@@ -1,0 +1,30 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+build/
+*.tsbuildinfo
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+
+# ECode 运行时配置与数据（含 API Key，禁止提交）
+.ecode/
+*.session.json
+
+# 日志
+*.log
+logs/
+
+# 测试
+coverage/
+.vitest/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp

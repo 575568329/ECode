@@ -1,0 +1,30 @@
+{
+  "name": "ecode",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "手写 AI coding agent - 学习型项目",
+  "main": "dist/index.js",
+  "bin": {
+    "ecode": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest"
+  },
+  "keywords": ["ai", "agent", "coding-assistant", "llm"],
+  "author": "fjyu9",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

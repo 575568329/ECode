@@ -1,5 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { toolDefinitions, executeTool } from './tools.js';
+import {
+  initRuntimeLog,
+  logApiRequest,
+  logApiResponse,
+  logToolExecution,
+  logError,
+  finalizeRuntimeLog,
+} from './runtime-logger.js';
 
 // ============================================================
 // Agent Loop — 理解 Agent 的心脏
@@ -30,21 +38,39 @@ export async function runAgent(task: string): Promise<void> {
   const anthropic = new Anthropic({ apiKey });
   const model = process.env['ANTHROPIC_MODEL'] || 'claude-sonnet-4-20250514';
 
+  // 初始化运行时日志（实时写入 docs/logs/runtime/）
+  const logFile = initRuntimeLog(task, model);
+
   // 消息历史 —— 整个 agent 的"记忆"
   const messages: Anthropic.MessageParam[] = [
     { role: 'user', content: task },
   ];
 
   console.log(`\n🤖 ECode (model: ${model})`);
-  console.log(`📝 任务: ${task}\n`);
+  console.log(`📝 任务: ${task}`);
+  console.log(`📋 日志: ${logFile}\n`);
 
-  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+  let iteration: number;
+  for (iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    // ---- 日志：API 请求 ----
+    logApiRequest(iteration, messages, toolDefinitions);
+
+    // ---- 调用 LLM ----
     const response = await anthropic.messages.create({
       model,
       max_tokens: 4096,
       messages,
       tools: toolDefinitions,
+    }).catch((err) => {
+      logError(`API call (round ${iteration})`, err);
+      throw err;
     });
+
+    // ---- 日志：API 响应 ----
+    const usage = response.usage
+      ? { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens }
+      : undefined;
+    logApiResponse(iteration, response.content, response.stop_reason ?? 'unknown', usage);
 
     // ---- 处理 LLM 返回的内容块 ----
     const toolUseBlocks: Array<{ id: string; name: string; input: unknown }> = [];
@@ -65,7 +91,7 @@ export async function runAgent(task: string): Promise<void> {
 
     // 没有工具调用 → LLM 已给出最终回答，循环终止
     if (toolUseBlocks.length === 0) {
-      console.log('\n'); // 空行
+      console.log('\n');
       break;
     }
 
@@ -82,10 +108,12 @@ export async function runAgent(task: string): Promise<void> {
 
       const result = await executeTool(toolUse.name, toolUse.input as Record<string, unknown>);
 
+      // 日志：工具执行
+      logToolExecution(iteration, toolUse.name, toolUse.input, result.content, result.isError);
+
       if (result.isError) {
         console.log(`❌ 错误: ${result.content.slice(0, 300)}`);
       } else {
-        // 只显示结果的前几行，防止刷屏
         const preview = result.content.split('\n').slice(0, 5).join('\n');
         console.log(`✅ 完成 (${result.content.length} 字符)`);
         if (preview) {
@@ -107,13 +135,14 @@ export async function runAgent(task: string): Promise<void> {
       });
     }
 
-    // 打印本轮迭代摘要
     const toolNames = toolUseBlocks.map((t) => t.name).join(', ');
     console.log(`\n  ── 第 ${iteration + 1} 轮结束 (调用了 ${toolUseBlocks.length} 个工具: ${toolNames}) ──\n`);
   }
 
+  // 完成日志
+  finalizeRuntimeLog(iteration + 1);
+
   if (!messages.some((m) => m.role === 'assistant' && typeof m.content === 'string')) {
-    // 到达迭代上限但 LLM 还没给出最终回答
     console.log(`\n⚠️  达到最大迭代次数 (${MAX_ITERATIONS})，自动终止`);
   }
 }

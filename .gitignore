@@ -17,7 +17,7 @@ build/
 
 # 日志
 *.log
-logs/
+/logs/
 
 # 测试
 coverage/

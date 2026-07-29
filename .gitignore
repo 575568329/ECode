@@ -28,3 +28,6 @@ coverage/
 .idea/
 .vscode/
 *.swp
+
+# Claude Code 本地配置（含个人/内网权限配置，禁止提交）
+.claude/

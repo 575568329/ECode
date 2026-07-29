@@ -18,7 +18,7 @@
 
 | 操作 | 命令 |
 |------|------|
-| 开发运行 | `npx tsx src/index.ts "任务"`（需先 `cp .env.example .env` 填 `ANTHROPIC_API_KEY`） |
+| 开发运行 | `npm run dev -- "任务"`（自动加载 `.env`；默认走 DeepSeek 兼容端点，见 `.env.example`） |
 | 编译 | `npm run build`（tsc，strict） |
 | 测试 | `npm test` / 单文件 `npx vitest run xxx.test.ts` / 按名 `npx vitest run -t "用例名"` |
 

@@ -12,7 +12,7 @@
 - **里程碑**：M1（Agent Loop）进行中
 - **已实现**：tool_use / tool_result 工具调用循环、`read_file` + `bash` 工具、运行时全量日志（`docs/logs/runtime/`）
 - **下一焦点**：M1 收尾验证 → M2 多模型适配
-- **环境**：需 `ANTHROPIC_API_KEY`（`.env`），默认模型 `claude-sonnet-4-20250514`
+- **环境**：默认走 DeepSeek 兼容端点（`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`），模型 `deepseek-v4-pro`；`.env` 由 `npm run dev` 自动加载
 
 ---
 

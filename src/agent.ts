@@ -28,15 +28,25 @@ import {
 const MAX_ITERATIONS = 25;
 
 export async function runAgent(task: string): Promise<void> {
+  // 兼容两种鉴权：
+  //   - ANTHROPIC_API_KEY   官方 Claude（x-api-key 头）
+  //   - ANTHROPIC_AUTH_TOKEN 兼容端点如 DeepSeek（Authorization: Bearer 头）
+  // 二者至少给一个；BASE_URL 留空走官方，填了走兼容端点。
   const apiKey = process.env['ANTHROPIC_API_KEY'];
-  if (!apiKey) {
-    console.error('错误: 未设置 ANTHROPIC_API_KEY 环境变量');
-    console.error('请创建 .env 文件并填入你的 API Key，或直接 export');
+  const authToken = process.env['ANTHROPIC_AUTH_TOKEN'];
+  if (!apiKey && !authToken) {
+    console.error('错误: 未设置 ANTHROPIC_API_KEY 或 ANTHROPIC_AUTH_TOKEN');
+    console.error('请创建 .env 文件（参考 .env.example）填入 key，或直接 export');
     process.exit(1);
   }
 
-  const anthropic = new Anthropic({ apiKey });
-  const model = process.env['ANTHROPIC_MODEL'] || 'claude-sonnet-4-20250514';
+  const anthropic = new Anthropic({
+    apiKey: apiKey ?? undefined,
+    authToken: authToken ?? undefined,
+    baseURL: process.env['ANTHROPIC_BASE_URL'],
+  });
+  // 默认走 DeepSeek；切官方 Claude 时在 .env 覆盖 ANTHROPIC_MODEL
+  const model = process.env['ANTHROPIC_MODEL'] || 'deepseek-v4-pro';
 
   // 初始化运行时日志（实时写入 docs/logs/runtime/）
   const logFile = initRuntimeLog(task, model);

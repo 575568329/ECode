@@ -56,6 +56,7 @@ src/runtime-logger.ts 每次运行写 docs/logs/runtime/YYYY-MM-DD/HHmmss.md
 
 ## 环境
 
-- 运行：`npx tsx src/index.ts "任务"`，需 `.env` 填 `ANTHROPIC_API_KEY`
-- 默认模型：`claude-sonnet-4-20250514`（可 `ANTHROPIC_MODEL` 覆盖）
-- Node >= 18
+- 运行：`npm run dev -- "任务"`（自动加载 `.env`，via `tsx --env-file-if-exists`）
+- 默认走 DeepSeek 兼容端点：`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`，默认模型 `deepseek-v4-pro`
+- 切官方 Claude：改用 `ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL=claude-sonnet-4-20250514`，留空 BASE_URL
+- Node >= 18（实测 v22.22.2）

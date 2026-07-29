@@ -8,9 +8,12 @@
  *   ecode "你的任务描述"
  *   ecode "读 package.json 告诉我依赖"
  *
- * 环境变量:
- *   ANTHROPIC_API_KEY  — Claude API Key（必填）
- *   ANTHROPIC_MODEL    — 模型名（可选，默认 claude-sonnet-4-20250514）
+ * 环境变量（见 .env.example，默认走 DeepSeek 兼容端点）:
+ *   ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY — 鉴权（二选一，必填）
+ *   ANTHROPIC_BASE_URL — 兼容端点（DeepSeek: https://api.deepseek.com/anthropic）
+ *   ANTHROPIC_MODEL    — 模型名（可选，默认 deepseek-v4-pro）
+ *
+ * .env 由 `npm run dev`（tsx --env-file-if-exists）自动加载，无需手动 export。
  */
 
 import { runAgent } from './agent.js';

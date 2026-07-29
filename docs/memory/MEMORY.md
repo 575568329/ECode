@@ -34,3 +34,4 @@
 ## 索引（每条记忆一行，新建后追加）
 
 - [project.md](./project.md) — 项目性质 / 架构骨架 / 里程碑进度 / 当前焦点
+- [debugging.md](./debugging.md) — 踩坑：#001 `--env-file` 不覆盖继承的 env / #002 `env -i` 丢 TMPDIR 致 tsx 写 `undefined/`

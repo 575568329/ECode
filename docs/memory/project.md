@@ -55,10 +55,9 @@ src/runtime-logger.ts 每次运行写 docs/logs/runtime/YYYY-MM-DD/HHmmss.md
 ## 关键文档
 
 - `docs/00-开发规划.md` — 总规划与里程碑
-- `docs/01-技术栈选型与理由.md` — 选型决策
-- `docs/02-M1骨架搭建方案.md` — M1 方案
-- `docs/03-Anthropic-SDK-参数详解.md` — SDK 参数
-- `docs/04-OpenAI-vs-Anthropic-API协议对比.md` — M2 前置
+- `docs/M1-技术选型与理由.md` — 选型决策（ESM / Vitest / tsx / tsconfig）
+- `docs/M1-实施方案.md` — 骨架记录 + M1 补全清单 + 验收
+- `docs/M1-方案解析.md` — 协议/SDK 原理 + 设计答疑（合并原 03/04/notes）
 
 ## 环境
 

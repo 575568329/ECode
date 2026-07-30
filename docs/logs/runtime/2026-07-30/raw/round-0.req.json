@@ -1,9 +1,0 @@
-{
-  "messages": [
-    {
-      "role": "user",
-      "content": "详细介绍你能做什么，至少500字"
-    }
-  ],
-  "toolCount": 2
-}

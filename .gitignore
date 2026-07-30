@@ -18,6 +18,7 @@ build/
 # 日志
 *.log
 /logs/
+/docs/logs/runtime/
 
 # 测试
 coverage/

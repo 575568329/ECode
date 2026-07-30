@@ -1,13 +1,19 @@
 /**
- * Runtime Logger — Agent Loop 的运行时全量日志
+ * Runtime Logger — Agent Loop 的运行时日志
  *
- * 每次执行 agent 自动记录到 docs/logs/runtime/YYYY-MM-DD/HHmmss_xxx.md
- * 包含：API 请求/响应报文、工具调用详情、Token 用量、耗时
+ * 设计：主日志（摘要）+ 旁路完整报文（raw/*.json）双层结构
+ *   - 主日志 .md      人类可读摘要，截断处显式标注「共 N 字符 / 显示前 M / 完整见 raw/...」
+ *   - raw/round-N.req.json｜resp.json  完整 API 报文（结构化 JSON，方便 jq 查）
  *
- * 使用 appendFileSync 实时写入，进程崩溃日志不丢
+ * 为什么不全塞进 .md：
+ *   - 完整报文动辄上万字符，塞 .md 会淹没元数据、难以阅读
+ *   - 静默截断会让人误以为「日志就是全部」（曾导致 text/thinking 看似丢失的错觉）
+ *   - 业界实践：主日志记摘要 + 指针，完整 payload 单独存，避免「日志与实际不一致」
+ *
+ * 使用 appendFileSync 实时写主日志，进程崩溃不丢
  */
 
-import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
+import { appendFileSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,11 +21,24 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOG_ROOT = resolve(__dirname, '..', 'docs', 'logs', 'runtime');
 
 let logPath = '';
+let sessionDir = ''; // 本次会话目录（主日志所在目录，raw/ 挂在它下面）
 let startTime = 0;
 let roundStartTime = 0;
 
 function ts(): string {
   return new Date().toISOString().slice(11, 23);
+}
+
+/**
+ * 把完整 payload 写到 raw/round-{round}.{kind}.json
+ * 返回相对会话目录的路径，供主日志引用（让读者知道「还有更多，去这看」）
+ */
+function saveRaw(round: number, kind: string, payload: unknown): string {
+  const rawDir = resolve(sessionDir, 'raw');
+  if (!existsSync(rawDir)) mkdirSync(rawDir, { recursive: true });
+  const rel = `raw/round-${round}.${kind}.json`;
+  writeFileSync(resolve(sessionDir, rel), JSON.stringify(payload, null, 2), 'utf-8');
+  return rel;
 }
 
 export function initRuntimeLog(task: string, model: string): string {
@@ -28,10 +47,10 @@ export function initRuntimeLog(task: string, model: string): string {
   const time = now.toISOString().slice(11, 19).replace(/:/g, ''); // HHmmss
   const sessionId = `${date}_${time}`;
 
-  const dir = resolve(LOG_ROOT, date);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  sessionDir = resolve(LOG_ROOT, date);
+  if (!existsSync(sessionDir)) mkdirSync(sessionDir, { recursive: true });
 
-  logPath = resolve(dir, `${sessionId}.md`);
+  logPath = resolve(sessionDir, `${sessionId}.md`);
   startTime = Date.now();
   roundStartTime = startTime;
 
@@ -43,6 +62,8 @@ export function initRuntimeLog(task: string, model: string): string {
     `- **Model**: ${model}`,
     `- **Time**: ${now.toISOString()}`,
     ``,
+    `> 主日志为摘要，完整 API 报文见同目录 \`raw/round-N.req.json\` / \`round-N.resp.json\``,
+    ``,
     '─'.repeat(60),
     ``,
   ].join('\n'));
@@ -52,36 +73,57 @@ export function initRuntimeLog(task: string, model: string): string {
 
 export function logApiRequest(round: number, messages: unknown[], tools: unknown[]): void {
   roundStartTime = Date.now();
+
+  // 完整请求报文落盘（messages 可能很长，不塞主日志）
+  const rawFile = saveRaw(round, 'req', { messages, toolCount: tools.length });
+
+  // 主日志只记摘要：前 3 条消息预览 + 总数 + 指针
+  const previewMessages = (messages as unknown[]).slice(0, 3);
+  const truncated = messages.length > 3;
+
   appendFileSync(logPath, [
     `## Round ${round}`,
     ``,
     `### [${ts()}] API Request`,
     ``,
+    `- **messages**: 共 ${messages.length} 条${truncated ? `（主日志仅显示前 3 条，完整见 ${rawFile}）` : ''}`,
+    ``,
     '```json',
-    JSON.stringify({ messages, toolCount: tools.length }, null, 2).slice(0, 5000),
-    messages.length > 3 ? `\n  // ... 共 ${messages.length} 条消息，仅显示前 3 条` : '',
+    JSON.stringify({ previewMessages, toolCount: tools.length }, null, 2).slice(0, 5000),
     '```',
     ``,
   ].join('\n'));
 }
 
 export function logApiResponse(
-  _round: number,
+  round: number,
   content: unknown[],
   stopReason: string,
   usage: { inputTokens?: number; outputTokens?: number } | undefined,
 ): void {
   const duration = Date.now() - roundStartTime;
 
+  // 完整响应报文（含 text/thinking/tool_use 全文）落盘
+  const rawFile = saveRaw(round, 'resp', { content, stopReason, usage });
+
+  // 主日志：每个 block 一行摘要，长内容显式标注「共 N / 显示前 M / 完整见 raw」
   let blocks = '';
-  for (const block of content as Array<{ type: string; [key: string]: unknown }>) {
+  for (const block of content as Array<{ type: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown }>) {
     if (block.type === 'text') {
       const text = String(block.text ?? '');
-      blocks += `  [text] ${text.slice(0, 200)}${text.length > 200 ? '...' : ''}\n`;
+      const LIMIT = 200;
+      if (text.length > LIMIT) {
+        blocks += `  [text] ${text.slice(0, LIMIT)}\n        ↳ 共 ${text.length} 字符，此处仅显示前 ${LIMIT}，完整见 ${rawFile}\n`;
+      } else {
+        blocks += `  [text] ${text}\n`;
+      }
     } else if (block.type === 'tool_use') {
       blocks += `  [tool_use] ${block.id} → ${block.name}(${JSON.stringify(block.input)})\n`;
+    } else if (block.type === 'thinking') {
+      const len = String(block.thinking ?? '').length;
+      blocks += `  [thinking] 推理过程 ${len} 字符（不在终端展示，完整见 ${rawFile}）\n`;
     } else {
-      blocks += `  [${block.type}] ${JSON.stringify(block).slice(0, 200)}\n`;
+      blocks += `  [${block.type}] 完整见 ${rawFile}\n`;
     }
   }
 
@@ -92,6 +134,7 @@ export function logApiResponse(
     `- **input_tokens**: ${usage?.inputTokens ?? '?'}`,
     `- **output_tokens**: ${usage?.outputTokens ?? '?'}`,
     `- **duration**: ${duration}ms`,
+    `- **完整报文**: ${rawFile}`,
     ``,
     '```',
     blocks.trim(),
@@ -116,7 +159,7 @@ export function logToolExecution(
     ``,
     '```',
     output.slice(0, 1000),
-    output.length > 1000 ? `\n... (截断，共 ${output.length} 字符)` : '',
+    output.length > 1000 ? `\n... (共 ${output.length} 字符，此处仅显示前 1000)` : '',
     '```',
     ``,
   ].join('\n'));

@@ -152,7 +152,12 @@ export async function runAgent(task: string): Promise<void> {
   // 完成日志
   finalizeRuntimeLog(iteration + 1);
 
-  if (!messages.some((m) => m.role === 'assistant' && typeof m.content === 'string')) {
+  // 判断是否真的跑满上限：
+  //   break 退出 → iteration 是 break 那一轮（< MAX_ITERATIONS），正常结束
+  //   跑满退出 → for 自然结束，iteration === MAX_ITERATIONS，才需要警告
+  // （旧实现用 typeof content === 'string' 判断，但 assistant 的 content 恒为数组，
+  //  条件永假 → 每次都误报警告，已弃用）
+  if (iteration >= MAX_ITERATIONS) {
     console.log(`\n⚠️  达到最大迭代次数 (${MAX_ITERATIONS})，自动终止`);
   }
 }

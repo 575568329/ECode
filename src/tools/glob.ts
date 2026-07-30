@@ -1,4 +1,4 @@
-import { glob } from 'fast-glob';
+import fg from 'fast-glob';
 import { ToolResult } from './types.js';
 import { truncate } from './truncate.js';
 
@@ -13,7 +13,7 @@ const DEFAULT_IGNORE = ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/bu
 export async function executeGlob(input: GlobInput): Promise<ToolResult> {
   const cwd = input.path ?? process.cwd();
   try {
-    const files = await glob(input.pattern, {
+    const files = await fg(input.pattern, {
       cwd,
       ignore: DEFAULT_IGNORE,
       dot: false,

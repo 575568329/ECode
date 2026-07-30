@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { toolDefinitions, executeTool } from './tools/index.js';
 import { buildSystemPrompt } from './system-prompt.js';
+import { withRetry } from './retry.js';
 import {
   initRuntimeLog,
   logApiRequest,
@@ -62,18 +63,24 @@ export async function runAgent(task: string): Promise<void> {
   console.log(`📋 日志: ${logFile}\n`);
 
   let iteration: number;
+  let lastSignature = '';
+  let repeated = false;
   for (iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     // ---- 日志：API 请求 ----
     logApiRequest(iteration, messages, toolDefinitions);
 
-    // ---- 调用 LLM ----
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: 4096,
-      system: buildSystemPrompt(),
-      messages,
-      tools: toolDefinitions,
-    }).catch((err) => {
+    // ---- 调用 LLM（带重试：429/5xx 退避重试，不可重试立即抛）----
+    const response = await withRetry(
+      () =>
+        anthropic.messages.create({
+          model,
+          max_tokens: 4096,
+          system: buildSystemPrompt(),
+          messages,
+          tools: toolDefinitions,
+        }),
+      `API round ${iteration}`,
+    ).catch((err) => {
       logError(`API call (round ${iteration})`, err);
       throw err;
     });
@@ -147,6 +154,19 @@ export async function runAgent(task: string): Promise<void> {
       });
     }
 
+    // ---- 重复动作检测（防死循环）：连续两轮工具调用签名相同 → 终止 ----
+    const signature = toolUseBlocks
+      .map((t) => `${t.name}:${JSON.stringify(t.input)}`)
+      .sort()
+      .join(' || ');
+    if (signature === lastSignature) {
+      console.log('\n⚠️  检测到连续重复的工具调用，终止以防死循环。');
+      logError('重复动作检测', `签名: ${signature}`);
+      repeated = true;
+      break;
+    }
+    lastSignature = signature;
+
     const toolNames = toolUseBlocks.map((t) => t.name).join(', ');
     console.log(`\n  ── 第 ${iteration + 1} 轮结束 (调用了 ${toolUseBlocks.length} 个工具: ${toolNames}) ──\n`);
   }
@@ -154,12 +174,8 @@ export async function runAgent(task: string): Promise<void> {
   // 完成日志
   finalizeRuntimeLog(iteration + 1);
 
-  // 判断是否真的跑满上限：
-  //   break 退出 → iteration 是 break 那一轮（< MAX_ITERATIONS），正常结束
-  //   跑满退出 → for 自然结束，iteration === MAX_ITERATIONS，才需要警告
-  // （旧实现用 typeof content === 'string' 判断，但 assistant 的 content 恒为数组，
-  //  条件永假 → 每次都误报警告，已弃用）
-  if (iteration >= MAX_ITERATIONS) {
+  // 终止原因：重复动作（loop 内已打印警告）/ 跑满上限 / 正常结束
+  if (!repeated && iteration >= MAX_ITERATIONS) {
     console.log(`\n⚠️  达到最大迭代次数 (${MAX_ITERATIONS})，自动终止`);
   }
 }

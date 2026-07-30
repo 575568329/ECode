@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { truncate, executeTool } from '../src/tools.js';
+import { truncate, executeTool } from '../src/tools/index.js';
 
 describe('truncate', () => {
   it('短文本（< max）应原样返回', () => {

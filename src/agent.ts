@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { toolDefinitions, executeTool } from './tools.js';
+import { toolDefinitions, executeTool } from './tools/index.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import {
   initRuntimeLog,

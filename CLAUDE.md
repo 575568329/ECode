@@ -7,7 +7,7 @@
 
 ## 🧭 AI 读取导航（会话开始先看这里）
 
-**这是什么项目**：用 TS + Node.js 从零**手写** AI coding agent（学习项目，对标 Claude Code）。单包 CLI，核心是手写的 agent loop（不用 LangGraph 等框架）。完整规划见 `docs/00-学习型开发规划.md`。
+**这是什么项目**：用 TS + Node.js 从零**手写** AI coding agent（**开源产品**，对标 Claude Code）。单包 CLI，核心是手写的 agent loop（不用 LangGraph 等框架）。交付优先：测试 / 错误恢复 / 权限 / 文档都是必须项。完整规划见 `docs/00-开发规划.md`。
 
 **会话开始按顺序读**：
 1. 本文件 **§九**（红线避坑）——必须遵守。

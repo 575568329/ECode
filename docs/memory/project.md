@@ -4,7 +4,9 @@
 
 ## 是什么
 
-**手写 AI coding agent**——学习项目（对标 Claude Code / opencode）。第一目的是**理解**而非交付：拒绝框架黑盒（不用 LangGraph），每个模块动手前先讲清原理。
+**手写 AI coding agent**——**开源产品**（对标 Claude Code / opencode），认真一步步开发交付。手写 agent loop（不用 LangGraph 等框架），追求稳定、完整、可维护。
+
+> 定位变更（2026-07-30）：从"学习项目（理解优先、YAGNI）"转为"开源产品（交付优先）"。质量标准随之提高：测试覆盖、错误恢复、权限、文档都是必须项，不再"用到再加"。
 
 - 单包 CLI，TypeScript + Node.js（ESM）
 - 核心是手写的 agent loop（while 循环 + tool_use/tool_result 配对）
@@ -35,20 +37,24 @@ src/runtime-logger.ts 每次运行写 docs/logs/runtime/YYYY-MM-DD/HHmmss.md
 
 | 里程碑 | 学习目标 | 状态 |
 |--------|---------|------|
-| M1 Agent Loop | 工具调用协议、while 循环、id 配对 | 🔄 进行中 |
+| M1 Agent Loop | 工具调用协议、while 循环、id 配对 | 🔄 补全中（能跑，补到"真能用"） |
 | M2 多模型适配 | Provider 抽象、协议差异、能力探测 | ⬜ 未开始 |
 | M3 上下文压缩 | token 计数、摘要压缩、结果截断 | ⬜ 未开始 |
 | M4 权限系统 | default/acceptEdits/plan/bypass、危险命令拦截 | ⬜ 未开始 |
-| M5+ 进阶 | 可观测性 / 测试 / Repo Map / Subagent | ⬜ 未开始 |
+| M5+ 进阶 | 可观测性 / Repo Map / Subagent | ⬜ 未开始 |
 
 ## 当前焦点
 
-- M1 收尾：现有 loop + 工具 + 日志已可跑，待补充测试与验证
-- M2 前置：Provider 抽象设计（见 `docs/04-OpenAI-vs-Anthropic-API协议对比.md`）
+**M1 补全到"真能用"**（交付标准，不再是学习收尾）：
+- 补测试（纯函数 + Mock SDK，TDD 基础）
+- System Prompt（分层，模型认知 + 行为约束）
+- 错误恢复（API 重试 429/529、死循环防护加强）
+- 工具补全（edit_file / grep / glob）
+- 后置验证（强制 build/test，不信模型自报完成）
 
 ## 关键文档
 
-- `docs/00-学习型开发规划.md` — 总规划与里程碑
+- `docs/00-开发规划.md` — 总规划与里程碑
 - `docs/01-技术栈选型与理由.md` — 选型决策
 - `docs/02-M1骨架搭建方案.md` — M1 方案
 - `docs/03-Anthropic-SDK-参数详解.md` — SDK 参数

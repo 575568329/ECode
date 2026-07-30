@@ -2,7 +2,7 @@
   "name": "ecode",
   "version": "0.1.0",
   "type": "module",
-  "description": "手写 AI coding agent - 学习型项目",
+  "description": "手写 AI coding agent - 开源产品（对标 Claude Code）",
   "main": "dist/index.js",
   "bin": {
     "ecode": "dist/index.js"

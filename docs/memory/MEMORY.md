@@ -9,10 +9,11 @@
 
 ## 当前状态（一眼概览）
 
-- **里程碑**：M1（Agent Loop）进行中
-- **已实现**：tool_use / tool_result 工具调用循环、`read_file` + `bash` 工具、运行时全量日志（`docs/logs/runtime/`）
-- **下一焦点**：M1 收尾验证 → M2 多模型适配
-- **环境**：默认走 DeepSeek 兼容端点（`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`），模型 `deepseek-v4-pro`；`.env` 由 `npm run dev` 自动加载
+- **定位**：开源产品（对标 Claude Code），交付优先——2026-07-30 从"学习项目"转型
+- **里程碑**：M1（Agent Loop）补全中——loop 能跑，正在补到"真能用"
+- **已实现**：tool_use / tool_result 循环、`read_file` + `bash` 工具、主摘要+raw 双层日志
+- **下一焦点**：M1 补全（测试 / system prompt / 错误恢复 / 工具补全 / 后置验证）
+- **环境**：默认走 DeepSeek 兼容端点（`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`）；`.env` 由 `npm run dev` 自动加载
 
 ---
 

@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { toolDefinitions, executeTool } from './tools.js';
+import { buildSystemPrompt } from './system-prompt.js';
 import {
   initRuntimeLog,
   logApiRequest,
@@ -69,6 +70,7 @@ export async function runAgent(task: string): Promise<void> {
     const response = await anthropic.messages.create({
       model,
       max_tokens: 4096,
+      system: buildSystemPrompt(),
       messages,
       tools: toolDefinitions,
     }).catch((err) => {

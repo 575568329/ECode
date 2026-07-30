@@ -72,7 +72,8 @@ export async function executeTool(
   }
 }
 
-function truncate(text: string, max: number = MAX_OUTPUT_LENGTH): string {
+// export 以便单元测试；运行时也被 executeReadFile/executeBash 内部使用
+export function truncate(text: string, max: number = MAX_OUTPUT_LENGTH): string {
   if (text.length <= max) return text;
   return text.slice(0, max) + `\n\n... (已截断，共 ${text.length} 字符，仅显示前 ${max} 字符)`;
 }

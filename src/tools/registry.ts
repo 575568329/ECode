@@ -51,4 +51,31 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['path', 'oldText', 'newText'],
     },
   },
+  {
+    name: 'grep',
+    description:
+      '按正则在文件内容中搜索。返回「相对路径:行号: 行内容」。需要找哪个文件含某段代码时用，不要用 bash + cat。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: '正则表达式' },
+        path: { type: 'string', description: '搜索根目录（可选，默认当前工作目录）' },
+        include: { type: 'string', description: '文件名过滤，如 "*.ts"（可选）' },
+      },
+      required: ['pattern'],
+    },
+  },
+  {
+    name: 'glob',
+    description:
+      '按文件名模式查找文件（如 "**/*.ts"）。需要列出某类文件时用。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: '文件名 glob 模式' },
+        path: { type: 'string', description: '搜索根目录（可选，默认当前工作目录）' },
+      },
+      required: ['pattern'],
+    },
+  },
 ];

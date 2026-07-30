@@ -23,8 +23,10 @@ const BEHAVIOR = `## 行为准则
 
 const TOOL_GUIDE = `## 工具使用
 - **read_file**：查看文件内容。需要了解代码时优先用它，不要用 bash + cat。
-- **bash**：执行命令（跑测试、装依赖、git 等）。输出超过 3 万字符会被截断。
-- 搜索代码暂时用 bash（grep/find），后续会提供专用 grep/glob 工具。`;
+- **edit_file**：精确替换文件片段。oldText 必须唯一匹配，否则会回显真实内容供你重试。
+- **grep**：按正则搜索文件内容（返回「路径:行号: 行内容」），找代码用它而非 bash+cat。
+- **glob**：按文件名模式找文件（如 \`**/*.ts\`）。
+- **bash**：执行命令（跑测试、装依赖、git 等）。输出超过 3 万字符会被截断。`;
 
 /** 拼装完整 system prompt。分层组合，便于后续按里程碑扩展。 */
 export function buildSystemPrompt(): string {

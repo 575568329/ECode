@@ -2,6 +2,8 @@ import { ToolResult } from './types.js';
 import { executeReadFile } from './read-file.js';
 import { executeBash } from './bash.js';
 import { executeEditFile } from './edit-file.js';
+import { executeGrep } from './grep.js';
+import { executeGlob } from './glob.js';
 
 /**
  * 工具分发器：按工具名路由到具体实现。
@@ -20,6 +22,10 @@ export async function executeTool(
       return executeEditFile(
         input as { path: string; oldText: string; newText: string },
       );
+    case 'grep':
+      return executeGrep(input as { pattern: string; path?: string; include?: string });
+    case 'glob':
+      return executeGlob(input as { pattern: string; path?: string });
     default:
       return { content: `未知工具: ${name}`, isError: true };
   }

@@ -10,9 +10,9 @@
 ## 当前状态（一眼概览）
 
 - **定位**：开源产品（对标 Claude Code），交付优先——2026-07-30 从"学习项目"转型
-- **里程碑**：M1（Agent Loop）补全中——loop 能跑，正在补到"真能用"
-- **已实现**：tool_use / tool_result 循环、`read_file` + `bash` 工具、主摘要+raw 双层日志
-- **下一焦点**：M1 补全（测试 / system prompt / 错误恢复 / 工具补全 / 后置验证）
+- **里程碑**：M1 补全完成（P0-1~P0-6），待端到端验证后进 M2
+- **已实现**：agent loop + system prompt + 5 工具（read/edit/grep/glob/bash）+ withRetry 重试 + 重复动作检测 + 主摘要/raw 日志 + 25 单测
+- **下一焦点**：M1 端到端真实任务验证 → M2 Provider 抽象（多模型）
 - **环境**：默认走 DeepSeek 兼容端点（`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`）；`.env` 由 `npm run dev` 自动加载
 
 ---
@@ -35,4 +35,4 @@
 ## 索引（每条记忆一行，新建后追加）
 
 - [project.md](./project.md) — 项目性质 / 架构骨架 / 里程碑进度 / 当前焦点
-- [debugging.md](./debugging.md) — 踩坑：#001 `--env-file` 不覆盖继承的 env / #002 `env -i` 丢 TMPDIR 致 tsx 写 `undefined/`
+- [debugging.md](./debugging.md) — 踩坑：#001 `--env-file` 不覆盖继承的 env / #002 `env -i` 丢 TMPDIR / #003 fast-glob ESM named export（vitest 假过）

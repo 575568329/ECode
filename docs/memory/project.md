@@ -45,12 +45,12 @@ src/runtime-logger.ts 每次运行写 docs/logs/runtime/YYYY-MM-DD/HHmmss.md
 
 ## 当前焦点
 
-**M1 补全到"真能用"**（交付标准，不再是学习收尾）：
-- 补测试（纯函数 + Mock SDK，TDD 基础）
-- System Prompt（分层，模型认知 + 行为约束）
-- 错误恢复（API 重试 429/529、死循环防护加强）
-- 工具补全（edit_file / grep / glob）
-- 后置验证（强制 build/test，不信模型自报完成）
+**M1 补全完成**（2026-07-30）：P0-1~P0-6 全部落地。
+- ✅ 测试基础（25 单测）/ System Prompt / edit_file（匹配恢复）/ grep+glob / withRetry 重试 + 重复检测 / 后置验证（system 引导）
+- ⬜ 剩余：agent loop Mock SDK 集成测试、端到端真实任务验证
+- 下一里程碑：**M2 Provider 抽象**（多模型适配，见 [M1-方案解析第三章](../M1-方案解析.md)）
+
+> P0-6 后置验证：M1 靠 system prompt 引导（"改完代码用 bash 跑 build/test 确认"）。完整里程碑 hook 系统（Stop/PreToolUse 触发、可配置开关/超时/增量）是 **M4+ 扩展点**，M1 不做。
 
 ## 关键文档
 

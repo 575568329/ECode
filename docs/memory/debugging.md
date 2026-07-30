@@ -54,3 +54,28 @@ env -i PATH="$PATH" TMPDIR="$TMPDIR" TEMP="$TEMP" TMP="$TMP" \
   SYSTEMROOT="$SYSTEMROOT" npx tsx ...
 ```
 测试产生的 `undefined/` 目录直接 `rm -rf` 删掉即可，不入库。
+
+---
+
+## #003 fast-glob 3.x ESM 无 named export（vitest 假过，Node 运行时才报错）
+
+**日期**：2026-07-30
+**影响**：vitest 测试全绿，但 `npm run dev` 实跑 `SyntaxError: does not provide an export named 'glob'`。
+
+### 现象
+`import { glob } from 'fast-glob'` —— vitest 跑 glob.test.ts 全过；`npm run dev` 实跑报 `The requested module 'fast-glob' does not provide an export named 'glob'`。
+
+### 根因
+- fast-glob 3.x 的 ESM 只有 **default export**（函数），没有 named export `glob`。
+- **vitest 用 vite/esbuild 做模块互操作，对 CJS→ESM 的 named import 宽容**（把 default 当属性来源），导致测试"假过"。
+- Node 原生 ESM 严格，named import 必须真实存在，实跑才暴露。
+
+### 解决
+用 default import：
+```ts
+import fg from 'fast-glob';
+const files = await fg(pattern, { ... });
+```
+
+### 教训
+**vitest 测试过 ≠ Node 运行时正常**（ESM/CJS interop 差异）。涉及第三方库 import 时，务必用 `npm run dev` 实跑验证，不能只靠 vitest。

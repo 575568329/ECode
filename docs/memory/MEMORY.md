@@ -10,10 +10,10 @@
 ## 当前状态（一眼概览）
 
 - **定位**：开源产品（对标 Claude Code），交付优先——2026-07-30 从"学习项目"转型
-- **里程碑**：M1 补全完成（P0-1~P0-6），待端到端验证后进 M2
-- **已实现**：agent loop + system prompt + 5 工具（read/edit/grep/glob/bash）+ withRetry 重试 + 重复动作检测 + 主摘要/raw 日志 + 25 单测
-- **下一焦点**：M1 端到端真实任务验证 → M2 Provider 抽象（多模型）
-- **环境**：默认走 DeepSeek 兼容端点（`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`）；`.env` 由 `npm run dev` 自动加载
+- **里程碑**：M2 完成（Provider 抽象：Claude/OpenAI 双协议 + config + factory + --model CLI），下一 M3
+- **已实现**：M1 全部 + Provider 层（types/transform/claude/openai/config/factory）+ agent 解耦 SDK + tools 协议中立化 + CLI --model；49 单测；OpenAI 协议端到端实跑通过（deepseek-chat + 工具）
+- **下一焦点**：M3 上下文压缩 + Session 持久化 + 流式输出
+- **环境**：M2 起 config.json 驱动（`DEEPSEEK_API_KEY` / `ZHIPUAI_API_KEY` / `ANTHROPIC_API_KEY`，OpenAI 兼容协议）；`.env` 由 `npm run dev` 自动加载
 
 ---
 

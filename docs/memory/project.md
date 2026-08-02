@@ -45,12 +45,14 @@ src/runtime-logger.ts 每次运行写 docs/logs/runtime/YYYY-MM-DD/HHmmss.md
 
 ## 当前焦点
 
-**M1 补全完成**（2026-07-30）：P0-1~P0-6 全部落地。
-- ✅ 测试基础（25 单测）/ System Prompt / edit_file（匹配恢复）/ grep+glob / withRetry 重试 + 重复检测 / 后置验证（system 引导）
-- ⬜ 剩余：agent loop Mock SDK 集成测试、端到端真实任务验证
-- 下一里程碑：**M2 Provider 抽象**（多模型适配，见 [M1-方案解析第三章](../M1-方案解析.md)）
+**M2 完成**（2026-08-02）：Provider 抽象层落地，agent 解耦 SDK。
+- ✅ Provider 层（types/transform/claude/openai/config/factory）+ agent 解耦 SDK + tools 协议中立化（input_schema→parameters）+ CLI --model/--list-models
+- ✅ 49 单测（transform 10 / claude 3 / openai 3 / config 5 / factory 3 + M1 全部）
+- ✅ OpenAI 协议端到端实跑通过（deepseek-chat，含工具调用）
+- 🟡 Anthropic 协议端到端：单测覆盖（mock SDK），待真 Claude key 实跑
+- 下一里程碑：**M3 上下文压缩 + Session 持久化 + 流式输出**
 
-> P0-6 后置验证：M1 靠 system prompt 引导（"改完代码用 bash 跑 build/test 确认"）。完整里程碑 hook 系统（Stop/PreToolUse 触发、可配置开关/超时/增量）是 **M4+ 扩展点**，M1 不做。
+> M2 配置变化：从 M1 的 `ANTHROPIC_AUTH_TOKEN`+Anthropic 兼容端点，改为 config.json 驱动的 `DEEPSEEK_API_KEY`/`ZHIPUAI_API_KEY`（OpenAI 兼容协议，openai SDK）。
 
 ## 关键文档
 

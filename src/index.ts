@@ -1,32 +1,47 @@
 #!/usr/bin/env node
 
 /**
- * ECode — 手写 AI coding agent
- * M1: 最小可运行 agent loop
+ * ECode — 手写 AI coding agent（M2：多模型 Provider 抽象）
  *
  * 使用:
- *   ecode "你的任务描述"
+ *   ecode [--model <name>] [--list-models] <任务描述>
  *   ecode "读 package.json 告诉我依赖"
+ *   ecode --model glm-5.2 "改 src/agent.ts 的 xxx"
+ *   ecode --list-models
  *
- * 环境变量（见 .env.example，默认走 DeepSeek 兼容端点）:
- *   ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY — 鉴权（二选一，必填）
- *   ANTHROPIC_BASE_URL — 兼容端点（DeepSeek: https://api.deepseek.com/anthropic）
- *   ANTHROPIC_MODEL    — 模型名（可选，默认 deepseek-v4-pro）
- *
- * .env 由 `npm run dev`（tsx --env-file-if-exists）自动加载，无需手动 export。
+ * 模型配置见 ~/.ecode/config.json（不存在则用内置默认：GLM/DeepSeek/Claude）。
+ * 各 provider 的 API Key 通过环境变量传入（config.json 的 apiKeyEnv 指向变量名），
+ * .env 由 `npm run dev`（tsx --env-file-if-exists）自动加载。
  */
 
+import { parseArgs } from 'node:util';
 import { runAgent } from './agent.js';
+import { listAvailableModels } from './providers/config.js';
 
-const task = process.argv[2];
+const { values, positionals } = parseArgs({
+  options: {
+    model: { type: 'string' },
+    'list-models': { type: 'boolean' },
+  },
+  allowPositionals: true,
+});
 
+if (values['list-models']) {
+  console.log('可用模型：');
+  for (const m of listAvailableModels()) {
+    console.log(`  ${m.model} (provider: ${m.provider})`);
+  }
+  process.exit(0);
+}
+
+const task = positionals[0];
 if (!task) {
-  console.error('用法: ecode <任务描述>');
+  console.error('用法: ecode [--model <name>] [--list-models] <任务描述>');
   console.error('示例: ecode "读 package.json 告诉我依赖"');
   process.exit(1);
 }
 
-runAgent(task).catch((err) => {
+runAgent(task, values.model).catch((err) => {
   console.error('\n💥 致命错误:', err instanceof Error ? err.message : String(err));
   process.exit(1);
 });

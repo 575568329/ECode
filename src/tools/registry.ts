@@ -8,7 +8,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'read_file',
     description: '读取文件内容。当你需要查看文件内容时使用这个工具。',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         path: {
@@ -23,7 +23,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'bash',
     description:
       '执行 shell 命令。当你需要运行命令、安装依赖、编译代码、运行脚本时使用这个工具。',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         command: {
@@ -38,7 +38,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'edit_file',
     description:
       '精确替换文件中的指定文本片段。oldText 必须在文件中唯一匹配（包括空格/换行）；匹配失败时会回显文件真实内容供你重试。',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: '要编辑的文件路径' },
@@ -55,7 +55,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'grep',
     description:
       '按正则在文件内容中搜索。返回「相对路径:行号: 行内容」。需要找哪个文件含某段代码时用，不要用 bash + cat。',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         pattern: { type: 'string', description: '正则表达式' },
@@ -69,7 +69,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'glob',
     description:
       '按文件名模式查找文件（如 "**/*.ts"）。需要列出某类文件时用。',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         pattern: { type: 'string', description: '文件名 glob 模式' },

@@ -1,7 +1,9 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { toolDefinitions, executeTool } from './tools/index.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { withRetry } from './retry.js';
+import { createProvider } from './providers/factory.js';
+import { getDefaultModel, hasCapability } from './providers/config.js';
+import type { ECodeMessage } from './providers/types.js';
 import {
   initRuntimeLog,
   logApiRequest,
@@ -17,48 +19,34 @@ import {
 //
 // 原理：
 //   agent 是一个 while 循环，每次迭代：
-//   1. 把累积的 messages 发给 LLM
-//   2. LLM 返回 text（思考/回答）或 tool_use（工具调用请求）
-//   3. 如果是 tool_use → 执行工具 → 回传 tool_result → 继续循环
+//   1. 把累积的 messages 发给 LLM（经 Provider 抽象，不绑死某家协议）
+//   2. LLM 返回 text（思考/回答）或 tool_call（工具调用请求）
+//   3. 如果是 tool_call → 执行工具 → 回传 tool_result → 继续循环
 //   4. 如果是 text → 终止循环
 //
 // 关键约束：
-//   - tool_result.tool_use_id 必须等于 tool_use.id（不配对会 400）
+//   - tool_result.tool_use_id 必须等于 tool_call.id（不配对会 400）
 //   - messages 是累加的（append 不是重建），每次循环传全部历史
+//
+// M2 改造：agent 不再 import 任何 SDK，只依赖 ModelProvider 接口 + ECode 内部格式。
 // ============================================================
 
 const MAX_ITERATIONS = 25;
 
-export async function runAgent(task: string): Promise<void> {
-  // 兼容两种鉴权：
-  //   - ANTHROPIC_API_KEY   官方 Claude（x-api-key 头）
-  //   - ANTHROPIC_AUTH_TOKEN 兼容端点如 DeepSeek（Authorization: Bearer 头）
-  // 二者至少给一个；BASE_URL 留空走官方，填了走兼容端点。
-  const apiKey = process.env['ANTHROPIC_API_KEY'];
-  const authToken = process.env['ANTHROPIC_AUTH_TOKEN'];
-  if (!apiKey && !authToken) {
-    console.error('错误: 未设置 ANTHROPIC_API_KEY 或 ANTHROPIC_AUTH_TOKEN');
-    console.error('请创建 .env 文件（参考 .env.example）填入 key，或直接 export');
-    process.exit(1);
-  }
-
-  const anthropic = new Anthropic({
-    apiKey: apiKey ?? undefined,
-    authToken: authToken ?? undefined,
-    baseURL: process.env['ANTHROPIC_BASE_URL'],
-  });
-  // 默认走 DeepSeek；切官方 Claude 时在 .env 覆盖 ANTHROPIC_MODEL
-  const model = process.env['ANTHROPIC_MODEL'] || 'deepseek-v4-pro';
+export async function runAgent(task: string, model?: string): Promise<void> {
+  const resolvedModel = model ?? getDefaultModel();
+  const provider = createProvider(resolvedModel);
+  const useTools = hasCapability(resolvedModel, 'tools');
 
   // 初始化运行时日志（实时写入 docs/logs/runtime/）
-  const logFile = initRuntimeLog(task, model);
+  const logFile = initRuntimeLog(task, resolvedModel);
 
-  // 消息历史 —— 整个 agent 的"记忆"
-  const messages: Anthropic.MessageParam[] = [
-    { role: 'user', content: task },
-  ];
+  // 消息历史 —— 整个 agent 的"记忆"（ECode 内部格式，与协议无关）
+  const messages: ECodeMessage[] = [{ role: 'user', content: task }];
 
-  console.log(`\n🤖 ECode (model: ${model})`);
+  const tools = useTools ? toolDefinitions : [];
+
+  console.log(`\n🤖 ECode (model: ${resolvedModel}, provider: ${provider.name})`);
   console.log(`📝 任务: ${task}`);
   console.log(`📋 日志: ${logFile}\n`);
 
@@ -67,45 +55,35 @@ export async function runAgent(task: string): Promise<void> {
   let repeated = false;
   for (iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     // ---- 日志：API 请求 ----
-    logApiRequest(iteration, messages, toolDefinitions);
+    logApiRequest(iteration, messages, tools);
 
-    // ---- 调用 LLM（带重试：429/5xx 退避重试，不可重试立即抛）----
+    // ---- 调用 LLM（经 Provider 抽象，带重试）----
     const response = await withRetry(
       () =>
-        anthropic.messages.create({
-          model,
-          max_tokens: 4096,
+        provider.complete({
+          model: resolvedModel,
           system: buildSystemPrompt(),
           messages,
-          tools: toolDefinitions,
+          tools,
         }),
-      `API round ${iteration}`,
+      `provider:${resolvedModel}`,
     ).catch((err) => {
       logError(`API call (round ${iteration})`, err);
       throw err;
     });
 
     // ---- 日志：API 响应 ----
-    const usage = response.usage
-      ? { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens }
-      : undefined;
-    logApiResponse(iteration, response.content, response.stop_reason ?? 'unknown', usage);
+    logApiResponse(iteration, response.content, response.stopReason, response.usage);
 
-    // ---- 处理 LLM 返回的内容块 ----
-    const toolUseBlocks: Array<{ id: string; name: string; input: unknown }> = [];
-
+    // ---- 处理 LLM 返回的内容块（ECode 统一格式）----
+    const toolUseBlocks: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
     for (const block of response.content) {
       if (block.type === 'text') {
-        // LLM 的文本回复（思考过程/最终答案）
         process.stdout.write(block.text);
-      } else if (block.type === 'tool_use') {
-        // LLM 请求调用工具
-        toolUseBlocks.push({
-          id: block.id,
-          name: block.name,
-          input: block.input,
-        });
+      } else if (block.type === 'tool_call') {
+        toolUseBlocks.push({ id: block.id, name: block.name, input: block.input });
       }
+      // tool_result 不会出现在 LLM 响应里
     }
 
     // 没有工具调用 → LLM 已给出最终回答，循环终止
@@ -114,20 +92,15 @@ export async function runAgent(task: string): Promise<void> {
       break;
     }
 
-    // ---- 把 LLM 的完整回复加入消息历史 ----
-    // 注意：必须包含所有 content block（既包括 text 也包括 tool_use）
-    messages.push({
-      role: 'assistant',
-      content: response.content,
-    });
+    // ---- 把 LLM 的完整回复加入消息历史（含 text + tool_call blocks）----
+    messages.push({ role: 'assistant', content: response.content });
 
-    // ---- 执行每个工具，回传 tool_result ----
+    // ---- 执行每个工具，回传 tool_result（ECode 格式）----
     for (const toolUse of toolUseBlocks) {
       console.log(`\n\n⚡ [${toolUse.name}]`);
 
-      const result = await executeTool(toolUse.name, toolUse.input as Record<string, unknown>);
+      const result = await executeTool(toolUse.name, toolUse.input);
 
-      // 日志：工具执行
       logToolExecution(iteration, toolUse.name, toolUse.input, result.content, result.isError);
 
       if (result.isError) {

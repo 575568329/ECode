@@ -3,7 +3,7 @@
 export interface ToolDefinition {
   name: string;
   description: string;
-  input_schema: {
+  parameters: {
     type: 'object';
     properties: Record<string, unknown>;
     required?: string[];

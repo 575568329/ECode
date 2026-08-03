@@ -37,9 +37,10 @@ src/runtime-logger.ts 每次运行写 docs/logs/runtime/YYYY-MM-DD/HHmmss.md
 
 | 里程碑 | 学习目标 | 状态 |
 |--------|---------|------|
-| M1 Agent Loop | 工具调用协议、while 循环、id 配对 | 🔄 补全中（能跑，补到"真能用"） |
-| M2 多模型适配 | Provider 抽象、协议差异、能力探测 | ⬜ 未开始 |
-| M3 上下文压缩 | token 计数、摘要压缩、结果截断 | ⬜ 未开始 |
+| M1 Agent Loop | 工具调用协议、while 循环、id 配对 | ✅ 完成 |
+| M2 多模型适配 | Provider 抽象、协议差异、能力探测 | ✅ 完成 |
+| M3 上下文压缩 + Session | token 计数、摘要压缩、结果截断、Session 数据层 | ⬜ 下一 |
+| M3.5 交互式 CLI | 沉浸 REPL、slash 命令、流式渲染、中断、富文本/TUI | ⬜ 规划中 |
 | M4 权限系统 | default/acceptEdits/plan/bypass、危险命令拦截 | ⬜ 未开始 |
 | M5+ 进阶 | 可观测性 / Repo Map / Subagent | ⬜ 未开始 |
 
@@ -50,7 +51,7 @@ src/runtime-logger.ts 每次运行写 docs/logs/runtime/YYYY-MM-DD/HHmmss.md
 - ✅ 49 单测（transform 10 / claude 3 / openai 3 / config 5 / factory 3 + M1 全部）
 - ✅ OpenAI 协议端到端实跑通过（deepseek-chat，含工具调用）
 - 🟡 Anthropic 协议端到端：单测覆盖（mock SDK），待真 Claude key 实跑
-- 下一里程碑：**M3 上下文压缩 + Session 持久化 + 流式输出**
+- 下一里程碑：**M3 上下文压缩 + Session（数据层）→ M3.5 交互式 CLI 体验**
 
 > M2 配置变化：从 M1 的 `ANTHROPIC_AUTH_TOKEN`+Anthropic 兼容端点，改为 config.json 驱动的 `DEEPSEEK_API_KEY`/`ZHIPUAI_API_KEY`（OpenAI 兼容协议，openai SDK）。
 

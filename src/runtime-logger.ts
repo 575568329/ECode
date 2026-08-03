@@ -98,7 +98,7 @@ export function logApiRequest(round: number, messages: unknown[], tools: unknown
 export function logApiResponse(
   round: number,
   content: unknown[],
-  stopReason: string,
+  stopReason: { unified: string; raw?: string } | string,
   usage: { inputTokens?: number; outputTokens?: number } | undefined,
 ): void {
   const duration = Date.now() - roundStartTime;
@@ -130,7 +130,7 @@ export function logApiResponse(
   appendFileSync(logPath, [
     `### [${ts()}] API Response (${duration}ms)`,
     ``,
-    `- **stop_reason**: ${stopReason}`,
+    `- **stop_reason**: ${typeof stopReason === 'string' ? stopReason : `${stopReason.unified}${stopReason.raw ? ` (${stopReason.raw})` : ''}`}`,
     `- **input_tokens**: ${usage?.inputTokens ?? '?'}`,
     `- **output_tokens**: ${usage?.outputTokens ?? '?'}`,
     `- **duration**: ${duration}ms`,

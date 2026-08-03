@@ -75,6 +75,13 @@ export async function runAgent(task: string, model?: string): Promise<void> {
     // ---- 日志：API 响应 ----
     logApiResponse(iteration, response.content, response.stopReason, response.usage);
 
+    // 打印 transform 降级/不支持警告（让用户知道模型悄悄丢了什么）
+    if (response.warnings && response.warnings.length > 0) {
+      for (const w of response.warnings) {
+        console.log(`⚠️  [${w.type}] ${w.feature}${w.details ? ` (${w.details})` : ''}`);
+      }
+    }
+
     // ---- 处理 LLM 返回的内容块（ECode 统一格式）----
     const toolUseBlocks: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
     for (const block of response.content) {
@@ -99,7 +106,16 @@ export async function runAgent(task: string, model?: string): Promise<void> {
     for (const toolUse of toolUseBlocks) {
       console.log(`\n\n⚡ [${toolUse.name}]`);
 
-      const result = await executeTool(toolUse.name, toolUse.input);
+      // 防御:工具实现抛异常时降级为 isError 回喂 LLM,不让单个工具崩杀整个 loop
+      let result: { content: string; isError: boolean };
+      try {
+        result = await executeTool(toolUse.name, toolUse.input);
+      } catch (err) {
+        result = {
+          content: `工具执行异常: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
 
       logToolExecution(iteration, toolUse.name, toolUse.input, result.content, result.isError);
 

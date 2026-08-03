@@ -21,11 +21,28 @@ export interface ECodeMessage {
   content: string | ECodeContentBlock[];
 }
 
+/**
+ * 内部统一的停止原因（信息保真）。
+ * unified: agent loop 用这 6 个值做决策（语义清晰、跨 provider 一致）。
+ * raw?: 保留 provider 原始值，用于调试（如 'model_context_window_exceeded' vs 'max_tokens'）。
+ */
+export type ECodeStopReason = {
+  unified: 'stop' | 'length' | 'tool-use' | 'content-filter' | 'error' | 'other';
+  raw?: string;
+};
+
+/** 借鉴 Vercel warnings:transform 遇到不支持/降级的情况时,降级而非抛错,让 agent loop 可感知 */
+export type ECodeWarning =
+  | { type: 'unsupported'; feature: string; details?: string }
+  | { type: 'compatibility'; feature: string; details?: string };
+
 /** 统一 LLM 响应（Provider 翻译掉协议外壳后返回） */
 export interface ECodeResponse {
   content: ECodeContentBlock[]; // 仅 text + tool_call
-  stopReason: 'end_turn' | 'tool_use' | 'max_tokens';
+  stopReason: ECodeStopReason;
   usage: { inputTokens: number; outputTokens: number };
+  /** transform 收集的警告信息（降级/不支持），agent loop 可选打印或决策 */
+  warnings?: ECodeWarning[];
 }
 
 /** 统一工具定义（中性命名 parameters，非 Anthropic 的 input_schema） */

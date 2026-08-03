@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type OpenAI from 'openai';
-import type { ChatRequest, ECodeContentBlock, ECodeMessage, ECodeResponse, ECodeToolDefinition } from './types.js';
+import type { ChatRequest, ECodeContentBlock, ECodeMessage, ECodeResponse, ECodeStopReason, ECodeToolDefinition, ECodeWarning } from './types.js';
 
 // ============================================================
 // Transform —— 内部格式 ↔ 两家协议的双向翻译（纯函数，无副作用）
@@ -45,6 +45,10 @@ function toAnthropicBlock(
         content: block.content,
         ...(block.is_error ? { is_error: true } : {}),
       };
+    default:
+      // exhaustive check:新增 ECodeContentBlock variant 时编译报错,防漏
+      const _: never = block;
+      throw new Error(`unsupported block type: ${JSON.stringify(_)}`);
   }
 }
 
@@ -55,6 +59,7 @@ function toAnthropicTool(tool: ECodeToolDefinition): Anthropic.Tool {
 /** 把 Anthropic Message 翻译回 ECodeResponse（丢掉 thinking 等不关心的 block） */
 export function fromAnthropicResponse(res: Anthropic.Message): ECodeResponse {
   const blocks: ECodeContentBlock[] = [];
+  const warnings: ECodeWarning[] = [];
   for (const b of res.content) {
     if (b.type === 'text') {
       blocks.push({ type: 'text', text: b.text });
@@ -65,24 +70,30 @@ export function fromAnthropicResponse(res: Anthropic.Message): ECodeResponse {
         name: b.name,
         input: b.input as Record<string, unknown>,
       });
+    } else {
+      // thinking / 其它 block → 降级记录而非静默丢失
+      // TS 收窄为 never:所有已知 ContentBlock 变体已在上面处理,
+      // 但 SDK 可能返回新变体(如 future 新 block type),用类型断言兜底
+      const unknownBlock = b as { type: string };
+      warnings.push({ type: 'unsupported', feature: `content block type '${unknownBlock.type}'` });
     }
-    // thinking / 其它 block 忽略
   }
   return {
     content: blocks,
     stopReason: mapAnthropicStopReason(res.stop_reason),
     usage: { inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens },
+    warnings,
   };
 }
 
-function mapAnthropicStopReason(reason: Anthropic.Message['stop_reason']): ECodeResponse['stopReason'] {
+function mapAnthropicStopReason(reason: Anthropic.Message['stop_reason']): ECodeStopReason {
   switch (reason) {
     case 'end_turn':
-      return 'end_turn';
+      return { unified: 'stop', raw: reason };
     case 'tool_use':
-      return 'tool_use';
+      return { unified: 'tool-use', raw: reason };
     default: // max_tokens / stop_sequence / 其他
-      return 'max_tokens';
+      return { unified: 'length', raw: reason ?? undefined };
   }
 }
 
@@ -177,21 +188,26 @@ export function fromOpenAIResponse(res: OpenAI.Chat.ChatCompletion): ECodeRespon
   };
 }
 
-function mapOpenAIStopReason(reason: string | null | undefined): ECodeResponse['stopReason'] {
+function mapOpenAIStopReason(reason: string | null | undefined): ECodeStopReason {
   switch (reason) {
     case 'stop':
-      return 'end_turn';
+      return { unified: 'stop', raw: reason };
     case 'tool_calls':
-      return 'tool_use';
-    default: // length / content_filter / 其他
-      return 'max_tokens';
+      return { unified: 'tool-use', raw: reason };
+    case 'content_filter':
+      return { unified: 'content-filter', raw: reason };
+    case 'length':
+      return { unified: 'length', raw: reason };
+    default: // 其他未知值
+      return { unified: 'other', raw: reason ?? undefined };
   }
 }
 
 function safeParseJSON(s: string): Record<string, unknown> {
   try {
     return JSON.parse(s) as Record<string, unknown>;
-  } catch {
-    return {};
+  } catch (err) {
+    // 保留原始值和错误信息,不静默吞掉 —— 让 agent loop 能看到 LLM 返回了什么
+    return { _parseError: err instanceof Error ? err.message : String(err), _raw: s };
   }
 }

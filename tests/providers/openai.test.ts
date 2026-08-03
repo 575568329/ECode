@@ -32,7 +32,7 @@ describe('OpenAIProvider', () => {
     const r = await provider.complete(baseReq);
     expect(mockCreate).toHaveBeenCalledTimes(1);
     expect(r.content).toEqual([{ type: 'text', text: '你好' }]);
-    expect(r.stopReason).toBe('end_turn');
+    expect(r.stopReason.unified).toBe('stop');
     expect(r.usage).toEqual({ inputTokens: 3, outputTokens: 5 });
   });
 
@@ -65,6 +65,6 @@ describe('OpenAIProvider', () => {
     const provider = new OpenAIProvider({ apiKey: 'fake' });
     const r = await provider.complete(baseReq);
     expect(r.content[0]).toEqual({ type: 'tool_call', id: 'c1', name: 'read', input: { path: 'x' } });
-    expect(r.stopReason).toBe('tool_use');
+    expect(r.stopReason.unified).toBe('tool-use');
   });
 });

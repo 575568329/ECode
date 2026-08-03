@@ -64,7 +64,9 @@ describe('fromAnthropicResponse', () => {
     expect(r.content).toHaveLength(2);
     expect(r.content[0]).toEqual({ type: 'text', text: 'hello' });
     expect(r.content[1]).toEqual({ type: 'tool_call', id: 't1', name: 'read', input: { path: 'x' } });
-    expect(r.stopReason).toBe('tool_use');
+    expect(r.stopReason.unified).toBe('tool-use');
+    expect(r.stopReason.raw).toBe('tool_use');
+    expect(r.warnings).toEqual([{ type: 'unsupported', feature: "content block type 'thinking'" }]);
     expect(r.usage).toEqual({ inputTokens: 10, outputTokens: 20 });
   });
 
@@ -74,7 +76,8 @@ describe('fromAnthropicResponse', () => {
       stop_reason: 'end_turn',
       usage: { input_tokens: 1, output_tokens: 1 },
     } as unknown as Anthropic.Message;
-    expect(fromAnthropicResponse(fakeRes).stopReason).toBe('end_turn');
+    expect(fromAnthropicResponse(fakeRes).stopReason.unified).toBe('stop');
+    expect(fromAnthropicResponse(fakeRes).stopReason.raw).toBe('end_turn');
   });
 });
 
@@ -136,7 +139,7 @@ describe('fromOpenAIResponse', () => {
     const r = fromOpenAIResponse(fakeRes);
     expect(r.content[0]).toEqual({ type: 'text', text: 'hello' });
     expect(r.content[1]).toEqual({ type: 'tool_call', id: 'c1', name: 'read', input: { path: 'x' } });
-    expect(r.stopReason).toBe('tool_use');
+    expect(r.stopReason.unified).toBe('tool-use');
     expect(r.usage).toEqual({ inputTokens: 5, outputTokens: 8 });
   });
 
@@ -145,7 +148,8 @@ describe('fromOpenAIResponse', () => {
       choices: [{ message: { content: 'done' }, finish_reason: 'stop' }],
     } as unknown as OpenAI.Chat.ChatCompletion;
     const r = fromOpenAIResponse(fakeRes);
-    expect(r.stopReason).toBe('end_turn');
+    expect(r.stopReason.unified).toBe('stop');
+    expect(r.stopReason.raw).toBe('stop');
     expect(r.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
   });
 });

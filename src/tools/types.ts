@@ -16,6 +16,12 @@ export interface ToolDefinition {
   execute?: (input: Record<string, unknown>) => ToolResult | Promise<ToolResult>;
   /** P5 预留：标记工具是否只读可并行（如 glob/grep 可并发，edit_file 不行） */
   parallelizable?: boolean;
+  /**
+   * 是否危险操作（需权限审批）。
+   * 档A（CCode 式）：bash 等副作用工具标 true，触发 permissionGate 询问；
+   * read_file/grep/glob 等只读工具不标（undefined 视为 false，直接放行）。
+   */
+  dangerous?: boolean;
 }
 
 /**

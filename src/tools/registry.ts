@@ -30,6 +30,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'bash',
     description:
       '执行 shell 命令。当你需要运行命令、安装依赖、编译代码、运行脚本时使用这个工具。',
+    dangerous: true,
     parameters: {
       type: 'object',
       properties: {

@@ -120,3 +120,19 @@ describe('v2 声明式工具（execute 挂在定义上）', () => {
     }
   });
 });
+
+describe('ToolDefinition.dangerous 标记（M3.5 权限闸门消费）', () => {
+  it('bash 工具标记为 dangerous（需权限审批）', () => {
+    const bash = toolDefinitions.find((t) => t.name === 'bash');
+    expect(bash?.dangerous).toBe(true);
+  });
+
+  it('只读工具（read_file/grep/glob）未标 dangerous', () => {
+    const readonly = toolDefinitions.filter((t) =>
+      ['read_file', 'grep', 'glob'].includes(t.name),
+    );
+    for (const t of readonly) {
+      expect(t.dangerous ?? false).toBe(false);
+    }
+  });
+});

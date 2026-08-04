@@ -21,6 +21,7 @@ import {
 import { saveSession } from './session.js';
 import type { ECodeSession, ECodeSessionStats } from './session.js';
 import type { AgentEvent } from './agent-events.js';
+import { assertNever } from './assert-never.js';
 import { shouldAsk, AllowList } from './permission.js';
 import type { PermissionGate } from './permission.js';
 
@@ -116,7 +117,7 @@ export interface RunAgentStreamOptions extends RunAgentOptions {
 }
 
 /**
- * 把流式 chunk 累积成本轮 ECodeResponse.content（text + tool_call 完整 input）。
+ * 把流式 chunk 累积成本轮响应内容（text + tool_call 完整 input）。
  * - text_delta → 追加 text
  * - tool_call_start/delta/end → 按 id 累积 input JSON，跨 chunk 拼接
  * - usage → 暂不用于事件（成本追踪 M5）
@@ -467,6 +468,8 @@ export async function runAgent(
       case 'error':
         console.error(`\n💥 ${event.error}`);
         break;
+      default:
+        assertNever(event);
     }
   }
 }

@@ -101,7 +101,9 @@ function mapAnthropicStopReasonStreaming(
       return { unified: 'stop', raw: reason };
     case 'tool_use':
       return { unified: 'tool-use', raw: reason };
-    default: // max_tokens / stop_sequence / 其它
+    case 'stop_sequence':
+      return { unified: 'stop', raw: reason }; // 模型主动停止（非 max_tokens）
+    default: // max_tokens / 其它
       return { unified: 'length', raw: reason ?? undefined };
   }
 }

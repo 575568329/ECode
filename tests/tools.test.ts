@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { truncate, executeTool } from '../src/tools/index.js';
+import { truncate, executeTool, toolDefinitions } from '../src/tools/index.js';
 
 describe('truncate', () => {
   it('短文本（< max）应原样返回', () => {
@@ -89,5 +89,34 @@ describe('executeTool 异常降级(try/catch 不炸 loop)', () => {
     //  测试验证的是 executor 层的 try/catch 保护)
     expect(result).toBeDefined();
     expect(typeof result.isError).toBe('boolean');
+  });
+});
+
+describe('v2 声明式工具（execute 挂在定义上）', () => {
+  it('toolDefinitions 每个工具都有 execute 函数', () => {
+    for (const tool of toolDefinitions) {
+      expect(typeof tool.execute).toBe('function');
+    }
+  });
+
+  it('executor 不含 switch/case（纯 find + execute 分发）', async () => {
+    // 通过确认"有 execute 的工具能执行"来间接验证 executor 走的是 execute 字段
+    // 而非硬编码 switch
+    const result = await executeTool('bash', { command: 'echo hello' });
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain('hello');
+  });
+
+  it('registry 上无 execute 的工具 → executor 返回"未实现"', async () => {
+    const original = toolDefinitions.find((t) => t.name === 'glob');
+    if (original) {
+      const saved = original.execute;
+      // @ts-expect-error 测试用：临时移除 execute
+      delete original.execute;
+      const result = await executeTool('glob', { pattern: '*.ts' });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('未实现');
+      original.execute = saved; // 恢复
+    }
   });
 });

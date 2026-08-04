@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import type { ChatRequest, ECodeResponse, ModelProvider } from './types.js';
+import type { ChatRequest, ECodeResponse, ECodeStreamPart, ModelProvider } from './types.js';
 import { toOpenAIRequest, fromOpenAIResponse } from './transform.js';
 import { withRetry } from '../retry.js';
 
@@ -21,6 +21,11 @@ export class OpenAIProvider implements ModelProvider {
     this.client = new OpenAI(opts);
   }
 
+  /** SDK 实际 endpoint(构造时确定,含 env OPENAI_BASE_URL 覆盖——排障可见真实请求地址) */
+  get baseURL(): string {
+    return this.client.baseURL;
+  }
+
   async complete(request: ChatRequest): Promise<ECodeResponse> {
     const params = toOpenAIRequest(request);
     const completion = await withRetry(
@@ -29,5 +34,9 @@ export class OpenAIProvider implements ModelProvider {
     );
     // create 单签名返回 ChatCompletion | Stream 联合，非流式实际是 ChatCompletion
     return fromOpenAIResponse(completion as OpenAI.Chat.ChatCompletion);
+  }
+
+  async *stream(request: ChatRequest): AsyncIterable<ECodeStreamPart> {
+    throw new Error(`[M3.5] OpenAIProvider.stream() 尚未实现 (model: ${request.model})`);
   }
 }

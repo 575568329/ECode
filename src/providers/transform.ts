@@ -39,11 +39,13 @@ function toAnthropicBlock(
     case 'tool_call':
       return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
     case 'tool_result':
+      // v2: output 判别联合 → Anthropic 原生格式
+      // content: text/error 统一为字符串；is_error: 仅 error variant 设为 true
       return {
         type: 'tool_result',
         tool_use_id: block.tool_use_id,
-        content: block.content,
-        ...(block.is_error ? { is_error: true } : {}),
+        content: outputToAnthropicContent(block.output),
+        ...(block.output.type === 'error' ? { is_error: true as const } : {}),
       };
     default:
       // exhaustive check:新增 ECodeContentBlock variant 时编译报错,防漏
@@ -146,7 +148,8 @@ export function toOpenAIMessages(req: ChatRequest): OpenAI.Chat.ChatCompletionMe
       // user：tool_result → role:'tool'，text → role:'user'
       for (const b of msg.content) {
         if (b.type === 'tool_result') {
-          result.push({ role: 'tool', tool_call_id: b.tool_use_id, content: b.content });
+          // v2: output 判别联合 → OpenAI role:tool content
+          result.push({ role: 'tool', tool_call_id: b.tool_use_id, content: outputToOpenAIContent(b.output) });
         } else if (b.type === 'text') {
           result.push({ role: 'user', content: b.text });
         }
@@ -209,5 +212,40 @@ function safeParseJSON(s: string): Record<string, unknown> {
   } catch (err) {
     // 保留原始值和错误信息,不静默吞掉 —— 让 agent loop 能看到 LLM 返回了什么
     return { _parseError: err instanceof Error ? err.message : String(err), _raw: s };
+  }
+}
+
+// ---------------- ECode v2 output 辅助 ----------------
+
+/**
+ * ECodeToolResultOutput → Anthropic tool_result.content 字符串。
+ * Anthropic 的 tool_result.content 是 string | array，这里统一用 string。
+ * error variant → is_error 由 content block 的 content 决定（需要调用方补充），
+ * 但 Anthropic 新版 API 已支持 content block array，error 用 is_error 字段。
+ * 简化处理：text/error 统一序列化为 string，is_error 通过输出结构体现。
+ */
+function outputToAnthropicContent(output: import('./types.js').ECodeToolResultOutput): string {
+  switch (output.type) {
+    case 'text':
+      return output.value;
+    case 'error':
+      return output.value;
+    case 'json':
+      return JSON.stringify(output.value);
+  }
+}
+
+/**
+ * ECodeToolResultOutput → OpenAI role:tool 的 content 字段。
+ * OpenAI tool message 的 content 是 string | null。
+ */
+function outputToOpenAIContent(output: import('./types.js').ECodeToolResultOutput): string {
+  switch (output.type) {
+    case 'text':
+      return output.value;
+    case 'error':
+      return output.value;
+    case 'json':
+      return JSON.stringify(output.value);
   }
 }

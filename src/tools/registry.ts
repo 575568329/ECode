@@ -1,8 +1,14 @@
-import { ToolDefinition } from './types.js';
+import type { ToolDefinition } from './types.js';
+import { executeReadFile } from './read-file.js';
+import { executeBash } from './bash.js';
+import { executeEditFile } from './edit-file.js';
+import { executeGrep } from './grep.js';
+import { executeGlob } from './glob.js';
 
 /**
- * 给 LLM 看的工具清单（Anthropic input_schema 格式）。
- * 新增工具：在此加 schema + executor.ts 加 case + 实现工具函数。
+ * 声明式工具清单（v2）：每个工具自带 schema + execute。
+ * 新增工具：在此加一条（name + description + parameters + execute）即可，
+ * 无需再改 executor.ts 的 switch。
  */
 export const toolDefinitions: ToolDefinition[] = [
   {
@@ -18,6 +24,7 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['path'],
     },
+    execute: (input) => executeReadFile(input as { path: string }),
   },
   {
     name: 'bash',
@@ -33,6 +40,7 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['command'],
     },
+    execute: (input) => executeBash(input as { command: string }),
   },
   {
     name: 'edit_file',
@@ -50,6 +58,8 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['path', 'oldText', 'newText'],
     },
+    execute: (input) =>
+      executeEditFile(input as { path: string; oldText: string; newText: string }),
   },
   {
     name: 'grep',
@@ -64,6 +74,8 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['pattern'],
     },
+    execute: (input) =>
+      executeGrep(input as { pattern: string; path?: string; include?: string }),
   },
   {
     name: 'glob',
@@ -77,5 +89,6 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['pattern'],
     },
+    execute: (input) => executeGlob(input as { pattern: string; path?: string }),
   },
 ];

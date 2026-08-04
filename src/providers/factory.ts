@@ -1,6 +1,6 @@
 import { ClaudeProvider } from './claude.js';
 import { OpenAIProvider } from './openai.js';
-import { getModelConfig, getProviderConfig } from './config.js';
+import { getModelConfig, getProviderConfig, resolveBaseURL } from './config.js';
 import type { ModelProvider } from './types.js';
 
 /**
@@ -20,8 +20,10 @@ export function createProvider(model: string): ModelProvider {
     );
   }
 
+  // baseURL 经三级解析（env > config.json > 内置默认），见 resolveBaseURL
+  const baseURL = resolveBaseURL(providerConfig);
   if (providerConfig.protocol === 'anthropic') {
-    return new ClaudeProvider({ apiKey, baseURL: providerConfig.baseURL });
+    return new ClaudeProvider({ apiKey, baseURL });
   }
-  return new OpenAIProvider({ apiKey, baseURL: providerConfig.baseURL });
+  return new OpenAIProvider({ apiKey, baseURL });
 }

@@ -12,6 +12,7 @@ describe('createProvider', () => {
     _resetConfigCacheForTest();
     delete process.env.ZHIPUAI_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.GLM_BASE_URL;
   });
 
   it('glm（openai 协议）→ OpenAIProvider', () => {
@@ -28,5 +29,20 @@ describe('createProvider', () => {
   it('未知 model 抛错（config 层）', () => {
     process.env.ZHIPUAI_API_KEY = 'fake';
     expect(() => createProvider('not-exist')).toThrow('未知模型');
+  });
+
+  // baseURL 解析端到端：env（GLM_BASE_URL）> config.json（baseURL）> 内置默认（coding 端点）
+  // provider.baseURL 取自 SDK 实际值，验证整条链路（resolveBaseURL → 构造 → SDK getter）
+  it('baseURL：无 env 时用内置 coding plan 端点', () => {
+    process.env.ZHIPUAI_API_KEY = 'fake';
+    const p = createProvider('glm-5.2');
+    expect(p.baseURL).toBe('https://open.bigmodel.cn/api/coding/paas/v4');
+  });
+
+  it('baseURL：GLM_BASE_URL 覆盖内置默认', () => {
+    process.env.ZHIPUAI_API_KEY = 'fake';
+    process.env.GLM_BASE_URL = 'https://my-proxy/v1';
+    const p = createProvider('glm-5.2');
+    expect(p.baseURL).toBe('https://my-proxy/v1');
   });
 });

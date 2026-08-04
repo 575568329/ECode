@@ -41,7 +41,7 @@ function saveRaw(round: number, kind: string, payload: unknown): string {
   return rel;
 }
 
-export function initRuntimeLog(task: string, model: string): string {
+export function initRuntimeLog(task: string, model: string, endpoint?: string): string {
   const now = new Date();
   const date = now.toISOString().slice(0, 10); // YYYY-MM-DD
   const time = now.toISOString().slice(11, 19).replace(/:/g, ''); // HHmmss
@@ -60,6 +60,7 @@ export function initRuntimeLog(task: string, model: string): string {
     `- **Session**: ${sessionId}`,
     `- **Task**: ${task}`,
     `- **Model**: ${model}`,
+    `- **Endpoint**: ${endpoint ?? '(未提供)'}`,
     `- **Time**: ${now.toISOString()}`,
     ``,
     `> 主日志为摘要，完整 API 报文见同目录 \`raw/round-N.req.json\` / \`round-N.resp.json\``,

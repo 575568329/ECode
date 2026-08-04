@@ -40,12 +40,36 @@ describe('toAnthropicRequest', () => {
       ...baseRequest,
       messages: [
         { role: 'assistant', content: [{ type: 'tool_call', id: 't1', name: 'read', input: { path: 'x' } }] },
-        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '结果' }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', output: { type: 'text', value: '结果' } }] },
       ],
     };
     const r = toAnthropicRequest(req);
     expect(r.messages[0]).toMatchObject({ role: 'assistant', content: [{ type: 'tool_use', id: 't1' }] });
     expect(r.messages[1]).toMatchObject({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1' }] });
+  });
+
+  it('v2: tool_result error output → is_error: true', () => {
+    const req: ChatRequest = {
+      ...baseRequest,
+      messages: [
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', output: { type: 'error', value: '文件不存在' } }] },
+      ],
+    };
+    const r = toAnthropicRequest(req);
+    const block = (r.messages[0] as { content: Array<{ type: string; is_error?: boolean }> }).content[0];
+    expect(block.is_error).toBe(true);
+  });
+
+  it('v2: tool_result text output → is_error 不存在', () => {
+    const req: ChatRequest = {
+      ...baseRequest,
+      messages: [
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', output: { type: 'text', value: 'ok' } }] },
+      ],
+    };
+    const r = toAnthropicRequest(req);
+    const block = (r.messages[0] as { content: Array<{ type: string; is_error?: boolean }> }).content[0];
+    expect(block.is_error).toBeUndefined();
   });
 });
 
@@ -90,10 +114,28 @@ describe('toOpenAIMessages', () => {
   it('tool_result → 独立 role:tool 消息（ECode user → OpenAI tool）', () => {
     const req: ChatRequest = {
       ...baseRequest,
-      messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: '结果' }] }],
+      messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', output: { type: 'text', value: '结果' } }] }],
     };
     const msgs = toOpenAIMessages(req);
     expect(msgs[1]).toEqual({ role: 'tool', tool_call_id: 'c1', content: '结果' });
+  });
+
+  it('v2: tool_result error output → OpenAI tool content 保留错误文本', () => {
+    const req: ChatRequest = {
+      ...baseRequest,
+      messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', output: { type: 'error', value: '命令执行失败' } }] }],
+    };
+    const msgs = toOpenAIMessages(req);
+    expect(msgs[1]).toEqual({ role: 'tool', tool_call_id: 'c1', content: '命令执行失败' });
+  });
+
+  it('v2: tool_result json output → OpenAI tool content 序列化为 JSON 字符串', () => {
+    const req: ChatRequest = {
+      ...baseRequest,
+      messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', output: { type: 'json', value: { files: 3, lines: 120 } } }] }],
+    };
+    const msgs = toOpenAIMessages(req);
+    expect(msgs[1]).toEqual({ role: 'tool', tool_call_id: 'c1', content: '{"files":3,"lines":120}' });
   });
 
   it('assistant tool_call → tool_calls 字段，input 序列化成 JSON 字符串', () => {

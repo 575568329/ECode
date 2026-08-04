@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { ChatRequest, ECodeResponse, ModelProvider } from './types.js';
+import type { ChatRequest, ECodeResponse, ECodeStreamPart, ModelProvider } from './types.js';
 import { toAnthropicRequest, fromAnthropicResponse } from './transform.js';
 import { withRetry } from '../retry.js';
 
@@ -22,6 +22,11 @@ export class ClaudeProvider implements ModelProvider {
     this.client = new Anthropic(opts);
   }
 
+  /** SDK 实际 endpoint(含 env ANTHROPIC_BASE_URL 覆盖——排障可见真实请求地址) */
+  get baseURL(): string {
+    return this.client.baseURL;
+  }
+
   async complete(request: ChatRequest): Promise<ECodeResponse> {
     const params = toAnthropicRequest(request);
     const message = await withRetry(
@@ -30,5 +35,9 @@ export class ClaudeProvider implements ModelProvider {
     );
     // SDK 单签名返回 Message | Stream 联合，非流式（未传 stream:true）实际是 Message
     return fromAnthropicResponse(message as Anthropic.Message);
+  }
+
+  async *stream(request: ChatRequest): AsyncIterable<ECodeStreamPart> {
+    throw new Error(`[M3.5] ClaudeProvider.stream() 尚未实现 (model: ${request.model})`);
   }
 }

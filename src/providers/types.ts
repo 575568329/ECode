@@ -9,11 +9,22 @@
 // （TS 知识缺口 #1：判别联合 —— 用 type 字面量区分，switch/block.type 能自动收窄）
 // ============================================================
 
+/**
+ * 工具结果输出 —— 判别联合（v2 升级）。
+ * v1: tool_result 用 content:string + is_error?:boolean（扁平，语义模糊）。
+ * v2: 收敛为 output 判别联合（text/error/json），Provider 翻译时从协议格式映射到对应 variant。
+ * Why: 结构化结果（json）预留 + 错误语义显式化 + 与 Vercel providerOptions 模式对齐。
+ */
+export type ECodeToolResultOutput =
+  | { type: 'text'; value: string }
+  | { type: 'error'; value: string }
+  | { type: 'json'; value: unknown };
+
 /** 内部统一内容块 —— 判别联合，靠 type 字段收窄 */
 export type ECodeContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'tool_call'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
+  | { type: 'text'; text: string; providerOptions?: Record<string, unknown> }
+  | { type: 'tool_call'; id: string; name: string; input: Record<string, unknown>; providerOptions?: Record<string, unknown> }
+  | { type: 'tool_result'; tool_use_id: string; output: ECodeToolResultOutput; providerOptions?: Record<string, unknown> };
 
 /** 内部统一消息 */
 export interface ECodeMessage {
@@ -65,13 +76,31 @@ export interface ChatRequest {
   maxTokens?: number;
 }
 
+/**
+ * 流式响应的单个 chunk（M3.5 实现，M3 仅占位类型）。
+ * 定义在此避免 M3.5 时改 ModelProvider 接口。
+ */
+export type ECodeStreamPart =
+  | { type: 'text_delta'; text: string }
+  | { type: 'tool_call_start'; id: string; name: string }
+  | { type: 'tool_call_delta'; id: string; inputDelta: string }
+  | { type: 'tool_call_end'; id: string }
+  | { type: 'usage'; inputTokens: number; outputTokens: number }
+  | { type: 'stop'; reason: ECodeStopReason };
+
 /** Provider 接口 —— agent loop 唯一依赖，换模型 = 换 Provider 实例 */
 export interface ModelProvider {
   readonly name: string; // 'claude' | 'openai'
   readonly protocol: 'anthropic' | 'openai';
+  /** SDK 实际使用的 endpoint(含环境变量覆盖后的最终值,排障可见真实请求地址) */
+  readonly baseURL: string;
   /** 非流式：一次性返回完整响应。agent loop 当前唯一入口 */
   complete(request: ChatRequest): Promise<ECodeResponse>;
-  // TODO(M3+): stream(request: ChatRequest): AsyncIterable<ECodeStreamChunk>;
+  /**
+   * 流式：逐 chunk 返回（M3.5 实现）。
+   * M3 仅占位签名，各 Provider 暂抛 'not implemented'。
+   */
+  stream(request: ChatRequest): AsyncIterable<ECodeStreamPart>;
 }
 
 /** 模型能力（静态声明，不做 runtime 探测） */
@@ -81,4 +110,6 @@ export type ModelCapability = 'tools' | 'vision' | 'thinking' | 'fast_mode';
 export interface ModelConfig {
   provider: string; // 指向 config.providers 的 key
   capabilities: ModelCapability[];
+  /** 模型上下文窗口大小（token），供 ContextManager 算压缩阈值 */
+  contextWindow?: number;
 }

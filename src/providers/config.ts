@@ -11,6 +11,9 @@ export interface ProviderConfig {
   protocol: 'anthropic' | 'openai';
   baseURL?: string;
   apiKeyEnv: string; // 指向环境变量名，不在 config 里明文存 key（安全）
+  /** baseURL 的环境变量名（厂商专属，与 apiKeyEnv 对称）：GLM_BASE_URL / DEEPSEEK_BASE_URL / ANTHROPIC_BASE_URL。
+   *  优先级高于 baseURL：env 有值则覆盖 config.json 里的 baseURL（.env 灵活切换代理/端点）。 */
+  baseURLEnv?: string;
   models?: string[];
 }
 
@@ -26,13 +29,14 @@ const CONFIG_PATH = join(homedir(), '.ecode', 'config.json');
 const DEFAULT_CONFIG: ECodeConfig = {
   defaultModel: 'glm-5.2',
   providers: {
-    glm: { protocol: 'openai', baseURL: 'https://open.bigmodel.cn/api/paas/v4', apiKeyEnv: 'ZHIPUAI_API_KEY' },
-    deepseek: { protocol: 'openai', baseURL: 'https://api.deepseek.com', apiKeyEnv: 'DEEPSEEK_API_KEY' },
-    claude: { protocol: 'anthropic', baseURL: 'https://api.anthropic.com', apiKeyEnv: 'ANTHROPIC_API_KEY' },
+    // GLM 走 coding plan 专用端点（含 /coding/）；普通 paas/v4 会因套餐不匹配报 429（对齐 CCode 源码 config-manager.ts:53）
+    glm: { protocol: 'openai', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZHIPUAI_API_KEY', baseURLEnv: 'GLM_BASE_URL' },
+    deepseek: { protocol: 'openai', baseURL: 'https://api.deepseek.com', apiKeyEnv: 'DEEPSEEK_API_KEY', baseURLEnv: 'DEEPSEEK_BASE_URL' },
+    claude: { protocol: 'anthropic', baseURL: 'https://api.anthropic.com', apiKeyEnv: 'ANTHROPIC_API_KEY', baseURLEnv: 'ANTHROPIC_BASE_URL' },
   },
   models: {
-    'glm-5.2': { provider: 'glm', capabilities: ['tools'] },
-    'deepseek-chat': { provider: 'deepseek', capabilities: ['tools'] },
+    'glm-5.2': { provider: 'glm', capabilities: ['tools'], contextWindow: 1_000_000 },
+    'deepseek-chat': { provider: 'deepseek', capabilities: ['tools'], contextWindow: 128_000 },
   },
 };
 
@@ -75,6 +79,18 @@ export function getProviderConfig(providerKey: string): ProviderConfig {
   return pc;
 }
 
+/**
+ * 解析 provider 最终生效的 baseURL（三级优先级，借鉴 Claude Code env 覆盖 + CCode config 文件双入口）：
+ *   ① process.env[baseURLEnv]  ← .env 灵活覆盖（GLM_BASE_URL 等，与 apiKeyEnv 对称），切代理/切端点不改 config.json
+ *   ② providerConfig.baseURL   ← config.json 显式写（长期固定配置）
+ *   ③ undefined                ← 都没有则不传，交 SDK 走协议默认地址（如 api.anthropic.com）
+ * env 为空串视为未设置（.env 里留空=用默认），避免空 baseURL 破坏请求。
+ */
+export function resolveBaseURL(pc: ProviderConfig): string | undefined {
+  const fromEnv = pc.baseURLEnv ? process.env[pc.baseURLEnv] : undefined;
+  return fromEnv || pc.baseURL;
+}
+
 export function hasCapability(model: string, cap: ModelCapability): boolean {
   try {
     return getModelConfig(model).capabilities.includes(cap);
@@ -85,6 +101,15 @@ export function hasCapability(model: string, cap: ModelCapability): boolean {
 
 export function listAvailableModels(): Array<{ model: string; provider: string }> {
   return Object.entries(loadConfig().models).map(([model, mc]) => ({ model, provider: mc.provider }));
+}
+
+/** 获取模型上下文窗口大小（token），未配置时默认 128K */
+export function getContextWindow(model: string): number {
+  try {
+    return getModelConfig(model).contextWindow ?? 128_000;
+  } catch {
+    return 128_000;
+  }
 }
 
 /** 测试用：重置缓存（验证默认 vs 文件加载） */

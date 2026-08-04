@@ -10,10 +10,10 @@
 ## 当前状态（一眼概览）
 
 - **定位**：开源产品（对标 Claude Code），交付优先——2026-07-30 从"学习项目"转型
-- **里程碑**：M2 完成（Provider 抽象：Claude/OpenAI 双协议 + config + factory + --model CLI），下一 M3 → M3.5
-- **已实现**：M1 全部 + Provider 层（types/transform/claude/openai/config/factory）+ agent 解耦 SDK + tools 协议中立化 + CLI --model；49 单测；OpenAI 协议端到端实跑通过（deepseek-chat + 工具）
-- **下一焦点**：M3 上下文压缩 + Session（数据层）→ M3.5 交互式 CLI 体验（沉浸 REPL / slash 命令 / 流式渲染 / 中断）
-- **环境**：M2 起 config.json 驱动（`DEEPSEEK_API_KEY` / `ZHIPUAI_API_KEY` / `ANTHROPIC_API_KEY`，OpenAI 兼容协议）；`.env` 由 `npm run dev` 自动加载
+- **里程碑**：M3 P1-P4 完成（格式 v2 + 声明式工具 + token 计数 + 截断 + 上下文压缩 + 超限恢复 + **Session 持久化**）；下一 P5 伴随特性 → M3.5
+- **已实现**：M1 全部 + Provider 层（双协议/config/factory/--model/**baseURL 三级可配：env>config>内置，GLM 默认走 coding plan 端点**）+ tools 协议中立化 + M3 上下文管理（token-counter/context-manager 含 trim+级联+forceCompact/截断）+ **M3 P4 Session**（session.ts 纯数据层 + agent loop 挂载 + CLI --continue/-c/--resume/--sessions）；**160 单测**；tsc clean
+- **下一焦点**：P5（并行只读工具 / retry 读 Retry-After / usage 细化）→ M3.5 交互式 CLI
+- **环境**：M2 起 config.json 驱动（`DEEPSEEK_API_KEY` / `ZHIPUAI_API_KEY` / `ANTHROPIC_API_KEY`，OpenAI 兼容协议）；`.env` 由 `npm run dev` 自动加载；会话落盘 `.ecode/sessions/`（已 gitignore）
 
 ---
 
@@ -35,4 +35,5 @@
 ## 索引（每条记忆一行，新建后追加）
 
 - [project.md](./project.md) — 项目性质 / 架构骨架 / 里程碑进度 / 当前焦点
-- [debugging.md](./debugging.md) — 踩坑：#001 `--env-file` 不覆盖继承的 env / #002 `env -i` 丢 TMPDIR / #003 fast-glob ESM named export（vitest 假过）
+- [decisions.md](./decisions.md) — 决策：#001 token 计数 ai-tokenizer→length/4 / #002 Session 同 id 覆盖（剔除 -2）
+- [debugging.md](./debugging.md) — 踩坑：#001 `--env-file` 不覆盖继承的 env / #002 `env -i` 丢 TMPDIR / #003 fast-glob ESM named export（vitest 假过）/ #004 LLM 既有知识写"具体数值"会失真（设计文档核查方法论）/ #005 上下文超限死局→响应式恢复（L2 trim + L3 forceCompact + L4 熔断，仿 Claude Code reactiveCompact）/ #006 GLM coding plan 端点（coding/paas/v4 vs paas/v4，已验证 429 为端点不匹配）

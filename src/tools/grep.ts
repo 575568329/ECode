@@ -10,6 +10,8 @@ export interface GrepInput {
 }
 
 const IGNORE_DIRS = ['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.cache'];
+/** grep 最大匹配条数，防止大量结果撑爆上下文 */
+const MAX_MATCH_COUNT = 500;
 
 /**
  * 按内容搜索文件（正则匹配）。
@@ -40,6 +42,7 @@ export function executeGrep(input: GrepInput): ToolResult {
         return; // 二进制 / 无权限等，跳过
       }
       content.split('\n').forEach((line, i) => {
+        if (matches.length >= MAX_MATCH_COUNT) return; // 条数上限
         if (regex.test(line)) {
           matches.push(`${relative(root, filePath)}:${i + 1}: ${line}`);
         }
@@ -55,7 +58,12 @@ export function executeGrep(input: GrepInput): ToolResult {
   if (matches.length === 0) {
     return { content: '未找到匹配。', isError: false };
   }
-  return { content: truncate(matches.join('\n'), 30_000), isError: false };
+  const result = matches.join('\n');
+  let content = truncate(result, 30_000);
+  if (matches.length >= MAX_MATCH_COUNT) {
+    content += `\n... (匹配数已达上限 ${MAX_MATCH_COUNT}，可能有更多结果未显示)`;
+  }
+  return { content, isError: false };
 }
 
 function walk(root: string, dir: string, cb: (path: string) => void): void {

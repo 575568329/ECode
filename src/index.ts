@@ -18,10 +18,14 @@
  */
 
 import { parseArgs } from 'node:util';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { runAgent } from './agent.js';
 import { listAvailableModels } from './providers/config.js';
 import { listSessions, loadSession, latestSessionId, SessionNotFoundError } from './session.js';
 import type { ECodeSession } from './session.js';
+import { loadInstructions } from './instructions-loader.js';
+import { buildSystemPrompt } from './system-prompt.js';
 
 const { values, positionals } = parseArgs({
   options: {
@@ -147,6 +151,19 @@ if (wantContinue || wantResume) {
   }
 
   // 有任务 → 续接跑(复用原 id 续写同一文件,决策③A)
+  const controller = new AbortController();
+  process.on('SIGINT', () => {
+    if (!controller.signal.aborted) controller.abort();
+  });
+  const projectRoot = process.cwd();
+  const instructions = loadInstructions([
+    homedir(),
+    projectRoot,
+    resolve(projectRoot, '.ecode'),
+    projectRoot, // cwd 与 root 同;保留以对齐 4 层模型
+  ]);
+  const system = buildSystemPrompt(instructions);
+
   runAgent(newTask, values.model, {
     resumed: {
       id: session.id,
@@ -154,6 +171,8 @@ if (wantContinue || wantResume) {
       createdAt: session.createdAt,
       messages: session.messages,
     },
+    signal: controller.signal,
+    system,
   }).catch((err) => {
     console.error('\n💥 致命错误:', err instanceof Error ? err.message : String(err));
     process.exit(1);
@@ -165,7 +184,20 @@ if (wantContinue || wantResume) {
     printUsage();
     process.exit(1);
   }
-  runAgent(task, values.model).catch((err) => {
+  const controller = new AbortController();
+  process.on('SIGINT', () => {
+    if (!controller.signal.aborted) controller.abort();
+  });
+  const projectRoot = process.cwd();
+  const instructions = loadInstructions([
+    homedir(),
+    projectRoot,
+    resolve(projectRoot, '.ecode'),
+    projectRoot, // cwd 与 root 同;保留以对齐 4 层模型
+  ]);
+  const system = buildSystemPrompt(instructions);
+
+  runAgent(task, values.model, { signal: controller.signal, system }).catch((err) => {
     console.error('\n💥 致命错误:', err instanceof Error ? err.message : String(err));
     process.exit(1);
   });

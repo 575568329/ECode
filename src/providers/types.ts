@@ -98,9 +98,9 @@ export interface ModelProvider {
   complete(request: ChatRequest): Promise<ECodeResponse>;
   /**
    * 流式：逐 chunk 返回（M3.5 实现）。
-   * M3 仅占位签名，各 Provider 暂抛 'not implemented'。
+   * @param options.signal 可选 AbortSignal，中断时停止迭代（M3.5 中断机制用）。
    */
-  stream(request: ChatRequest): AsyncIterable<ECodeStreamPart>;
+  stream(request: ChatRequest, options?: { signal?: AbortSignal }): AsyncIterable<ECodeStreamPart>;
 }
 
 /** 模型能力（静态声明，不做 runtime 探测） */

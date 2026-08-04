@@ -74,6 +74,19 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 - `docs/借鉴Vercel-AI-SDK对比报告.md` — 11 个借鉴点（Top5 优先级 + 演进路线）
 - `docs/M3-实施方案.md` / `M3-方案解析.md` — 上下文管理 + Session（5 Phase + 压缩算法）⬜ 待审阅
 
+## 本地参考源码（M3.5 起参照，避免每次联网查）
+
+做交互式 CLI / 权限审批 / CLAUDE.md 兼容等里程碑时，优先参照以下本地源码（源码级可读，不必每次上网查）：
+
+| 项目 | 本地路径 | 参照用途 |
+|------|---------|---------|
+| CCode（社区对标） | `D:\Study\CCode\cCli` | 同栈(TS+Node)最直接参照：Ink REPL、审批弹窗、CLAUDE.md fallback、AgentLoop 事件流 |
+| Claude Code（本尊） | `D:\Study\claude-code-main` | 审批完整规格、自研 Ink fork、partial compact 等设计思想（仅学思想不学规模）。已核查(2026-08-04)：REPL.tsx 5005行 / main.tsx 4683行 / bashPermissions 2621行 均准确；但 Tool.ts 实 792行（文档误称29K）、commands.ts 实 754行（误称25K）——疑字节数误标行数，引用时注意 |
+| opencode（SST） | `D:\Study\opencode` | 同 TS 栈、OpenTUI/SolidJS、客户端-服务端分离、Effect-TS |
+| ECode（本项目） | `D:\Study\ECode` | 自身源码 |
+
+> 路径跨设备可能不同（用户名/盘符），核查时以实际为准。核查文档断言时遵循 [debugging.md #004](./debugging.md)：LLM 既有知识写"具体数值/行号"易失真，必须实读源码核对。
+
 ## 环境
 
 - 运行：`npm run dev -- "任务"`（自动加载 `.env`，via `tsx --env-file-if-exists`）

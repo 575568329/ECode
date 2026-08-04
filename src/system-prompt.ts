@@ -28,7 +28,14 @@ const TOOL_GUIDE = `## 工具使用
 - **glob**：按文件名模式找文件（如 \`**/*.ts\`）。
 - **bash**：执行命令（跑测试、装依赖、git 等）。输出超过 3 万字符会被截断。`;
 
-/** 拼装完整 system prompt。分层组合，便于后续按里程碑扩展。 */
-export function buildSystemPrompt(): string {
-  return [IDENTITY, BEHAVIOR, TOOL_GUIDE].join('\n\n---\n\n');
+/**
+ * 拼装完整 system prompt。分层组合，便于后续按里程碑扩展。
+ * @param instructions 项目记忆（CLAUDE.md/ECODE.md 内容，Task 2 产出）；空则不拼该段。
+ */
+export function buildSystemPrompt(instructions?: string): string {
+  const sections = [IDENTITY, BEHAVIOR, TOOL_GUIDE];
+  if (instructions && instructions.trim()) {
+    sections.push(instructions.trim());
+  }
+  return sections.join('\n\n---\n\n');
 }

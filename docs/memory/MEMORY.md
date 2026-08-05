@@ -36,4 +36,4 @@
 
 - [project.md](./project.md) — 项目性质 / 架构骨架 / 里程碑进度 / 当前焦点
 - [decisions.md](./decisions.md) — 决策：#001 token 计数 ai-tokenizer→length/4 / #002 Session 同 id 覆盖（剔除 -2）
-- [debugging.md](./debugging.md) — 踩坑：#001 `--env-file` 不覆盖继承的 env / #002 `env -i` 丢 TMPDIR / #003 fast-glob ESM named export（vitest 假过）/ #004 LLM 既有知识写"具体数值"会失真（设计文档核查方法论）/ #005 上下文超限死局→响应式恢复（L2 trim + L3 forceCompact + L4 熔断，仿 Claude Code reactiveCompact）/ #006 GLM coding plan 端点（coding/paas/v4 vs paas/v4，已验证 429 为端点不匹配）
+- [debugging.md](./debugging.md) — 踩坑：#001 env 不覆盖 / #002 env -i 丢 TMPDIR / #003 fast-glob ESM / #004 LLM 知识失真 / #005 上下文超限恢复 / #006 GLM 端点 / #007 Session ID 碰撞→UUID / #008 全功能日志覆盖原则

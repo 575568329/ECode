@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { toolDefinitions, executeTool } from './tools/index.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { createProvider } from './providers/factory.js';
@@ -16,6 +17,7 @@ import {
   logApiResponse,
   logToolExecution,
   logError,
+  logSessionSave,
   finalizeRuntimeLog,
 } from './runtime-logger.js';
 import { saveSession } from './session.js';
@@ -45,14 +47,19 @@ import type { PermissionGate } from './permission.js';
 
 const MAX_ITERATIONS = 25;
 
-/** 生成 session id:时间戳 YYYYMMDDHHmmss(秒级,单用户 CLI 同秒撞概率极低)。 */
-function timestampId(): string {
-  const d = new Date();
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
-    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  );
+/**
+ * 生成 session id：使用 crypto.randomUUID()（UUID v4）。
+ *
+ * 为什么不用时间戳 YYYYMMDDHHmmss：
+ *   旧方案秒级精度，同秒内连续运行两次不同任务会产生相同 ID，
+ *   因 slug(task) 不同导致 saveSession 写出两个文件——覆盖机制失效，
+ *   loadSession 只能找到第一个匹配项（readdirSync.find 随机），数据静默丢失。
+ *   参考：Claude Code 用 UUID，OpenCode 用 ses_+UUID。
+ *
+ * UUID v4 碰撞概率：需生成 ~2.71×10^18 个才有 50% 碰撞——单用户 CLI 不可能达到。
+ */
+function generateSessionId(): string {
+  return randomUUID();
 }
 
 /** 续接上下文:复用原 session 的 id/首句任务/创建时间,续写同一文件(决策③A)。 */
@@ -77,15 +84,17 @@ let sessionSaveFailed = false;
  */
 function persistSession(session: ECodeSession): void {
   try {
-    saveSession(session);
+    const path = saveSession(session);
+    logSessionSave(path, session.id, session.task, session.messages.length, session.stats.rounds);
   } catch (err) {
     if (!sessionSaveFailed) {
       sessionSaveFailed = true;
       console.warn(
         `⚠️  会话未持久化,本次不可 --continue:${err instanceof Error ? err.message : String(err)}`,
       );
+      logError('Session 落盘失败(首次)', err);
     } else {
-      logError('Session 持久化(静默重试)', err);
+      logError('Session 落盘失败(静默重试)', err);
     }
   }
 }
@@ -211,7 +220,7 @@ export async function* runAgentStream(
   // runtime-log（CLAUDE.md §1.6：日志保存到文件供排查）—— 与原 runAgent 一致
   const logFile = initRuntimeLog(task, resolvedModel, provider.baseURL);
   // session 落盘上下文（与原 runAgent 一致：首轮/每轮末/压缩后/结束落盘）
-  const sessionId = opts.resumed?.id ?? timestampId();
+  const sessionId = opts.resumed?.id ?? generateSessionId();
   const sessionTask = opts.resumed?.task ?? task;
   const createdAt = opts.resumed?.createdAt ?? new Date().toISOString();
   const stats: ECodeSessionStats = { rounds: 0, compressed: false, toolCalls: 0 };

@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   existsSync,
+  unlinkSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { ECodeMessage } from './providers/types.js';
@@ -116,6 +117,19 @@ export function saveSession(session: ECodeSession, baseDir?: string): string {
 
   const slug = taskToSlug(session.task);
   const filePath = buildFilePath(session.id, slug, dir);
+
+  // 碰撞检测：同 id 前缀但不同 slug 的文件（说明 ID 重复 + task 不同）。
+  // UUID v4 不可能碰撞，此检查是旧 timestampId 遗留问题的防御性日志。
+  const existing = findFileById(session.id, dir);
+  if (existing && existing !== filePath) {
+    console.warn(
+      `[session] ⚠️ ID 碰撞检测: session ${session.id} 已存在 ${existing}，新写入 ${filePath}。` +
+      `这表明 session ID 生成器有重复（旧 timestampId 秒级精度问题）。` +
+      `旧文件将被覆盖，可能导致数据丢失。`,
+    );
+    // 清理旧文件，避免同 ID 残留多个文件
+    try { unlinkSync(existing); } catch { /* ignore */ }
+  }
 
   // 原子写:先写 .tmp 再 rename(POSIX/Win 均原子),防进程被强杀于写盘中途留截断损坏文件。
   const writeAtomically = (): void => {

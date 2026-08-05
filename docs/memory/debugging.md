@@ -216,3 +216,132 @@ P4 真机落盘验证时 GLM 持续 429，一度归因配额耗尽。核查端�
 - 参考：CCode `D:\Study\CCode\cCli\src\config\config-manager.ts:53`（GLM 默认 coding 端点）
 - 实现：[M2-方案解析 §Provider baseURL Q&A](../M2-方案解析.md)、`src/providers/config.ts` `resolveBaseURL`
 - 方法论：#004（LLM 知识失真——因果断言同属核查红线）
+
+---
+
+## #007 Session ID 秒级精度碰撞——同秒两次运行产生重复会话文件
+
+**日期**：2026-08-05
+**影响**：`.ecode/sessions/` 里同一 session ID 出现多个不同 task 的文件，`loadSession` 只能找到第一个（随机），数据静默丢失。
+
+### 现象
+
+`.ecode/sessions/` 下 102 个文件，但只有 46 个唯一 session ID。38 个 ID 各有 2 个文件：
+
+```
+20260804082236_打招呼.json     ← task="打招呼", msgs=1, rounds=1
+20260804082236_读-package.json.json ← task="读 package.json", msgs=5, rounds=2
+```
+
+同一 ID，不同 task → 不同 slug → 不同文件路径 → 覆盖写失效，两个文件共存。
+
+### 根因
+
+`agent.ts` 的 `timestampId()` 用 `YYYYMMDDHHmmss`（秒级精度）生成 session ID。同一秒内运行两次不同命令（快速连续执行 `npm run dev`），两次产生**完全相同的 ID**。
+
+`saveSession` 的文件路径是 `{id}_{slug}.json`，slug 来自 `session.task`。同 ID + 不同 task = 不同文件路径 → 覆盖机制失效（设计假设"同 ID = 同 task = 同文件"）。
+
+### 其他项目怎么做的
+
+| 项目 | Session ID 方案 | 碰撞风险 | 出处 |
+|------|----------------|---------|------|
+| **Claude Code** | `crypto.randomUUID()` (UUID v4) | 10⁻¹⁸（不可能） | session 文件名 `{uuid}.jsonl`，内部 `sessionId` 字段也是 UUID |
+| **OpenCode** | 内部 `createNext()` 自生成，`ses_` 前缀 | 不可能（随机 + 前缀） | issue #12916 / #5381 讨论，支持自定义 ID |
+| **ECode (旧)** | `YYYYMMDDHHmmss` 时间戳 | **同秒碰撞** ❌ | `agent.ts:49-56` |
+
+**共识**：所有成熟产品都用**随机 ID**（UUID / nanoid），不用时间戳。
+
+### 解决
+
+1. **`agent.ts`**：`timestampId()` → `generateSessionId()`，使用 `randomUUID()`（Node 18 内置 `node:crypto`，零依赖）。
+
+```ts
+import { randomUUID } from 'node:crypto';
+function generateSessionId(): string { return randomUUID(); }
+```
+
+2. **`session.ts`**：`saveSession` 增加碰撞防御——检测到同 ID 前缀但不同 slug 时 `console.warn` + 清理旧文件 + 覆盖（防御性编程，UUID 后不可能触发，但日志留痕）。
+
+3. **`runtime-logger.ts`**：新增 `logSessionSave()`，每次落盘记录 `filePath + id + task + msgs + rounds` 到 runtime-log。以后排查文件重复/丢失问题时不用猜，看日志就行。
+
+### 教训
+
+> **时间戳做 ID 只在"毫秒级精度 + 单进程 + 低频"前提下安全。** 秒级精度在快速连续执行（测试脚本 / 快速重跑）下必然碰撞。任何需要唯一 ID 的场景，直接用 `crypto.randomUUID()`（Node 18+ 零依赖），不要自己造轮子。
+>
+> **"同一 ID 应该只对应一个文件"的假设需要碰撞检测兜底。** 文件路径包含业务字段（如 task slug）时，ID 碰撞不会报错而是静默产生多文件。加一行检测 + 清理就能把静默数据丢失变成可感知的告警。
+
+### 关联
+
+- 实现：`src/agent.ts` `generateSessionId`、`src/session.ts` `saveSession` 碰撞检测、`src/runtime-logger.ts` `logSessionSave`
+- 测试：`tests/session.test.ts` 新增碰撞检测用例（同 id 不同 task → 清理旧文件 + 覆盖）
+
+---
+
+## #008 关键路径缺日志 = 排查盲区——全功能日志覆盖原则
+
+**日期**：2026-08-05
+**性质**：工程实践（由 #007 排查困难触发）
+**影响**：#007 的 session 文件重复问题，因为没有落盘日志，花了大量时间才定位到"同秒碰撞"这个简单根因。
+
+### 现象
+
+排查 #007 时，runtime-log 里只有 API 请求/响应和工具执行的日志，**没有 session 落盘的任何记录**。不知道：
+- 什么时候落的盘
+- 落到了哪个文件
+- 用的是什么 ID 和 task
+- 哪次落盘产生了重复文件
+
+只能靠猜 + 手动翻目录 + 对比文件内容 + 读源码倒推，排查路径长且不确定。
+
+### 根因
+
+`persistSession` 是 fire-and-forget，只在失败时 `logError`。成功落盘**零日志**。加上 `saveSession` 本身也是静默写文件，没有任何输出——等于关键状态变更完全不可观测。
+
+### 原则：所有功能的关键路径必须有日志
+
+**什么算关键路径**（必须记）：
+
+| 类别 | 示例 | 必须/建议 |
+|------|------|----------|
+| **状态变更** | session 创建/落盘/压缩、模型切换、配置加载 | 必须 |
+| **外部交互** | API 请求/响应、工具执行、文件读写 | 必须 |
+| **错误/异常** | 重试、降级、熔断、碰撞检测告警 | 必须 |
+| **分支决策** | 压缩阈值命中哪级、exit-window 触发、权限裁决 | 建议 |
+| **高频循环内部** | 每 100ms 的 spinner 帧、每字符的流式输出 | 不记（噪声） |
+
+**日志怎么写**：
+
+1. **关键状态变更**（session/配置/模型）：写入 `runtime-logger`（结构化、持久化、每行带时间戳）。
+2. **错误/异常**：`logError(source, err)`（已有）。
+3. **碰撞/异常状态**（防御性检测触发的告警）：`console.warn`（用户可见）+ `logError`（runtime-log 留痕）**双通道**。
+4. **调试信息**（开发期帮助定位问题）：写入 runtime-log，不用 `console.log`（避免污染用户终端）。
+
+**日志内容规范**：
+
+- 必须包含**足够复现/定位的关键参数**（ID、路径、状态值、计数），不能只写"操作完成"。
+- 参考 #007 的 `logSessionSave`：`filePath + id + task + msgs + rounds`——出问题看一行就知道是哪次、哪个文件。
+
+### 对照检查（当前覆盖率）
+
+| 模块 | API 日志 | 工具日志 | Session 日志 | 错误日志 | 缺失 |
+|------|---------|---------|------------|---------|------|
+| agent loop | ✅ logApiRequest/Response | ✅ logToolExecution | ✅ logSessionSave (本次补) | ✅ logError | — |
+| context-manager | — | — | — | ✅ logError | 压缩决策点缺日志 |
+| providers | — | — | — | ✅ logError | 端点选择/重试缺日志 |
+| slash-commands | — | — | — | — | 命令解析/执行缺日志 |
+| permission | — | — | — | — | 裁决结果缺日志 |
+| REPL (ui/app) | — | — | — | — | 模式选择/命令 dispatch 缺日志 |
+
+### 教训
+
+> **"跑起来没报错"≠"出问题能查到"。** 排查靠的是日志，不是猜。关键路径没有日志 = 排查盲区 = 出问题只能靠读源码倒推。
+>
+> **写功能时同步写日志。** 不要"先实现再补日志"——事后补容易漏，而且补的日志往往不够（因为当时没意识到哪些参数重要）。每实现一个功能，顺手把关键路径的日志写上，成本几乎为零（一行 `appendFileSync`），收益是排查时间从小时级降到分钟级。
+>
+> **日志写什么比怎么写更重要。** 出问题时需要知道的是"哪次操作、什么参数、写到哪了"，不是"某时某分某秒做了什么事"。日志行里带全关键参数，一行就够了。
+
+### 关联
+
+- 触发原因：#007（session 落盘零日志，排查耗时远超修复耗时）
+- 当前日志实现：`src/runtime-logger.ts`（`initRuntimeLog` / `logApiRequest` / `logApiResponse` / `logToolExecution` / `logError` / `logSessionSave` / `finalizeRuntimeLog`）
+- 待补日志的模块：`context-manager.ts`（压缩决策）、`providers/`（端点选择）、`ui/app.tsx`（REPL 交互）

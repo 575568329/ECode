@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -133,6 +133,22 @@ describe('saveSession + loadSession', () => {
     const loaded = loadSession('20260803143022', dir);
     expect(loaded.updatedAt).toBe('2026-08-03T15:00:00.000Z');
     expect(loaded.stats.rounds).toBe(2);
+  });
+
+  it('同 id 不同 task(slug 碰撞) → 清理旧文件 + 覆盖', () => {
+    // 模拟旧 timestampId 秒级碰撞：同 id + 不同 task → 不同 slug → 不同文件
+    const id = '20260803143022';
+    // 先写一个 task="打招呼"
+    saveSession(makeSession({ id, task: '打招呼' }), dir);
+    // 再写同 id + task="读代码" → slug 不同，触发碰撞检测
+    const filePath = saveSession(makeSession({ id, task: '读代码' }), dir);
+    // 应只存在一个文件（新的），旧的被清理
+    const files = readdirSync(dir).filter((f) => f.startsWith(`${id}_`));
+    expect(files).toHaveLength(1);
+    expect(files[0]).toBe(`${id}_读代码.json`);
+    // loadSession 返回最新数据
+    const loaded = loadSession(id, dir);
+    expect(loaded.task).toBe('读代码');
   });
 });
 

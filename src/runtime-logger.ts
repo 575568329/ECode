@@ -177,6 +177,18 @@ export function logError(source: string, err: unknown): void {
   ].join('\n'));
 }
 
+/** 记录 session 落盘事件（路径、ID、task、消息数、轮数），便于排查文件重复/丢失问题。 */
+export function logSessionSave(
+  filePath: string,
+  sessionId: string,
+  task: string,
+  messageCount: number,
+  rounds: number,
+): void {
+  if (!logPath) return; // runtime-log 未初始化时静默
+  appendFileSync(logPath, `### [${ts()}] 💾 Session 落盘 → ${filePath} (id=${sessionId}, task=${task}, msgs=${messageCount}, rounds=${rounds})\n\n`);
+}
+
 export function finalizeRuntimeLog(totalRounds: number): void {
   const totalTime = Date.now() - startTime;
   appendFileSync(logPath, [

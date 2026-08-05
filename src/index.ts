@@ -4,7 +4,9 @@
  * ECode — 手写 AI coding agent
  *
  * 使用:
- *   ecode "<任务>"                    开始新会话
+ *   ecode                             进入沉浸式 REPL（无参 + 交互终端 TTY）
+ *   ecode --repl                      强制进入 REPL（即便非 TTY，自动化/测试用）
+ *   ecode "<任务>"                    开始新会话(one-shot 逐字流式)
  *   ecode --continue                  恢复最近会话(打印摘要,不调 LLM)
  *   ecode -c "新指令"                 续接最近会话(--continue 简写)
  *   ecode --resume <id>               恢复指定会话(打印摘要,不调 LLM)
@@ -13,19 +15,27 @@
  *   ecode --model <name> "<任务>"     指定模型
  *   ecode --list-models               列出可用模型
  *
+ * 双模式入口（spec §八 阶段②验收）：
+ *   - 无参 + TTY → REPL（沉浸式默认入口）；--repl 显式触发 → REPL
+ *   - 有任务 → one-shot（保留 ecode "任务" 现状）
+ *   - 无参 + 非 TTY（管道/CI）→ 打印用法退出（Ink 抢占无输入源 stdin 不安全）
+ *
  * 会话历史落盘 .ecode/sessions/(已 gitignore)。
  * 模型配置见 ~/.ecode/config.json;API Key 通过环境变量传入,.env 由 npm run dev 自动加载。
  */
 
 import { parseArgs } from 'node:util';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { runAgent } from './agent.js';
 import { listAvailableModels } from './providers/config.js';
 import { listSessions, loadSession, latestSessionId, SessionNotFoundError } from './session.js';
 import type { ECodeSession } from './session.js';
 import { loadInstructions } from './instructions-loader.js';
 import { buildSystemPrompt } from './system-prompt.js';
+import { selectEntryMode } from './repl-mode.js';
 
 const { values, positionals } = parseArgs({
   options: {
@@ -34,6 +44,7 @@ const { values, positionals } = parseArgs({
     sessions: { type: 'boolean' },
     continue: { type: 'boolean', short: 'c' }, // -c 简写
     resume: { type: 'string' },
+    repl: { type: 'boolean' }, // 强制 REPL 模式（即便非 TTY）
   },
   allowPositionals: true,
 });
@@ -68,6 +79,8 @@ function fatal(message: string): never {
 /** 打印用法。 */
 function printUsage(): void {
   console.error('用法: ecode [选项] <任务描述>\n');
+  console.error('  ecode                             进入沉浸式 REPL(交互终端)');
+  console.error('  ecode --repl                      强制进入 REPL');
   console.error('  ecode "<任务>"                    开始新会话');
   console.error('  ecode --continue                  恢复最近会话(不调 LLM)');
   console.error('  ecode -c "新指令"                 续接最近会话');
@@ -76,6 +89,51 @@ function printUsage(): void {
   console.error('  ecode --sessions                  列出全部会话');
   console.error('  ecode --model <name> "<任务>"     指定模型');
   console.error('  ecode --list-models               列出可用模型');
+}
+
+/**
+ * 读 package.json 的版本号（REPL 欢迎屏显示用）。
+ *
+ * 路径相对本文件解析（dev: src/index.ts / prod: dist/index.js）→ ../../package.json，
+ * 均指向 ECode 包根。全局安装时也正确（node_modules/ecode/package.json）。
+ * 读不到（权限/缺失）降级为 '0.0.0'，不让版本读取阻断启动。
+ */
+function readAppVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkgPath = resolve(here, '..', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+/**
+ * 启动沉浸式 REPL（渲染 <App>）。
+ *
+ * UI 依赖（ink/react/ui/app）走动态 import：one-shot 路径不加载 GUI 栈，降低 CLI 启动延迟；
+ * 仅在确需 REPL 时付出加载成本。render() 接管 stdout 并保持进程常驻，直到用户 /exit 或
+ * 双击 Ctrl+C（App 内部处理），故本函数 resolve 后不得再执行任何 process.exit。
+ *
+ * @param model --model 指定的模型名（缺省交由 agent core 自选默认）
+ * @param system 预拼 system prompt（含 CLAUDE.md/ECODE.md 注入）
+ */
+async function startRepl(model: string | undefined, system: string): Promise<void> {
+  const projectRoot = process.cwd();
+  const version = readAppVersion();
+  const { render } = await import('ink');
+  const React = (await import('react')).default;
+  const { App } = await import('./ui/app.js');
+  // index.ts 为 .ts（非 .tsx），不能写 JSX；用 createElement 等价表达 <App .../>。
+  render(
+    React.createElement(App, {
+      model,
+      cwd: projectRoot,
+      system,
+      version,
+    }),
+  );
 }
 
 // ============================================================
@@ -178,16 +236,9 @@ if (wantContinue || wantResume) {
     process.exit(1);
   });
 } else {
-  // ---- 新会话(现状)----
-  const task = positionals[0];
-  if (!task) {
-    printUsage();
-    process.exit(1);
-  }
-  const controller = new AbortController();
-  process.on('SIGINT', () => {
-    if (!controller.signal.aborted) controller.abort();
-  });
+  // ---- 新会话 / REPL：双模式入口分流（spec §八 阶段②验收）----
+  // 指令/CLAUDE.md 加载在两个分支都要用（REPL 同样把 system prompt 注入 agent），
+  // 故在此处统一加载，再按模式分流。
   const projectRoot = process.cwd();
   const instructions = loadInstructions([
     homedir(),
@@ -197,8 +248,36 @@ if (wantContinue || wantResume) {
   ]);
   const system = buildSystemPrompt(instructions);
 
-  runAgent(task, values.model, { signal: controller.signal, system }).catch((err) => {
-    console.error('\n💥 致命错误:', err instanceof Error ? err.message : String(err));
-    process.exit(1);
+  const mode = selectEntryMode({
+    replFlag: values.repl === true,
+    // 用 truthiness（非空字符串）而非 length：`ecode ""` 传空串本就不是有效任务，
+    // 与原 `if (!task)` 守卫语义一致——空任务回退到 REPL/usage，不送空串给 agent。
+    hasTask: !!positionals[0],
+    isTTY: process.stdout.isTTY === true,
   });
+
+  if (mode === 'repl') {
+    // REPL：渲染 <App>，进程常驻至用户退出。render() 内部接管 stdout，
+    // 故这里用 .catch 兜底动态 import 失败（如 ink 缺包），不 silent hang。
+    startRepl(values.model, system).catch((err) => {
+      console.error('\n💥 REPL 启动失败:', err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    });
+  } else if (mode === 'usage') {
+    // 无任务 + 非 TTY（管道/CI）：打印用法退出，避免 Ink 抢占无输入源 stdin。
+    printUsage();
+    process.exit(1);
+  } else {
+    // one-shot：保留现状 ecode "任务" 逐字流式。
+    const task = positionals[0];
+    const controller = new AbortController();
+    process.on('SIGINT', () => {
+      if (!controller.signal.aborted) controller.abort();
+    });
+
+    runAgent(task, values.model, { signal: controller.signal, system }).catch((err) => {
+      console.error('\n💥 致命错误:', err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    });
+  }
 }

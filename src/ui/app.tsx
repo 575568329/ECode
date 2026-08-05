@@ -20,8 +20,12 @@ import { parseUserInput } from '../slash-commands.js';
 const DOUBLE_CTRL_C_MS = 2000;
 /** 状态栏上下文占用估算用的窗口上限（token，粗略，仅百分比用）。 */
 const CONTEXT_WINDOW_TOKENS = 60_000;
-/** REPL 欢迎屏显示版本（Task 13 集成时可改为读 package.json）。 */
-const APP_VERSION = '0.4.0';
+/**
+ * REPL 欢迎屏版本号兜底值（与 package.json 保持一致）。
+ * 生产入口（src/index.ts）会从 package.json 读取真实版本经 `version` prop 注入，
+ * 此常量仅用于未注入时（如单测）的回退，避免 UI 空字段。
+ */
+const APP_VERSION_FALLBACK = '0.1.0';
 
 interface AppProps {
   model?: string;
@@ -29,9 +33,11 @@ interface AppProps {
   /** 注入：测试用；生产由 index.ts 传 loadInstructions/buildSystemPrompt 结果。 */
   loadStatus?: LoadStatus;
   system?: string;
+  /** REPL 欢迎屏版本号；缺省时回退到 APP_VERSION_FALLBACK。由 index.ts 读 package.json 注入。 */
+  version?: string;
 }
 
-export function App({ model, cwd, loadStatus, system }: AppProps): React.ReactElement {
+export function App({ model, cwd, loadStatus, system, version }: AppProps): React.ReactElement {
   const api = useAgentStream({ model, system });
 
   // started：用户是否已 submit 过（含被命令清空后——清空不回退到欢迎屏）。
@@ -128,7 +134,7 @@ export function App({ model, cwd, loadStatus, system }: AppProps): React.ReactEl
   return (
     <Box flexDirection="column">
       {!started ? (
-        <WelcomeScreen version={APP_VERSION} loadStatus={status} cwd={cwd} />
+        <WelcomeScreen version={version ?? APP_VERSION_FALLBACK} loadStatus={status} cwd={cwd} />
       ) : (
         <ChatView state={api} />
       )}

@@ -76,4 +76,50 @@ describe('runAgentStream', () => {
     const td = events[textIdx] as Extract<AgentEvent, { type: 'text_delta' }>;
     expect(td.text).toBe('让我读取 package.json');
   });
+
+  it('LLM 流末带 usage → yield usage 事件（input/output tokens）', async () => {
+    const provider = mockProvider([
+      { type: 'text_delta', text: 'done' },
+      { type: 'usage', inputTokens: 120, outputTokens: 30 },
+      { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
+    ]);
+    const events = await collect(runAgentStream('打招呼', { provider }));
+    const usage = events.find((e) => e.type === 'usage');
+    expect(usage).toBeDefined();
+    expect(usage?.type === 'usage' && usage.inputTokens).toBe(120);
+    expect(usage?.type === 'usage' && usage.outputTokens).toBe(30);
+  });
+
+  it('多轮对话 → 每轮各 yield 一个 usage 事件（可累计）', async () => {
+    // 第一轮：tool-use；第二轮：纯文本结束。
+    // 用一个按 messages 长度返回不同流的自定义 provider
+    let call = 0;
+    const provider: ModelProvider = {
+      name: 'mock',
+      protocol: 'openai',
+      baseURL: 'http://mock',
+      complete: vi.fn(async () => ({
+        content: [{ type: 'text', text: '压缩摘要' }],
+        stopReason: { unified: 'stop' },
+        usage: { inputTokens: 0, outputTokens: 0 },
+      })),
+      stream: async function* (req: ChatRequest): AsyncIterable<ECodeStreamPart> {
+        call++;
+        if (call === 1) {
+          yield { type: 'tool_call_start', id: 't1', name: 'read_file' };
+          yield { type: 'tool_call_delta', id: 't1', inputDelta: '{"path":"a"}' };
+          yield { type: 'tool_call_end', id: 't1' };
+          yield { type: 'usage', inputTokens: 100, outputTokens: 10 };
+          yield { type: 'stop', reason: { unified: 'tool-use', raw: 'tc' } };
+        } else {
+          yield { type: 'text_delta', text: '好了' };
+          yield { type: 'usage', inputTokens: 200, outputTokens: 20 };
+          yield { type: 'stop', reason: { unified: 'stop', raw: 'stop' } };
+        }
+      },
+    };
+    const events = await collect(runAgentStream('读 a', { provider }));
+    const usages = events.filter((e) => e.type === 'usage');
+    expect(usages).toHaveLength(2);
+  });
 });

@@ -26,6 +26,7 @@ export type AgentEvent =
   | PermissionRequestEvent
   | { type: 'warning'; message: string }
   | { type: 'completed'; rounds: number; toolCalls: number; reason: AgentCompletionReason }
+  | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'error'; error: string };
 
 // ---- 类型守卫（消费方收窄用）----

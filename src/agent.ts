@@ -117,10 +117,10 @@ export interface RunAgentStreamOptions extends RunAgentOptions {
 }
 
 /**
- * 把流式 chunk 累积成本轮响应内容（text + tool_call 完整 input）。
+ * 把流式 chunk 累积成本轮响应内容（text + tool_call 完整 input + usage）。
  * - text_delta → 追加 text
  * - tool_call_start/delta/end → 按 id 累积 input JSON，跨 chunk 拼接
- * - usage → 暂不用于事件（成本追踪 M5）
+ * - usage → 记录本轮 token 用量（供 runAgentStream yield usage 事件，UI 累计）
  * - stop → 记录 unified 停止原因
  * 中断：迭代中 signal.aborted → 抛 AbortError（DOMException）让外层 catch 收尾。
  */
@@ -131,12 +131,14 @@ async function consumeStream(
   text: string;
   toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
   stopUnified: string;
+  usage: { inputTokens: number; outputTokens: number };
 }> {
   let text = '';
   const inputBuf = new Map<string, string>(); // id → 累积的 input JSON 字符串
   const names = new Map<string, string>(); // id → name
   const order: string[] = []; // 保持 tool_call 顺序
   let stopUnified = 'stop';
+  let usage = { inputTokens: 0, outputTokens: 0 };
   for await (const part of gen) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     switch (part.type) {
@@ -154,7 +156,8 @@ async function consumeStream(
       case 'tool_call_end':
         break; // 累积已随 delta 完成
       case 'usage':
-        break; // usage 暂不用于事件（成本追踪 M5）
+        usage = { inputTokens: part.inputTokens, outputTokens: part.outputTokens };
+        break;
       case 'stop':
         stopUnified = part.reason.unified;
         break;
@@ -165,7 +168,7 @@ async function consumeStream(
     name: names.get(id) ?? 'unknown',
     input: safeParseToolInput(inputBuf.get(id) ?? '{}'),
   }));
-  return { text, toolCalls, stopUnified };
+  return { text, toolCalls, stopUnified, usage };
 }
 
 /** 健壮解析 tool_call 的 input JSON：失败时返回带 _parseError 的对象（不让单个坏 JSON 杀 loop）。 */
@@ -258,7 +261,7 @@ export async function* runAgentStream(
         { model: resolvedModel, system, messages, tools },
         { signal: opts.signal },
       );
-      const { text, toolCalls } = await consumeStream(streamGen, opts.signal);
+      const { text, toolCalls, usage } = await consumeStream(streamGen, opts.signal);
       stats.rounds = iteration + 1;
 
       // 构造本轮 assistant 完整回复 blocks（供日志 + push messages）
@@ -279,6 +282,9 @@ export async function* runAgentStream(
       // 与原 runAgent 行为一致：text 始终流向输出（旧代码 process.stdout.write 无条件打印）。
       // 常见场景：LLM 先说"让我读取 package.json"再发 tool_call —— 这段文字也必须作为事件流出。
       if (text) yield { type: 'text_delta', text };
+
+      // ---- 本轮 usage 事件（状态栏累计 token/费用用；每轮各 yield 一个）----
+      yield { type: 'usage', inputTokens: usage.inputTokens, outputTokens: usage.outputTokens };
 
       // ---- 没有工具调用 → LLM 给出最终回答，终止 ----
       if (toolCalls.length === 0) {
@@ -461,6 +467,9 @@ export async function runAgent(
         if (event.reason === 'max-iterations') {
           console.log(`\n⚠️  达到最大迭代次数 (${MAX_ITERATIONS})，自动终止`);
         }
+        break;
+      case 'usage':
+        // 旧 CLI 不显示 token（状态栏在 REPL 里显示），静默吸收。
         break;
       case 'permission_request':
         console.log(`\n🔒 权限请求: ${event.toolName}（旧 CLI 自动放行，REPL 模式将弹窗）`);

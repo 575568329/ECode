@@ -35,4 +35,13 @@ describe('SLASH_COMMANDS 注册表', () => {
     expect(names).toContain('model');
     expect(names).toContain('exit');
   });
+
+  it('阶段②新增 4 命令 cost/compact/resume/sessions', () => {
+    const names = SLASH_COMMANDS.map((c) => c.name);
+    expect(names).toContain('cost');
+    expect(names).toContain('compact');
+    expect(names).toContain('resume');
+    expect(names).toContain('sessions');
+    expect(names).toHaveLength(8);
+  });
 });

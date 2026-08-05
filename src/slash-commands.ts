@@ -6,12 +6,20 @@ export interface SlashCommandDef {
   description: string;
 }
 
-/** MVP 命令注册表（声明式，新增命令加一条） */
+/**
+ * 命令注册表（声明式，新增命令加一条）。
+ * 阶段②在 MVP 四命令基础上补齐 cost/compact/resume/sessions，共 8 个。
+ * parseUserInput 逻辑不变——注册表多了它们即自动识别。
+ */
 export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: 'help', description: '显示可用命令' },
   { name: 'clear', description: '清空对话历史' },
   { name: 'model', description: '切换模型（如 /model deepseek）' },
   { name: 'exit', description: '退出 ECode' },
+  { name: 'cost', description: '显示当前会话 token 用量' },
+  { name: 'compact', description: '手动触发上下文压缩' },
+  { name: 'resume', description: '显示会话恢复面板' },
+  { name: 'sessions', description: '列出项目会话' },
 ];
 
 export type ParsedInput =

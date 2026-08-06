@@ -13,6 +13,37 @@ describe('reduceAgentEvent', () => {
     expect(s.isRunning).toBe(true);
   });
 
+  it('start → 记录 currentModel + runStartedAt（MetaLine 数据源，M3.5 Phase 1）', () => {
+    const s = reduceAgentEvent(initialStreamState, {
+      type: 'start',
+      task: 't',
+      model: 'glm-4.6',
+      provider: 'p',
+    });
+    expect(s.currentModel).toBe('glm-4.6');
+    expect(typeof s.runStartedAt).toBe('number');
+  });
+
+  it('completed → assistant 消息带 model + durationMs（MetaLine 数据源）', () => {
+    let s = reduceAgentEvent(initialStreamState, {
+      type: 'start',
+      task: 't',
+      model: 'glm-4.6',
+      provider: 'p',
+    });
+    s = reduceAgentEvent(s, { type: 'text_delta', text: '答复' });
+    s = reduceAgentEvent(s, {
+      type: 'completed',
+      rounds: 1,
+      toolCalls: 0,
+      reason: 'done',
+    });
+    const asst = s.completedMessages.find((m) => m.kind === 'assistant');
+    expect(asst?.kind === 'assistant' && asst.model).toBe('glm-4.6');
+    expect(asst?.kind === 'assistant' && typeof asst.durationMs).toBe('number');
+    expect(asst?.kind === 'assistant' && (asst.durationMs ?? -1)).toBeGreaterThanOrEqual(0);
+  });
+
   it('text_delta → 累加到 streamingText', () => {
     let s = reduceAgentEvent(initialStreamState, { type: 'text_delta', text: '你好' });
     s = reduceAgentEvent(s, { type: 'text_delta', text: '世界' });

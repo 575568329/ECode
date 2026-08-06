@@ -2,27 +2,57 @@
 // <Static items={completedMessages}>：Ink 把已完成项写入 stdout 一次后不再 diff（O(n)→O(1)）。
 // 动态区：streamingText（流式纯文本）+ activeTools（运行中工具）。
 import React from 'react';
-import { Static, Box, Text } from 'ink';
+import { Static, Box, Text, type BoxProps } from 'ink';
 import { T, SYMBOLS } from './theme.js';
 import { MarkdownRenderer } from './markdown.js';
 import { ToolRunning, ToolDone } from './tool-panel.js';
 import type { UseAgentStreamReturn } from './use-agent-stream.js';
 import type { DisplayMessage } from './types.js';
 
+/**
+ * ink 单边左边框 props。
+ * 注意（M3.5 实测）：单独 `borderLeft` 不渲染——ink 必须先给 `borderStyle`，
+ * 再用四个 borderXxx 布尔控制显哪些边；这里显式只开左边。
+ */
+const leftBorder: Pick<BoxProps, 'borderStyle' | 'borderLeft' | 'borderTop' | 'borderBottom' | 'borderRight'> = {
+  borderStyle: 'single',
+  borderLeft: true,
+  borderTop: false,
+  borderBottom: false,
+  borderRight: false,
+};
+
 /** 单条已完成消息 → React 节点（供 <Static>）。 */
 function renderCompleted(msg: DisplayMessage): React.ReactNode {
   switch (msg.kind) {
     case 'user':
+      // 角色区分（M3.5 Phase 1）：左边框 + 背景色，让用户消息一眼可辨。
+      // backgroundColor 在真实终端渲染块底色；测试假 stdout 不渲染（ink-testing-library 限制）。
       return (
-        <Box flexDirection="column">
-          <Text><Text color={T.user} bold>{SYMBOLS.user} 你</Text></Text>
-          <Box paddingLeft={4}><Text color={T.muted}>{msg.text}</Text></Box>
+        <Box
+          flexDirection="column"
+          {...leftBorder}
+          borderColor={T.border}
+          backgroundColor={T.userBg}
+          paddingLeft={1}
+          marginTop={1}
+        >
+          <Text>
+            <Text color={T.user} bold>
+              {SYMBOLS.user} 你
+            </Text>
+          </Text>
+          <Text color={T.muted}>{msg.text}</Text>
         </Box>
       );
     case 'assistant':
       return (
-        <Box flexDirection="column">
-          <Text><Text color={T.brand} bold>{SYMBOLS.brand} ECode</Text></Text>
+        <Box flexDirection="column" marginTop={1}>
+          <Text>
+            <Text color={T.brand} bold>
+              {SYMBOLS.brand} ECode
+            </Text>
+          </Text>
           <Box paddingLeft={4}>
             <MarkdownRenderer text={msg.text} />
           </Box>
@@ -35,12 +65,21 @@ function renderCompleted(msg: DisplayMessage): React.ReactNode {
         </Box>
       );
     case 'warning':
+      // 系统消息左边框（M3.5 Phase 1，§8.4-2.1）：与角色消息同构区分。
       return (
-        <Text color={T.warning}>{SYMBOLS.warning} {msg.text}</Text>
+        <Box {...leftBorder} borderColor={T.warning} paddingLeft={1} marginTop={1}>
+          <Text color={T.warning}>
+            {SYMBOLS.warning} {msg.text}
+          </Text>
+        </Box>
       );
     case 'error':
       return (
-        <Text color={T.error}>{SYMBOLS.error} {msg.text}</Text>
+        <Box {...leftBorder} borderColor={T.error} paddingLeft={1} marginTop={1}>
+          <Text color={T.error}>
+            {SYMBOLS.error} {msg.text}
+          </Text>
+        </Box>
       );
   }
 }

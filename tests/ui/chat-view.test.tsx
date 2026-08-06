@@ -34,6 +34,28 @@ describe('<ChatView />', () => {
     expect(f).toContain('帮我');
   });
 
+  it('用户消息渲染左边框 │（角色区分，M3.5 Phase 1）', () => {
+    const state = makeState({
+      completedMessages: [{ kind: 'user', id: 'u1', text: '帮我' }],
+    });
+    const { lastFrame } = render(<ChatView state={state} />);
+    expect(lastFrame()).toContain('│');
+  });
+
+  it('warning/error 消息渲染左边框 │（系统消息同构区分）', () => {
+    const state = makeState({
+      completedMessages: [
+        { kind: 'warning', id: 'w1', text: '上下文已压缩' },
+        { kind: 'error', id: 'e1', text: '出错了' },
+      ],
+    });
+    const { lastFrame } = render(<ChatView state={state} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain('│');
+    expect(f).toContain('上下文已压缩');
+    expect(f).toContain('出错了');
+  });
+
   it('渲染已完成助手消息（◆ ECode 前缀 + markdown）', () => {
     const state = makeState({
       completedMessages: [{ kind: 'assistant', id: 'a1', text: '好的' }],

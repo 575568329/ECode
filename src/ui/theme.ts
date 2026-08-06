@@ -17,6 +17,9 @@ export const T = {
   accent: '#89B4FA',
   muted: '#6C7086',
   border: '#45475A',
+  userBg: '#313244', // 用户消息背景（角色区分，M3.5 Phase 1）
+  toolBg: '#181825', // BlockTool 面板背景（深）
+  toolBorder: '#313244', // BlockTool 左边框
   diffAdded: '#A6E3A1',
   diffRemoved: '#F38BA8',
   inverseText: '#1E1E2E',

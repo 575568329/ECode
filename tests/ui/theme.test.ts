@@ -2,14 +2,18 @@ import { describe, it, expect } from 'vitest';
 import { T, SYMBOLS, SPINNER_FRAMES } from '../../src/ui/theme.js';
 
 describe('视觉基础', () => {
-  it('T 含 17 个语义 token，值为 hex', () => {
+  it('T 含 20 个语义 token，值为 hex', () => {
     const keys = Object.keys(T);
-    expect(keys).toHaveLength(17);
+    expect(keys).toHaveLength(20);
     // 抽查 spec §8.1 的关键 token 值
     expect(T.brand).toBe('#4ECDC4');
     expect(T.user).toBe('#89B4FA'); // 蓝，非绿（避免撞 success）
     expect(T.success).toBe('#A6E3A1');
     expect(T.permission).toBe('#FAB387'); // 独立 token，不复用 error
+    // M3.5 Phase 1 新增（角色区分 / 工具面板）
+    expect(T.userBg).toBe('#313244');
+    expect(T.toolBg).toBe('#181825');
+    expect(T.toolBorder).toBe('#313244');
     // 全部 hex 格式
     for (const v of Object.values(T)) {
       expect(v).toMatch(/^#[0-9A-Fa-f]{6}$/);

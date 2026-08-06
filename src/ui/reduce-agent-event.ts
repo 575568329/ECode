@@ -20,7 +20,8 @@ const nextId = (): string => `m${++msgSeq}`;
 export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamState {
   switch (event.type) {
     case 'start':
-      return { ...state, isRunning: true, error: null };
+      // 记录 currentModel + runStartedAt：assistant MetaLine（模型名 / 耗时）的数据源。
+      return { ...state, isRunning: true, error: null, currentModel: event.model, runStartedAt: Date.now() };
 
     case 'text_delta':
       return { ...state, streamingText: (state.streamingText ?? '') + event.text };
@@ -56,7 +57,15 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
     case 'completed': {
       const msgs = [...state.completedMessages];
       if (state.streamingText) {
-        msgs.push({ kind: 'assistant', id: nextId(), text: state.streamingText });
+        // 落地助手文本时附带 MetaLine 数据：模型名 + 本轮耗时（start→completed）。
+        msgs.push({
+          kind: 'assistant',
+          id: nextId(),
+          text: state.streamingText,
+          model: state.currentModel ?? undefined,
+          durationMs:
+            state.runStartedAt != null ? Date.now() - state.runStartedAt : undefined,
+        });
       }
       return {
         ...state,

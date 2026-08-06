@@ -13,7 +13,13 @@ export interface ActiveTool {
 /** 已冻结进 <Static> 的消息（用户输入 / 助手文本 / 工具结果 / 系统警告）。 */
 export type DisplayMessage =
   | { kind: 'user'; id: string; text: string }
-  | { kind: 'assistant'; id: string; text: string } // 已完成的助手文本（completed 时从 streamingText 落地）
+  | {
+      kind: 'assistant';
+      id: string;
+      text: string; // 已完成的助手文本（completed 时从 streamingText 落地）
+      model?: string; // 产出该回复的模型（MetaLine 数据源，M3.5 Phase 1）
+      durationMs?: number; // 本轮回复耗时（MetaLine 数据源）
+    }
   | {
       kind: 'tool';
       id: string;
@@ -44,6 +50,10 @@ export interface StreamState {
   error: string | null;
   /** 最近一次 completed 的元信息（供状态栏/调试）。 */
   lastCompleted: { rounds: number; reason: string } | null;
+  /** 当前模型名（start 事件记录，assistant MetaLine 数据源）。null = 尚未 start。 */
+  currentModel: string | null;
+  /** 本次 run 起始时间戳（start 事件记录，算 assistant 回复耗时）。null = 尚未 start。 */
+  runStartedAt: number | null;
 }
 
 export const initialStreamState: StreamState = {
@@ -55,4 +65,6 @@ export const initialStreamState: StreamState = {
   isRunning: false,
   error: null,
   lastCompleted: null,
+  currentModel: null,
+  runStartedAt: null,
 };

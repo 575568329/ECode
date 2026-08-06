@@ -24,6 +24,8 @@ export interface Simulator {
   /** Esc：内部推进 20ms 触发 ink 的 escape flush */
   esc(): Promise<void>;
   ctrlC(): Promise<void>;
+  /** Ctrl+O（转录 pager 入口，方向 B）：写 \x0f，ink 解析为 input='o' + key.ctrl */
+  ctrlO(): Promise<void>;
   backspace(): Promise<void>;
   /** 实际渲染帧（含 ANSI 颜色码） */
   frame(): string;
@@ -62,6 +64,10 @@ export function simulate(jsx: React.ReactElement): Simulator {
     },
     ctrlC: async () => {
       stdin.write('\x03');
+      await flush0();
+    },
+    ctrlO: async () => {
+      stdin.write('\x0f');
       await flush0();
     },
     backspace: async () => {

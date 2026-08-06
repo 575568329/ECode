@@ -22,6 +22,8 @@ import { listSessions, loadSession } from '../session.js';
 import type { ECodeSessionSummary } from '../session.js';
 import { messagesToDisplayMessages } from './messages-to-display.js';
 import { shortSessionId } from './format-session.js';
+import { sessionMessagesToTranscript } from './format-transcript.js';
+import { runLess } from './pager.js';
 import type { ResumeContext } from '../agent.js';
 
 /** 双击 Ctrl+C 退出窗口（ms）：窗口内第二次 Ctrl+C → process.exit。 */
@@ -61,6 +63,11 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
   // resumeOpen 时 SessionPicker 替换 InputBar（Modal 三元前置）。sessions 已过滤当前会话。
   const [resumeOpen, setResumeOpen] = useState(false);
   const [resumeSessions, setResumeSessions] = useState<ECodeSessionSummary[]>([]);
+  // Ctrl+O 转录 pager（方向 B，详设 docs/20260806230000_工具折叠-详设.md §5.4/§5.5）：
+  // inPager=true 时底部交互区卸载（消除 InputBar 等的 useInput 抢键）+ 全局 useInput 让位给 less。
+  // ref 同步防重入/防按键串台（state 异步、ref 即时）；state 驱动渲染。
+  const [inPager, setInPager] = useState(false);
+  const inPagerRef = useRef(false);
 
   // 默认 loadStatus：CLAUDE.md 不确定时给 null，provider 用 model 推断。
   const status: LoadStatus = loadStatus ?? {
@@ -68,11 +75,42 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
     provider: { ok: true, label: model ?? 'default' },
   };
 
+  // Ctrl+O → 进转录 pager 看完整会话（整段 completedMessages → less 全屏）。
+  // 空 → 提示不进；非空 → alternate screen + less，try/finally 兜底确保切回主屏（绝不卡 alternate）。
+  const openPager = async () => {
+    if (inPagerRef.current) return; // 防重入
+    const transcript = sessionMessagesToTranscript(api.completedMessages);
+    if (transcript.length === 0) {
+      api.addMessage({ kind: 'warning', id: `sys-pager-${Date.now()}`, text: '暂无内容可查看。' });
+      return;
+    }
+    inPagerRef.current = true;
+    setInPager(true);
+    process.stdout.write('\x1b[?1049h'); // 切 alternate buffer
+    try {
+      await runLess(transcript);
+    } catch (err) {
+      api.addMessage({
+        kind: 'error',
+        id: `sys-pager-err-${Date.now()}`,
+        text: `无法打开转录视图（需安装 less）: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    } finally {
+      process.stdout.write('\x1b[?1049l'); // 切回主 buffer
+      inPagerRef.current = false;
+      setInPager(false);
+    }
+  };
+
   // 全局按键（与 InputBar/PermissionDialog/SessionPicker 的 useInput 并存；ink 按挂载序分发）：
-  //   Esc → 中断当前流（权限弹窗/会话选择器期让位：它们 idle 出现，isRunning=false 本不触发，
-  //         !resumeOpen/!pendingPermission 守卫防边角竞态；SessionPicker 的 Esc 走自身 onCancel）；
-  //   Ctrl+C → 单击中断 / 双击退出。
+  //   Ctrl+O → 转录 pager（方向 B）；Esc → 中断当前流；Ctrl+C → 单击中断 / 双击退出。
+  //   pager 期间（inPagerRef）全部让位给 less（less inherit stdio 独占按键）。
   useInput((input, key) => {
+    if (inPagerRef.current) return; // pager 期间让位
+    if (key.ctrl && input === 'o') {
+      void openPager();
+      return;
+    }
     if (key.escape && api.isRunning && !api.pendingPermission && !resumeOpen) {
       api.abort();
       return;
@@ -211,7 +249,7 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
         <ChatView state={api} />
       )}
 
-      {resumeOpen ? (
+      {inPager ? null : resumeOpen ? (
         <SessionPicker
           sessions={resumeSessions}
           onConfirm={handleResumeConfirm}

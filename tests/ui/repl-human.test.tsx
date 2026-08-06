@@ -17,6 +17,7 @@ import { runAgentStream } from '../../src/agent.js';
 import { listSessions, loadSession } from '../../src/session.js';
 import type { ECodeSessionSummary } from '../../src/session.js';
 import { simulate } from './simulate.js';
+import { runLess } from '../../src/ui/pager.js';
 
 vi.mock('../../src/agent.js', () => ({
   runAgentStream: vi.fn(async function* (): AsyncGenerator<never> {
@@ -29,10 +30,16 @@ vi.mock('../../src/session.js', () => ({
   listSessions: vi.fn(() => [] as ECodeSessionSummary[]),
   loadSession: vi.fn(),
 }));
+// Ctrl+O 转录 pager（方向 B）：app 调 runLess spawn less；测试 mock 掉避免真起进程，
+// 用 mockResolvedValue/mockRejectedValue 模拟 less 正常退出 / 失败。
+vi.mock('../../src/ui/pager.js', () => ({
+  runLess: vi.fn(),
+}));
 
 const mockedRun = runAgentStream as unknown as ReturnType<typeof vi.fn>;
 const mockedList = listSessions as unknown as ReturnType<typeof vi.fn>;
 const mockedLoad = loadSession as unknown as ReturnType<typeof vi.fn>;
+const mockedRunLess = runLess as unknown as ReturnType<typeof vi.fn>;
 
 const CWD = '/tmp/ecode-human-test';
 
@@ -549,5 +556,58 @@ describe('REPL 人肉驱动 —— /resume 会话切换（方向 C）', () => {
     const lastCall = mockedRun.mock.calls[mockedRun.mock.calls.length - 1];
     const opts = lastCall[1] as { resumed?: { id: string } };
     expect(opts.resumed?.id).toBe('target-session');
+  });
+});
+
+describe('REPL 人肉驱动 —— Ctrl+O 转录 pager（方向 B）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockedRun.mockImplementation(async function* () {});
+    mockedList.mockReturnValue([]);
+    mockedRunLess.mockReset();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // ink-testing-library 用内部 stdout 渲染帧；process.stdout.write 是 app 直接写的
+  // （清屏 / alternate screen），spy 它可观测 alternate 序列而不污染帧。
+  const wroteSeq = (spy: ReturnType<typeof vi.spyOn>, seq: string): boolean =>
+    spy.mock.calls.some((c) => String(c[0]).includes(seq));
+
+  it('Ctrl+O 有消息 → 进 pager（写 1049h）→ 调 runLess → 出 pager（写 1049l）', async () => {
+    mockedRunLess.mockResolvedValue(undefined);
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim); // 造消息（completedMessages 非空）
+    await sim.ctrlO();
+    await sim.waitFor(() => wroteSeq(stdoutSpy, '\x1b[?1049h'));
+    expect(mockedRunLess).toHaveBeenCalled(); // 进 pager 调 runLess
+    await sim.waitFor(() => wroteSeq(stdoutSpy, '\x1b[?1049l')); // runLess resolve → 退出
+    expect(wroteSeq(stdoutSpy, '\x1b[?1049l')).toBe(true);
+  });
+
+  it('空消息（/clear 后）→ 提示暂无内容，不进 pager（不调 runLess、不写 alternate）', async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/clear');
+    await sim.enter();
+    await sim.waitFor(() => true); // 让 clear 落地（completedMessages=[]）
+    await sim.ctrlO();
+    await sim.waitFor((f) => f.includes('暂无内容可查看'));
+    expect(mockedRunLess).not.toHaveBeenCalled();
+    expect(wroteSeq(stdoutSpy, '\x1b[?1049h')).toBe(false);
+  });
+
+  it('runLess 失败 → error 提示 + finally 仍写 1049l（不卡在 alternate）', async () => {
+    mockedRunLess.mockRejectedValue(new Error('less not found'));
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.ctrlO();
+    await sim.waitFor((f) => f.includes('无法打开转录视图'));
+    expect(wroteSeq(stdoutSpy, '\x1b[?1049l')).toBe(true); // finally 必切回主屏
   });
 });

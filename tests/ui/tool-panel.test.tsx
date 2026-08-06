@@ -22,7 +22,8 @@ describe('ToolDone', () => {
     expect(f).toContain('line1');
     expect(f).toContain('line2');
     expect(f).toContain('line3');
-    expect(f).toContain('... 2 more lines'); // 5-3=2
+    expect(f).toContain('… +2 more lines'); // 5-3=2
+    expect(f).toContain('(ctrl+o 展开)'); // 可发现性提示
     expect(f).not.toContain('line4');
   });
 
@@ -39,7 +40,7 @@ describe('ToolDone', () => {
     expect(f).toContain(SYMBOLS.error);
     expect(f).toContain('err0');
     expect(f).toContain('err4');
-    expect(f).toContain('... 3 more lines'); // 8-5=3
+    expect(f).toContain('… +3 more lines'); // 8-5=3
   });
 
   it('read_file → 只显 "Read N lines"（不显内容主体）', () => {
@@ -59,12 +60,60 @@ describe('ToolDone', () => {
     expect(f).not.toContain('more lines');
   });
 
-  it('grep → 前 3 行匹配 + ... N more matches', () => {
+  it('write_file 超 10 行 → 前 10 行 + 折叠提示（对齐 CC write 阈值）', () => {
+    const content = Array.from({ length: 13 }, (_, i) => `line${i}`).join('\n');
+    const { lastFrame } = render(<ToolDone name="write_file" content={content} isError={false} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain('line0');
+    expect(f).toContain('line9'); // 第 10 行在
+    expect(f).not.toContain('line10'); // 第 11 行被裁
+    expect(f).toContain('… +3 more lines'); // 13-10=3
+  });
+
+  it('write_file ≤10 行 → 完整不折叠', () => {
+    const content = Array.from({ length: 8 }, (_, i) => `line${i}`).join('\n');
+    const { lastFrame } = render(<ToolDone name="write_file" content={content} isError={false} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain('line7');
+    expect(f).not.toContain('more lines');
+  });
+
+  it('grep → 前 3 行匹配 + 提示含总命中数（of N matches）', () => {
     const content = 'a.ts:1: TODO\nb.ts:2: TODO\nc.ts:3: TODO\nd.ts:4: TODO';
     const { lastFrame } = render(<ToolDone name="grep" content={content} isError={false} />);
     const f = lastFrame() ?? '';
     expect(f).toContain('a.ts:1: TODO');
-    expect(f).toContain('... 1 more matches');
+    expect(f).toContain('of 4 matches'); // 总命中数（不只被裁数）
+    expect(f).toContain('(ctrl+o 展开)');
+  });
+
+  it('glob 多文件 → 完全折叠 "Found N files" 单行（不列文件，对齐 CC）', () => {
+    const content = 'src/a.ts\nsrc/b.ts\nsrc/c.ts';
+    const { lastFrame } = render(<ToolDone name="glob" content={content} isError={false} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain('Found 3 files');
+    expect(f).not.toContain('src/a.ts'); // 不列文件名（清单去 Ctrl+O 转录看）
+    expect(f).not.toContain('more lines');
+  });
+
+  it('glob 单文件 / 空命中 → 原样显示（不报 Found 1 files）', () => {
+    const content = '未找到匹配文件。';
+    const { lastFrame } = render(<ToolDone name="glob" content={content} isError={false} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain('未找到匹配文件。');
+    expect(f).not.toContain('Found');
+  });
+
+  it('bash content 尾部空行 → 不渲染空 ↳ 行（execSync 输出常带尾 \\n）', () => {
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+    const content = 'line1\nline2\n'; // 尾 \n → split 出末尾空串 → 渲染空 ↳ 行（噪声）
+    const { lastFrame } = render(<ToolDone name="bash" content={content} isError={false} />);
+    const f = stripAnsi(lastFrame() ?? '');
+    const arrowLines = f.split('\n').filter((l) => l.includes('↳'));
+    expect(arrowLines.length).toBe(2); // 只有 line1/line2 两行，不是 3 行（含空 ↳）
+    for (const l of arrowLines) {
+      expect(l.split('↳')[1].trim().length).toBeGreaterThan(0); // 每行箭头后必有内容
+    }
   });
 });
 

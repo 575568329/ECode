@@ -6,6 +6,7 @@ import { marked } from 'marked';
 import type { Token, TokensList, Tokens } from 'marked';
 import { highlight } from 'cli-highlight';
 import { T } from './theme.js';
+import { displayWidth, padEndDisplay } from './display-width.js';
 
 interface MarkdownRendererProps {
   text: string;
@@ -53,15 +54,25 @@ function renderTokens(tokens: TokensList, keyPrefix: string): React.ReactNode[] 
         // tok 仍残留 Generic 臂、使 tok.items 退化为 any；这里显式按 List['items'] 取用。
         const items = tok.items as Tokens.List['items'];
         items.forEach((item, j) => {
+          // list_item.tokens 首层是 text/paragraph 容器，真 inline 在其 .tokens；
+          // 直接 renderInline(item.tokens) 会命中 text 分支返回 tok.text（保留 ** 等标记 → 漏星号）。
+          // 拍平：有 .tokens 的取它，否则原样（兼容纯 inline / loose list 多 paragraph）。
+          const inline = (item.tokens ?? []).flatMap((it) => {
+            const node = it as { tokens?: Token[] };
+            return node.tokens ?? [it];
+          });
           nodes.push(
             <Text key={`${key}-${j}`}>
               <Text color={T.user}>• </Text>
-              {renderInline(item.tokens ?? [], `${key}-${j}`)}
+              {renderInline(inline, `${key}-${j}`)}
             </Text>,
           );
         });
         break;
       }
+      case 'table':
+        nodes.push(renderTable(tok as Tokens.Table, key));
+        break;
       case 'space':
         nodes.push(<Text key={key}> </Text>);
         break;
@@ -89,6 +100,53 @@ function renderInline(tokens: Token[], keyPrefix: string): React.ReactNode {
     if (tok.type === 'text') return <Text key={key}>{tok.text}</Text>;
     return <Text key={key}>{tok.raw}</Text>;
   });
+}
+
+/** 单元格 inline tokens → 纯文本（marked 的 TableCell.text 保留 ** 等标记，
+ *  用 tokens 提纯 → 表格里 **粗体** 显示为「粗体」无星号；空 tokens 回退 .text）。 */
+function cellToPlainText(cell: Tokens.TableCell): string {
+  // marked 的 Token 联合里部分类型（如 Space）无 .text 字段，结构化转型安全访问。
+  const t = (cell.tokens ?? [])
+    .map((tk) => {
+      const node = tk as { text?: string; raw?: string };
+      return node.text ?? node.raw ?? '';
+    })
+    .join('');
+  return t.length > 0 ? t : (cell.text ?? '');
+}
+
+/** 表格 → 对齐列 + │ 边框（表头粗体 + brand 色；数据行常规）。
+ *  已知限制：padEnd 按 string.length 对齐，中日韩等宽字符显示宽 ≠ length → 轻微错位。 */
+function renderTable(tok: Tokens.Table, key: string): React.ReactNode {
+  const headerCells = tok.header.map(cellToPlainText);
+  const rowsCells = tok.rows.map((r) => r.map(cellToPlainText));
+  const colCount = headerCells.length;
+  const allRows = [headerCells, ...rowsCells];
+  // 列宽 = 该列所有单元格「显示宽度」最长者（padEndDisplay 按显示宽度补齐，保证 │ 对齐）。
+  // 不能用 string.length：中文 length=2 占 2 终端列，padEnd 会补错 → │ 右移错位。
+  const widths = Array.from({ length: colCount }, (_, ci) =>
+    Math.max(...allRows.map((r) => displayWidth(r[ci] ?? ''))),
+  );
+  const renderRow = (cells: string[], rowKey: string, isHeader: boolean): React.ReactNode => (
+    <Text key={rowKey}>
+      <Text color={T.muted}>│ </Text>
+      {cells.map((c, ci) => (
+        <React.Fragment key={ci}>
+          <Text bold={isHeader} color={isHeader ? T.brand : undefined}>
+            {padEndDisplay(c, widths[ci])}
+          </Text>
+          {ci < colCount - 1 ? <Text color={T.muted}> │ </Text> : null}
+        </React.Fragment>
+      ))}
+      <Text color={T.muted}> │</Text>
+    </Text>
+  );
+  return (
+    <Box key={key} flexDirection="column">
+      {renderRow(headerCells, `${key}-h`, true)}
+      {rowsCells.map((r, ri) => renderRow(r, `${key}-r${ri}`, false))}
+    </Box>
+  );
 }
 
 export function MarkdownRenderer({ text, streaming = false }: MarkdownRendererProps): React.ReactElement {

@@ -14,14 +14,12 @@ import type { DisplayMessage } from './types.js';
 function renderCompleted(msg: DisplayMessage): React.ReactNode {
   switch (msg.kind) {
     case 'user':
-      // 角色区分（M3.5 Phase 1）：左边框 + 背景色，让用户消息一眼可辨。
-      // backgroundColor 在真实终端渲染块底色；测试假 stdout 不渲染（ink-testing-library 限制）。
+      // 角色区分：仅左边框（与 BlockTool 同款去背景色），让用户消息一眼可辨又不抢眼。
       return (
         <Box
           flexDirection="column"
           {...leftBorder}
           borderColor={T.border}
-          backgroundColor={T.userBg}
           paddingLeft={1}
           marginTop={1}
         >

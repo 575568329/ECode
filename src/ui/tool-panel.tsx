@@ -24,7 +24,9 @@ export function ToolRunning({ name, arg }: ToolRunningProps): React.ReactElement
   return (
     <Box>
       <Spinner color={T.brand} />
-      <Text color={T.tool}> {SYMBOLS.tool} {name}</Text>
+      {/* 降存在感（对标 CC）：spinner 留 brand 作唯一动态亮点；工具名+▸ 走 muted 灰，
+          完成后(ToolDone)才亮起(✓ 绿/黄名)。ECode 青 spinner + 黄工具名双亮冲突 → 工具名降灰。 */}
+      <Text color={T.muted}> {SYMBOLS.tool} {name}</Text>
       {arg ? <Text color={T.muted}>({arg})</Text> : null}
     </Box>
   );
@@ -37,16 +39,26 @@ interface Folded {
   label: string;
 }
 
+/** write_file 折叠阈值：对齐 CC MAX_LINES_TO_RENDER=10（FileWriteTool/UI.tsx:26）。 */
+const WRITE_HEAD = 10;
+
 /** 把多行内容按工具折叠策略裁剪。 */
 function foldContent(name: string, isError: boolean, content: string): Folded {
-  const all = content.split('\n');
+  // 去尾部换行：execSync 等输出常带尾 \n，split 会产出末尾空串 → 渲染空 ↳ 行（噪声）。
+  const all = content.replace(/\n+$/, '').split('\n');
   // read_file：只报行数，不显内容
   if (name === 'read_file') {
     return { lines: [`Read ${all.length} lines`], omitted: 0, label: '' };
   }
-  // edit_file / write_file：完整不折叠（diff 是精华）
-  if (name === 'edit_file' || name === 'write_file') {
+  // edit_file：完整 diff 不折叠（diff 是精华）
+  if (name === 'edit_file') {
     return { lines: all, omitted: 0, label: '' };
+  }
+  // write_file：前 10 行（写文件正文超长时折叠；对齐 CC write 阈值）
+  if (name === 'write_file') {
+    return all.length > WRITE_HEAD
+      ? { lines: all.slice(0, WRITE_HEAD), omitted: all.length - WRITE_HEAD, label: 'more lines' }
+      : { lines: all, omitted: 0, label: '' };
   }
   // bash：成功前 3 行，错误前 5 行（错误栈关键信息常在后面，多给几行）
   if (name === 'bash') {
@@ -55,11 +67,19 @@ function foldContent(name: string, isError: boolean, content: string): Folded {
       ? { lines: all.slice(0, head), omitted: all.length - head, label: 'more lines' }
       : { lines: all, omitted: 0, label: '' };
   }
-  // grep：前 3 行匹配
+  // grep：前 3 行匹配，提示含总命中数（用户关心共找到多少）
   if (name === 'grep') {
     return all.length > 3
-      ? { lines: all.slice(0, 3), omitted: all.length - 3, label: 'more matches' }
+      ? { lines: all.slice(0, 3), omitted: all.length - 3, label: `of ${all.length} matches` }
       : { lines: all, omitted: 0, label: '' };
+  }
+  // glob：多文件完全折叠成 "Found N files" 单行（对齐 CC；文件清单去 Ctrl+O 转录看）。
+  //   单文件 / 空命中原样——避免 "Found 1 files" 这种尴尬文案，且空命中 "未找到匹配文件。" 需直显。
+  if (name === 'glob') {
+    if (all.length >= 2) {
+      return { lines: [`Found ${all.length} files`], omitted: 0, label: '' };
+    }
+    return { lines: all, omitted: 0, label: '' };
   }
   // 其他：完整
   return { lines: all, omitted: 0, label: '' };
@@ -117,7 +137,6 @@ function BlockTool({ name, isError, arg, lines, omitted, label }: BlockToolProps
     <Box
       {...leftBorder}
       borderColor={isError ? T.error : T.toolBorder}
-      backgroundColor={T.toolBg}
       paddingLeft={1}
       flexDirection="column"
     >
@@ -135,7 +154,7 @@ function BlockTool({ name, isError, arg, lines, omitted, label }: BlockToolProps
         </Text>
       ))}
       {omitted > 0 ? (
-        <Text color={T.muted}>  ... {omitted} {label}</Text>
+        <Text color={T.muted}>  … +{omitted} {label} (ctrl+o 展开)</Text>
       ) : null}
     </Box>
   );

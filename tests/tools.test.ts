@@ -50,6 +50,15 @@ describe('executeTool 参数校验', () => {
     expect(result.content).toContain('command');
   });
 
+  it('bash 失败 → content 取纯 stderr（去 Node "Command failed: cmd" 重复，UI/agent 都见干净错误）', async () => {
+    const result = await executeTool('bash', {
+      command: 'node -e "console.error(\'boom\'); process.exit(1)"',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('boom');
+    expect(result.content).not.toContain('Command failed');
+  });
+
   it('edit_file 缺 oldText 应返回 isError(参数缺失)', async () => {
     const result = await executeTool('edit_file', { path: '/a', newText: 'b' });
     expect(result.isError).toBe(true);

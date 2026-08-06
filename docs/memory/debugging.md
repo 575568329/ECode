@@ -135,6 +135,14 @@ const files = await fg(pattern, { ... });
 
 ## #005 上下文超限死局——"超限后无法压缩"的响应式恢复
 
+> **⚠️ 2026-08-07 复核纠正（实读源码核实，非 LLM 推断）**
+>
+> 本文 §"ECode 实现"（L161）/ §"验证"（L174）声称「L3 响应式恢复已实现 + 全量测试通过」**部分失真**——下次会话**勿据此假设超限已能自恢复**：
+> - **函数层确实实现且单测过**：`isContextWindowError`（context-manager.ts:353）、`forceCompact`（:376）、`maybeCompress`（:316）都在；tests/context-resilience.test.ts 20 测试覆盖它们**作为纯函数**。
+> - **但 agent.ts 从未接线**：`grep 'forceCompact\|isContextWindowError' src/agent.ts` 零命中。catch 块（agent.ts:459-480）只处理 `AbortError`，其余异常（含 API 400 context-window 错）一律 `yield {type:'error'}` 终止 loop，**无 forceCompact 恢复重试分支**。
+> - 即「函数级绿、集成级红」——本文 §"现象"描述的死局**实际未解决**：超限后 agent 仍会死。`withRetry`（retry.ts:33）把 400 当不可重试直接抛，加重死局。
+> - 下次修 M3 时接线 catch 块（修法见 [../20260807_ECode项目审查报告.md](../20260807_ECode项目审查报告.md) 🔴-1），并补「provider 首次抛 context_length_exceeded → forceCompact 恢复重试」的回归测试（现有 agent-stream.test.ts 只覆盖 maybeCompress **主动**压缩，未覆盖**响应式**恢复）。
+
 **日期**：2026-08-03
 **性质**：设计增强（非 bug），M3 P3 之后插队
 **影响**：用户高频触发 `API Error: The model has reached its context window limit`，超限后 API 直接 400、压缩没机会触发、任务死。

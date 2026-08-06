@@ -41,8 +41,8 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 |--------|---------|------|
 | M1 Agent Loop | 工具调用协议、while 循环、id 配对 | ✅ 完成 |
 | M2 多模型适配 | Provider 抽象、协议差异、能力探测 | ✅ 完成 |
-| M3 上下文压缩 + Session | token 计数、摘要压缩、结果截断、Session 持久化 | 🟡 P1-P4 完成（超限恢复插队完成），P5 待 |
-| M3.5 交互式 CLI | 沉浸 REPL、slash 命令、流式渲染、中断、富文本/TUI | ⬜ 规划中 |
+| M3 上下文压缩 + Session | token 计数、摘要压缩、结果截断、Session 持久化 | 🟡 P1-P4 完成，P5 待（⚠️ 超限响应式恢复 L3 未接线，见 [审查报告](../20260807_ECode项目审查报告.md) 🔴-1）|
+| M3.5 交互式 CLI | 沉浸 REPL、slash 命令、流式渲染、中断、富文本/TUI | 🟡 进行中（REPL/斜杠/折叠组/pager/会话切换/**Esc-Ctrl+C 分工**已落地，Ctrl+O B+ 精简代码完成待真机）|
 | M4 权限系统 | default/acceptEdits/plan/bypass、危险命令拦截 | ⬜ 未开始 |
 | M5+ 进阶 | 可观测性 / Repo Map / Subagent | ⬜ 未开始 |
 
@@ -52,11 +52,32 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 - ✅ P1 格式 v2（声明式工具，executor 纯 find+execute 分发，无 switch/case）
 - ✅ P2 token 计数（`length/4` 粗估，零依赖，仿 Claude Code）+ 截断（tool_result 内容截断）
 - ✅ P3 上下文压缩（maybeCompress 级联：trim tool_result 内容 → summary；trim 保留 tool_use_id 配对不断裂）
-- ✅ 超限恢复插队（L2 trim / L3 forceCompact 响应式 / L4 熔断，仿 Claude Code reactiveCompact）
+- ⚠️ 超限恢复插队——**L3 响应式未接线（死代码）**（2026-08-07 审查核实）：L2 trim / L4 熔断的纯函数已实现，但 L3 forceCompact 响应式恢复**只在 context-manager.ts 实现，agent.ts catch（:459）从未调用**（只处理 AbortError）。即"函数级绿、集成级红"，本节 §现象描述的死局实际未解决。详见 [审查报告 🔴-1](../20260807_ECode项目审查报告.md)；纠正见 [debugging.md #005](./debugging.md)。下次修 M3 接线 catch 块 + 补回归测试。
 - ✅ **P4 Session 持久化**：`src/session.ts`（纯数据层，原子写 tmp+rename，覆盖语义剔除 -2）+ agent loop 挂载（首轮/每轮末/压缩后/结束）+ CLI `--continue`/`-c`/`--resume`/`--sessions`（不带任务=纯恢复不调 LLM）。设计见 [M3-实施方案.md](../M3-实施方案.md) §6，剔除 -2 决策见 [decisions.md #002](./decisions.md)
 - ✅ 151 单测（session 21 + context-resilience 20 + …）；tsc clean
 - 🟡 真实 LLM 端到端落盘：待配 `.env` key 实跑（单测 + tsc + CLI 免费分流已验证）
-- ⬜ P5 伴随特性（并行只读工具 / retry 读 Retry-After / usage 细化）→ M3.5 交互式 CLI
+- ⬜ P5 伴随特性（并行只读工具 / retry 读 Retry-After / usage 细化）
+
+**M3.5 交互式 CLI 进行中**（2026-08 起，单测 400 绿）：
+- ✅ 沉浸 Ink REPL（app/chat-view/input-bar/status-bar/welcome）+ 斜杠命令（/help /cost /sessions /clear /resume /exit）+ 斜杠补全 picker（↑↓）
+- ✅ 流式渲染（自写 markdown 富文本/表格/list）+ 工具折叠（Inline/Block，per-tool 阈值）+ **折叠组延迟冻结**（连续只读工具合并成 tool_group）
+- ✅ 中断分工（**Esc 专职中断 / Ctrl+C 专职退出**，2026-08-07，详设 docs/20260807000318，⚠️ breaking：streaming 时 Ctrl+C 单击不再中断，改 Esc）+ Ctrl+O pager（less 转录，alternate screen）+ 会话切换（/resume SessionPicker）
+- 🟡 **Ctrl+O B+ 精简**（2026-08-06，详设 docs/20260806232155）：format-transcript 按对话分组只留折叠工具（D）+ 进 alternate 前等重绘修双❯（C）+「按 q 退出」提示（G）— 代码完成，**待真机确认**
+- ⬜ #40 真机冒烟（D/C/G）+ A 重复文本（streamingText 跨轮累加，待 reducer 日志验证）/ B 乱码（Windows find.exe+GBK）— 另立项
+
+**2026-08-07 夜间产出（用户休息，自主推进，待审核）**：
+- ✅ 代码 4 commits：① config 首启自动生成模板+JSON注释兼容（787fad8）② 折叠组延迟冻结—连续只读工具合并摘要（fd56e5a）③ Ctrl+O 转录按对话分组精简+修双❯/退出键/蜂鸣音（8485b08）④ **Esc/Ctrl+C 横向分工**（b972f13，⚠️ breaking）
+- ✅ 测试：agent-stream.test.ts 补 maybeCompress 主动压缩端到端触发 + glm-5.2 config 取值（待提交）
+- 📄 调研/审查文档（**均未实施，待审核**）：
+  - [消息区分设计—光标/loading/对话标识](../消息区分设计方案-光标loading对话标识.md)（CC 源码实证：user 整行背景/● 点/▋ 闪烁光标/星号家族 spinner）
+  - [Todo 功能方案](../Todo功能方案.md)（常驻下方，抄 CC TodoWriteTool 全替换语义）
+  - [用户插话机制方案](../用户插话机制方案.md)（抄 CC mid-turn drain：运行中排队，工具完成后注入）
+  - [M4 权限系统三源交叉验证报告](../M4-权限系统三源交叉验证报告.md)（CC/opencode/CCode 对比，建议以 opencode 为模板）
+  - [ECode 项目审查报告](../20260807_ECode项目审查报告.md)（3 P0 / 8 🟡 / 7 🟢）
+- ⚠️ **3 个 P0（已实读代码核实为真，待决策修复）**：
+  - 🔴-1 L3 响应式恢复死代码（见上 ⚠️ 超限恢复行）
+  - 🔴-2 `allow` vs `allow_always` 语义塌陷（agent.ts:379 无条件 add，一次性许可被升级为永久）—— M4 权限前置基础
+  - 🔴-3 StatusBar Ctx% 用累计 token 算，多轮虚高（reduce-agent-event.ts:126 inputTokens 累加）
 
 **M2 完成**（2026-08-02）：Provider 抽象层落地，agent 解耦 SDK。
 - Provider 层（types/transform/claude/openai/config/factory）+ tools 协议中立化 + CLI --model/--list-models

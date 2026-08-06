@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { runAgentStream } from '../src/agent.js';
 import type { AgentEvent } from '../src/agent-events.js';
 import type { ResumeContext } from '../src/agent.js';
-import type { ECodeStreamPart, ModelProvider, ChatRequest } from '../src/providers/types.js';
+import type { ECodeMessage, ECodeStreamPart, ModelProvider, ChatRequest } from '../src/providers/types.js';
+import { isOverThreshold } from '../src/context-manager.js';
+import { getContextWindow } from '../src/providers/config.js';
 
 /** 造一个返回固定 chunk 流的 mock provider（complete 给桩，summarize 压缩时用）。 */
 function mockProvider(parts: ECodeStreamPart[]): ModelProvider {
@@ -66,7 +68,7 @@ describe('runAgentStream', () => {
     // 两事件发射时须透传。
     const provider = mockProvider([
       { type: 'tool_call_start', id: 't1', name: 'bash' },
-      { type: 'tool_call_delta', id: 't1', inputDelta: '{"command":"npm test"}' },
+      { type: 'tool_call_delta', id: 't1', inputDelta: '{"command":"echo hi"}' },
       { type: 'tool_call_end', id: 't1' },
       { type: 'stop', reason: { unified: 'tool-use', raw: 'tool_calls' } },
     ]);
@@ -79,8 +81,8 @@ describe('runAgentStream', () => {
       AgentEvent,
       { type: 'tool_result' }
     >;
-    expect(start.input).toEqual({ command: 'npm test' });
-    expect(result.input).toEqual({ command: 'npm test' });
+    expect(start.input).toEqual({ command: 'echo hi' });
+    expect(result.input).toEqual({ command: 'echo hi' });
   });
 
   it('text + tool_call 同时出现 → text_delta 在 tool_call_start 之前 yield（事件流完整性）', async () => {
@@ -270,4 +272,57 @@ describe('runAgentStream', () => {
     );
     expect(lastText?.text).toBe('新回答');
   });
+
+  it('resumed 注入大量消息 → 首轮触发上下文压缩 → yield warning 事件', async () => {
+    // 验证 agent loop 的 maybeCompress 链路真正被触发：
+    //   test-model → getContextWindow 兜底 128K → 阈值 102400 token ≈ 410K 字符。
+    //   注入 450K 字符（≈112K token）的 resumed messages → 超阈值 → L3 摘要压缩。
+    //   agent 应 yield warning 事件，且正常流程（start / text_delta / completed）不缺。
+    const bigText = 'a'.repeat(450_000); // ≈112K tokens（length/4 估算），超过 102K 阈值
+    const preMessages: ECodeMessage[] = [
+      { role: 'user', content: bigText },
+      { role: 'assistant', content: [{ type: 'text', text: '旧回答' }] },
+    ];
+    const provider = mockProvider([
+      { type: 'text_delta', text: '压缩后继续' },
+      { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
+    ]);
+    const events = await collect(
+      runAgentStream('短任务', {
+        provider,
+        model: 'test-model', // contextWindow 兜底 128K → 阈值 102K token
+        system: '', // 空 system，不贡献 token
+        resumed: {
+          id: 'compress-test',
+          task: '压缩测试',
+          createdAt: '',
+          messages: preMessages,
+        },
+      }),
+    );
+    // 压缩触发 → yield warning 事件（agent.ts:272）
+    const warnings = events.filter((e) => e.type === 'warning');
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
+    expect((warnings[0] as { type: 'warning'; message: string }).message).toContain('压缩');
+    // 正常流程事件不缺：start / text_delta / completed
+    expect(events.some((e) => e.type === 'start')).toBe(true);
+    expect(events.some((e) => e.type === 'text_delta')).toBe(true);
+    expect(events.some((e) => e.type === 'completed')).toBe(true);
+  });
+
+  it('glm-5.2 真实 config 链路 → contextWindow = 1M, threshold = 800K', () => {
+    // 验证不 mock config 时，真实 config 链路正确取到 glm-5.2 的 1M 上下文窗口。
+    // getContextWindow → getModelConfig → loadConfig → config.json 或 DEFAULT_CONFIG。
+    expect(getContextWindow('glm-5.2')).toBe(1_000_000);
+    // 阈值 = 1M × 0.8 = 800,000
+    const { threshold } = isOverThreshold('glm-5.2', '', []);
+    expect(threshold).toBe(800_000);
+  });
+
+  // 注：原「glm-5.2 真实阈值(800K token) → 超量消息触发压缩」用例已移除——
+  // 它为绕过 glm-5.2 的 1M 窗口造了 'a'.repeat(3_300_000)（330 万字符），仅 mock vi.fn
+  // deep-serialize 调用快照就要数秒，且与上方两用例功能重叠：
+  //   · 「真实 config 链路 → 800K」（纯函数）已覆盖 glm config 取值；
+  //   · 「resumed 注入大量消息 → 触发压缩」（test-model）已覆盖 agent loop 压缩端到端。
+  // 换 model 重跑同一 agent 路径不增覆盖，代价却是巨型字符串，故删。
 });

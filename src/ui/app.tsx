@@ -56,6 +56,10 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
   const [started, setStarted] = useState(false);
   const [startedAt] = useState(Date.now());
   const lastCtrlCRef = useRef(0);
+  // lastCtrlC state：Ctrl+C 单击同步更新 → 触发重绘让 StatusBar phase 重算进 exit-window
+  // （ref 变化不触发重绘，旧代码靠 abort 的 setState 顺带重绘，删 abort 后须显式驱动）。
+  // ref 保留做双击即时判断（state 异步，双击两次事件间未必 commit，双击须即时）。
+  const [lastCtrlC, setLastCtrlC] = useState(0);
   // 首次 submit 同步清屏（§5.2）：ref 控幂等，必须在 submit 函数体内同步执行，
   // 清掉 WelcomeScreen 残留行，让 ChatView 顶到首行。
   const hasClearedRef = useRef(false);
@@ -107,7 +111,7 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
   };
 
   // 全局按键（与 InputBar/PermissionDialog/SessionPicker 的 useInput 并存；ink 按挂载序分发）：
-  //   Ctrl+O → 转录 pager（方向 B）；Esc → 中断当前流；Ctrl+C → 单击中断 / 双击退出。
+  //   Ctrl+O → 转录 pager（方向 B）；Esc → 中断当前流（专职软中断）；Ctrl+C → 双击退出（专职硬退出，单击仅进退出窗口）。
   //   pager 期间（inPagerRef）全部让位给 less（less inherit stdio 独占按键）。
   useInput((input, key) => {
     if (inPagerRef.current) return; // pager 期间让位
@@ -120,12 +124,14 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
       return;
     }
     if (key.ctrl && input === 'c') {
+      // Ctrl+C = 硬退出（专职）：双击(2s 内) process.exit；单击只记退出窗口（StatusBar 提示「再按退出」）。
+      // 不再 abort——中断专职交给 Esc（横向分工，详设 docs/20260807000318）。
       const now = Date.now();
       if (now - lastCtrlCRef.current < DOUBLE_CTRL_C_MS) {
         process.exit(0);
       }
       lastCtrlCRef.current = now;
-      if (api.isRunning) api.abort();
+      setLastCtrlC(now); // 触发重绘 → phase 重算进 exit-window（StatusBar 提示「再按退出」）
     }
   });
 
@@ -236,13 +242,15 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
     setStarted(true);
   };
 
-  // StatusBar 阶段：permission > streaming > exit-window > idle。
+  // StatusBar 阶段：permission > exit-window > streaming > idle。
+  // exit-window 优先于 streaming：Ctrl+C 单击进退出窗口后，即便仍在 streaming 也要提示「再按退出」
+  // （否则 streaming 态按 Ctrl+C 单击无可见反馈——StatusBar 仍只显示 esc to interrupt，用户不知再按即退出）。
   const phase: StatusBarPhase = api.pendingPermission
     ? 'permission'
-    : api.isRunning
-      ? 'streaming'
-      : Date.now() - lastCtrlCRef.current < DOUBLE_CTRL_C_MS
-        ? 'exit-window'
+    : Date.now() - lastCtrlC < DOUBLE_CTRL_C_MS
+      ? 'exit-window'
+      : api.isRunning
+        ? 'streaming'
         : 'idle';
 
   return (

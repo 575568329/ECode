@@ -260,14 +260,19 @@ describe('REPL 人肉驱动 —— 快捷键（按实际反馈）', () => {
     await sim.waitFor((f) => !f.includes('interrupt')); // abort → 恢复输入栏
   });
 
-  it('Ctrl+C 单击中断运行中流', async () => {
+  it('Ctrl+C 单击不中断流（中断专职 Esc），进退出窗口提示「再按退出」', async () => {
+    // 详设 docs/20260807000318：Esc 专职中断（软），Ctrl+C 专职退出（硬，双击）。
+    // 故 Ctrl+C 单击不再 abort——仅进退出窗口（StatusBar 提示再按退出），流仍在跑。
     hangingRun();
     const sim = simulate(<App cwd={CWD} />);
     await sim.type('跑起来');
     await sim.enter();
-    await sim.waitFor((f) => f.includes('interrupt'));
+    await sim.waitFor((f) => f.includes('interrupt')); // isRunning → InputBar disabled
     await sim.ctrlC();
-    await sim.waitFor((f) => !f.includes('interrupt'));
+    // Ctrl+C 不 abort：流仍 running；StatusBar 进退出窗口（phase exit-window 优先于 streaming）
+    await sim.waitFor((f) => f.includes('press ctrl+c again'));
+    expect(sim.plain()).toContain('interrupt'); // 仍 running（InputBar 仍 disabled，未中断）
+    sim.unmount(); // mock 挂起等 abort，不中断则手动卸载避免泄漏
   });
 
   it('Ctrl+C 双击 → process.exit', async () => {

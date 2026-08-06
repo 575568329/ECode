@@ -82,6 +82,54 @@ describe('reduceAgentEvent', () => {
     expect(tool?.kind === 'tool' && tool.isError).toBe(false);
   });
 
+  it('tool_call_start → activeTools 记录 input（动态区 ToolRunning 摘要用，§9.5）', () => {
+    const s = reduceAgentEvent(initialStreamState, {
+      type: 'tool_call_start',
+      id: 't1',
+      name: 'bash',
+      input: { command: 'npm test' },
+    });
+    expect(s.activeTools[0].input).toEqual({ command: 'npm test' });
+  });
+
+  it('tool_result → DisplayMessage 携带 input（历史区摘要 §9.5）', () => {
+    let s = reduceAgentEvent(initialStreamState, {
+      type: 'tool_call_start',
+      id: 't1',
+      name: 'bash',
+      input: { command: 'npm test' },
+    });
+    s = reduceAgentEvent(s, {
+      type: 'tool_result',
+      id: 't1',
+      name: 'bash',
+      content: 'ok',
+      isError: false,
+      input: { command: 'npm test' },
+    });
+    const tool = s.completedMessages.find((m) => m.kind === 'tool');
+    expect(tool?.kind === 'tool' && tool.input).toEqual({ command: 'npm test' });
+  });
+
+  it('tool_result 未带 input → 从 activeTool 补全（容错：事件缺字段时不丢摘要）', () => {
+    let s = reduceAgentEvent(initialStreamState, {
+      type: 'tool_call_start',
+      id: 't1',
+      name: 'bash',
+      input: { command: 'ls' },
+    });
+    s = reduceAgentEvent(s, {
+      type: 'tool_result',
+      id: 't1',
+      name: 'bash',
+      content: 'ok',
+      isError: false,
+      // 故意不传 input：reducer 应从 activeTool 回填
+    });
+    const tool = s.completedMessages.find((m) => m.kind === 'tool');
+    expect(tool?.kind === 'tool' && tool.input).toEqual({ command: 'ls' });
+  });
+
   it('permission_request → pendingPermission 挂起', () => {
     const s = reduceAgentEvent(initialStreamState, {
       type: 'permission_request',

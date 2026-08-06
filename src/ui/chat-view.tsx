@@ -2,25 +2,13 @@
 // <Static items={completedMessages}>：Ink 把已完成项写入 stdout 一次后不再 diff（O(n)→O(1)）。
 // 动态区：streamingText（流式纯文本）+ activeTools（运行中工具）。
 import React from 'react';
-import { Static, Box, Text, type BoxProps } from 'ink';
+import { Static, Box, Text } from 'ink';
 import { T, SYMBOLS } from './theme.js';
 import { MarkdownRenderer } from './markdown.js';
-import { ToolRunning, ToolDone } from './tool-panel.js';
+import { ToolRunning, ToolDone, summarizeArg } from './tool-panel.js';
+import { leftBorder } from './borders.js';
 import type { UseAgentStreamReturn } from './use-agent-stream.js';
 import type { DisplayMessage } from './types.js';
-
-/**
- * ink 单边左边框 props。
- * 注意（M3.5 实测）：单独 `borderLeft` 不渲染——ink 必须先给 `borderStyle`，
- * 再用四个 borderXxx 布尔控制显哪些边；这里显式只开左边。
- */
-const leftBorder: Pick<BoxProps, 'borderStyle' | 'borderLeft' | 'borderTop' | 'borderBottom' | 'borderRight'> = {
-  borderStyle: 'single',
-  borderLeft: true,
-  borderTop: false,
-  borderBottom: false,
-  borderRight: false,
-};
 
 /** 单条已完成消息 → React 节点（供 <Static>）。 */
 function renderCompleted(msg: DisplayMessage): React.ReactNode {
@@ -61,7 +49,7 @@ function renderCompleted(msg: DisplayMessage): React.ReactNode {
     case 'tool':
       return (
         <Box paddingLeft={4}>
-          <ToolDone name={msg.name} content={msg.content} isError={msg.isError} />
+          <ToolDone name={msg.name} content={msg.content} isError={msg.isError} input={msg.input} />
         </Box>
       );
     case 'warning':
@@ -106,7 +94,7 @@ export function ChatView({ state }: ChatViewProps): React.ReactElement {
             </Text>
           ) : null}
           {state.activeTools.map((t) => (
-            <ToolRunning key={t.id} name={t.name} />
+            <ToolRunning key={t.id} name={t.name} arg={summarizeArg(t.name, t.input)} />
           ))}
         </Box>
       )}

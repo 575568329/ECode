@@ -8,6 +8,8 @@ export interface ActiveTool {
   name: string;
   /** 启动时间戳（ms），供计时显示。 */
   startedAt: number;
+  /** 工具输入参数（§9.5 透传，供动态区 ToolRunning / 历史区 BlockTool 摘要）。 */
+  input?: Record<string, unknown>;
 }
 
 /** 已冻结进 <Static> 的消息（用户输入 / 助手文本 / 工具结果 / 系统警告）。 */

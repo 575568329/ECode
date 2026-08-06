@@ -29,17 +29,20 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
     case 'tool_call_start':
       return {
         ...state,
-        activeTools: [...state.activeTools, { id: event.id, name: event.name, startedAt: Date.now() }],
+        activeTools: [...state.activeTools, { id: event.id, name: event.name, startedAt: Date.now(), input: event.input }],
       };
 
     case 'tool_result': {
       const activeTools = state.activeTools.filter((t) => t.id !== event.id);
+      // §9.5 input 透传：优先用事件自带 input，兜底从 activeTool 回填（容错：事件缺字段时不丢摘要）
+      const fallbackInput = state.activeTools.find((t) => t.id === event.id)?.input;
       const msg: DisplayMessage = {
         kind: 'tool',
         id: nextId(),
         name: event.name,
         content: event.content,
         isError: event.isError,
+        input: event.input ?? fallbackInput,
       };
       return { ...state, activeTools, completedMessages: [...state.completedMessages, msg] };
     }

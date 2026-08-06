@@ -81,13 +81,40 @@ describe('<ChatView />', () => {
     expect(lastFrame()).toContain('bash');
   });
 
-  it('已完成的工具消息走 ToolDone（含 ↳）', () => {
+  it('已完成工具消息走 ToolDone（单行 → Inline 模式）', () => {
     const state = makeState({
       completedMessages: [
         { kind: 'tool', id: 't1', name: 'bash', content: 'done', isError: false },
       ],
     });
     const { lastFrame } = render(<ChatView state={state} />);
-    expect(lastFrame()).toContain(SYMBOLS.result);
+    const f = lastFrame() ?? '';
+    // 单行 bash → Inline 模式，渲染 ✓ 图标 + 工具名 + 摘要
+    expect(f).toContain(SYMBOLS.success);
+    expect(f).toContain('bash');
+    expect(f).toContain('done');
+  });
+
+  it('已完成工具含 input → 历史区显示参数摘要', () => {
+    const state = makeState({
+      completedMessages: [
+        { kind: 'tool', id: 't2', name: 'bash', content: 'line1\nline2\nline3\nline4', isError: false, input: { command: 'npm test' } },
+      ],
+    });
+    const { lastFrame } = render(<ChatView state={state} />);
+    const f = lastFrame() ?? '';
+    // BlockTool 显示参数
+    expect(f).toContain('npm test');
+    // BlockTool 渲染左边框
+    expect(f).toContain('│');
+  });
+
+  it('动态区运行中工具显示参数摘要（Phase 2 input 透传）', () => {
+    const state = makeState({
+      isRunning: true,
+      activeTools: [{ id: 't3', name: 'bash', startedAt: Date.now(), input: { command: 'npm run build' } }],
+    });
+    const { lastFrame } = render(<ChatView state={state} />);
+    expect(lastFrame()).toContain('npm run build');
   });
 });

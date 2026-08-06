@@ -67,3 +67,37 @@ describe('ToolDone', () => {
     expect(f).toContain('... 1 more matches');
   });
 });
+
+describe('ToolDone Inline/Block 双模式（Phase 2）', () => {
+  it('read_file → Inline（无边框字符 │，单行摘要）', () => {
+    const content = 'const x = 1;\nconst y = 2;';
+    const { lastFrame } = render(
+      <ToolDone name="read_file" content={content} isError={false} input={{ path: 'src/index.ts' }} />,
+    );
+    const f = lastFrame() ?? '';
+    // Inline 模式不渲染左边框
+    expect(f).not.toContain('│');
+    // 仍包含摘要和路径参数
+    expect(f).toMatch(/Read \d+ lines/);
+    expect(f).toContain('src/index.ts');
+  });
+
+  it('bash 多行 → Block（含左边框字符 │）', () => {
+    const content = 'line1\nline2\nline3\nline4\nline5';
+    const { lastFrame } = render(
+      <ToolDone name="bash" content={content} isError={false} input={{ command: 'npm test' }} />,
+    );
+    const f = lastFrame() ?? '';
+    // Block 模式渲染左边框
+    expect(f).toContain('│');
+    expect(f).toContain('npm test');
+  });
+
+  it('error → Block（含左边框字符 │，error 图标）', () => {
+    const content = Array.from({ length: 8 }, (_, i) => `err${i}`).join('\n');
+    const { lastFrame } = render(<ToolDone name="bash" content={content} isError={true} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain('│');
+    expect(f).toContain(SYMBOLS.error);
+  });
+});

@@ -13,6 +13,8 @@ import type { StreamState, DisplayMessage, PendingPermission } from './types.js'
 
 export interface UseAgentStreamReturn {
   completedMessages: DisplayMessage[];
+  /** <Static> 重置键（switchSession/clear ++）；ChatView 用作 <Static key> 强制重灌历史。 */
+  staticKey: number;
   streamingText: string | null;
   activeTools: StreamState['activeTools'];
   pendingPermission: PendingPermission | null;
@@ -31,6 +33,10 @@ export interface UseAgentStreamReturn {
   clear: () => void;
   /** 注入系统消息到聊天（/help /cost /sessions 等命令输出用，不送 LLM）。 */
   addMessage: (msg: DisplayMessage) => void;
+  /** 切换到指定会话：重置续接上下文（sessionRef）+ 用历史还原渲染态（/resume 载入用）。 */
+  switchSession: (resume: ResumeContext, history: DisplayMessage[]) => void;
+  /** 当前会话 id（sessionRef.current?.id）；null = 新会话未建立。/resume 过滤当前会话用。 */
+  currentSessionId: () => string | null;
 }
 
 export interface UseAgentStreamOptions {
@@ -42,7 +48,7 @@ export interface UseAgentStreamOptions {
 export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStreamReturn {
   const [state, setState] = useState<StreamState>(initialStreamState);
 
-  // refs（async 闭包内读最新值，§4.3）
+  // refs（async 闘包内读最新值，§4.3）
   const stateRef = useRef(state);
   stateRef.current = state;
   const generationRef = useRef(0);
@@ -139,16 +145,35 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
 
   const clear = useCallback(() => {
     // 清 UI 渲染态 + 重置会话续接真相源 → 下一次 submit 走新会话（新 id、新文件、不带旧历史）。
+    // staticKey++ → <Static> 重 mount（append-only 不自动清空，须 key 变才重灌）。
     sessionRef.current = null;
-    setState((prev) => ({ ...prev, completedMessages: [] }));
+    setState((prev) => ({ ...prev, completedMessages: [], staticKey: prev.staticKey + 1 }));
   }, []);
 
   const addMessage = useCallback((msg: DisplayMessage) => {
     setState((prev) => ({ ...prev, completedMessages: [...prev.completedMessages, msg] }));
   }, []);
 
+  // /resume 载入：把续接真相源换成目标会话（后续 submit 经 resumed 复用同会话）+ 用历史软重置渲染态。
+  // 对齐 clear 的「重置 sessionRef + completedMessages」模式；usage 归零（新会话视角，/cost 不串台）。
+  // staticKey++ → <Static> 重 mount 重灌历史（append-only 否则只追加新项，旧 index 位不刷新）。
+  const switchSession = useCallback((resume: ResumeContext, history: DisplayMessage[]) => {
+    sessionRef.current = resume;
+    setState((prev) => ({
+      ...prev,
+      completedMessages: history,
+      streamingText: null,
+      activeTools: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+      staticKey: prev.staticKey + 1,
+    }));
+  }, []);
+
+  const currentSessionId = useCallback(() => sessionRef.current?.id ?? null, []);
+
   return {
     completedMessages: state.completedMessages,
+    staticKey: state.staticKey,
     streamingText: state.streamingText,
     activeTools: state.activeTools,
     pendingPermission: state.pendingPermission,
@@ -161,5 +186,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     isAllowAlways,
     clear,
     addMessage,
+    switchSession,
+    currentSessionId,
   };
 }

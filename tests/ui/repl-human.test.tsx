@@ -1,0 +1,553 @@
+// REPL 人肉驱动测试：用 simulate() 驱动真实 <App>，按「实际渲染反馈」断言。
+// 覆盖：全部斜杠命令的内容正确性 + 快捷键（↑/↓/backspace/Esc/Ctrl+C）。
+//
+// 为什么 mock runAgentStream 空转、却说反馈「真实」：
+//   斜杠命令（/help /cost /sessions /clear /exit…）和快捷键全在 REPL/UI 层，根本不调 LLM。
+//   被 mock 的只有「LLM 大脑」；reducer / useAgentStream / 组件渲染全是真的——每一帧都是真实输出。
+//   唯一需要 agent 事件的 Esc/Ctrl+C 中断测试，用「yield start 后挂起等 abort」的 mock 造 running 态。
+//
+// ── 编写/审阅本文件测试时的 checklist（防假绿，见 docs/memory/preferences.md）──────────
+//   □ 该功能的「首条 / 零状态」用例有没有？（别只测中途——/help 假绿就是只测了中途）
+//   □ setup（enterConversation 等）是否偷换了被测前提？测试名是否诚实反映前置？
+//   □ 写完后能否破坏对应代码让它变红？（怎么改都绿 = 假绿，去补零状态用例）
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import React from 'react';
+import { App } from '../../src/ui/app.js';
+import { runAgentStream } from '../../src/agent.js';
+import { listSessions, loadSession } from '../../src/session.js';
+import type { ECodeSessionSummary } from '../../src/session.js';
+import { simulate } from './simulate.js';
+
+vi.mock('../../src/agent.js', () => ({
+  runAgentStream: vi.fn(async function* (): AsyncGenerator<never> {
+    // 默认空转；个别用例在 beforeEach / 用例内 mockImplementation 覆盖
+  }),
+}));
+// App 用 listSessions（/resume /sessions）+ loadSession（/resume 载入历史）。
+// agent.ts 虽 import saveSession 但 agent.js 已被整替，不执行 → 此处给 listSessions/loadSession。
+vi.mock('../../src/session.js', () => ({
+  listSessions: vi.fn(() => [] as ECodeSessionSummary[]),
+  loadSession: vi.fn(),
+}));
+
+const mockedRun = runAgentStream as unknown as ReturnType<typeof vi.fn>;
+const mockedList = listSessions as unknown as ReturnType<typeof vi.fn>;
+const mockedLoad = loadSession as unknown as ReturnType<typeof vi.fn>;
+
+const CWD = '/tmp/ecode-human-test';
+
+/**
+ * 先发一条真消息把 <App> 从欢迎屏推进 ChatView（started=true）。
+ * 必要性：handleSubmit 对斜杠命令在 setStarted(true) 之前 return —— 命令作为首条输入时
+ * 卡在欢迎屏，命令输出（addMessage 进 completedMessages）要等 ChatView 挂载后才随 <Static> 渲染。
+ * 这也是真实使用场景（命令一般在中途用），非取巧。
+ */
+async function enterConversation(sim: Awaited<ReturnType<typeof simulate>>): Promise<void> {
+  await sim.type('开始对话');
+  await sim.enter();
+  await sim.waitFor((f) => f.includes('开始对话'));
+}
+
+/** 造一个「已启动并挂起」的 agent：yield start 置 isRunning=true，随后等 abort 信号才结束。 */
+function hangingRun(): void {
+  mockedRun.mockImplementation(async function* (text: string, opts: { signal: AbortSignal }) {
+    yield { type: 'start', task: text, model: 'glm-5.2', provider: 'glm' };
+    await new Promise<void>((_resolve, reject) => {
+      opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+    });
+  });
+}
+
+describe('REPL 人肉驱动 —— 斜杠命令（按实际反馈）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockedRun.mockImplementation(async function* () {});
+    mockedList.mockReturnValue([]);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('/help 输出全部命令 + 描述', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/help');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('可用命令'));
+    const f = sim.plain();
+    expect(f).toMatch(/\/help.*显示可用命令/);
+    expect(f).toMatch(/\/cost.*token/i);
+    expect(f).toMatch(/\/sessions.*会话/);
+    expect(f).toMatch(/\/clear.*清空/);
+  });
+
+  it('/help 作为首条输入（未先进对话）也能显示输出', async () => {
+    // 真实场景：用户一启动就敲 /help。命令分支此前在 setStarted(true) 之前 return，
+    // 欢迎屏期间 ChatView 未挂载 → addMessage 的「可用命令」无处渲染 → 用户看到「没效果」。
+    // 本用例不先 enterConversation，直接首条命令，复现并守住这条路径。
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('/help');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('可用命令'));
+    expect(sim.plain()).toMatch(/\/help.*显示可用命令/);
+  });
+
+  it('/cost 显示 token 用量（空转 agent → 全 0）', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/cost');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('Token 用量'));
+    expect(sim.plain()).toContain('0 输入 / 0 输出 (0 总计)');
+  });
+
+  it('/sessions 无会话 → 提示暂无', async () => {
+    mockedList.mockReturnValue([]);
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/sessions');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('暂无历史会话'));
+  });
+
+  it('/sessions 单条会话 → 列出并计数 1（含短 id）', async () => {
+    mockedList.mockReturnValue([
+      {
+        id: 'abcdef1234567890',
+        task: '写快排',
+        model: 'glm-5.2',
+        createdAt: '',
+        updatedAt: '',
+        stats: { rounds: 3, compressed: false, toolCalls: 2 },
+      },
+    ]);
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/sessions');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('历史会话'));
+    const f = sim.plain();
+    expect(f).toContain('写快排');
+    expect(f).toContain('(glm-5.2, 3轮)');
+    expect(f).toContain('共 1 个会话');
+    expect(f).toContain('abcdef12'); // 短 id（UUID 前 8 位）
+  });
+
+  it('/sessions 超 10 条 → 截断前 10 + 总数 footer', async () => {
+    const many: ECodeSessionSummary[] = Array.from({ length: 12 }, (_, i) => ({
+      id: `s${i}`,
+      task: `任务${i}`,
+      model: 'glm-5.2',
+      createdAt: '',
+      updatedAt: '',
+      stats: { rounds: 1, compressed: false, toolCalls: 0 },
+    }));
+    mockedList.mockReturnValue(many);
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/sessions');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('历史会话'));
+    const f = sim.plain();
+    expect(f).toContain('任务0'); // 首条在
+    expect(f).not.toContain('任务11'); // 第 12 条被截断
+    expect(f).toContain('共 12 个会话(显示前 10)');
+  });
+
+  it('/clear 被识别分发，清空后仍能正常收新消息', async () => {
+    // 注意：<Static> 是 append-only（写入 stdout 后不再 diff，chat-view.tsx:82 注释明说）。
+    // 所以 /clear 清空 completedMessages 后「旧消息从帧消失」在 ink-testing-library 里观测不到
+    // （现有 app.test.tsx 的 /clear 也只用 toBeDefined() 回避同一问题）。
+    // 这里测可观测的部分：命令被识别分发（无崩溃）+ 清空后流健康（新消息能落地）。
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('待清除');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('待清除'));
+    await sim.type('/clear');
+    await sim.enter();
+    await sim.type('清除后新消息');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('清除后新消息'));
+  });
+
+  it('/model /compact → 尚未实现 提示（/resume 已实现，见方向 C 用例）', async () => {
+    for (const cmd of ['model', 'compact']) {
+      const sim = simulate(<App cwd={CWD} />);
+      await enterConversation(sim);
+      await sim.type(`/${cmd}`);
+      await sim.enter();
+      await sim.waitFor((f) => f.includes('尚未实现'));
+      expect(sim.plain()).toContain(`/${cmd}`);
+    }
+  });
+
+  it('/exit → process.exit', async () => {
+    vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('EXIT');
+    }) as never);
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('/exit');
+    await expect(sim.enter()).rejects.toThrow('EXIT');
+  });
+
+  it('未知命令 /foobar → 静默忽略（无落地、无崩溃）', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('/foobar');
+    await sim.enter();
+    await sim.waitFor(() => true);
+    // 未送 LLM、未落地消息：帧里看不到 /foobar（InputBar 提交后已清空）
+    expect(sim.plain()).not.toContain('/foobar');
+  });
+});
+
+describe('REPL 人肉驱动 —— 快捷键（按实际反馈）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockedRun.mockImplementation(async function* () {});
+    mockedList.mockReturnValue([]);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('backspace 删除末字符', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('abc');
+    await sim.backspace();
+    const f = sim.plain();
+    expect(f).toContain('ab');
+    expect(f).not.toMatch(/abc/);
+  });
+
+  it('↑ 用历史替换当前草稿（草稿消失证明 ↑ 生效）', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('已提交');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('已提交'));
+    await sim.type('草稿未提交'); // 仅在输入栏，未提交
+    await sim.up(); // ↑ 调出历史 → 输入栏切到「已提交」，草稿隐藏
+    await sim.waitFor((f) => !f.includes('草稿未提交'));
+  });
+
+  it('↓ 回到草稿（草稿重新出现）', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('已提交');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('已提交'));
+    await sim.type('草稿'); // 草稿
+    await sim.up(); // → 显示历史，草稿隐藏
+    await sim.waitFor((f) => !f.includes('草稿'));
+    await sim.down(); // → 回到草稿
+    await sim.waitFor((f) => f.includes('草稿'));
+  });
+
+  it('Esc 中断运行中流（isRunning→false，输入栏恢复）', async () => {
+    hangingRun();
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('跑起来');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('interrupt')); // isRunning=true → InputBar 显 disabled
+    await sim.esc();
+    await sim.waitFor((f) => !f.includes('interrupt')); // abort → 恢复输入栏
+  });
+
+  it('Ctrl+C 单击中断运行中流', async () => {
+    hangingRun();
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('跑起来');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('interrupt'));
+    await sim.ctrlC();
+    await sim.waitFor((f) => !f.includes('interrupt'));
+  });
+
+  it('Ctrl+C 双击 → process.exit', async () => {
+    vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('EXIT');
+    }) as never);
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.ctrlC(); // 单击：仅记退出窗口
+    await expect(sim.ctrlC()).rejects.toThrow('EXIT'); // 双击：退出
+  });
+});
+
+describe('REPL 人肉驱动 —— 斜杠补全 picker（方向 A）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockedRun.mockImplementation(async function* () {});
+    mockedList.mockReturnValue([]);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // 判断 picker 候选用 SLASH_COMMANDS 的描述词（如「显示可用命令」「清空对话历史」），
+  // 不用 /help 等——欢迎屏自带命令列表也含 /help，会误判。
+  // （防假绿：断言要命中 picker 独有物。）
+  // 零状态用例（防假绿第 2 条）：首条即 /，纯 InputBar 行为，不 enterConversation。
+
+  it('输 / 显示命令候选（首条零状态）', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('/');
+    await sim.waitFor((f) => f.includes('显示可用命令')); // help 候选
+    const f = sim.plain();
+    expect(f).toContain('显示可用命令'); // help
+    expect(f).toContain('清空对话历史'); // clear
+    expect(f).toContain('显示当前会话 token 用量'); // cost
+  });
+
+  it('前缀过滤 /c → 只剩 clear/cost/compact', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('/c');
+    await sim.waitFor((f) => f.includes('清空对话历史'));
+    const f = sim.plain();
+    expect(f).toContain('清空对话历史'); // clear
+    expect(f).toContain('显示当前会话 token 用量'); // cost
+    expect(f).toContain('手动触发上下文压缩'); // compact
+    expect(f).not.toContain('显示可用命令'); // help 被 /c 过滤掉
+  });
+
+  it('无匹配 /foo → 不显示候选', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('/foo');
+    await sim.waitFor(() => true);
+    expect(sim.plain()).not.toContain('显示可用命令');
+    expect(sim.plain()).not.toContain('清空对话历史');
+  });
+
+  it('带参 /clear（空格）→ 不显示候选', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('/clear ');
+    await sim.waitFor(() => true);
+    // 带空格后 picker 消失：clear 候选描述「清空对话历史」不在（输入行 /clear 本身不含它）
+    expect(sim.plain()).not.toContain('清空对话历史');
+  });
+
+  it('默认选中第一项，↓ 移到第二项（选中指示 ❯）', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('/c'); // 候选 [clear, cost, compact]
+    await sim.waitFor((f) => f.includes('清空对话历史'));
+    expect(sim.plain()).toMatch(/❯\s*\/clear/); // 默认选中 clear
+    await sim.down();
+    await sim.waitFor(() => true);
+    expect(sim.plain()).toMatch(/❯\s*\/cost/); // ↓ 后选中 cost
+    expect(sim.plain()).not.toMatch(/❯\s*\/clear/);
+  });
+
+  it('Enter 直接执行选中命令（/c → ↓ cost → enter → Token 用量）', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/c');
+    await sim.waitFor((f) => f.includes('清空对话历史'));
+    await sim.down(); // 选中 cost
+    await sim.enter(); // 直接执行（不先 Tab）
+    await sim.waitFor((f) => f.includes('Token 用量'));
+    expect(sim.plain()).toContain('0 输入 / 0 输出');
+  });
+
+  it('Esc 关闭 picker 不执行（text 保留、无命令输出）', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('/c');
+    await sim.waitFor((f) => f.includes('清空对话历史'));
+    await sim.esc();
+    await sim.waitFor((f) => !f.includes('清空对话历史')); // 候选消失
+    const f = sim.plain();
+    expect(f).toContain('/c'); // text 保留
+    expect(f).not.toContain('Token 用量'); // 未执行命令
+    expect(f).not.toContain('可用命令');
+  });
+
+  it('非 / 输入不显示候选', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('hello');
+    await sim.waitFor(() => true);
+    const f = sim.plain();
+    expect(f).toContain('hello');
+    expect(f).not.toContain('显示可用命令');
+  });
+
+  it('选中后真执行（/help → enter → 可用命令，防假绿第 3 条）', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/help'); // 唯一匹配，选中
+    await sim.waitFor((f) => f.includes('显示可用命令')); // picker help 候选
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('可用命令')); // 命令真执行
+    expect(sim.plain()).toMatch(/\/help.*显示可用命令/);
+  });
+});
+
+describe('REPL 人肉驱动 —— /resume 会话切换（方向 C）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockedRun.mockImplementation(async function* () {});
+    mockedList.mockReturnValue([]);
+    mockedLoad.mockReset();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // 辅助：让 agent yield completed 设 sessionRef.id（测「过滤当前会话」需当前会话有 id）。
+  function runThatCompletes(sessionId: string): void {
+    mockedRun.mockImplementation(async function* (text: string) {
+      yield { type: 'start', task: text, model: 'glm-5.2', provider: 'glm' };
+      yield {
+        type: 'completed',
+        sessionId,
+        task: text,
+        createdAt: '',
+        messages: [{ role: 'user', content: text }],
+        rounds: 1,
+        reason: 'done',
+      };
+    });
+  }
+
+  // 等 InputBar 从 running 恢复（completed 后 isRunning=false，「interrupt」消失）。
+  async function waitForIdle(sim: Awaited<ReturnType<typeof simulate>>): Promise<void> {
+    await sim.waitFor((f) => !f.includes('interrupt'));
+  }
+
+  it('/resume 无会话 → 提示暂无（不弹 picker）', async () => {
+    mockedList.mockReturnValue([]);
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/resume');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('暂无历史会话'));
+    expect(sim.plain()).not.toContain('恢复会话'); // 未弹 picker
+  });
+
+  it('/resume 过滤当前会话（列表不含当前会话任务，防假绿：真过滤非全显）', async () => {
+    runThatCompletes('current-id');
+    mockedList.mockReturnValue([
+      { id: 'current-id', task: '当前会话任务', model: 'glm-5.2', createdAt: '', updatedAt: '', stats: { rounds: 1, compressed: false, toolCalls: 0 } },
+      { id: 'other-id', task: '历史会话任务', model: 'glm-5.2', createdAt: '', updatedAt: '', stats: { rounds: 2, compressed: false, toolCalls: 0 } },
+    ]);
+    const sim = simulate(<App cwd={CWD} />);
+    await sim.type('任意');
+    await sim.enter();
+    await waitForIdle(sim); // 等 completed 设 sessionRef.id = current-id
+    await sim.type('/resume');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('恢复会话'));
+    const f = sim.plain();
+    expect(f).toContain('历史会话任务'); // other 在列表
+    expect(f).not.toContain('当前会话任务'); // current 被过滤
+  });
+
+  it('/resume 弹选择器 → 显示 task + metadata（模型·轮数·相对时间·短id）', async () => {
+    mockedList.mockReturnValue([
+      { id: 'abcdef1234567890', task: '写快排', model: 'glm-5.2', createdAt: '', updatedAt: new Date(Date.now() - 5 * 60_000).toISOString(), stats: { rounds: 3, compressed: false, toolCalls: 1 } },
+    ]);
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/resume');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('恢复会话'));
+    const f = sim.plain();
+    expect(f).toContain('写快排');
+    expect(f).toContain('glm-5.2');
+    expect(f).toContain('3轮');
+    expect(f).toMatch(/分钟前|刚刚/); // 相对时间
+    // 短 id（UUID 前 8 位）放 metadata 行尾：区分同名会话 + 便于 --resume <id> 定位文件。
+    // 防假绿：前 8 在、尾部不在 → 证明是 slice 截断而非全显。
+    expect(f).toContain('abcdef12');
+    expect(f).not.toContain('34567890');
+  });
+
+  it('↑↓ 循环导航（首项 ↑ 跳末项，对齐 CC use-select-navigation）', async () => {
+    mockedList.mockReturnValue([
+      { id: 's1', task: '任务一', model: 'glm-5.2', createdAt: '', updatedAt: '', stats: { rounds: 1, compressed: false, toolCalls: 0 } },
+      { id: 's2', task: '任务二', model: 'glm-5.2', createdAt: '', updatedAt: '', stats: { rounds: 1, compressed: false, toolCalls: 0 } },
+      { id: 's3', task: '任务三', model: 'glm-5.2', createdAt: '', updatedAt: '', stats: { rounds: 1, compressed: false, toolCalls: 0 } },
+    ]);
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/resume');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('恢复会话'));
+    expect(sim.plain()).toMatch(/❯\s*任务一/); // 默认选中首项
+    await sim.up(); // 首项 ↑ → 末项（循环）
+    await sim.waitFor(() => true);
+    expect(sim.plain()).toMatch(/❯\s*任务三/);
+    expect(sim.plain()).not.toMatch(/❯\s*任务一/);
+  });
+
+  it('Enter 切换 → 历史内容可见（防假绿：真载入，非只关 picker）', async () => {
+    mockedList.mockReturnValue([
+      { id: 's1', task: '历史任务', model: 'glm-5.2', createdAt: '', updatedAt: '', stats: { rounds: 1, compressed: false, toolCalls: 0 } },
+    ]);
+    mockedLoad.mockReturnValue({
+      id: 's1',
+      task: '历史任务',
+      model: 'glm-5.2',
+      createdAt: '',
+      updatedAt: '',
+      messages: [
+        { role: 'user', content: '历史提问' },
+        { role: 'assistant', content: '历史回答' },
+      ],
+      stats: { rounds: 1, compressed: false, toolCalls: 0 },
+    });
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/resume');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('恢复会话'));
+    await sim.enter(); // 选中首项 → 载入
+    await sim.waitFor((f) => f.includes('历史回答'));
+    const f = sim.plain();
+    expect(f).toContain('历史提问');
+    expect(f).toContain('历史回答');
+  });
+
+  it('Esc 取消 → 不切换（loadSession 未调，当前会话不变）', async () => {
+    mockedList.mockReturnValue([
+      { id: 's1', task: '历史任务', model: 'glm-5.2', createdAt: '', updatedAt: '', stats: { rounds: 1, compressed: false, toolCalls: 0 } },
+    ]);
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/resume');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('恢复会话'));
+    await sim.esc();
+    await sim.waitFor((f) => !f.includes('恢复会话'));
+    expect(mockedLoad).not.toHaveBeenCalled();
+  });
+
+  it('切换后发新消息 → runAgentStream 收到 resumed.id=切换的会话（续接真相源，防假绿第3条）', async () => {
+    mockedList.mockReturnValue([
+      { id: 'target-session', task: '历史', model: 'glm-5.2', createdAt: '', updatedAt: '', stats: { rounds: 1, compressed: false, toolCalls: 0 } },
+    ]);
+    mockedLoad.mockReturnValue({
+      id: 'target-session',
+      task: '历史',
+      model: 'glm-5.2',
+      createdAt: '',
+      updatedAt: '',
+      messages: [{ role: 'user', content: '历史提问' }],
+      stats: { rounds: 1, compressed: false, toolCalls: 0 },
+    });
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/resume');
+    await sim.enter();
+    await sim.waitFor((f) => f.includes('恢复会话'));
+    await sim.enter(); // 载入 target-session → switchSession 设 sessionRef
+    await sim.waitFor((f) => f.includes('历史提问'));
+    mockedRun.mockClear(); // 仅看续接这一次调用
+    await sim.type('续接新消息');
+    await sim.enter();
+    await sim.waitFor(() => true);
+    expect(mockedRun).toHaveBeenCalled();
+    const lastCall = mockedRun.mock.calls[mockedRun.mock.calls.length - 1];
+    const opts = lastCall[1] as { resumed?: { id: string } };
+    expect(opts.resumed?.id).toBe('target-session');
+  });
+});

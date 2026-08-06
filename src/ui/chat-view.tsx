@@ -79,7 +79,9 @@ interface ChatViewProps {
 export function ChatView({ state }: ChatViewProps): React.ReactElement {
   return (
     <Box flexDirection="column">
-      <Static items={state.completedMessages}>
+      {/* key=staticKey：switchSession/clear 时 ++ → <Static> 重 mount 重灌历史
+          （<Static> append-only，替换 completedMessages 后须 key 变才重渲染，否则只追加新项）。 */}
+      <Static key={state.staticKey} items={state.completedMessages}>
         {(msg) => <Box key={msg.id}>{renderCompleted(msg)}</Box>}
       </Static>
 

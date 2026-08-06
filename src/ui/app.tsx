@@ -3,6 +3,7 @@
 //
 // 组合关系：
 //   - 无 completedMessages 且未 submit 过 → WelcomeScreen；否则 ChatView
+//   - resumeOpen → SessionPicker（/resume 会话选择，方向 C；Modal 替换 InputBar）
 //   - pendingPermission 挂起 → PermissionDialog（Modal 替换 InputBar，唯一活跃 useInput）
 //   - StatusBar 恒显底部
 import React, { useRef, useState } from 'react';
@@ -13,11 +14,15 @@ import type { LoadStatus } from './welcome-screen.js';
 import { ChatView } from './chat-view.js';
 import { InputBar } from './input-bar.js';
 import { PermissionDialog } from './permission-dialog.js';
+import { SessionPicker } from './session-picker.js';
 import { StatusBar, type StatusBarPhase } from './status-bar.js';
 import { parseUserInput, SLASH_COMMANDS } from '../slash-commands.js';
 import { getContextWindow, getDefaultModel } from '../providers/config.js';
-import { listSessions } from '../session.js';
+import { listSessions, loadSession } from '../session.js';
 import type { ECodeSessionSummary } from '../session.js';
+import { messagesToDisplayMessages } from './messages-to-display.js';
+import { shortSessionId } from './format-session.js';
+import type { ResumeContext } from '../agent.js';
 
 /** 双击 Ctrl+C 退出窗口（ms）：窗口内第二次 Ctrl+C → process.exit。 */
 const DOUBLE_CTRL_C_MS = 2000;
@@ -52,6 +57,10 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
   // 首次 submit 同步清屏（§5.2）：ref 控幂等，必须在 submit 函数体内同步执行，
   // 清掉 WelcomeScreen 残留行，让 ChatView 顶到首行。
   const hasClearedRef = useRef(false);
+  // /resume 会话选择器（方向 C，详设 docs/20260806210000_历史会话切换-详设.md）：
+  // resumeOpen 时 SessionPicker 替换 InputBar（Modal 三元前置）。sessions 已过滤当前会话。
+  const [resumeOpen, setResumeOpen] = useState(false);
+  const [resumeSessions, setResumeSessions] = useState<ECodeSessionSummary[]>([]);
 
   // 默认 loadStatus：CLAUDE.md 不确定时给 null，provider 用 model 推断。
   const status: LoadStatus = loadStatus ?? {
@@ -59,11 +68,12 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
     provider: { ok: true, label: model ?? 'default' },
   };
 
-  // 全局按键（与 InputBar/PermissionDialog 的 useInput 并存；ink 按挂载序分发）：
-  //   Esc → 中断当前流（权限弹窗期让位给 PermissionDialog 的 esc=deny）；
+  // 全局按键（与 InputBar/PermissionDialog/SessionPicker 的 useInput 并存；ink 按挂载序分发）：
+  //   Esc → 中断当前流（权限弹窗/会话选择器期让位：它们 idle 出现，isRunning=false 本不触发，
+  //         !resumeOpen/!pendingPermission 守卫防边角竞态；SessionPicker 的 Esc 走自身 onCancel）；
   //   Ctrl+C → 单击中断 / 双击退出。
   useInput((input, key) => {
-    if (key.escape && api.isRunning && !api.pendingPermission) {
+    if (key.escape && api.isRunning && !api.pendingPermission && !resumeOpen) {
       api.abort();
       return;
     }
@@ -79,23 +89,27 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
 
   const handleSubmit = (text: string) => {
     const parsed = parseUserInput(text);
-    if (parsed.type === 'command') {
-      handleCommand(parsed.name);
-      return;
-    }
     if (parsed.type === 'unknown_command') {
       // 未知斜杠命令：静默忽略（不送 LLM，不落地）
       return;
     }
-    // 纯消息：首次 submit 同步清屏（清掉 WelcomeScreen 残留，§5.2）。
+    // 首次 submit 同步清屏（清掉 WelcomeScreen 残留，§5.2）+ 推进到 ChatView。
+    // 斜杠命令（除 /exit 立即退出）同样需要：否则欢迎屏期间 ChatView 未挂载，
+    // /help /cost /sessions 等 addMessage 输出无处渲染 → 用户看到「命令没效果」。
     // 仅在真实 TTY 清屏，避免污染测试/非交互 stdout。
-    if (!hasClearedRef.current) {
+    const isExit = parsed.type === 'command' && parsed.name === 'exit';
+    if (!isExit && !hasClearedRef.current) {
       if (process.stdout.isTTY) {
         process.stdout.write('\x1b[2J\x1b[H');
       }
       hasClearedRef.current = true;
     }
-    setStarted(true);
+    if (!isExit) setStarted(true);
+
+    if (parsed.type === 'command') {
+      handleCommand(parsed.name);
+      return;
+    }
     api.submit(parsed.text);
   };
 
@@ -129,16 +143,27 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
           api.addMessage({ kind: 'warning', id: `sys-sessions-${Date.now()}`, text: '暂无历史会话。' });
         } else {
           const lines = sessions.slice(0, 10).map(
-            (s, i) => `${i + 1}. ${s.task.slice(0, 40)} (${s.model}, ${s.stats.rounds}轮)`,
+            (s, i) => `${i + 1}. ${s.task.slice(0, 40)} (${s.model}, ${s.stats.rounds}轮) · ${shortSessionId(s.id)}`,
           );
           const footer = sessions.length > 10 ? `\n...共 ${sessions.length} 个会话(显示前 10)` : `\n共 ${sessions.length} 个会话`;
           api.addMessage({ kind: 'warning', id: `sys-sessions-${Date.now()}`, text: `历史会话:\n${lines.join('\n')}${footer}` });
         }
         return;
       }
+      case 'resume': {
+        // 过滤当前会话（对齐 CC filterResumableSessions：当前 session 不在列表，其文件不动）。
+        const currentId = api.currentSessionId();
+        const sessions = listSessions().filter((s) => s.id !== currentId);
+        if (sessions.length === 0) {
+          api.addMessage({ kind: 'warning', id: `sys-resume-${Date.now()}`, text: '暂无历史会话。' });
+          return;
+        }
+        setResumeSessions(sessions);
+        setResumeOpen(true);
+        return;
+      }
       case 'compact':
       case 'model':
-      case 'resume':
         api.addMessage({
           kind: 'warning',
           id: `sys-todo-${Date.now()}`,
@@ -148,6 +173,25 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
       default:
         return;
     }
+  };
+
+  // /resume 选中会话 → 载入历史 + 软重置续接上下文（详设 §3.4：switchSession + 过滤当前会话不丢失）。
+  const handleResumeConfirm = (id: string) => {
+    // 真实终端清屏重画（<Static> append-only：切换会话须清掉旧消息；测试 !isTTY 不执行，不影响断言）。
+    if (process.stdout.isTTY) {
+      process.stdout.write('\x1b[2J\x1b[H');
+    }
+    const session = loadSession(id);
+    const history = messagesToDisplayMessages(session.messages, session.model);
+    const resume: ResumeContext = {
+      id: session.id,
+      task: session.task,
+      createdAt: session.createdAt,
+      messages: session.messages,
+    };
+    api.switchSession(resume, history);
+    setResumeOpen(false);
+    setStarted(true);
   };
 
   // StatusBar 阶段：permission > streaming > exit-window > idle。
@@ -167,7 +211,13 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
         <ChatView state={api} />
       )}
 
-      {api.pendingPermission ? (
+      {resumeOpen ? (
+        <SessionPicker
+          sessions={resumeSessions}
+          onConfirm={handleResumeConfirm}
+          onCancel={() => setResumeOpen(false)}
+        />
+      ) : api.pendingPermission ? (
         <PermissionDialog
           permission={api.pendingPermission}
           onResolve={api.resolvePermission}

@@ -56,6 +56,9 @@ export interface StreamState {
   currentModel: string | null;
   /** 本次 run 起始时间戳（start 事件记录，算 assistant 回复耗时）。null = 尚未 start。 */
   runStartedAt: number | null;
+  /** <Static> 重置键：switchSession/clear 时 ++ → ChatView <Static key> 变 → 重 mount 重灌历史
+   *  （<Static> append-only，切换/清空替换 completedMessages 后须 key 变才重渲染，否则只追加新项）。 */
+  staticKey: number;
 }
 
 export const initialStreamState: StreamState = {
@@ -69,4 +72,5 @@ export const initialStreamState: StreamState = {
   lastCompleted: null,
   currentModel: null,
   runStartedAt: null,
+  staticKey: 0,
 };

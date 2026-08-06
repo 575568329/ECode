@@ -30,6 +30,13 @@ export type DisplayMessage =
       isError: boolean;
       input?: Record<string, unknown>;
     }
+  | {
+      // 折叠组：连续只读工具合并成的单条冻结消息（延迟冻结，详见
+      // docs/20260806220000_折叠组延迟冻结-详设.md）。Ctrl+O pager 展开 tools 看完整内容。
+      kind: 'tool_group';
+      id: string;
+      tools: { name: string; content: string; isError: boolean; input?: Record<string, unknown> }[];
+    }
   | { kind: 'warning'; id: string; text: string }
   | { kind: 'error'; id: string; text: string };
 
@@ -59,6 +66,10 @@ export interface StreamState {
   /** <Static> 重置键：switchSession/clear 时 ++ → ChatView <Static key> 变 → 重 mount 重灌历史
    *  （<Static> append-only，切换/清空替换 completedMessages 后须 key 变才重渲染，否则只追加新项）。 */
   staticKey: number;
+  /** 延迟冻结：挂起的连续只读工具（未 flush 进 Static，动态区实时显示折叠摘要）。
+   *  组被破坏(text_delta/非只读 tool/completed/warning/error)时合并成 tool_group flush。
+   *  详见 docs/20260806220000_折叠组延迟冻结-详设.md。 */
+  pendingReadSearch: DisplayMessage[];
 }
 
 export const initialStreamState: StreamState = {
@@ -73,4 +84,5 @@ export const initialStreamState: StreamState = {
   currentModel: null,
   runStartedAt: null,
   staticKey: 0,
+  pendingReadSearch: [],
 };

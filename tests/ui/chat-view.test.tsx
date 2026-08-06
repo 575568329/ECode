@@ -10,6 +10,7 @@ function makeState(over: Partial<UseAgentStreamReturn> = {}): UseAgentStreamRetu
     completedMessages: [],
     streamingText: null,
     activeTools: [],
+    pendingReadSearch: [],
     pendingPermission: null,
     usage: { inputTokens: 0, outputTokens: 0 },
     isRunning: false,
@@ -116,5 +117,55 @@ describe('<ChatView />', () => {
     });
     const { lastFrame } = render(<ChatView state={state} />);
     expect(lastFrame()).toContain('npm run build');
+  });
+
+  it('折叠组 tool_group → 单行摘要（✓ + search + Read N files + ctrl+o）', () => {
+    const state = makeState({
+      completedMessages: [
+        {
+          kind: 'tool_group', id: 'g1',
+          tools: [
+            { name: 'read_file', content: 'a', isError: false },
+            { name: 'read_file', content: 'b', isError: false },
+            { name: 'read_file', content: 'c', isError: false },
+          ],
+        },
+      ],
+    });
+    const { lastFrame } = render(<ChatView state={state} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain(SYMBOLS.success);
+    expect(f).toContain('Read 3 files');
+    expect(f).toContain('ctrl+o');
+  });
+
+  it('折叠组含错误 → 渲染 ✗ 图标', () => {
+    const state = makeState({
+      completedMessages: [
+        {
+          kind: 'tool_group', id: 'g2',
+          tools: [
+            { name: 'read_file', content: 'a', isError: false },
+            { name: 'grep', content: 'err', isError: true },
+          ],
+        },
+      ],
+    });
+    const { lastFrame } = render(<ChatView state={state} />);
+    expect(lastFrame()).toContain(SYMBOLS.error);
+  });
+
+  it('动态区挂起只读组 → 实时合并摘要（· · · + Read N files）', () => {
+    const state = makeState({
+      isRunning: true,
+      pendingReadSearch: [
+        { kind: 'tool', id: 'p1', name: 'read_file', content: 'a', isError: false },
+        { kind: 'tool', id: 'p2', name: 'read_file', content: 'b', isError: false },
+      ],
+    });
+    const { lastFrame } = render(<ChatView state={state} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain('Read 2 files');
+    expect(f).toContain('· · ·');
   });
 });

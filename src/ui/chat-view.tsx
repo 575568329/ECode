@@ -5,10 +5,18 @@ import React from 'react';
 import { Static, Box, Text } from 'ink';
 import { T, SYMBOLS } from './theme.js';
 import { MarkdownRenderer } from './markdown.js';
-import { ToolRunning, ToolDone, summarizeArg } from './tool-panel.js';
+import { ToolRunning, ToolDone, InlineTool, summarizeArg } from './tool-panel.js';
+import { summarizeGroup } from './read-search-group.js';
 import { leftBorder } from './borders.js';
 import type { UseAgentStreamReturn } from './use-agent-stream.js';
 import type { DisplayMessage } from './types.js';
+
+/** pendingReadSearch 收窄到 tool 取 name 供合并摘要（reducer 保证只挂 kind:tool）。 */
+function pendingToolNames(msgs: DisplayMessage[]): { name: string }[] {
+  return msgs
+    .filter((m): m is Extract<DisplayMessage, { kind: 'tool' }> => m.kind === 'tool')
+    .map((t) => ({ name: t.name }));
+}
 
 /** 单条已完成消息 → React 节点（供 <Static>）。 */
 function renderCompleted(msg: DisplayMessage): React.ReactNode {
@@ -50,6 +58,21 @@ function renderCompleted(msg: DisplayMessage): React.ReactNode {
           <ToolDone name={msg.name} content={msg.content} isError={msg.isError} input={msg.input} />
         </Box>
       );
+    case 'tool_group': {
+      // 连续只读工具合并的折叠摘要行（延迟冻结 flush 进 Static）。
+      // ✓/✗ + search + "Read N files · … (ctrl+o 展开)"；Ctrl+O pager 展开 tools 看完整内容。
+      const hasError = msg.tools.some((t) => t.isError);
+      return (
+        <Box paddingLeft={4}>
+          <InlineTool
+            name="search"
+            isError={hasError}
+            summary={`${summarizeGroup(msg.tools)}  (ctrl+o 展开)`}
+            arg=""
+          />
+        </Box>
+      );
+    }
     case 'warning':
       // 系统消息左边框（M3.5 Phase 1，§8.4-2.1）：与角色消息同构区分。
       return (
@@ -83,8 +106,8 @@ export function ChatView({ state }: ChatViewProps): React.ReactElement {
         {(msg) => <Box key={msg.id}>{renderCompleted(msg)}</Box>}
       </Static>
 
-      {/* 动态区：流式文本 + 运行中工具 */}
-      {(state.streamingText || state.activeTools.length > 0) && (
+      {/* 动态区：流式文本 + 运行中工具 + 挂起的只读折叠组（延迟冻结） */}
+      {(state.streamingText || state.activeTools.length > 0 || state.pendingReadSearch.length > 0) && (
         <Box flexDirection="column" paddingLeft={4}>
           {state.streamingText ? (
             <Text>
@@ -96,6 +119,10 @@ export function ChatView({ state }: ChatViewProps): React.ReactElement {
           {state.activeTools.map((t) => (
             <ToolRunning key={t.id} name={t.name} arg={summarizeArg(t.name, t.input)} />
           ))}
+          {/* 挂起的连续只读组：实时合并摘要（muted 灰 + ··· 进行中感），组破坏时 flush 进 Static */}
+          {state.pendingReadSearch.length > 0 ? (
+            <Text color={T.muted}>· · · {summarizeGroup(pendingToolNames(state.pendingReadSearch))} …</Text>
+          ) : null}
         </Box>
       )}
     </Box>

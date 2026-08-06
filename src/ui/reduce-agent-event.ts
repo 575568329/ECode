@@ -2,10 +2,40 @@
 // 无 React 依赖，核心状态转换全在此可测。useAgentStream hook 包它接 React。
 import type { AgentEvent } from '../agent-events.js';
 import { initialStreamState, type StreamState, type DisplayMessage } from './types.js';
+import { isReadSearchTool } from './read-search-group.js';
 
 /** 单调递增 id 生成（reducer 内部用，保证 DisplayMessage 稳定 key）。 */
 let msgSeq = 0;
 const nextId = (): string => `m${++msgSeq}`;
+
+/**
+ * 延迟冻结：把挂起的连续只读组合并(多条)/ 直通(单条)后追加进 completedMessages，清空 pending。
+ * 纯函数，导出供单测。空 pending 无操作；单条直通(避免 "Read 1 files" 尴尬文案)；
+ * 多条合并成 tool_group(Ctrl+O pager 展开 tools 看完整内容)。
+ * 详见 docs/20260806220000_折叠组延迟冻结-详设.md。
+ */
+export function flushReadSearch(state: StreamState): Pick<StreamState, 'completedMessages' | 'pendingReadSearch'> {
+  const pending = state.pendingReadSearch;
+  if (pending.length === 0) {
+    return { completedMessages: state.completedMessages, pendingReadSearch: [] };
+  }
+  if (pending.length === 1) {
+    // 单条：不合并，直接进 Static（避免 "Read 1 files"）
+    return { completedMessages: [...state.completedMessages, pending[0]], pendingReadSearch: [] };
+  }
+  const tools = pending
+    .filter((m): m is Extract<DisplayMessage, { kind: 'tool' }> => m.kind === 'tool')
+    .map((t) => ({ name: t.name, content: t.content, isError: t.isError, input: t.input }));
+  const group: DisplayMessage = { kind: 'tool_group', id: nextId(), tools };
+  return { completedMessages: [...state.completedMessages, group], pendingReadSearch: [] };
+}
+
+/** 若有挂起的只读组则 flush 合并，返回新 state（无挂起原样返回）。破坏时机统一入口。 */
+function flushIfNeeded(state: StreamState): StreamState {
+  if (state.pendingReadSearch.length === 0) return state;
+  const flushed = flushReadSearch(state);
+  return { ...state, completedMessages: flushed.completedMessages, pendingReadSearch: flushed.pendingReadSearch };
+}
 
 /**
  * 把一个 AgentEvent 折进 state，返回新 state（不可变）。
@@ -23,8 +53,11 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
       // 记录 currentModel + runStartedAt：assistant MetaLine（模型名 / 耗时）的数据源。
       return { ...state, isRunning: true, error: null, currentModel: event.model, runStartedAt: Date.now() };
 
-    case 'text_delta':
-      return { ...state, streamingText: (state.streamingText ?? '') + event.text };
+    case 'text_delta': {
+      // 助手开始说话 → 破坏连续只读组（延迟冻结 flush），再累加 streamingText
+      const s = flushIfNeeded(state);
+      return { ...s, streamingText: (s.streamingText ?? '') + event.text };
+    }
 
     case 'tool_call_start':
       return {
@@ -44,7 +77,13 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
         isError: event.isError,
         input: event.input ?? fallbackInput,
       };
-      return { ...state, activeTools, completedMessages: [...state.completedMessages, msg] };
+      // 延迟冻结：只读工具 → 挂起 pendingReadSearch（不进 Static，动态区实时显示合并摘要）；
+      // 非只读 → 先 flush 挂起组（它破坏了连续只读），再把这个工具进 Static。
+      if (isReadSearchTool(event.name, msg.input)) {
+        return { ...state, activeTools, pendingReadSearch: [...state.pendingReadSearch, msg] };
+      }
+      const s = flushIfNeeded(state);
+      return { ...s, activeTools, completedMessages: [...s.completedMessages, msg] };
     }
 
     case 'permission_request':
@@ -58,20 +97,21 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
       };
 
     case 'completed': {
-      const msgs = [...state.completedMessages];
-      if (state.streamingText) {
+      const s = flushIfNeeded(state);
+      const msgs = [...s.completedMessages];
+      if (s.streamingText) {
         // 落地助手文本时附带 MetaLine 数据：模型名 + 本轮耗时（start→completed）。
         msgs.push({
           kind: 'assistant',
           id: nextId(),
-          text: state.streamingText,
-          model: state.currentModel ?? undefined,
+          text: s.streamingText,
+          model: s.currentModel ?? undefined,
           durationMs:
-            state.runStartedAt != null ? Date.now() - state.runStartedAt : undefined,
+            s.runStartedAt != null ? Date.now() - s.runStartedAt : undefined,
         });
       }
       return {
-        ...state,
+        ...s,
         completedMessages: msgs,
         streamingText: null,
         isRunning: false,
@@ -88,19 +128,23 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
         },
       };
 
-    case 'warning':
+    case 'warning': {
+      const s = flushIfNeeded(state);
       return {
-        ...state,
-        completedMessages: [...state.completedMessages, { kind: 'warning', id: nextId(), text: event.message }],
+        ...s,
+        completedMessages: [...s.completedMessages, { kind: 'warning', id: nextId(), text: event.message }],
       };
+    }
 
-    case 'error':
+    case 'error': {
+      const s = flushIfNeeded(state);
       return {
-        ...state,
+        ...s,
         isRunning: false,
         error: event.error,
-        completedMessages: [...state.completedMessages, { kind: 'error', id: nextId(), text: event.error }],
+        completedMessages: [...s.completedMessages, { kind: 'error', id: nextId(), text: event.error }],
       };
+    }
 
     default: {
       // exhaustive（noFallthroughCasesInSwitch + 类型守卫）

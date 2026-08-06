@@ -17,6 +17,8 @@ export interface UseAgentStreamReturn {
   staticKey: number;
   streamingText: string | null;
   activeTools: StreamState['activeTools'];
+  /** 延迟冻结：挂起的连续只读工具（动态区实时显示合并摘要，组破坏时 flush 进 Static）。 */
+  pendingReadSearch: DisplayMessage[];
   pendingPermission: PendingPermission | null;
   usage: StreamState['usage'];
   isRunning: boolean;
@@ -147,7 +149,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     // 清 UI 渲染态 + 重置会话续接真相源 → 下一次 submit 走新会话（新 id、新文件、不带旧历史）。
     // staticKey++ → <Static> 重 mount（append-only 不自动清空，须 key 变才重灌）。
     sessionRef.current = null;
-    setState((prev) => ({ ...prev, completedMessages: [], staticKey: prev.staticKey + 1 }));
+    setState((prev) => ({ ...prev, completedMessages: [], pendingReadSearch: [], staticKey: prev.staticKey + 1 }));
   }, []);
 
   const addMessage = useCallback((msg: DisplayMessage) => {
@@ -164,6 +166,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
       completedMessages: history,
       streamingText: null,
       activeTools: [],
+      pendingReadSearch: [],
       usage: { inputTokens: 0, outputTokens: 0 },
       staticKey: prev.staticKey + 1,
     }));
@@ -176,6 +179,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     staticKey: state.staticKey,
     streamingText: state.streamingText,
     activeTools: state.activeTools,
+    pendingReadSearch: state.pendingReadSearch,
     pendingPermission: state.pendingPermission,
     usage: state.usage,
     isRunning: state.isRunning,

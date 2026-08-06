@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { reduceAgentEvent, initialStreamState } from '../../src/ui/reduce-agent-event.js';
+import { reduceAgentEvent, initialStreamState, flushReadSearch } from '../../src/ui/reduce-agent-event.js';
 import type { AgentEvent } from '../../src/agent-events.js';
+import type { DisplayMessage } from '../../src/ui/types.js';
 
 describe('reduceAgentEvent', () => {
   it('start → isRunning=true', () => {
@@ -116,7 +117,9 @@ describe('reduceAgentEvent', () => {
       type: 'tool_call_start',
       id: 't1',
       name: 'bash',
-      input: { command: 'ls' },
+      // 用非搜索类命令：折叠延迟冻结会把搜索类 bash(如 ls)挂起进 pending，
+      // 此处专测 input 补全，故避开挂起走 completedMessages 旧路径。
+      input: { command: 'npm run build' },
     });
     s = reduceAgentEvent(s, {
       type: 'tool_result',
@@ -127,7 +130,7 @@ describe('reduceAgentEvent', () => {
       // 故意不传 input：reducer 应从 activeTool 回填
     });
     const tool = s.completedMessages.find((m) => m.kind === 'tool');
-    expect(tool?.kind === 'tool' && tool.input).toEqual({ command: 'ls' });
+    expect(tool?.kind === 'tool' && tool.input).toEqual({ command: 'npm run build' });
   });
 
   it('permission_request → pendingPermission 挂起', () => {
@@ -188,5 +191,157 @@ describe('reduceAgentEvent', () => {
     reduceAgentEvent(before, { type: 'text_delta', text: 'x' });
     expect(before.streamingText).toBeNull(); // 原对象未被改
     expect(before.completedMessages).toHaveLength(0);
+  });
+});
+
+// ---- 折叠组延迟冻结（reduce-agent-event 挂起连续只读工具，破坏时合并 flush）----
+// 详见 docs/20260806220000_折叠组延迟冻结-详设.md
+
+describe('flushReadSearch（延迟冻结合并纯函数）', () => {
+  it('空 pending → 无操作', () => {
+    const r = flushReadSearch(initialStreamState);
+    expect(r.completedMessages).toEqual([]);
+    expect(r.pendingReadSearch).toEqual([]);
+  });
+
+  it('单条只读 → 直通进 completedMessages（不合并，避免 "Read 1 files"）', () => {
+    const tool: DisplayMessage = { kind: 'tool', id: 't1', name: 'read_file', content: 'x', isError: false };
+    const r = flushReadSearch({ ...initialStreamState, pendingReadSearch: [tool] });
+    expect(r.completedMessages).toEqual([tool]);
+    expect(r.pendingReadSearch).toEqual([]);
+  });
+
+  it('多条只读 → 合并成 tool_group（tools 保留 name/content）', () => {
+    const tools: DisplayMessage[] = [
+      { kind: 'tool', id: 't1', name: 'read_file', content: 'a', isError: false },
+      { kind: 'tool', id: 't2', name: 'read_file', content: 'b', isError: false },
+      { kind: 'tool', id: 't3', name: 'grep', content: 'c', isError: false },
+    ];
+    const r = flushReadSearch({ ...initialStreamState, pendingReadSearch: tools });
+    expect(r.completedMessages).toHaveLength(1);
+    expect(r.pendingReadSearch).toEqual([]);
+    const group = r.completedMessages[0];
+    expect(group.kind).toBe('tool_group');
+    if (group.kind === 'tool_group') {
+      expect(group.tools).toHaveLength(3);
+      expect(group.tools.map((t) => t.name)).toEqual(['read_file', 'read_file', 'grep']);
+      expect(group.tools.map((t) => t.content)).toEqual(['a', 'b', 'c']);
+      expect(group.id).toMatch(/^m\d+$/);
+    }
+  });
+
+  it('已有 completedMessages → group 追加在后（不丢历史）', () => {
+    const prior: DisplayMessage = { kind: 'tool', id: 'e1', name: 'edit_file', content: 'd', isError: false };
+    const r = flushReadSearch({
+      ...initialStreamState,
+      completedMessages: [prior],
+      pendingReadSearch: [
+        { kind: 'tool', id: 't1', name: 'read_file', content: 'a', isError: false },
+        { kind: 'tool', id: 't2', name: 'read_file', content: 'b', isError: false },
+      ],
+    });
+    expect(r.completedMessages).toHaveLength(2);
+    expect(r.completedMessages[0]).toEqual(prior);
+    expect(r.completedMessages[1].kind).toBe('tool_group');
+  });
+});
+
+describe('延迟冻结：tool_result 挂起 + 破坏时机 flush', () => {
+  it('read_file result → 挂起 pendingReadSearch，不进 completedMessages', () => {
+    let s = reduceAgentEvent(initialStreamState, {
+      type: 'tool_call_start', id: 't1', name: 'read_file', input: { path: 'a.ts' },
+    });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't1', name: 'read_file', content: 'a', isError: false });
+    expect(s.pendingReadSearch).toHaveLength(1);
+    expect(s.completedMessages.find((m) => m.kind === 'tool')).toBeUndefined();
+  });
+
+  it('连续 2 个 read_file → 挂起累加（pending=2，completed 仍无 tool）', () => {
+    let s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't1', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't1', name: 'read_file', content: 'a', isError: false });
+    s = reduceAgentEvent(s, { type: 'tool_call_start', id: 't2', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't2', name: 'read_file', content: 'b', isError: false });
+    expect(s.pendingReadSearch).toHaveLength(2);
+    expect(s.completedMessages.find((m) => m.kind === 'tool')).toBeUndefined();
+  });
+
+  it('bash 搜索类(ls)→ 挂起；非搜索(npm test)→ 进 completedMessages', () => {
+    // 搜索类 ls → 挂起
+    let s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't1', name: 'bash', input: { command: 'ls' } });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't1', name: 'bash', content: 'x', isError: false, input: { command: 'ls' } });
+    expect(s.pendingReadSearch).toHaveLength(1);
+    expect(s.completedMessages.find((m) => m.kind === 'tool')).toBeUndefined();
+    // 非搜索 npm test → 进 completedMessages
+    s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't2', name: 'bash', input: { command: 'npm test' } });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't2', name: 'bash', content: 'y', isError: false, input: { command: 'npm test' } });
+    expect(s.pendingReadSearch).toHaveLength(0);
+    expect(s.completedMessages.find((m) => m.kind === 'tool')).toBeDefined();
+  });
+
+  it('非只读 edit_file result → 先 flush 挂起组，edit 也进 completedMessages', () => {
+    let s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't1', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't1', name: 'read_file', content: 'a', isError: false });
+    s = reduceAgentEvent(s, { type: 'tool_call_start', id: 't2', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't2', name: 'read_file', content: 'b', isError: false });
+    // pending=2，edit 破坏组
+    s = reduceAgentEvent(s, { type: 'tool_call_start', id: 't3', name: 'edit_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't3', name: 'edit_file', content: 'diff', isError: false });
+    expect(s.pendingReadSearch).toHaveLength(0);
+    expect(s.completedMessages.find((m) => m.kind === 'tool_group')).toBeDefined();
+    expect(s.completedMessages.find((m) => m.kind === 'tool' && m.name === 'edit_file')).toBeDefined();
+  });
+
+  it('text_delta 破坏挂起组 → flush 成 tool_group + 累加 streamingText', () => {
+    let s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't1', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't1', name: 'read_file', content: 'a', isError: false });
+    s = reduceAgentEvent(s, { type: 'tool_call_start', id: 't2', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't2', name: 'read_file', content: 'b', isError: false });
+    s = reduceAgentEvent(s, { type: 'text_delta', text: '答复' });
+    expect(s.pendingReadSearch).toHaveLength(0);
+    expect(s.completedMessages.find((m) => m.kind === 'tool_group')).toBeDefined();
+    expect(s.streamingText).toBe('答复');
+  });
+
+  it('单条只读 + text_delta → 直通进 completed（不合并成 group，避免 "Read 1 files"）', () => {
+    let s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't1', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't1', name: 'read_file', content: 'a', isError: false });
+    s = reduceAgentEvent(s, { type: 'text_delta', text: '答复' });
+    expect(s.pendingReadSearch).toHaveLength(0);
+    expect(s.completedMessages.find((m) => m.kind === 'tool')).toBeDefined();
+    expect(s.completedMessages.find((m) => m.kind === 'tool_group')).toBeUndefined();
+  });
+
+  it('completed 破坏挂起组 → group 在前，assistant 在后', () => {
+    let s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't1', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't1', name: 'read_file', content: 'a', isError: false });
+    s = reduceAgentEvent(s, { type: 'tool_call_start', id: 't2', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't2', name: 'read_file', content: 'b', isError: false });
+    s = reduceAgentEvent(s, { type: 'text_delta', text: '答复' });
+    s = reduceAgentEvent(s, { type: 'completed', rounds: 1, toolCalls: 2, reason: 'done' });
+    const kinds = s.completedMessages.map((m) => m.kind);
+    expect(kinds).toContain('tool_group');
+    expect(kinds).toContain('assistant');
+    expect(kinds.indexOf('tool_group')).toBeLessThan(kinds.indexOf('assistant'));
+  });
+
+  it('warning 破坏挂起组', () => {
+    let s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't1', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't1', name: 'read_file', content: 'a', isError: false });
+    s = reduceAgentEvent(s, { type: 'tool_call_start', id: 't2', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't2', name: 'read_file', content: 'b', isError: false });
+    s = reduceAgentEvent(s, { type: 'warning', message: '压缩' });
+    expect(s.pendingReadSearch).toHaveLength(0);
+    expect(s.completedMessages.find((m) => m.kind === 'tool_group')).toBeDefined();
+    expect(s.completedMessages.find((m) => m.kind === 'warning')).toBeDefined();
+  });
+
+  it('error 破坏挂起组', () => {
+    let s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't1', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't1', name: 'read_file', content: 'a', isError: false });
+    s = reduceAgentEvent(s, { type: 'tool_call_start', id: 't2', name: 'read_file' });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't2', name: 'read_file', content: 'b', isError: false });
+    s = reduceAgentEvent(s, { type: 'error', error: 'boom' });
+    expect(s.pendingReadSearch).toHaveLength(0);
+    expect(s.completedMessages.find((m) => m.kind === 'tool_group')).toBeDefined();
   });
 });

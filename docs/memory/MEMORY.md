@@ -36,4 +36,5 @@
 
 - [project.md](./project.md) — 项目性质 / 架构骨架 / 里程碑进度 / 当前焦点
 - [decisions.md](./decisions.md) — 决策：#001 token 计数 ai-tokenizer→length/4 / #002 Session 同 id 覆盖（剔除 -2）
-- [debugging.md](./debugging.md) — 踩坑：#001 env 不覆盖 / #002 env -i 丢 TMPDIR / #003 fast-glob ESM / #004 LLM 知识失真 / #005 上下文超限恢复 / #006 GLM 端点 / #007 Session ID 碰撞→UUID / #008 全功能日志覆盖原则
+- [debugging.md](./debugging.md) — 踩坑：#001 env 不覆盖 / #002 env -i 丢 TMPDIR / #003 fast-glob ESM / #004 LLM 知识失真 / #005 上下文超限恢复 / #006 GLM 端点 / #007 Session ID 碰撞→UUID / #008 全功能日志覆盖 / **#009 `<Static>` append-only→换 key 重 mount**
+- [preferences.md](./preferences.md) — 偏好：防假绿 5 条 testing 约定（L2 ink 测试必守）

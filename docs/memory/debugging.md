@@ -345,3 +345,53 @@ function generateSessionId(): string { return randomUUID(); }
 - 触发原因：#007（session 落盘零日志，排查耗时远超修复耗时）
 - 当前日志实现：`src/runtime-logger.ts`（`initRuntimeLog` / `logApiRequest` / `logApiResponse` / `logToolExecution` / `logError` / `logSessionSave` / `finalizeRuntimeLog`）
 - 待补日志的模块：`context-manager.ts`（压缩决策）、`providers/`（端点选择）、`ui/app.tsx`（REPL 交互）
+
+---
+
+## #009 ink `<Static>` 是 append-only——切换/清空会话后历史不刷新
+
+**日期**：2026-08-06
+**影响**：`/resume` 切换会话（或 `/clear`）后，`<Static>` 区只追加新项，**旧 index 位的历史不刷新**——表现为「切到新会话，上一会话的旧消息还赖着」「clear 后第一条新消息出现在旧消息下面」。
+
+### 现象
+
+C 方向 `/resume` 切换会话测试，`switchSession` 用新会话历史**替换** `completedMessages` 后，末帧只见 `历史回答`（index 1）出现，`历史提问`（index 0）**没渲染**。
+
+### 根因
+
+ink 的 `<Static items={...}>` 语义是 **append-only 一次性写 stdout**：
+
+- 它**记录已写出的 item index 数量**（不是内容）。
+- items 数组**整体替换**时，`<Static>` 只认「index ≥ 上次写出数量」的项为新项去追加；**旧 index 位不重新 diff、不重新渲染**。
+- 「替换整个数组」对它不是「清空重画」，而是「在已有项后面接着加」。所以 `completedMessages` 从 `[A,B]` 换成 `[C,D]`，它不会画 C/D——因为 index 0/1「已经写过」。
+
+这是性能优化（O(n)→O(1)，每条只写一次不 diff）的代价：**它假定 items 是单调增长的日志流**，不支持「整个数组换掉」。
+
+### 解决：用 key 强制重 mount
+
+加一个 `staticKey: number` 到 `StreamState`，在**任何替换 completedMessages 的地方**自增，用作 `<Static key>`:
+
+```tsx
+// use-agent-stream.ts：switchSession / clear 里
+setState((prev) => ({ ...prev, completedMessages: history, staticKey: prev.staticKey + 1 }));
+
+// chat-view.tsx：key 变 → <Static> 卸载重 mount → 视为全新流，全量重灌历史
+<Static key={state.staticKey} items={state.completedMessages}>
+```
+
+key 一变，React 卸载旧 `<Static>`、挂载全新的 → 内部「已写出 index」计数归零 → 把当前 items 当全新流全量渲染一次。**这是让 `<Static>` 支持数组替换的唯一干净手段**（比 `useEffect` 手动操作 stdout/`Static` 命令式 API 都简单可靠）。
+
+真实终端再叠加清屏（`process.stdout.write('\x1b[2J\x1b[H')`)，把上一会话写过的 stdout 物理擦掉，视觉彻底干净（测试 `!isTTY` 不执行，不影响断言）。
+
+### 教训
+
+> **`<Static>` 不是受控列表渲染器，是一条单向追加的日志管道。** 它优化掉了 diff，代价就是「整体替换数组」对它无效。凡是要「换一批」item（切会话 / 清空 / 还原历史 / 回放），都不能指望改 items——必须换 `<Static>` 的 `key` 让它重 mount。记住这条，ink 里凡是"数据整体换掉但 UI 没跟着换"，第一反应就是 `<Static>` 的 append-only。
+
+### 验证
+
+`tests/ui/repl-human.test.tsx` 加了 3 个防假绿用例：① 过滤当前会话（断言当前 task 不在列表）；② Enter 切换后历史可见（断言`历史提问`/`历史回答`都在末帧——直接覆盖本坑）；③ 续接 `resumed.id` 正确。其中②就是为这个坑准备的回归测试。破坏 `switchSession` 里的 `staticKey++` 后②立刻变红，证实非平凡。全量 40 文件 335 测试绿，tsc clean。
+
+### 关联
+
+- 实现位置：`src/ui/types.ts`（`staticKey` 字段）、`src/ui/use-agent-stream.ts`（`switchSession`/`clear` 自增）、`src/ui/chat-view.tsx`（`<Static key>`）、`src/ui/app.tsx`（`handleResumeConfirm` 清屏）
+- 触发场景：C 方向 `/resume`（详设 `docs/20260806210000_历史会话切换-详设.md` §八 预见了此风险，本坑是其落地）

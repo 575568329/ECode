@@ -1,15 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 
 vi.mock('node:fs', () => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
 }));
 
 import {
   getDefaultModel,
   getModelConfig,
   getProviderConfig,
+  getContextWindow,
   hasCapability,
   listAvailableModels,
   resolveBaseURL,
@@ -19,6 +22,8 @@ import {
 describe('config（默认配置，文件不存在）', () => {
   beforeEach(() => {
     vi.mocked(existsSync).mockReturnValue(false);
+    vi.mocked(writeFileSync).mockClear();
+    vi.mocked(mkdirSync).mockClear();
     _resetConfigCacheForTest();
   });
 
@@ -26,6 +31,16 @@ describe('config（默认配置，文件不存在）', () => {
     expect(getDefaultModel()).toBe('glm-5.2');
     expect(hasCapability('glm-5.2', 'tools')).toBe(true);
     expect(hasCapability('glm-5.2', 'vision')).toBe(false);
+  });
+
+  it('首次加载触发配置模板生成（writeFileSync + mkdirSync）', () => {
+    getDefaultModel(); // 触发 loadConfig
+    expect(mkdirSync).toHaveBeenCalledOnce();
+    expect(writeFileSync).toHaveBeenCalledOnce();
+    // 写入的内容应包含 // 注释行 + JSON 主体
+    const written = vi.mocked(writeFileSync).mock.calls[0][1] as string;
+    expect(written).toContain('// ECode 用户配置');
+    expect(written).toContain('glm-5.2');
   });
 
   it('未知模型抛错并列出可用', () => {
@@ -75,6 +90,37 @@ describe('config（读取文件）', () => {
     vi.mocked(existsSync).mockReturnValue(true);
     vi.mocked(readFileSync).mockReturnValue('{ 不是合法 json');
     expect(getDefaultModel()).toBe('glm-5.2');
+  });
+
+  // 真实 ~/.ecode/config.json 由 writeConfigTemplate 自动生成，带 // 注释头。
+  // 验证 loadConfig 的注释 strip 逻辑能正确解析它，并读出文件里的模型 + 阈值
+  // （上下文压缩 isOverThreshold 依赖 getContextWindow 取窗口大小）。
+  //
+  // 关键：mock 文件里 glm-5.2 的 contextWindow 故意写成 500_000（区别于默认 1m）。
+  // 这样只有「注释被 strip + 文件被真正解析」才会拿到 500k；
+  // 若 strip 缺失/失败 → JSON.parse 抛错 → 降级 DEFAULT_CONFIG → 拿到 1m → 测试失败。
+  // 即本测试能真正 catch「带注释 config 读不出」的回归。
+  it('带 // 注释的 config.json 能被正确解析（注释 strip 生效，读出文件真实值）', () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    // 镜像真实文件结构：注释头 + JSON 主体（contextWindow 用区别于默认的 500_000）
+    vi.mocked(readFileSync).mockReturnValue(
+      [
+        '// ECode 用户配置（首次启动自动生成）',
+        '// API Key 通过环境变量注入，不要在此文件明文填写密钥。',
+        '// 添加自定义模型：见文档',
+        JSON.stringify({
+          defaultModel: 'glm-5.2',
+          providers: { glm: { protocol: 'openai', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZHIPUAI_API_KEY' } },
+          models: { 'glm-5.2': { provider: 'glm', capabilities: ['tools'], contextWindow: 500_000 } },
+        }),
+      ].join('\n'),
+    );
+    // 默认模型从文件读出（非降级）
+    expect(getDefaultModel()).toBe('glm-5.2');
+    // 500k 证明确实是读文件（降级会给 1m）→ 注释 strip 生效
+    expect(getContextWindow('glm-5.2')).toBe(500_000);
+    // 未配置的模型仍回退默认 128K（getContextWindow 的兜底）
+    expect(getContextWindow('unknown-model')).toBe(128_000);
   });
 });
 

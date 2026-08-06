@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { existsSync } from 'node:fs';
 
-vi.mock('node:fs', () => ({ existsSync: vi.fn() }));
+vi.mock('node:fs', () => ({ existsSync: vi.fn(), writeFileSync: vi.fn(), mkdirSync: vi.fn() }));
 
 import { createProvider } from '../../src/providers/factory.js';
 import { _resetConfigCacheForTest } from '../../src/providers/config.js';

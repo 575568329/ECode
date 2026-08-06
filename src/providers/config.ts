@@ -1,6 +1,6 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import type { ModelCapability, ModelConfig } from './types.js';
 
 // ============================================================
@@ -46,7 +46,13 @@ function loadConfig(): ECodeConfig {
   if (cachedConfig) return cachedConfig;
   if (existsSync(CONFIG_PATH)) {
     try {
-      cachedConfig = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) as ECodeConfig;
+      const raw = readFileSync(CONFIG_PATH, 'utf-8');
+      // 兼容首次生成的带 // 注释行（JSON 标准不含注释，手动 strip）
+      const stripped = raw
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('//'))
+        .join('\n');
+      cachedConfig = JSON.parse(stripped) as ECodeConfig;
       return cachedConfig;
     } catch (err) {
       console.error(
@@ -54,8 +60,33 @@ function loadConfig(): ECodeConfig {
       );
     }
   }
+  // 首次启动：自动生成带注释的配置模板（生产级 UX：用户可见可改）
+  writeConfigTemplate();
   cachedConfig = DEFAULT_CONFIG;
   return cachedConfig;
+}
+
+/** 首次生成 ~/.ecode/config.json（含注释头，JSON 标准不支持注释，手动拼接）。 */
+function writeConfigTemplate(): void {
+  const dir = dirname(CONFIG_PATH);
+  mkdirSync(dir, { recursive: true });
+  const header = [
+    '// ECode 用户配置（首次启动自动生成）',
+    '// 修改后重启 ECode 生效；也可通过 .env 环境变量覆盖（见 .env.example）。',
+    '// API Key 通过环境变量注入（apiKeyEnv 字段），不要在此文件明文填写密钥。',
+    '//',
+    '// 添加自定义模型：',
+    '//   1. 在 providers 中添加一个条目（protocol 选 "openai" 或 "anthropic"）',
+    '//   2. 在 models 中添加一个条目（provider 指向上面的 key）',
+    '//   3. 在 .env 中设置对应的 API Key 环境变量',
+    '',
+  ].join('\n');
+  const json = JSON.stringify(DEFAULT_CONFIG, null, 2);
+  try {
+    writeFileSync(CONFIG_PATH, header + json + '\n', 'utf-8');
+  } catch {
+    // 首次生成失败不阻塞启动（目录权限等），静默降级用内存默认
+  }
 }
 
 export function getDefaultModel(): string {

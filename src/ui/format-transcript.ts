@@ -1,10 +1,11 @@
-// format-transcript —— DisplayMessage[] → 带 ANSI 颜色的纯文本转录（pager/less 输入）。
-// 与 renderCompleted（chat-view.tsx）共享角色/符号/着色约定，但输出纯文本（给 less -R 解析）。
-// 关键差异：工具结果取**完整 content**，不走 tool-panel 的 foldContent 裁剪——
-// pager 存在的意义就是让用户看到折叠后丢失的完整长输出。
-// 详见 docs/20260806230000_工具折叠-详设.md §5.2。
+// format-transcript —— DisplayMessage[] → 精简分组的转录纯文本（pager/less 输入）。
+// B+ 方案（docs/20260806232155）：按 user 提问分组，只输出「被折叠/裁剪的工具完整 content」——
+// 即主界面看不到的关键内容。跳过 assistant/warning/error/edit_file/未裁剪的单工具；
+// 无折叠工具的轮次整体跳过；空结果 → 空串（调用方据此不进 pager）。
+//
+// 「是否折叠」复用 tool-panel 的 foldContent 裁剪判定（单一规则源，transcript 展开的 = 主界面裁掉的）。
 import { T, SYMBOLS } from './theme.js';
-import { summarizeArg } from './tool-panel.js';
+import { summarizeArg, foldContent } from './tool-panel.js';
 import type { DisplayMessage } from './types.js';
 
 // ---- ANSI 24-bit 真彩色辅助（ink 走 <Text color> 不需要这些，纯文本输出给 less 才需要）----
@@ -37,33 +38,84 @@ function indentBlock(text: string): string {
     .join('\n');
 }
 
-/** 单条消息 → 转录行块（角色/符号对齐 renderCompleted）。 */
-function messageToLines(msg: DisplayMessage): string {
-  switch (msg.kind) {
-    case 'user':
-      return `${color(`${SYMBOLS.user} 你`, T.user, { bold: true })}\n${INDENT}${color(msg.text, T.muted)}`;
-    case 'assistant':
-      // markdown 源码原样输出（pager 看「发生了什么」，原文最真实；渲染态由主界面负责）
-      return `${color(`${SYMBOLS.brand} ECode`, T.brand, { bold: true })}\n${INDENT}${msg.text}`;
-    case 'tool': {
-      const icon = msg.isError ? SYMBOLS.error : SYMBOLS.success;
-      const iconHex = msg.isError ? T.error : T.success;
-      const arg = summarizeArg(msg.name, msg.input);
-      const title = `${color(icon, iconHex)} ${color(msg.name, T.tool)}${arg ? color(` (${arg})`, T.muted) : ''}`;
-      const body = indentBlock(msg.content); // 完整 content，不 foldContent
-      return body ? `${title}\n${body}` : title;
+/** 折叠工具的扁平表示（tool_group 展开后的各工具 + 被折叠的单 tool 统一成这个）。 */
+interface FoldedTool {
+  name: string;
+  content: string;
+  isError: boolean;
+  input?: Record<string, unknown>;
+}
+
+/** 判定单个 tool 在主界面是否被折叠/裁剪（→ 该进 less 展开看完整 content）。
+ *  read_file 总是被摘要行数（content 全丢）；glob ≥2 文件被摘要成 Found N files；
+ *  bash/grep/write_file 被 foldContent 裁剪尾部（omitted>0）；edit_file 完整 diff 从不折叠。 */
+function isToolFolded(name: string, isError: boolean, content: string): boolean {
+  if (name === 'read_file') return true;
+  if (name === 'edit_file') return false;
+  if (name === 'glob') return content.replace(/\n+$/, '').split('\n').length >= 2;
+  return foldContent(name, isError, content).omitted > 0;
+}
+
+/** 单个工具 → 转录行块（完整 content，不裁剪——pager 的意义就是看主界面丢掉的完整内容）。 */
+function renderTool(t: FoldedTool): string {
+  const icon = t.isError ? SYMBOLS.error : SYMBOLS.success;
+  const iconHex = t.isError ? T.error : T.success;
+  const arg = summarizeArg(t.name, t.input);
+  const title = `${color(icon, iconHex)} ${color(t.name, T.tool)}${arg ? color(` (${arg})`, T.muted) : ''}`;
+  const body = indentBlock(t.content);
+  return body ? `${title}\n${body}` : title;
+}
+
+/** 一个对话轮次 = user 提问 + 其后（至下一 user 前）所有被折叠的工具。 */
+interface Turn {
+  userText: string;
+  tools: FoldedTool[];
+}
+
+/** 遍历消息构建轮次：user 开新轮；tool_group/被折叠 tool 归入当前轮；其余跳过。
+ *  仅保留含折叠工具的轮次（无折叠工具的轮整体丢弃，精简避免空锚点）。 */
+function buildTurns(messages: DisplayMessage[]): Turn[] {
+  const turns: Turn[] = [];
+  let current: Turn | null = null;
+  const flushIfFolded = () => {
+    if (current && current.tools.length > 0) turns.push(current);
+  };
+  for (const msg of messages) {
+    if (msg.kind === 'user') {
+      flushIfFolded();
+      current = { userText: msg.text, tools: [] };
+    } else if (msg.kind === 'tool_group') {
+      if (!current) current = { userText: '', tools: [] }; // 防御：无前导 user 的孤立 group
+      current.tools.push(
+        ...msg.tools.map((t) => ({ name: t.name, content: t.content, isError: t.isError, input: t.input })),
+      );
+    } else if (msg.kind === 'tool') {
+      if (isToolFolded(msg.name, msg.isError, msg.content)) {
+        if (!current) current = { userText: '', tools: [] };
+        current.tools.push({ name: msg.name, content: msg.content, isError: msg.isError, input: msg.input });
+      }
     }
-    case 'warning':
-      return color(`${SYMBOLS.warning} ${msg.text}`, T.warning);
-    case 'error':
-      return color(`${SYMBOLS.error} ${msg.text}`, T.error);
+    // assistant / warning / error：主界面已完整显示，跳过
   }
+  flushIfFolded();
+  return turns;
+}
+
+/** 一个轮次 → 转录块：醒目分隔锚点 + 提问首行摘要 + 各折叠工具完整内容。 */
+function renderTurn(turn: Turn, index: number): string {
+  const anchor = color(`━━━━━━━━ 对话 ${index} ━━━━━━━━`, T.muted);
+  const firstLine = turn.userText.split('\n')[0].trim();
+  const prompt = firstLine ? color(`${SYMBOLS.user} ${firstLine}`, T.user) : '';
+  const toolBlocks = turn.tools.map(renderTool);
+  return [anchor, prompt, ...toolBlocks].filter((s) => s.length > 0).join('\n');
 }
 
 /**
- * DisplayMessage[] → 带 ANSI 颜色的转录纯文本（pager/less 输入）。
- * 段间空行分隔；空数组返回空串（调用方据此判断「无内容不进 pager」）。
+ * DisplayMessage[] → 精简分组的转录纯文本（pager/less 输入）。
+ * 按 user 提问分组，只含被折叠工具的完整 content；轮间空行分隔；无折叠内容返回空串（不进 pager）。
  */
 export function sessionMessagesToTranscript(messages: DisplayMessage[]): string {
-  return messages.map(messageToLines).join('\n\n');
+  const turns = buildTurns(messages);
+  if (turns.length === 0) return '';
+  return turns.map((turn, i) => renderTurn(turn, i + 1)).join('\n\n');
 }

@@ -576,11 +576,24 @@ describe('REPL 人肉驱动 —— Ctrl+O 转录 pager（方向 B）', () => {
   const wroteSeq = (spy: ReturnType<typeof vi.spyOn>, seq: string): boolean =>
     spy.mock.calls.some((c) => String(c[0]).includes(seq));
 
+  /** 造一次含 read_file 工具结果的对话：completedMessages 含折叠工具 → transcript 非空（进 pager）。
+   *  新 format-transcript 逻辑：无折叠工具的纯对话 → 空串不进 pager，故 Ctrl+O 测试需 seeding 折叠工具。 */
+  function runWithReadFile(): void {
+    mockedRun.mockImplementation(async function* (text: string) {
+      yield { type: 'start', task: text, model: 'glm-5.2', provider: 'glm' };
+      yield { type: 'tool_call_start', id: 't1', name: 'read_file', input: { path: 'a.ts' } };
+      yield { type: 'tool_result', id: 't1', name: 'read_file', content: '文件内容A', isError: false, input: { path: 'a.ts' } };
+      yield { type: 'completed', rounds: 1, toolCalls: 1, reason: 'done', messages: [], sessionId: 's1', task: text, createdAt: '2026-01-01' };
+    });
+  }
+
   it('Ctrl+O 有消息 → 进 pager（写 1049h）→ 调 runLess → 出 pager（写 1049l）', async () => {
     mockedRunLess.mockResolvedValue(undefined);
+    runWithReadFile(); // 造含折叠工具的消息（新逻辑：无折叠工具 → 空串不进 pager）
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const sim = simulate(<App cwd={CWD} />);
-    await enterConversation(sim); // 造消息（completedMessages 非空）
+    await enterConversation(sim);
+    await sim.waitFor((f) => f.includes('read_file')); // 等 read_file 落地进 completedMessages
     await sim.ctrlO();
     await sim.waitFor(() => wroteSeq(stdoutSpy, '\x1b[?1049h'));
     expect(mockedRunLess).toHaveBeenCalled(); // 进 pager 调 runLess
@@ -603,9 +616,11 @@ describe('REPL 人肉驱动 —— Ctrl+O 转录 pager（方向 B）', () => {
 
   it('runLess 失败 → error 提示 + finally 仍写 1049l（不卡在 alternate）', async () => {
     mockedRunLess.mockRejectedValue(new Error('less not found'));
+    runWithReadFile(); // 造含折叠工具的消息（否则空串不进 pager，runLess 无从触发）
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const sim = simulate(<App cwd={CWD} />);
     await enterConversation(sim);
+    await sim.waitFor((f) => f.includes('read_file'));
     await sim.ctrlO();
     await sim.waitFor((f) => f.includes('无法打开转录视图'));
     expect(wroteSeq(stdoutSpy, '\x1b[?1049l')).toBe(true); // finally 必切回主屏

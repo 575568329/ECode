@@ -42,8 +42,9 @@ interface Folded {
 /** write_file 折叠阈值：对齐 CC MAX_LINES_TO_RENDER=10（FileWriteTool/UI.tsx:26）。 */
 const WRITE_HEAD = 10;
 
-/** 把多行内容按工具折叠策略裁剪。 */
-function foldContent(name: string, isError: boolean, content: string): Folded {
+/** 把多行内容按工具折叠策略裁剪。
+ *  导出：format-transcript 复用 omitted 判定「该工具是否被折叠」→ 决定是否进 less 展开（单一规则源）。 */
+export function foldContent(name: string, isError: boolean, content: string): Folded {
   // 去尾部换行：execSync 等输出常带尾 \n，split 会产出末尾空串 → 渲染空 ↳ 行（噪声）。
   const all = content.replace(/\n+$/, '').split('\n');
   // read_file：只报行数，不显内容
@@ -103,7 +104,7 @@ interface InlineToolProps {
   arg: string;
 }
 
-function InlineTool({ name, isError, summary, arg }: InlineToolProps): React.ReactElement {
+export function InlineTool({ name, isError, summary, arg }: InlineToolProps): React.ReactElement {
   const icon = isError ? SYMBOLS.error : SYMBOLS.success;
   const iconColor = isError ? T.error : T.success;
   const parts: React.ReactNode[] = [

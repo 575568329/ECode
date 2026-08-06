@@ -86,6 +86,10 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
     }
     inPagerRef.current = true;
     setInPager(true);
+    // 等 ink 重绘落地（InputBar 卸载）再进 alternate buffer：setInPager 是异步 state，
+    // 同步紧跟 1049h 会让 alternate 快照保存「含旧 ❯ 的主屏」，退出恢复后与重绘的新 ❯
+    // 叠加 → 双 ❯（问题 C）。让出一帧让 React 提交 + ink 重绘，快照即不含 ❯。
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     process.stdout.write('\x1b[?1049h'); // 切 alternate buffer
     try {
       await runLess(transcript);

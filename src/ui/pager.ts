@@ -5,8 +5,10 @@
 // 详见 docs/20260806230000_工具折叠-详设.md §5.3。
 import { spawn } from 'node:child_process';
 
-/** less 底部提示文案（-P 参数）。 */
-const LESS_PROMPT = '转录视图 · /搜索 · ↑↓滚动 · q退出';
+/** less 底部提示文案（-P 参数）。
+ *  less inherit stdio 独占按键 —— app 的 useInput 在 pager 期间让位，收不到 esc；less 本身只认 q 退出。
+ *  故无法支持 esc 退出，只能靠提示把「按 q 退出」放最前最醒目（问题 G）。 */
+const LESS_PROMPT = '[ 按 q 退出 ]  转录视图 · / 搜索文本 · ↑↓ 滚动';
 
 /**
  * 用 less 查看 content：-R 解析 ANSI 颜色、--no-init 避免进出场闪烁；
@@ -15,7 +17,10 @@ const LESS_PROMPT = '转录视图 · /搜索 · ↑↓滚动 · q退出';
  */
 export function runLess(content: string, prompt: string = LESS_PROMPT): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn('less', ['-R', '--no-init', '-P', prompt], {
+    // -Q（completely quiet）：never ring terminal bell。-q（--quiet）只是 moderately quiet，Windows
+    // less.exe 翻到边界仍会发 \a → 映射 Windows「默认提示音」响铃（git diff 翻页同款问题）。
+    // -Q 彻底静默。来源：stackoverflow/q/1266545 + less man（-Q / --QUIET）。
+    const child = spawn('less', ['-R', '--no-init', '-Q', '-P', prompt], {
       stdio: ['pipe', 'inherit', 'inherit'],
     });
     child.on('exit', resolve);

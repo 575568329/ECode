@@ -311,6 +311,15 @@ export async function* runAgentStream(
       // ---- 本轮 usage 事件（状态栏累计 token/费用用；每轮各 yield 一个）----
       yield { type: 'usage', inputTokens: usage.inputTokens, outputTokens: usage.outputTokens };
 
+      // ---- push assistant 本轮完整回复（必须在 done 判断之前！）----
+      // 否则纯文本最终回答进不了 messages：done 路径在 push 之前 return，
+      // 会导致 REPL 多轮续接 / --continue 时 LLM 看不到自己上一轮的回答
+      // （messages 缺最后一条 assistant）。三方参考（CCode HistoryWriter 原地写、
+      // Claude Code 无状态 query 每轮喂完整历史）均是每轮 assistant 无条件入历史。
+      if (assistantBlocks.length > 0) {
+        messages.push({ role: 'assistant', content: assistantBlocks });
+      }
+
       // ---- 没有工具调用 → LLM 给出最终回答，终止 ----
       if (toolCalls.length === 0) {
         persistSession(buildSession()); // 最终落盘
@@ -319,12 +328,13 @@ export async function* runAgentStream(
           rounds: iteration + 1,
           toolCalls: stats.toolCalls,
           reason: 'done',
+          sessionId,
+          messages,
+          task: sessionTask,
+          createdAt,
         };
         return;
       }
-
-      // ---- push assistant 本轮完整回复（text + tool_call blocks）----
-      messages.push({ role: 'assistant', content: assistantBlocks });
 
       // ---- 执行每个工具（含权限拦截）----
       for (const tc of toolCalls) {
@@ -371,7 +381,7 @@ export async function* runAgentStream(
           // 无 gate = 默认放行（兼容无 UI / 测试）
         }
 
-        yield { type: 'tool_call_start', id: tc.id, name: tc.name };
+        yield { type: 'tool_call_start', id: tc.id, name: tc.name, input: tc.input };
 
         // 防御：工具实现抛异常时降级为 isError 回喂 LLM（与原 runAgent 一致）
         let result: { content: string; isError: boolean };
@@ -391,6 +401,7 @@ export async function* runAgentStream(
           name: tc.name,
           content: result.content,
           isError: result.isError,
+          input: tc.input,
         };
 
         // 回传 tool_result（id 必须配对！）
@@ -419,6 +430,10 @@ export async function* runAgentStream(
           rounds: iteration + 1,
           toolCalls: stats.toolCalls,
           reason: 'repeated',
+          sessionId,
+          messages,
+          task: sessionTask,
+          createdAt,
         };
         return;
       }
@@ -436,6 +451,10 @@ export async function* runAgentStream(
       rounds: iteration,
       toolCalls: stats.toolCalls,
       reason: 'max-iterations',
+      sessionId,
+      messages,
+      task: sessionTask,
+      createdAt,
     };
   } catch (err) {
     // 中断 / 其它异常：本实现里 tool_result 在工具执行后立即 push，
@@ -450,6 +469,10 @@ export async function* runAgentStream(
         rounds: stats.rounds,
         toolCalls: stats.toolCalls,
         reason: 'aborted',
+        sessionId,
+        messages,
+        task: sessionTask,
+        createdAt,
       };
       return;
     }

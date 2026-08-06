@@ -15,11 +15,10 @@ import { InputBar } from './input-bar.js';
 import { PermissionDialog } from './permission-dialog.js';
 import { StatusBar, type StatusBarPhase } from './status-bar.js';
 import { parseUserInput } from '../slash-commands.js';
+import { getContextWindow, getDefaultModel } from '../providers/config.js';
 
 /** 双击 Ctrl+C 退出窗口（ms）：窗口内第二次 Ctrl+C → process.exit。 */
 const DOUBLE_CTRL_C_MS = 2000;
-/** 状态栏上下文占用估算用的窗口上限（token，粗略，仅百分比用）。 */
-const CONTEXT_WINDOW_TOKENS = 60_000;
 /**
  * REPL 欢迎屏版本号兜底值（与 package.json 保持一致）。
  * 生产入口（src/index.ts）会从 package.json 读取真实版本经 `version` prop 注入，
@@ -39,6 +38,10 @@ interface AppProps {
 
 export function App({ model, cwd, loadStatus, system, version }: AppProps): React.ReactElement {
   const api = useAgentStream({ model, system });
+
+  // 状态栏上下文百分比分母：用模型真实 contextWindow（config.json 可逐模型配置/覆盖），
+  // 替代早期硬编码 60K——GLM 窗口 1M，硬编码会让百分比一眼顶到 99% 误报"超了"。
+  const contextWindow = getContextWindow(model ?? getDefaultModel());
 
   // started：用户是否已 submit 过（含被命令清空后——清空不回退到欢迎屏）。
   const [started, setStarted] = useState(false);
@@ -152,7 +155,7 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
         usage={api.usage}
         model={model ?? 'default'}
         provider={model ?? 'default'}
-        ctxPercent={Math.min(99, Math.round((api.usage.inputTokens / CONTEXT_WINDOW_TOKENS) * 100))}
+        ctxPercent={Math.min(99, Math.round((api.usage.inputTokens / contextWindow) * 100))}
         phase={phase}
         startedAt={startedAt}
       />

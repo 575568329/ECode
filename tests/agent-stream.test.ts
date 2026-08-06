@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runAgentStream } from '../src/agent.js';
 import type { AgentEvent } from '../src/agent-events.js';
+import type { ResumeContext } from '../src/agent.js';
 import type { ECodeStreamPart, ModelProvider, ChatRequest } from '../src/providers/types.js';
 
 /** 造一个返回固定 chunk 流的 mock provider（complete 给桩，summarize 压缩时用）。 */
@@ -57,6 +58,29 @@ describe('runAgentStream', () => {
     >;
     expect(tr.id).toBe('t1');
     expect(tr.name).toBe('read_file');
+  });
+
+  it('tool_call_start / tool_result 事件携带 input（§9.5 透传，供历史区摘要）', async () => {
+    // 回归 §9.5：旧实现两事件都不带 input → 历史区 summarizeArg 拿不到参数，
+    // bash 命令/文件路径等摘要从不显示。consumeStream 解析 inputDelta 进 tc.input，
+    // 两事件发射时须透传。
+    const provider = mockProvider([
+      { type: 'tool_call_start', id: 't1', name: 'bash' },
+      { type: 'tool_call_delta', id: 't1', inputDelta: '{"command":"npm test"}' },
+      { type: 'tool_call_end', id: 't1' },
+      { type: 'stop', reason: { unified: 'tool-use', raw: 'tool_calls' } },
+    ]);
+    const events = await collect(runAgentStream('跑测试', { provider }));
+    const start = events.find((e) => e.type === 'tool_call_start') as Extract<
+      AgentEvent,
+      { type: 'tool_call_start' }
+    >;
+    const result = events.find((e) => e.type === 'tool_result') as Extract<
+      AgentEvent,
+      { type: 'tool_result' }
+    >;
+    expect(start.input).toEqual({ command: 'npm test' });
+    expect(result.input).toEqual({ command: 'npm test' });
   });
 
   it('text + tool_call 同时出现 → text_delta 在 tool_call_start 之前 yield（事件流完整性）', async () => {
@@ -184,5 +208,66 @@ describe('runAgentStream', () => {
     }>;
     const textBlock = assistantBlocks.find((b) => b.type === 'text');
     expect(textBlock?.text).toBe('你好！');
+  });
+
+  it('纯文本 done → completed 带 sessionId/messages/task/createdAt，messages 含最终 assistant 回复', async () => {
+    // 回归：done 路径必须在 push assistant 之后才 completed。历史 bug：push 写在 if(done) 之后，
+    // 导致纯文本最终回答进不了 messages → REPL 续接 / --continue 时 LLM 看不到自己上一轮的回答。
+    const provider = mockProvider([
+      { type: 'text_delta', text: '你好啊' },
+      { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
+    ]);
+    const events = await collect(runAgentStream('打招呼', { provider }));
+    const done = events.find(
+      (e): e is Extract<AgentEvent, { type: 'completed' }> => e.type === 'completed',
+    );
+    expect(done).toBeDefined();
+    expect(done!.reason).toBe('done');
+    // 续接真相源字段
+    expect(done!.sessionId).toEqual(expect.any(String));
+    expect(done!.sessionId.length).toBeGreaterThan(0);
+    expect(done!.task).toBe('打招呼');
+    expect(done!.createdAt).toEqual(expect.any(String));
+    // 关键：messages 末尾是本轮 assistant 文本回答（push 提前修复）
+    const last = done!.messages[done!.messages.length - 1];
+    expect(last.role).toBe('assistant');
+    const textBlock = (last.content as Array<{ type: string; text?: string }>).find(
+      (b) => b.type === 'text',
+    );
+    expect(textBlock?.text).toBe('你好啊');
+  });
+
+  it('resumed 续接 → 复用原 sessionId/task/createdAt，messages = 历史 + 新 user + 新 assistant', async () => {
+    // REPL 多轮续接核心：useAgentStream 把上一轮 completed 带回的 {id,messages,...} 经 resumed 传回，
+    // agent 必须复用同一会话（不新建 id/文件）、带上轮历史、且不覆盖首句 task/createdAt。
+    const resumed: ResumeContext = {
+      id: 'reuse-this-id',
+      task: '原首句任务',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      messages: [
+        { role: 'user', content: '原首句任务' },
+        { role: 'assistant', content: [{ type: 'text', text: '原回答' }] },
+      ],
+    };
+    const provider = mockProvider([
+      { type: 'text_delta', text: '新回答' },
+      { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
+    ]);
+    const events = await collect(runAgentStream('追问', { provider, resumed }));
+    const done = events.find(
+      (e): e is Extract<AgentEvent, { type: 'completed' }> => e.type === 'completed',
+    );
+    expect(done).toBeDefined();
+    expect(done!.sessionId).toBe('reuse-this-id'); // 复用，不新建
+    expect(done!.task).toBe('原首句任务'); // 不被当前 "追问" 覆盖
+    expect(done!.createdAt).toBe('2026-01-01T00:00:00.000Z'); // 保持不变
+    // messages 顺序：历史(2 条) + 新 user("追问") + 新 assistant("新回答")
+    expect(done!.messages).toHaveLength(4);
+    expect(done!.messages[2].role).toBe('user');
+    expect(done!.messages[3].role).toBe('assistant');
+    const lastText = (done!.messages[3].content as Array<{ type: string; text?: string }>).find(
+      (b) => b.type === 'text',
+    );
+    expect(lastText?.text).toBe('新回答');
   });
 });

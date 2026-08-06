@@ -6,7 +6,7 @@
 //   - 权限 gate 内部把 allow_always 映射成 allow + allow.add（§4.5，agent core 无感）
 import { useCallback, useRef, useState } from 'react';
 import { runAgentStream } from '../agent.js';
-import type { RunAgentStreamOptions } from '../agent.js';
+import type { RunAgentStreamOptions, ResumeContext } from '../agent.js';
 import { AllowList } from '../permission.js';
 import { reduceAgentEvent, initialStreamState } from './reduce-agent-event.js';
 import type { StreamState, DisplayMessage, PendingPermission } from './types.js';
@@ -46,6 +46,11 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   const generationRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const allowRef = useRef(new AllowList());
+  // 跨轮会话续接的真相源（修 REPL 每轮新会话 + 失忆）：首次为 null（新会话），
+  // runAgentStream 的 completed 事件带回 {id,messages,...} 后存入此 ref；
+  // 之后每次 submit 经 resumed 传回 → agent 复用同一会话（同 id 覆盖同一文件）。
+  // /clear 重置为 null 开新会话。对齐 CCode sessionLogger.ensureSession 幂等 / Claude Code ref 持守。
+  const sessionRef = useRef<ResumeContext | null>(null);
 
   // 权限 gate 决策 resolver（permission_request 时挂起，resolvePermission 时兑现）
   const permissionResolverRef = useRef<((d: 'allow' | 'deny') => void) | null>(null);
@@ -78,6 +83,9 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
               permissionResolverRef.current = resolve;
             }),
         },
+        // 续接：首次 sessionRef 为 null → 不传 → agent 开新会话；
+        // 之后传回上一轮 completed 带回的 {id,messages,...} → agent 复用同会话带历史。
+        resumed: sessionRef.current ?? undefined,
       };
 
       // async IIFE：消费事件流（§5.1 submit 流程 4-11）
@@ -85,6 +93,15 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
         try {
           for await (const event of runAgentStream(text, streamOpts)) {
             apply(event);
+            // completed 带回本轮全量历史 + 会话元信息，存入 sessionRef 供下一轮 resumed 续接。
+            if (event.type === 'completed') {
+              sessionRef.current = {
+                id: event.sessionId,
+                task: event.task,
+                createdAt: event.createdAt,
+                messages: event.messages,
+              };
+            }
           }
         } catch (err) {
           // runAgentStream 内部已 try/yield error，这里兜底未捕获异常
@@ -119,6 +136,8 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   const isAllowAlways = useCallback((toolName: string) => allowRef.current.has(toolName), []);
 
   const clear = useCallback(() => {
+    // 清 UI 渲染态 + 重置会话续接真相源 → 下一次 submit 走新会话（新 id、新文件、不带旧历史）。
+    sessionRef.current = null;
     setState((prev) => ({ ...prev, completedMessages: [] }));
   }, []);
 

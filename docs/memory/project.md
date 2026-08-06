@@ -83,6 +83,7 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 | CCode（社区对标） | `D:\Study\CCode\cCli` | 同栈(TS+Node)最直接参照：Ink REPL、审批弹窗、CLAUDE.md fallback、AgentLoop 事件流 |
 | Claude Code（本尊） | `D:\Study\claude-code-main` | 审批完整规格、自研 Ink fork、partial compact 等设计思想（仅学思想不学规模）。已核查(2026-08-04)：REPL.tsx 5005行 / main.tsx 4683行 / bashPermissions 2621行 均准确；但 Tool.ts 实 792行（文档误称29K）、commands.ts 实 754行（误称25K）——疑字节数误标行数，引用时注意 |
 | opencode（SST） | `D:\Study\opencode` | 同 TS 栈、OpenTUI/SolidJS、客户端-服务端分离、Effect-TS |
+| OpenClaw | `D:\Study\openclaw` | ⚠️ **非 coding agent**（多渠道个人助手网关），只参考两块特色：① skill 的 `SKILL.md`+frontmatter 格式 + 懒加载注入 + **proposal 审批队列**（skill「自动归纳」实为纯正则、别抄）；② **systemRunPlan 审批守恒**（M4 bash 权限分级时抄，单文件即可）。Gateway/ACP/Canvas/跨设备 pairing 全是过度设计，别碰。详见 [OpenClaw参考研究](../20260806085241_OpenClaw参考研究.md) |
 | ECode（本项目） | `D:\Study\ECode` | 自身源码 |
 
 > 路径跨设备可能不同（用户名/盘符），核查时以实际为准。核查文档断言时遵循 [debugging.md #004](./debugging.md)：LLM 既有知识写"具体数值/行号"易失真，必须实读源码核对。

@@ -25,10 +25,19 @@ function Harness({ apiRef }: { apiRef: React.MutableRefObject<Api | null> }) {
 describe('useAgentStream', () => {
   it('submit → 用户消息进入 completedMessages + 启动 runAgentStream', async () => {
     const mocked = runAgentStream as unknown as ReturnType<typeof vi.fn>;
-    // 立即完成的空事件流
+    // 立即完成的空事件流（completed 带续接字段，与真实 runAgentStream 一致）
     mocked.mockImplementation(async function* (): AsyncGenerator<AgentEvent> {
       yield { type: 'start', task: 'hi', model: 'm', provider: 'p' };
-      yield { type: 'completed', rounds: 1, toolCalls: 0, reason: 'done' };
+      yield {
+        type: 'completed',
+        rounds: 1,
+        toolCalls: 0,
+        reason: 'done',
+        sessionId: 'test-sess-1',
+        messages: [{ role: 'user', content: '你好' }, { role: 'assistant', content: [{ type: 'text', text: '嗨' }] }],
+        task: 'hi',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      };
     } as never);
 
     const apiRef: React.MutableRefObject<Api | null> = { current: null };
@@ -56,7 +65,16 @@ describe('useAgentStream', () => {
         const decision = opts?.permissionGate ? await opts.permissionGate.ask({}) : 'allow';
         yield { type: 'tool_call_start', id: 't1', name: 'bash' };
         yield { type: 'tool_result', id: 't1', name: 'bash', content: 'ok', isError: false };
-        yield { type: 'completed', rounds: 1, toolCalls: 1, reason: 'done' };
+        yield {
+          type: 'completed',
+          rounds: 1,
+          toolCalls: 1,
+          reason: 'done',
+          sessionId: 'test-sess-perm',
+          messages: [{ role: 'user', content: '跑 bash' }, { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }],
+          task: '跑 bash',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        };
         void decision;
       } as never,
     );
@@ -106,5 +124,57 @@ describe('useAgentStream', () => {
     api().abort();
     // abort 后 generation finally 把 isRunning 翻回 false
     await vi.waitFor(() => expect(api().isRunning).toBe(false));
+  });
+
+  it('连发两句 → 第二次 submit 带 resumed（复用 sessionId + 历史），/clear 后重置', async () => {
+    // REPL 多轮续接闭环验证：首次无 resumed → completed 回传 → 第二次带 resumed → clear 重置
+    const mocked = runAgentStream as unknown as ReturnType<typeof vi.fn>;
+    mocked.mockClear(); // 清除前 3 个测试的残留调用计数
+    let callCount = 0;
+    mocked.mockImplementation(
+      async function* (task: string): AsyncGenerator<AgentEvent> {
+        callCount++;
+        yield { type: 'start', task, model: 'm', provider: 'p' };
+        yield {
+          type: 'completed',
+          rounds: 1,
+          toolCalls: 0,
+          reason: 'done',
+          sessionId: `sess-call-${callCount}`,
+          messages: [
+            { role: 'user', content: task },
+            { role: 'assistant', content: [{ type: 'text', text: `回${callCount}` }] },
+          ],
+          task,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        };
+      } as never,
+    );
+
+    const apiRef: React.MutableRefObject<Api | null> = { current: null };
+    render(<Harness apiRef={apiRef} />);
+    const api = () => apiRef.current as Api;
+
+    // 第一次 submit → 无 resumed（新会话）
+    api().submit('第一句');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mocked).toHaveBeenCalledTimes(1);
+    expect((mocked.mock.calls[0][1] as { resumed?: unknown }).resumed).toBeUndefined(); // 首次无 resumed
+
+    // 第二次 submit → 带 resumed（复用第一轮的 sessionId + messages）
+    api().submit('第二句');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mocked).toHaveBeenCalledTimes(2);
+    const secondOpts = mocked.mock.calls[1][1] as { resumed?: { id: string } };
+    expect(secondOpts.resumed).toBeDefined();
+    expect(secondOpts.resumed!.id).toBe('sess-call-1'); // 复用第一轮的 sessionId
+
+    // /clear 后第三次 submit → resumed 又变 undefined（新会话）
+    api().clear();
+    api().submit('第三句');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mocked).toHaveBeenCalledTimes(3);
+    const thirdOpts = mocked.mock.calls[2][1] as { resumed?: unknown };
+    expect(thirdOpts.resumed).toBeUndefined(); // clear 后重置
   });
 });

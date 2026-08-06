@@ -6,6 +6,8 @@
 // 是两个层面）。为避免 noUnusedLocals 编译错误，这里不引入未使用的 import；
 // 后续 task 若需要在 completed 事件中透传底层 stopReason，再行引入。见 task-1-report.md。
 
+import type { ECodeMessage } from './providers/types.js';
+
 /** 请求权限的事件（可观测用，决策本身走 permissionGate 回调） */
 export interface PermissionRequestEvent {
   type: 'permission_request';
@@ -21,11 +23,24 @@ export type AgentCompletionReason = 'done' | 'max-iterations' | 'repeated' | 'ab
 export type AgentEvent =
   | { type: 'start'; task: string; model: string; provider: string; logFile?: string }
   | { type: 'text_delta'; text: string }
-  | { type: 'tool_call_start'; id: string; name: string }
-  | { type: 'tool_result'; id: string; name: string; content: string; isError: boolean }
+  | { type: 'tool_call_start'; id: string; name: string; input?: Record<string, unknown> }
+  | { type: 'tool_result'; id: string; name: string; content: string; isError: boolean; input?: Record<string, unknown> }
   | PermissionRequestEvent
   | { type: 'warning'; message: string }
-  | { type: 'completed'; rounds: number; toolCalls: number; reason: AgentCompletionReason }
+  | {
+      type: 'completed';
+      rounds: number;
+      toolCalls: number;
+      reason: AgentCompletionReason;
+      /** 本轮结束时累积的全量 messages（含最终 assistant 回复）——REPL/续接经 resumed 回传的真相源。 */
+      messages: ECodeMessage[];
+      /** 会话 id（续接复用，修 REPL 每轮新会话导致的文件增殖 + 失忆）。 */
+      sessionId: string;
+      /** 会话首句任务（续接不覆盖此字段）。 */
+      task: string;
+      /** 会话创建时间（续接保持不变）。 */
+      createdAt: string;
+    }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'error'; error: string };
 

@@ -125,23 +125,30 @@ export interface RunAgentStreamOptions extends RunAgentOptions {
   provider?: ModelProvider; // 依赖注入（测试用 mock；生产用 createProvider）
 }
 
-/**
- * 把流式 chunk 累积成本轮响应内容（text + tool_call 完整 input + usage）。
- * - text_delta → 追加 text
- * - tool_call_start/delta/end → 按 id 累积 input JSON，跨 chunk 拼接
- * - usage → 记录本轮 token 用量（供 runAgentStream yield usage 事件，UI 累计）
- * - stop → 记录 unified 停止原因
- * 中断：迭代中 signal.aborted → 抛 AbortError（DOMException）让外层 catch 收尾。
- */
-async function consumeStream(
-  gen: AsyncIterable<ECodeStreamPart>,
-  signal?: AbortSignal,
-): Promise<{
+/** consumeStream 的累积结果：逐 chunk yield 完 text_delta 后 return，供本轮 push messages / 日志用。 */
+interface ConsumedStream {
   text: string;
   toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
   stopUnified: string;
   usage: { inputTokens: number; outputTokens: number };
-}> {
+}
+
+/**
+ * 流式消费 provider chunk（M3.5 R4：逐 chunk yield，而非整轮累加后一次性输出）。
+ * - text_delta → 逐 chunk yield（UI 动态区真正流式），同时累积进 text
+ * - tool_call_start/delta/end → 按 id 跨 chunk 累积 input JSON（不 yield，本轮后续统一处理）
+ * - usage → 记录本轮 token 用量（供 runAgentStream yield usage 事件，UI 累计）
+ * - stop → 记录 unified 停止原因
+ * 返回值 = 累积结果（text 全文 + toolCalls + usage + stopUnified）。
+ * 中断：迭代中 signal.aborted → 抛 AbortError（DOMException）让外层 catch 收尾。
+ *
+ * 设计：用 async generator 同时 yield（流式事件）+ return（累积结果），
+ * 调用方用 drain 循环转发 yield 并捕获 return（见 runAgentStream 内 consumeStream 调用处）。
+ */
+async function* consumeStream(
+  gen: AsyncIterable<ECodeStreamPart>,
+  signal?: AbortSignal,
+): AsyncGenerator<{ type: 'text_delta'; text: string }, ConsumedStream, void> {
   let text = '';
   const inputBuf = new Map<string, string>(); // id → 累积的 input JSON 字符串
   const names = new Map<string, string>(); // id → name
@@ -153,6 +160,7 @@ async function consumeStream(
     switch (part.type) {
       case 'text_delta':
         text += part.text;
+        yield { type: 'text_delta', text: part.text }; // 逐 chunk 流出（R4）
         break;
       case 'tool_call_start':
         names.set(part.id, part.name);
@@ -270,7 +278,20 @@ export async function* runAgentStream(
         { model: resolvedModel, system, messages, tools },
         { signal: opts.signal },
       );
-      const { text, toolCalls, usage } = await consumeStream(streamGen, opts.signal);
+      // 流式消费（M3.5 R4）：逐 chunk yield text_delta——UI 动态区真正流式，
+      // 而非旧实现"整轮累加后一次性输出"。drain 循环转发每个 text_delta 事件，
+      // 消费结束捕获累积结果。时序保持：text（消费期间）→ usage（消费后）→ tool（执行）。
+      const consumer = consumeStream(streamGen, opts.signal);
+      let consumed!: ConsumedStream; // drain 必在 done=true 时 break，break 前已赋值
+      while (true) {
+        const { value, done } = await consumer.next();
+        if (done) {
+          consumed = value;
+          break;
+        }
+        yield value; // 转发逐 chunk text_delta 事件
+      }
+      const { text, toolCalls, usage } = consumed;
       stats.rounds = iteration + 1;
 
       // 构造本轮 assistant 完整回复 blocks（供日志 + push messages）
@@ -286,11 +307,6 @@ export async function* runAgentStream(
         { unified: toolCalls.length > 0 ? 'tool-use' : 'stop' },
         { inputTokens: 0, outputTokens: 0 },
       );
-
-      // ---- 有文本时 yield text_delta（无论是否有工具调用——保持事件流完整性） ----
-      // 与原 runAgent 行为一致：text 始终流向输出（旧代码 process.stdout.write 无条件打印）。
-      // 常见场景：LLM 先说"让我读取 package.json"再发 tool_call —— 这段文字也必须作为事件流出。
-      if (text) yield { type: 'text_delta', text };
 
       // ---- 本轮 usage 事件（状态栏累计 token/费用用；每轮各 yield 一个）----
       yield { type: 'usage', inputTokens: usage.inputTokens, outputTokens: usage.outputTokens };

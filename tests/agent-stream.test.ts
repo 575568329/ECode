@@ -122,4 +122,67 @@ describe('runAgentStream', () => {
     const usages = events.filter((e) => e.type === 'usage');
     expect(usages).toHaveLength(2);
   });
+
+  it('多个 text_delta chunk → 逐 chunk yield 为独立事件（R4 真流式）', async () => {
+    // 回归 M3.5 R4：旧实现 consumeStream 把整轮 text 累加后只 yield 一次，
+    // 导致 UI 动态区每轮只收到一坨完整文本，并不流式。改为逐 chunk yield 后，
+    // 3 个 chunk 应产出 3 个独立 text_delta 事件，顺序与输入一致。
+    const provider = mockProvider([
+      { type: 'text_delta', text: '你' },
+      { type: 'text_delta', text: '好' },
+      { type: 'text_delta', text: '！' },
+      { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
+    ]);
+    const events = await collect(runAgentStream('打招呼', { provider }));
+    const textDeltas = events.filter(
+      (e): e is Extract<AgentEvent, { type: 'text_delta' }> => e.type === 'text_delta',
+    );
+    expect(textDeltas).toHaveLength(3);
+    expect(textDeltas.map((e) => e.text)).toEqual(['你', '好', '！']);
+  });
+
+  it('多 chunk 文本仍正确累积进 message 历史（assistant block.text 完整）', async () => {
+    // R4 副作用校验：逐 chunk yield 不能破坏内部 message 累积——
+    // 本轮 assistant 回复 push 进 messages 时 text 必须是完整拼接。
+    // 通过第二轮 provider 收到的 messages 间接断言（assistant 上轮文本应为 '你好！'）。
+    let call = 0;
+    const seenMessages: unknown[] = [];
+    const provider: ModelProvider = {
+      name: 'mock',
+      protocol: 'openai',
+      baseURL: 'http://mock',
+      complete: vi.fn(async () => ({
+        content: [{ type: 'text', text: '压缩摘要' }],
+        stopReason: { unified: 'stop' },
+        usage: { inputTokens: 0, outputTokens: 0 },
+      })),
+      stream: async function* (req: ChatRequest): AsyncIterable<ECodeStreamPart> {
+        call++;
+        seenMessages.push(req.messages);
+        if (call === 1) {
+          // 第一轮：3 chunk 文本 + tool_call（不终止，进第二轮）
+          yield { type: 'text_delta', text: '你' };
+          yield { type: 'text_delta', text: '好' };
+          yield { type: 'text_delta', text: '！' };
+          yield { type: 'tool_call_start', id: 't1', name: 'read_file' };
+          yield { type: 'tool_call_delta', id: 't1', inputDelta: '{"path":"a"}' };
+          yield { type: 'tool_call_end', id: 't1' };
+          yield { type: 'stop', reason: { unified: 'tool-use', raw: 'tc' } };
+        } else {
+          yield { type: 'text_delta', text: '完成' };
+          yield { type: 'stop', reason: { unified: 'stop', raw: 'stop' } };
+        }
+      },
+    };
+    const events = await collect(runAgentStream('读 a', { provider }));
+    expect(events.some((e) => e.type === 'completed')).toBe(true);
+    // 第二轮收到的 messages 里，上轮 assistant 文本块应为完整 '你好！'
+    const round2 = seenMessages[1] as Array<{ role: string; content: unknown }>;
+    const assistantBlocks = round2.find((m) => m.role === 'assistant')?.content as Array<{
+      type: string;
+      text?: string;
+    }>;
+    const textBlock = assistantBlocks.find((b) => b.type === 'text');
+    expect(textBlock?.text).toBe('你好！');
+  });
 });

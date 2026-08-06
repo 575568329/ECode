@@ -29,6 +29,8 @@ export interface UseAgentStreamReturn {
   isAllowAlways: (toolName: string) => boolean;
   /** 清空已完成消息（/clear 命令用）。 */
   clear: () => void;
+  /** 注入系统消息到聊天（/help /cost /sessions 等命令输出用，不送 LLM）。 */
+  addMessage: (msg: DisplayMessage) => void;
 }
 
 export interface UseAgentStreamOptions {
@@ -141,6 +143,10 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     setState((prev) => ({ ...prev, completedMessages: [] }));
   }, []);
 
+  const addMessage = useCallback((msg: DisplayMessage) => {
+    setState((prev) => ({ ...prev, completedMessages: [...prev.completedMessages, msg] }));
+  }, []);
+
   return {
     completedMessages: state.completedMessages,
     streamingText: state.streamingText,
@@ -154,5 +160,6 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     abort,
     isAllowAlways,
     clear,
+    addMessage,
   };
 }

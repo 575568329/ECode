@@ -14,8 +14,10 @@ import { ChatView } from './chat-view.js';
 import { InputBar } from './input-bar.js';
 import { PermissionDialog } from './permission-dialog.js';
 import { StatusBar, type StatusBarPhase } from './status-bar.js';
-import { parseUserInput } from '../slash-commands.js';
+import { parseUserInput, SLASH_COMMANDS } from '../slash-commands.js';
 import { getContextWindow, getDefaultModel } from '../providers/config.js';
+import { listSessions } from '../session.js';
+import type { ECodeSessionSummary } from '../session.js';
 
 /** 双击 Ctrl+C 退出窗口（ms）：窗口内第二次 Ctrl+C → process.exit。 */
 const DOUBLE_CTRL_C_MS = 2000;
@@ -107,18 +109,41 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
         // 走 process.exit（ink 的 useApp.exit 在测试/某些环境不触进程退出）。
         process.exit(0);
         return;
-      case 'help':
-      case 'cost':
+      case 'help': {
+        const lines = SLASH_COMMANDS.map((c) => `  /${c.name.padEnd(10)} ${c.description}`);
+        api.addMessage({ kind: 'warning', id: `sys-help-${Date.now()}`, text: `可用命令:\n${lines.join('\n')}` });
+        return;
+      }
+      case 'cost': {
+        const { inputTokens, outputTokens } = api.usage;
+        api.addMessage({
+          kind: 'warning',
+          id: `sys-cost-${Date.now()}`,
+          text: `Token 用量: ${inputTokens.toLocaleString()} 输入 / ${outputTokens.toLocaleString()} 输出 (${(inputTokens + outputTokens).toLocaleString()} 总计)`,
+        });
+        return;
+      }
+      case 'sessions': {
+        const sessions: ECodeSessionSummary[] = listSessions();
+        if (sessions.length === 0) {
+          api.addMessage({ kind: 'warning', id: `sys-sessions-${Date.now()}`, text: '暂无历史会话。' });
+        } else {
+          const lines = sessions.slice(0, 10).map(
+            (s, i) => `${i + 1}. ${s.task.slice(0, 40)} (${s.model}, ${s.stats.rounds}轮)`,
+          );
+          const footer = sessions.length > 10 ? `\n...共 ${sessions.length} 个会话(显示前 10)` : `\n共 ${sessions.length} 个会话`;
+          api.addMessage({ kind: 'warning', id: `sys-sessions-${Date.now()}`, text: `历史会话:\n${lines.join('\n')}${footer}` });
+        }
+        return;
+      }
       case 'compact':
-      case 'resume':
-      case 'sessions':
       case 'model':
-        // M3.5 阶段②最小占位：暂无可注入系统消息的 hook 通道（useAgentStream 未暴露），
-        // 这 6 个命令的可见响应留 Task 13 集成时补全：
-        //   /cost 打印 usage 行；/model 需 App 级 model state + 重启 agent；
-        //   /compact 需 agent core 暴露压缩入口 → 真正实现留 M4；
-        //   /resume /sessions 复用 listSessions 打印。
-        // 当前静默确认（已识别、不报错、不送 LLM），Task 13 验收如实标注。
+      case 'resume':
+        api.addMessage({
+          kind: 'warning',
+          id: `sys-todo-${Date.now()}`,
+          text: `/${name} 命令尚未实现，将在后续版本补全。`,
+        });
         return;
       default:
         return;

@@ -103,5 +103,35 @@ describe('ClaudeProvider', () => {
     ]);
     const start = parts.find((p) => p.type === 'tool_call_start');
     expect(start).toMatchObject({ id: 't1', name: 'read_file' });
+    // 🔴-3 修复：inputTokens 来自 message_start（5），不再硬编码 0；outputTokens 来自 message_delta（8）
+    const usagePart = parts.find((p) => p.type === 'usage');
+    expect(usagePart).toMatchObject({ inputTokens: 5, outputTokens: 8 });
+  });
+
+  it('stream() message_start 携 cache 用量 → usage 透传 cacheReadTokens/cacheWriteTokens', async () => {
+    const events = [
+      {
+        type: 'message_start',
+        message: {
+          usage: { input_tokens: 10, cache_read_input_tokens: 70, cache_creation_input_tokens: 15 },
+        },
+      },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 20 } },
+    ];
+    mockStream.mockReturnValue(
+      (async function* () {
+        for (const e of events) yield e;
+      })(),
+    );
+    const provider = new ClaudeProvider({ apiKey: 'fake' });
+    const parts = [];
+    for await (const p of provider.stream(baseReq)) parts.push(p);
+    const usagePart = parts.find((p) => p.type === 'usage');
+    expect(usagePart).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 20,
+      cacheReadTokens: 70,
+      cacheWriteTokens: 15,
+    });
   });
 });

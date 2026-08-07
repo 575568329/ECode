@@ -51,7 +51,17 @@ export class OpenAIProvider implements ModelProvider {
       // OpenAI 在单独的末尾 chunk 里返回 usage（choices:[]），需在 choice 判断之前处理，
       // 否则会被 `if (!choice) continue` 静默丢弃，生产环境永远拿不到 usage。
       if (chunk.usage) {
-        yield { type: 'usage', inputTokens: chunk.usage.prompt_tokens ?? 0, outputTokens: chunk.usage.completion_tokens ?? 0 };
+        yield {
+          type: 'usage',
+          inputTokens: chunk.usage.prompt_tokens ?? 0,
+          outputTokens: chunk.usage.completion_tokens ?? 0,
+          ...(chunk.usage.prompt_tokens_details?.cached_tokens != null && {
+            cacheReadTokens: chunk.usage.prompt_tokens_details.cached_tokens,
+          }),
+          ...(chunk.usage.completion_tokens_details?.reasoning_tokens != null && {
+            reasoningTokens: chunk.usage.completion_tokens_details.reasoning_tokens,
+          }),
+        };
       }
       const choice = chunk.choices?.[0];
       if (!choice) continue;

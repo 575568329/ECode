@@ -47,11 +47,26 @@ export type ECodeWarning =
   | { type: 'unsupported'; feature: string; details?: string }
   | { type: 'compatibility'; feature: string; details?: string };
 
+/**
+ * LLM 调用 token 用量。input/output 必有；cache/reasoning 可选。
+ * 可选项防御 GLM/DeepSeek 等兼容端点不返回这些字段（undefined = 未提供，区别于 0）。
+ */
+export interface ECodeUsage {
+  inputTokens: number;
+  outputTokens: number;
+  /** 命中缓存的输入 token（Anthropic cache_read_input_tokens / OpenAI prompt_tokens_details.cached_tokens） */
+  cacheReadTokens?: number;
+  /** 写入缓存的输入 token（Anthropic cache_creation_input_tokens） */
+  cacheWriteTokens?: number;
+  /** 推理 token（DeepSeek-R1 / o1 等推理模型的 completion_tokens_details.reasoning_tokens） */
+  reasoningTokens?: number;
+}
+
 /** 统一 LLM 响应（Provider 翻译掉协议外壳后返回） */
 export interface ECodeResponse {
   content: ECodeContentBlock[]; // 仅 text + tool_call
   stopReason: ECodeStopReason;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: ECodeUsage;
   /** transform 收集的警告信息（降级/不支持），agent loop 可选打印或决策 */
   warnings?: ECodeWarning[];
 }
@@ -85,7 +100,7 @@ export type ECodeStreamPart =
   | { type: 'tool_call_start'; id: string; name: string }
   | { type: 'tool_call_delta'; id: string; inputDelta: string }
   | { type: 'tool_call_end'; id: string }
-  | { type: 'usage'; inputTokens: number; outputTokens: number }
+  | ({ type: 'usage' } & ECodeUsage)
   | { type: 'stop'; reason: ECodeStopReason };
 
 /** Provider 接口 —— agent loop 唯一依赖，换模型 = 换 Provider 实例 */

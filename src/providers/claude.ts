@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { ChatRequest, ECodeResponse, ECodeStreamPart, ModelProvider } from './types.js';
-import { toAnthropicRequest, fromAnthropicResponse } from './transform.js';
+import { toAnthropicRequest, fromAnthropicResponse, type AnthropicCacheUsage } from './transform.js';
 import { withRetry } from '../retry.js';
 
 export interface ClaudeProviderOptions {
@@ -46,9 +46,26 @@ export class ClaudeProvider implements ModelProvider {
     );
     // index → tool_use id：content_block_delta/stop 需靠 index 反查 id（Anthropic 只在 start 里给 id）
     const toolIdByIndex = new Map<number, string>();
+    // 🔴-3 修复：Anthropic 流式 usage 拆两处——message_start 给 input + cache，message_delta 只给累积 output。
+    // 在 message_start 捕获 input/cache，message_delta 时合并 yield 完整 usage（修复原 inputTokens:0 硬编码）。
+    let pendingUsage:
+      | { inputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
+      | undefined;
     // MessageStream 即 AsyncIterable<MessageStreamEvent>，MessageStreamEvent = RawMessageStreamEvent
     for await (const ev of msgStream as AsyncIterable<Anthropic.RawMessageStreamEvent>) {
       switch (ev.type) {
+        case 'message_start': {
+          // input_tokens + cache 用量在此一次性给（message_delta 不重复）
+          const u = ev.message.usage;
+          // Anthropic cache 字段 SDK 0.32.1 类型未声明（运行时随 prompt caching 返回），断言访问
+          const cacheU = u as AnthropicCacheUsage;
+          pendingUsage = {
+            inputTokens: u.input_tokens,
+            ...(cacheU.cache_read_input_tokens != null && { cacheReadTokens: cacheU.cache_read_input_tokens }),
+            ...(cacheU.cache_creation_input_tokens != null && { cacheWriteTokens: cacheU.cache_creation_input_tokens }),
+          };
+          break;
+        }
         case 'content_block_start': {
           const block = ev.content_block;
           if (block.type === 'tool_use') {
@@ -76,13 +93,23 @@ export class ClaudeProvider implements ModelProvider {
         case 'message_delta': {
           // usage 与 content chunk 分开投递（借鉴 Task 7 教训：独立处理，不耦合 content 逻辑）
           if (ev.usage) {
-            yield { type: 'usage', inputTokens: 0, outputTokens: ev.usage.output_tokens };
+            yield {
+              type: 'usage',
+              inputTokens: pendingUsage?.inputTokens ?? 0,
+              outputTokens: ev.usage.output_tokens,
+              ...(pendingUsage?.cacheReadTokens != null && {
+                cacheReadTokens: pendingUsage.cacheReadTokens,
+              }),
+              ...(pendingUsage?.cacheWriteTokens != null && {
+                cacheWriteTokens: pendingUsage.cacheWriteTokens,
+              }),
+            };
           }
           yield { type: 'stop', reason: mapAnthropicStopReasonStreaming(ev.delta.stop_reason) };
           break;
         }
         default:
-          // message_start / ping / message_stop 等：不产出 ECodeStreamPart
+          // ping / message_stop 等：不产出 ECodeStreamPart
           break;
       }
     }

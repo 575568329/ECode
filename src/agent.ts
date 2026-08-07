@@ -9,6 +9,7 @@ import type {
   ModelProvider,
   ECodeStreamPart,
   ECodeContentBlock,
+  ECodeUsage,
 } from './providers/types.js';
 import { maybeCompress, forceCompact, isContextWindowError } from './context-manager.js';
 import type { CompressOptions } from './context-manager.js';
@@ -131,7 +132,7 @@ interface ConsumedStream {
   text: string;
   toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
   stopUnified: string;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: ECodeUsage;
 }
 
 /**
@@ -155,7 +156,7 @@ async function* consumeStream(
   const names = new Map<string, string>(); // id → name
   const order: string[] = []; // 保持 tool_call 顺序
   let stopUnified = 'stop';
-  let usage = { inputTokens: 0, outputTokens: 0 };
+  let usage: ECodeUsage = { inputTokens: 0, outputTokens: 0 };
   for await (const part of gen) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     switch (part.type) {
@@ -174,7 +175,13 @@ async function* consumeStream(
       case 'tool_call_end':
         break; // 累积已随 delta 完成
       case 'usage':
-        usage = { inputTokens: part.inputTokens, outputTokens: part.outputTokens };
+        usage = {
+          inputTokens: part.inputTokens,
+          outputTokens: part.outputTokens,
+          ...(part.cacheReadTokens != null && { cacheReadTokens: part.cacheReadTokens }),
+          ...(part.cacheWriteTokens != null && { cacheWriteTokens: part.cacheWriteTokens }),
+          ...(part.reasoningTokens != null && { reasoningTokens: part.reasoningTokens }),
+        };
         break;
       case 'stop':
         stopUnified = part.reason.unified;
@@ -333,16 +340,16 @@ export async function* runAgentStream(
       for (const tc of toolCalls) {
         assistantBlocks.push({ type: 'tool_call', id: tc.id, name: tc.name, input: tc.input });
       }
-      // 流式下 usage 可能不完整（OpenAI 需 stream_options，Anthropic 在 message_delta）；先记 0，保时序
+      // 日志记录本轮真实 usage（consumeStream 已在流结束捕获完整用量，含 cache/reasoning）
       logApiResponse(
         iteration,
         assistantBlocks,
         { unified: toolCalls.length > 0 ? 'tool-use' : 'stop' },
-        { inputTokens: 0, outputTokens: 0 },
+        usage,
       );
 
-      // ---- 本轮 usage 事件（状态栏累计 token/费用用；每轮各 yield 一个）----
-      yield { type: 'usage', inputTokens: usage.inputTokens, outputTokens: usage.outputTokens };
+      // ---- 本轮 usage 事件（状态栏累计 token/费用用；每轮各 yield 一个，透传五项）----
+      yield { type: 'usage', ...usage };
 
       // ---- push assistant 本轮完整回复（必须在 done 判断之前！）----
       // 否则纯文本最终回答进不了 messages：done 路径在 push 之前 return，

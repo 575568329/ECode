@@ -103,6 +103,34 @@ describe('fromAnthropicResponse', () => {
     expect(fromAnthropicResponse(fakeRes).stopReason.unified).toBe('stop');
     expect(fromAnthropicResponse(fakeRes).stopReason.raw).toBe('end_turn');
   });
+
+  it('P5: cache 用量（cache_read/cache_creation）透传到 cacheReadTokens/cacheWriteTokens', () => {
+    const fakeRes = {
+      content: [{ type: 'text', text: 'hi' }],
+      stop_reason: 'end_turn',
+      usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_read_input_tokens: 80,
+        cache_creation_input_tokens: 20,
+      },
+    } as unknown as Anthropic.Message;
+    expect(fromAnthropicResponse(fakeRes).usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 80,
+      cacheWriteTokens: 20,
+    });
+  });
+
+  it('P5: 无 cache 字段时 usage 不含 cacheRead/cacheWrite（undefined 即未提供）', () => {
+    const fakeRes = {
+      content: [{ type: 'text', text: 'hi' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 10, output_tokens: 5 },
+    } as unknown as Anthropic.Message;
+    expect(fromAnthropicResponse(fakeRes).usage).toEqual({ inputTokens: 10, outputTokens: 5 });
+  });
 });
 
 describe('toOpenAIMessages', () => {
@@ -193,5 +221,23 @@ describe('fromOpenAIResponse', () => {
     expect(r.stopReason.unified).toBe('stop');
     expect(r.stopReason.raw).toBe('stop');
     expect(r.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+  });
+
+  it('P5: cache/reasoning 用量透传（cached_tokens / reasoning_tokens）', () => {
+    const fakeRes = {
+      choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 50,
+        prompt_tokens_details: { cached_tokens: 60 },
+        completion_tokens_details: { reasoning_tokens: 30 },
+      },
+    } as unknown as OpenAI.Chat.ChatCompletion;
+    expect(fromOpenAIResponse(fakeRes).usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 60,
+      reasoningTokens: 30,
+    });
   });
 });

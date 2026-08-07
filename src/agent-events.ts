@@ -6,7 +6,7 @@
 // 是两个层面）。为避免 noUnusedLocals 编译错误，这里不引入未使用的 import；
 // 后续 task 若需要在 completed 事件中透传底层 stopReason，再行引入。见 task-1-report.md。
 
-import type { ECodeMessage } from './providers/types.js';
+import type { ECodeMessage, ECodeUsage } from './providers/types.js';
 
 /** 请求权限的事件（可观测用，决策本身走 permissionGate 回调） */
 export interface PermissionRequestEvent {
@@ -41,7 +41,7 @@ export type AgentEvent =
       /** 会话创建时间（续接保持不变）。 */
       createdAt: string;
     }
-  | { type: 'usage'; inputTokens: number; outputTokens: number }
+  | ({ type: 'usage' } & ECodeUsage)
   | { type: 'error'; error: string };
 
 // ---- 类型守卫（消费方收窄用）----

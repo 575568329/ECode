@@ -2,6 +2,15 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type OpenAI from 'openai';
 import type { ChatRequest, ECodeContentBlock, ECodeMessage, ECodeResponse, ECodeStopReason, ECodeToolDefinition, ECodeWarning } from './types.js';
 
+/**
+ * Anthropic prompt caching 用量字段（运行时随响应返回，但 SDK 0.32.1 的 Usage 类型未声明）。
+ * 用类型断言访问——cache 开启时 API JSON 实带这些字段，类型缺口不应导致丢数据（呼应 P5「usage 保真」）。
+ */
+export type AnthropicCacheUsage = {
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+};
+
 // ============================================================
 // Transform —— 内部格式 ↔ 两家协议的双向翻译（纯函数，无副作用）
 // ============================================================
@@ -80,10 +89,21 @@ export function fromAnthropicResponse(res: Anthropic.Message): ECodeResponse {
       warnings.push({ type: 'unsupported', feature: `content block type '${unknownBlock.type}'` });
     }
   }
+  // Anthropic cache 用量字段 SDK 0.32.1 类型未声明（运行时随 prompt caching 响应返回），断言访问
+  const cacheU = res.usage as AnthropicCacheUsage;
   return {
     content: blocks,
     stopReason: mapAnthropicStopReason(res.stop_reason),
-    usage: { inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens },
+    usage: {
+      inputTokens: res.usage.input_tokens,
+      outputTokens: res.usage.output_tokens,
+      ...(cacheU.cache_read_input_tokens != null && {
+        cacheReadTokens: cacheU.cache_read_input_tokens,
+      }),
+      ...(cacheU.cache_creation_input_tokens != null && {
+        cacheWriteTokens: cacheU.cache_creation_input_tokens,
+      }),
+    },
     warnings,
   };
 }
@@ -189,6 +209,12 @@ export function fromOpenAIResponse(res: OpenAI.Chat.ChatCompletion): ECodeRespon
     usage: {
       inputTokens: res.usage?.prompt_tokens ?? 0,
       outputTokens: res.usage?.completion_tokens ?? 0,
+      ...(res.usage?.prompt_tokens_details?.cached_tokens != null && {
+        cacheReadTokens: res.usage.prompt_tokens_details.cached_tokens,
+      }),
+      ...(res.usage?.completion_tokens_details?.reasoning_tokens != null && {
+        reasoningTokens: res.usage.completion_tokens_details.reasoning_tokens,
+      }),
     },
   };
 }

@@ -13,6 +13,7 @@
 import type { ECodeContentBlock, ECodeMessage, ECodeToolResultOutput } from './providers/types.js';
 import { countTokens } from './token-counter.js';
 import { getContextWindow } from './providers/config.js';
+import { ContextWindowError, looksLikeContextWindowError } from './errors.js';
 
 // ---------------- 类型定义 ----------------
 
@@ -352,6 +353,10 @@ export async function maybeCompress(
  */
 export function isContextWindowError(err: unknown): boolean {
   if (err == null) return false;
+  // 主路径：优先识别 retry 已结构化的 ContextWindowError + errors.ts 反射判别（status 400 / code）。
+  // 接通 retry→agent 链路：retry 把 SDK context 错误包装成 ContextWindowError 抛出，此处 instanceof 命中。
+  if (err instanceof ContextWindowError || looksLikeContextWindowError(err)) return true;
+  // 兜底：GLM/DeepSeek 错误可能不带 status 或措辞特殊，纯字符串匹配补充（不丢恢复机会）
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return (
     msg.includes('context window') ||

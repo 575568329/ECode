@@ -126,6 +126,7 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
           inputTokens: state.usage.inputTokens + event.inputTokens,
           outputTokens: state.usage.outputTokens + event.outputTokens,
         },
+        latestInputTokens: event.inputTokens, // per-call 覆写，供 Ctx% 计算
       };
 
     case 'warning': {

@@ -325,4 +325,41 @@ describe('runAgentStream', () => {
   //   · 「真实 config 链路 → 800K」（纯函数）已覆盖 glm config 取值；
   //   · 「resumed 注入大量消息 → 触发压缩」（test-model）已覆盖 agent loop 压缩端到端。
   // 换 model 重跑同一 agent 路径不增覆盖，代价却是巨型字符串，故删。
+
+  it('context window 超限 → forceCompact 压缩后自动重试 → 正常完成（🔴-1 接线验证）', async () => {
+    // 验证 L3 响应式恢复已接线到 agent loop：API 报超限 → forceCompact → 重试。
+    // mock provider：第一次 stream 抛 context window 错误，第二次成功。
+    let streamCall = 0;
+    const provider: ModelProvider = {
+      name: 'mock',
+      protocol: 'openai',
+      baseURL: 'http://mock',
+      complete: vi.fn(async () => ({
+        content: [{ type: 'text', text: '摘要' }],
+        stopReason: { unified: 'stop' },
+        usage: { inputTokens: 0, outputTokens: 0 },
+      })),
+      stream: async function* () {
+        streamCall++;
+        if (streamCall === 1) {
+          throw new Error('prompt is too long: reached its context window limit');
+        }
+        yield { type: 'text_delta', text: '重试成功' };
+        yield { type: 'usage', inputTokens: 50, outputTokens: 10 };
+        yield { type: 'stop', reason: { unified: 'stop', raw: 'stop' } };
+      },
+    };
+    const events = await collect(runAgentStream('超限重试测试', { provider }));
+    // 应有 warning 事件（上下文超限压缩重试）
+    const warnings = events.filter((e) => e.type === 'warning');
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
+    expect(warnings.some((w) => w.message.includes('上下文超限'))).toBe(true);
+    // 最终应正常完成（非 error 终止）
+    const done = events.find((e) => e.type === 'completed');
+    expect(done).toBeDefined();
+    expect(done?.type === 'completed' && done.reason).toBe('done');
+    // provider.stream 被调了 2 次（第一次抛错，第二次成功）
+    expect(streamCall).toBe(2);
+  });
+
 });

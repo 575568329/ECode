@@ -21,6 +21,8 @@ export interface UseAgentStreamReturn {
   pendingReadSearch: DisplayMessage[];
   pendingPermission: PendingPermission | null;
   usage: StreamState['usage'];
+  /** 最近一次 API 调用的 inputTokens（per-call，供 Ctx% 计算）。 */
+  latestInputTokens: number;
   isRunning: boolean;
   error: string | null;
   /** submit 用户输入（含斜杠命令？不——命令在 App 层拦截，这里只处理纯消息）。 */
@@ -168,6 +170,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
       activeTools: [],
       pendingReadSearch: [],
       usage: { inputTokens: 0, outputTokens: 0 },
+      latestInputTokens: 0,
       staticKey: prev.staticKey + 1,
     }));
   }, []);
@@ -182,6 +185,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     pendingReadSearch: state.pendingReadSearch,
     pendingPermission: state.pendingPermission,
     usage: state.usage,
+    latestInputTokens: state.latestInputTokens,
     isRunning: state.isRunning,
     error: state.error,
     submit,

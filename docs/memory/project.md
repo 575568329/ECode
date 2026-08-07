@@ -52,7 +52,7 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 - ✅ P1 格式 v2（声明式工具，executor 纯 find+execute 分发，无 switch/case）
 - ✅ P2 token 计数（`length/4` 粗估，零依赖，仿 Claude Code）+ 截断（tool_result 内容截断）
 - ✅ P3 上下文压缩（maybeCompress 级联：trim tool_result 内容 → summary；trim 保留 tool_use_id 配对不断裂）
-- ⚠️ 超限恢复插队——**L3 响应式未接线（死代码）**（2026-08-07 审查核实）：L2 trim / L4 熔断的纯函数已实现，但 L3 forceCompact 响应式恢复**只在 context-manager.ts 实现，agent.ts catch（:459）从未调用**（只处理 AbortError）。即"函数级绿、集成级红"，本节 §现象描述的死局实际未解决。详见 [审查报告 🔴-1](../总纲/ECode项目审查报告.md)；纠正见 [debugging.md #005](./debugging.md)。下次修 M3 接线 catch 块 + 补回归测试。
+- ✅ 超限恢复插队——**L3 响应式已接线**（2026-08-07 修复）：agent.ts 内加 inner try-catch，API 报 context window 超限 → forceCompact 压缩 → 自动重试（含连续失败计数器 + L4 熔断防护）。单测"context window 超限"端到端绿。
 - ✅ **P4 Session 持久化**：`src/session.ts`（纯数据层，原子写 tmp+rename，覆盖语义剔除 -2）+ agent loop 挂载（首轮/每轮末/压缩后/结束）+ CLI `--continue`/`-c`/`--resume`/`--sessions`（不带任务=纯恢复不调 LLM）。设计见 [M3-实施方案.md](../里程碑/M3-实施方案.md) §6，剔除 -2 决策见 [decisions.md #002](./decisions.md)
 - ✅ 151 单测（session 21 + context-resilience 20 + …）；tsc clean
 - 🟡 真实 LLM 端到端落盘：待配 `.env` key 实跑（单测 + tsc + CLI 免费分流已验证）
@@ -74,10 +74,10 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
   - [用户插话机制方案](../功能方案/用户插话机制方案.md)（抄 CC mid-turn drain：运行中排队，工具完成后注入）
   - [M4 权限系统三源交叉验证报告](../里程碑/M4-权限系统三源交叉验证报告.md)（CC/opencode/CCode 对比，建议以 opencode 为模板）
   - [ECode 项目审查报告](../总纲/ECode项目审查报告.md)（3 P0 / 8 🟡 / 7 🟢）
-- ⚠️ **3 个 P0（已实读代码核实为真，待决策修复）**：
-  - 🔴-1 L3 响应式恢复死代码（见上 ⚠️ 超限恢复行）
-  - 🔴-2 `allow` vs `allow_always` 语义塌陷（agent.ts:379 无条件 add，一次性许可被升级为永久）—— M4 权限前置基础
-  - 🔴-3 StatusBar Ctx% 用累计 token 算，多轮虚高（reduce-agent-event.ts:126 inputTokens 累加）
+- ⚠️ **3 个 P0（🔴-1/3 已修复 2026-08-07，🔴-2 defer M4）**：
+  - 🔴-1 ~~L3 响应式恢复死代码~~（✅ 已修复：agent.ts 内 inner try-catch + forceCompact 重试 + 连续失败熔断，单测绿）
+  - 🔴-2 `allow` vs `allow_always` 语义塌陷（agent.ts:379 无条件 add）—— **defer M4**：修复需 UI 提供 allow_once/allow_always 双选项，属 M4 权限系统完整设计
+  - 🔴-3 ~~StatusBar Ctx% 累计 token~~（✅ 已修复：reducer latestInputTokens per-call 覆写，app.tsx Ctx% 改用）
 
 **M2 完成**（2026-08-02）：Provider 抽象层落地，agent 解耦 SDK。
 - Provider 层（types/transform/claude/openai/config/factory）+ tools 协议中立化 + CLI --model/--list-models

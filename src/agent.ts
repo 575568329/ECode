@@ -10,7 +10,8 @@ import type {
   ECodeStreamPart,
   ECodeContentBlock,
 } from './providers/types.js';
-import { maybeCompress } from './context-manager.js';
+import { maybeCompress, forceCompact, isContextWindowError } from './context-manager.js';
+import type { CompressOptions } from './context-manager.js';
 import {
   initRuntimeLog,
   logApiRequest,
@@ -249,22 +250,28 @@ export async function* runAgentStream(
   let lastSignature = '';
   let iteration: number;
 
+  // 压缩选项（maybeCompress + forceCompact 共用，提取到循环外避免重复构造）
+  const compressOpts: CompressOptions = {
+    model: resolvedModel,
+    system,
+    summarize: async (prompt: string) => {
+      const resp = await provider.complete({
+        model: resolvedModel,
+        system: '你是对话历史压缩器。',
+        messages: [{ role: 'user', content: prompt }],
+        tools: [], // 压缩禁工具
+      });
+      return resp.content.find((b) => b.type === 'text')?.text ?? '';
+    },
+  };
+  // L3 重试计数：连续 context window 超限次数，超过上限则 L4 熔断（防死循环）
+  let consecutiveContextErrors = 0;
+  const MAX_CONTEXT_RETRIES = 3;
+
   try {
     for (iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-      // ---- 上下文压缩（复用 maybeCompress；降级提示走事件）----
-      const compressResult = await maybeCompress(messages, {
-        model: resolvedModel,
-        system,
-        summarize: async (prompt: string) => {
-          const resp = await provider.complete({
-            model: resolvedModel,
-            system: '你是对话历史压缩器。',
-            messages: [{ role: 'user', content: prompt }],
-            tools: [], // 压缩禁工具
-          });
-          return resp.content.find((b) => b.type === 'text')?.text ?? '';
-        },
-      });
+      // ---- 上下文压缩（proactive maybeCompress；降级提示走事件）----
+      const compressResult = await maybeCompress(messages, compressOpts);
       if (compressResult.compressed) {
         messages = compressResult.messages;
         stats.compressed = true;
@@ -273,24 +280,50 @@ export async function* runAgentStream(
       }
 
       // ---- 流式调用 LLM ----
-      logApiRequest(iteration, messages, tools);
-      const streamGen = provider.stream(
-        { model: resolvedModel, system, messages, tools },
-        { signal: opts.signal },
-      );
-      // 流式消费（M3.5 R4）：逐 chunk yield text_delta——UI 动态区真正流式，
-      // 而非旧实现"整轮累加后一次性输出"。drain 循环转发每个 text_delta 事件，
-      // 消费结束捕获累积结果。时序保持：text（消费期间）→ usage（消费后）→ tool（执行）。
-      const consumer = consumeStream(streamGen, opts.signal);
-      let consumed!: ConsumedStream; // drain 必在 done=true 时 break，break 前已赋值
-      while (true) {
-        const { value, done } = await consumer.next();
-        if (done) {
-          consumed = value;
-          break;
+      let consumed!: ConsumedStream;
+      try {
+        logApiRequest(iteration, messages, tools);
+        const streamGen = provider.stream(
+          { model: resolvedModel, system, messages, tools },
+          { signal: opts.signal },
+        );
+        // 流式消费（M3.5 R4）：逐 chunk yield text_delta——UI 动态区真正流式，
+        // 而非旧实现"整轮累加后一次性输出"。drain 循环转发每个 text_delta 事件，
+        // 消费结束捕获累积结果。时序保持：text（消费期间）→ usage（消费后）→ tool（执行）。
+        const consumer = consumeStream(streamGen, opts.signal);
+        while (true) {
+          const { value, done } = await consumer.next();
+          if (done) {
+            consumed = value;
+            break;
+          }
+          yield value; // 转发逐 chunk text_delta 事件
         }
-        yield value; // 转发逐 chunk text_delta 事件
+      } catch (apiErr) {
+        // L3 响应式恢复：context window 超限 → forceCompact 压缩 → 重试
+        if (isContextWindowError(apiErr)) {
+          consecutiveContextErrors++;
+          if (consecutiveContextErrors > MAX_CONTEXT_RETRIES) {
+            // L4 熔断：连续超限次数过多，放弃恢复
+            yield { type: 'error', error: `上下文超限，连续 ${MAX_CONTEXT_RETRIES} 次压缩后仍超限，终止` };
+            persistSession(buildSession());
+            return;
+          }
+          const compressed = await forceCompact(messages, compressOpts);
+          if (compressed) {
+            messages = compressed;
+            persistSession(buildSession());
+            yield { type: 'warning', message: `上下文超限，已强制压缩并重试（第 ${consecutiveContextErrors} 次）` };
+            continue; // 用压缩后的 messages 重试本轮
+          }
+          // L4 熔断：forceCompact 返回 null（压到极限仍超限）
+          yield { type: 'error', error: '上下文超限且压缩到极限仍超限，终止' };
+          persistSession(buildSession());
+          return;
+        }
+        throw apiErr; // 非 context window 错误 → 传播到外层 catch
       }
+      consecutiveContextErrors = 0; // API 调用成功，重置连续超限计数
       const { text, toolCalls, usage } = consumed;
       stats.rounds = iteration + 1;
 

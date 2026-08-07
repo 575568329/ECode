@@ -168,10 +168,18 @@ describe('reduceAgentEvent', () => {
     expect(s.completedMessages.find((m) => m.kind === 'assistant')).toBeUndefined();
   });
 
-  it('usage → 累加 token', () => {
+  it('usage → 累加 token（↑↓ 费用用累计值）', () => {
     let s = reduceAgentEvent(initialStreamState, { type: 'usage', inputTokens: 100, outputTokens: 10 });
     s = reduceAgentEvent(s, { type: 'usage', inputTokens: 50, outputTokens: 5 });
     expect(s.usage).toEqual({ inputTokens: 150, outputTokens: 15 });
+  });
+
+  it('usage → latestInputTokens 是 per-call 覆写（非累计，供 Ctx% 用）', () => {
+    let s = reduceAgentEvent(initialStreamState, { type: 'usage', inputTokens: 1000, outputTokens: 10 });
+    expect(s.latestInputTokens).toBe(1000);
+    s = reduceAgentEvent(s, { type: 'usage', inputTokens: 800, outputTokens: 5 });
+    expect(s.latestInputTokens).toBe(800); // 覆写为最新一轮，不是 1800
+    expect(s.usage.inputTokens).toBe(1800); // 累计仍正确
   });
 
   it('warning → 落地 kind:warning 消息', () => {

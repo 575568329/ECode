@@ -281,7 +281,7 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
         usage={api.usage}
         model={model ?? 'default'}
         provider={model ?? 'default'}
-        ctxPercent={Math.min(99, Math.round((api.usage.inputTokens / contextWindow) * 100))}
+        ctxPercent={Math.min(99, Math.round((api.latestInputTokens / contextWindow) * 100))}
         phase={phase}
         startedAt={startedAt}
       />

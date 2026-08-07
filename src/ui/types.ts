@@ -53,8 +53,11 @@ export interface StreamState {
   streamingText: string | null;
   activeTools: ActiveTool[];
   pendingPermission: PendingPermission | null;
-  /** 累计 token（每轮 usage 事件累加）。 */
+  /** 累计 token（每轮 usage 事件累加，供 ↑↓ 费用显示）。 */
   usage: { inputTokens: number; outputTokens: number };
+  /** 最近一次 API 调用的 inputTokens（per-call 覆写，供 Ctx% 计算）。
+   *  区别于 usage.inputTokens（累计）：Ctx% 反映当前上下文占用，不是历史总和。 */
+  latestInputTokens: number;
   isRunning: boolean;
   error: string | null;
   /** 最近一次 completed 的元信息（供状态栏/调试）。 */
@@ -78,6 +81,7 @@ export const initialStreamState: StreamState = {
   activeTools: [],
   pendingPermission: null,
   usage: { inputTokens: 0, outputTokens: 0 },
+  latestInputTokens: 0,
   isRunning: false,
   error: null,
   lastCompleted: null,

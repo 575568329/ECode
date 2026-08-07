@@ -1,7 +1,7 @@
 // InputBar —— 单行输入 + ↑↓ 历史（spec §5.3 / §8.4）+ 斜杠命令 picker（方向 A）。
 // 不用 ink-multiline-input（不成熟，实施方案明确排除）。L2 自研单行。
 //
-// picker 设计（方向 A 详设 docs/20260806180000_斜杠命令补全-详设.md）：
+// picker 设计（方向 A 详设 docs/详设/20260806180000_斜杠命令补全-详设.md）：
 //   - / 开头 + 无空格 → 前缀匹配 SLASH_COMMANDS 显示候选；↑↓ 选中、Enter 直接执行、Esc 关闭。
 //   - 单一 useInput 分支（picker 态 / 非 picker 态），picker 不用独立 useInput，避免抢键。
 //   - 对齐 CC：去 Tab（选中即 Enter 执行，最短路径）；Esc 关 picker（与「中断流」状态互斥不冲突——

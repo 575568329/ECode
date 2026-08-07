@@ -32,7 +32,7 @@ export type DisplayMessage =
     }
   | {
       // 折叠组：连续只读工具合并成的单条冻结消息（延迟冻结，详见
-      // docs/20260806220000_折叠组延迟冻结-详设.md）。Ctrl+O pager 展开 tools 看完整内容。
+      // docs/详设/20260806220000_折叠组延迟冻结-详设.md）。Ctrl+O pager 展开 tools 看完整内容。
       kind: 'tool_group';
       id: string;
       tools: { name: string; content: string; isError: boolean; input?: Record<string, unknown> }[];
@@ -68,7 +68,7 @@ export interface StreamState {
   staticKey: number;
   /** 延迟冻结：挂起的连续只读工具（未 flush 进 Static，动态区实时显示折叠摘要）。
    *  组被破坏(text_delta/非只读 tool/completed/warning/error)时合并成 tool_group flush。
-   *  详见 docs/20260806220000_折叠组延迟冻结-详设.md。 */
+   *  详见 docs/详设/20260806220000_折叠组延迟冻结-详设.md。 */
   pendingReadSearch: DisplayMessage[];
 }
 

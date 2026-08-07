@@ -251,7 +251,7 @@ describe('REPL 人肉驱动 —— 快捷键（按实际反馈）', () => {
   });
 
   it('Ctrl+C 中断运行中流（isRunning→false，输入栏恢复）', async () => {
-    // 键位分工（详设 docs/20260807000318，2026-08-07 反转）：Ctrl+C 专职中断（单击）+ 关闭对话（双击）。
+    // 键位分工（详设 docs/详设/20260807000318，2026-08-07 反转）：Ctrl+C 专职中断（单击）+ 关闭对话（双击）。
     hangingRun();
     const sim = simulate(<App cwd={CWD} />);
     await sim.type('跑起来');

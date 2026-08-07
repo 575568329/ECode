@@ -4,7 +4,7 @@ import { isSearchBash, isReadSearchTool, summarizeGroup } from '../../src/ui/rea
 // 背景：折叠组延迟冻结（reduce-agent-event 挂起连续只读工具）需要判定哪些工具
 // 属于「只读可合并」类。read_file/grep/glob 直接判定；bash 需识别搜索类命令
 // (grep/rg/find/ls/fd/ag/cat)。复合命令(管道/&&/;)保守判否——宁可漏合不可误合。
-// 详见 docs/20260806220000_折叠组延迟冻结-详设.md §4.1。
+// 详见 docs/详设/20260806220000_折叠组延迟冻结-详设.md §4.1。
 
 describe('isSearchBash（bash 搜索类命令识别）', () => {
   it('裸搜索命令 → true', () => {

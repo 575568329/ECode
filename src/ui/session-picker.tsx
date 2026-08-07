@@ -1,4 +1,4 @@
-// SessionPicker —— /resume 会话选择器（方向 C，详设 docs/20260806210000_历史会话切换-详设.md §3.2/§3.3）。
+// SessionPicker —— /resume 会话选择器（方向 C，详设 docs/详设/20260806210000_历史会话切换-详设.md §3.2/§3.3）。
 // Modal 形态（App 用三元前置 resumeOpen 替换 InputBar），自带 useInput：
 //   ↑↓ 循环导航（首项↑跳末项，对齐 CC use-select-navigation）/ Enter 载入 / Esc 取消（对齐 A/E）。
 // 复用 PickerList（twoLine 两行制，对齐 CC LogSelector）。

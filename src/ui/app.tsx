@@ -63,11 +63,11 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
   // 首次 submit 同步清屏（§5.2）：ref 控幂等，必须在 submit 函数体内同步执行，
   // 清掉 WelcomeScreen 残留行，让 ChatView 顶到首行。
   const hasClearedRef = useRef(false);
-  // /resume 会话选择器（方向 C，详设 docs/20260806210000_历史会话切换-详设.md）：
+  // /resume 会话选择器（方向 C，详设 docs/详设/20260806210000_历史会话切换-详设.md）：
   // resumeOpen 时 SessionPicker 替换 InputBar（Modal 三元前置）。sessions 已过滤当前会话。
   const [resumeOpen, setResumeOpen] = useState(false);
   const [resumeSessions, setResumeSessions] = useState<ECodeSessionSummary[]>([]);
-  // Ctrl+O 转录 pager（方向 B，详设 docs/20260806230000_工具折叠-详设.md §5.4/§5.5）：
+  // Ctrl+O 转录 pager（方向 B，详设 docs/详设/20260806230000_工具折叠-详设.md §5.4/§5.5）：
   // inPager=true 时底部交互区卸载（消除 InputBar 等的 useInput 抢键）+ 全局 useInput 让位给 less。
   // ref 同步防重入/防按键串台（state 异步、ref 即时）；state 驱动渲染。
   const [inPager, setInPager] = useState(false);
@@ -119,7 +119,7 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
       void openPager();
       return;
     }
-    // Ctrl+C（详设 docs/20260807000318，2026-08-07 反转）：单击中断对话（streaming→abort），
+    // Ctrl+C（详设 docs/详设/20260807000318，2026-08-07 反转）：单击中断对话（streaming→abort），
     // 双击(2s 内) 关闭对话（process.exit）。中断+退出都归 Ctrl+C；Esc 只退出弹窗+清空输入框。
     // Esc 不再在此处理——弹窗内 Esc 由各 modal 组件自身 useInput 接（picker/permission/session），
     // 主区 Esc 双击清空由 InputBar 接；故 App 全局对 Esc 无操作。

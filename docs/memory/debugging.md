@@ -141,7 +141,7 @@ const files = await fg(pattern, { ... });
 > - **函数层确实实现且单测过**：`isContextWindowError`（context-manager.ts:353）、`forceCompact`（:376）、`maybeCompress`（:316）都在；tests/context-resilience.test.ts 20 测试覆盖它们**作为纯函数**。
 > - **但 agent.ts 从未接线**：`grep 'forceCompact\|isContextWindowError' src/agent.ts` 零命中。catch 块（agent.ts:459-480）只处理 `AbortError`，其余异常（含 API 400 context-window 错）一律 `yield {type:'error'}` 终止 loop，**无 forceCompact 恢复重试分支**。
 > - 即「函数级绿、集成级红」——本文 §"现象"描述的死局**实际未解决**：超限后 agent 仍会死。`withRetry`（retry.ts:33）把 400 当不可重试直接抛，加重死局。
-> - 下次修 M3 时接线 catch 块（修法见 [../20260807_ECode项目审查报告.md](../20260807_ECode项目审查报告.md) 🔴-1），并补「provider 首次抛 context_length_exceeded → forceCompact 恢复重试」的回归测试（现有 agent-stream.test.ts 只覆盖 maybeCompress **主动**压缩，未覆盖**响应式**恢复）。
+> - 下次修 M3 时接线 catch 块（修法见 [../总纲/ECode项目审查报告.md](../总纲/ECode项目审查报告.md) 🔴-1），并补「provider 首次抛 context_length_exceeded → forceCompact 恢复重试」的回归测试（现有 agent-stream.test.ts 只覆盖 maybeCompress **主动**压缩，未覆盖**响应式**恢复）。
 
 **日期**：2026-08-03
 **性质**：设计增强（非 bug），M3 P3 之后插队
@@ -186,7 +186,7 @@ const files = await fg(pattern, { ... });
 ### 关联
 
 - 设计出处核查：`D:\Study\claude-code-main\src\services\compact\{autoCompact,microCompact}.ts`、`src\query.ts:1065-1183`、`src\services\api\errors.ts:62-77`、`D:\Study\CCode\cCli\src\core\context-manager.ts:200-246`
-- [M3-方案解析 §五](../M3-方案解析.md) 踩坑预警（本文补充其 §5.5 未覆盖的"API 报超限后恢复"）
+- [M3-方案解析 §五](../里程碑/M3-方案解析.md) 踩坑预警（本文补充其 §5.5 未覆盖的"API 报超限后恢复"）
 
 ---
 
@@ -222,7 +222,7 @@ P4 真机落盘验证时 GLM 持续 429，一度归因配额耗尽。核查端�
 ### 关联
 
 - 参考：CCode `D:\Study\CCode\cCli\src\config\config-manager.ts:53`（GLM 默认 coding 端点）
-- 实现：[M2-方案解析 §Provider baseURL Q&A](../M2-方案解析.md)、`src/providers/config.ts` `resolveBaseURL`
+- 实现：[M2-方案解析 §Provider baseURL Q&A](../里程碑/M2-方案解析.md)、`src/providers/config.ts` `resolveBaseURL`
 - 方法论：#004（LLM 知识失真——因果断言同属核查红线）
 
 ---
@@ -402,4 +402,4 @@ key 一变，React 卸载旧 `<Static>`、挂载全新的 → 内部「已写出
 ### 关联
 
 - 实现位置：`src/ui/types.ts`（`staticKey` 字段）、`src/ui/use-agent-stream.ts`（`switchSession`/`clear` 自增）、`src/ui/chat-view.tsx`（`<Static key>`）、`src/ui/app.tsx`（`handleResumeConfirm` 清屏）
-- 触发场景：C 方向 `/resume`（详设 `docs/20260806210000_历史会话切换-详设.md` §八 预见了此风险，本坑是其落地）
+- 触发场景：C 方向 `/resume`（详设 `docs/详设/20260806210000_历史会话切换-详设.md` §八 预见了此风险，本坑是其落地）

@@ -12,7 +12,7 @@ const nextId = (): string => `m${++msgSeq}`;
  * 延迟冻结：把挂起的连续只读组合并(多条)/ 直通(单条)后追加进 completedMessages，清空 pending。
  * 纯函数，导出供单测。空 pending 无操作；单条直通(避免 "Read 1 files" 尴尬文案)；
  * 多条合并成 tool_group(Ctrl+O pager 展开 tools 看完整内容)。
- * 详见 docs/20260806220000_折叠组延迟冻结-详设.md。
+ * 详见 docs/详设/20260806220000_折叠组延迟冻结-详设.md。
  */
 export function flushReadSearch(state: StreamState): Pick<StreamState, 'completedMessages' | 'pendingReadSearch'> {
   const pending = state.pendingReadSearch;

@@ -41,7 +41,7 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 |--------|---------|------|
 | M1 Agent Loop | 工具调用协议、while 循环、id 配对 | ✅ 完成 |
 | M2 多模型适配 | Provider 抽象、协议差异、能力探测 | ✅ 完成 |
-| M3 上下文压缩 + Session | token 计数、摘要压缩、结果截断、Session 持久化 | 🟡 P1-P4 完成，P5 待（⚠️ 超限响应式恢复 L3 未接线，见 [审查报告](../20260807_ECode项目审查报告.md) 🔴-1）|
+| M3 上下文压缩 + Session | token 计数、摘要压缩、结果截断、Session 持久化 | 🟡 P1-P4 完成，P5 待（⚠️ 超限响应式恢复 L3 未接线，见 [审查报告](../总纲/ECode项目审查报告.md) 🔴-1）|
 | M3.5 交互式 CLI | 沉浸 REPL、slash 命令、流式渲染、中断、富文本/TUI | 🟡 进行中（REPL/斜杠/折叠组/pager/会话切换/**Esc-Ctrl+C 分工**已落地，Ctrl+O B+ 精简代码完成待真机）|
 | M4 权限系统 | default/acceptEdits/plan/bypass、危险命令拦截 | ⬜ 未开始 |
 | M5+ 进阶 | 可观测性 / Repo Map / Subagent | ⬜ 未开始 |
@@ -52,8 +52,8 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 - ✅ P1 格式 v2（声明式工具，executor 纯 find+execute 分发，无 switch/case）
 - ✅ P2 token 计数（`length/4` 粗估，零依赖，仿 Claude Code）+ 截断（tool_result 内容截断）
 - ✅ P3 上下文压缩（maybeCompress 级联：trim tool_result 内容 → summary；trim 保留 tool_use_id 配对不断裂）
-- ⚠️ 超限恢复插队——**L3 响应式未接线（死代码）**（2026-08-07 审查核实）：L2 trim / L4 熔断的纯函数已实现，但 L3 forceCompact 响应式恢复**只在 context-manager.ts 实现，agent.ts catch（:459）从未调用**（只处理 AbortError）。即"函数级绿、集成级红"，本节 §现象描述的死局实际未解决。详见 [审查报告 🔴-1](../20260807_ECode项目审查报告.md)；纠正见 [debugging.md #005](./debugging.md)。下次修 M3 接线 catch 块 + 补回归测试。
-- ✅ **P4 Session 持久化**：`src/session.ts`（纯数据层，原子写 tmp+rename，覆盖语义剔除 -2）+ agent loop 挂载（首轮/每轮末/压缩后/结束）+ CLI `--continue`/`-c`/`--resume`/`--sessions`（不带任务=纯恢复不调 LLM）。设计见 [M3-实施方案.md](../M3-实施方案.md) §6，剔除 -2 决策见 [decisions.md #002](./decisions.md)
+- ⚠️ 超限恢复插队——**L3 响应式未接线（死代码）**（2026-08-07 审查核实）：L2 trim / L4 熔断的纯函数已实现，但 L3 forceCompact 响应式恢复**只在 context-manager.ts 实现，agent.ts catch（:459）从未调用**（只处理 AbortError）。即"函数级绿、集成级红"，本节 §现象描述的死局实际未解决。详见 [审查报告 🔴-1](../总纲/ECode项目审查报告.md)；纠正见 [debugging.md #005](./debugging.md)。下次修 M3 接线 catch 块 + 补回归测试。
+- ✅ **P4 Session 持久化**：`src/session.ts`（纯数据层，原子写 tmp+rename，覆盖语义剔除 -2）+ agent loop 挂载（首轮/每轮末/压缩后/结束）+ CLI `--continue`/`-c`/`--resume`/`--sessions`（不带任务=纯恢复不调 LLM）。设计见 [M3-实施方案.md](../里程碑/M3-实施方案.md) §6，剔除 -2 决策见 [decisions.md #002](./decisions.md)
 - ✅ 151 单测（session 21 + context-resilience 20 + …）；tsc clean
 - 🟡 真实 LLM 端到端落盘：待配 `.env` key 实跑（单测 + tsc + CLI 免费分流已验证）
 - ⬜ P5 伴随特性（并行只读工具 / retry 读 Retry-After / usage 细化）
@@ -69,11 +69,11 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 - ✅ 代码 4 commits：① config 首启自动生成模板+JSON注释兼容（787fad8）② 折叠组延迟冻结—连续只读工具合并摘要（fd56e5a）③ Ctrl+O 转录按对话分组精简+修双❯/退出键/蜂鸣音（8485b08）④ **Esc/Ctrl+C 横向分工**（b972f13，⚠️ breaking）
 - ✅ 测试：agent-stream.test.ts 补 maybeCompress 主动压缩端到端触发 + glm-5.2 config 取值（待提交）
 - 📄 调研/审查文档（**均未实施，待审核**）：
-  - [消息区分设计—光标/loading/对话标识](../消息区分设计方案-光标loading对话标识.md)（CC 源码实证：user 整行背景/● 点/▋ 闪烁光标/星号家族 spinner）
-  - [Todo 功能方案](../Todo功能方案.md)（常驻下方，抄 CC TodoWriteTool 全替换语义）
-  - [用户插话机制方案](../用户插话机制方案.md)（抄 CC mid-turn drain：运行中排队，工具完成后注入）
-  - [M4 权限系统三源交叉验证报告](../M4-权限系统三源交叉验证报告.md)（CC/opencode/CCode 对比，建议以 opencode 为模板）
-  - [ECode 项目审查报告](../20260807_ECode项目审查报告.md)（3 P0 / 8 🟡 / 7 🟢）
+  - [消息区分设计—光标/loading/对话标识](../功能方案/消息区分设计方案-光标loading对话标识.md)（CC 源码实证：user 整行背景/● 点/▋ 闪烁光标/星号家族 spinner）
+  - [Todo 功能方案](../功能方案/Todo功能方案.md)（常驻下方，抄 CC TodoWriteTool 全替换语义）
+  - [用户插话机制方案](../功能方案/用户插话机制方案.md)（抄 CC mid-turn drain：运行中排队，工具完成后注入）
+  - [M4 权限系统三源交叉验证报告](../里程碑/M4-权限系统三源交叉验证报告.md)（CC/opencode/CCode 对比，建议以 opencode 为模板）
+  - [ECode 项目审查报告](../总纲/ECode项目审查报告.md)（3 P0 / 8 🟡 / 7 🟢）
 - ⚠️ **3 个 P0（已实读代码核实为真，待决策修复）**：
   - 🔴-1 L3 响应式恢复死代码（见上 ⚠️ 超限恢复行）
   - 🔴-2 `allow` vs `allow_always` 语义塌陷（agent.ts:379 无条件 add，一次性许可被升级为永久）—— M4 权限前置基础
@@ -87,13 +87,13 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 
 ## 关键文档
 
-- `docs/00-开发规划.md` — 总规划与里程碑
-- `docs/M1-技术选型与理由.md` — 选型决策（ESM / Vitest / tsx / tsconfig）
-- `docs/M1-实施方案.md` — 骨架记录 + M1 补全清单 + 验收
-- `docs/M1-方案解析.md` — 协议/SDK 原理 + 设计答疑（合并原 03/04/notes）
-- `docs/M2-实施方案.md` / `M2-方案解析.md` — Provider 抽象层（接口/翻译/能力探测）
-- `docs/借鉴Vercel-AI-SDK对比报告.md` — 11 个借鉴点（Top5 优先级 + 演进路线）
-- `docs/M3-实施方案.md` / `M3-方案解析.md` — 上下文管理 + Session（5 Phase + 压缩算法）⬜ 待审阅
+- `docs/总纲/00-开发规划.md` — 总规划与里程碑
+- `docs/里程碑/M1-技术选型与理由.md` — 选型决策（ESM / Vitest / tsx / tsconfig）
+- `docs/里程碑/M1-实施方案.md` — 骨架记录 + M1 补全清单 + 验收
+- `docs/里程碑/M1-方案解析.md` — 协议/SDK 原理 + 设计答疑（合并原 03/04/notes）
+- `docs/里程碑/M2-实施方案.md` / `M2-方案解析.md` — Provider 抽象层（接口/翻译/能力探测）
+- `docs/调研/借鉴Vercel-AI-SDK对比报告.md` — 11 个借鉴点（Top5 优先级 + 演进路线）
+- `docs/里程碑/M3-实施方案.md` / `M3-方案解析.md` — 上下文管理 + Session（5 Phase + 压缩算法）⬜ 待审阅
 
 ## 本地参考源码（M3.5 起参照，避免每次联网查）
 
@@ -104,7 +104,7 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 | CCode（社区对标） | `D:\Study\CCode\cCli` | 同栈(TS+Node)最直接参照：Ink REPL、审批弹窗、CLAUDE.md fallback、AgentLoop 事件流 |
 | Claude Code（本尊） | `D:\Study\claude-code-main` | 审批完整规格、自研 Ink fork、partial compact 等设计思想（仅学思想不学规模）。已核查(2026-08-04)：REPL.tsx 5005行 / main.tsx 4683行 / bashPermissions 2621行 均准确；但 Tool.ts 实 792行（文档误称29K）、commands.ts 实 754行（误称25K）——疑字节数误标行数，引用时注意 |
 | opencode（SST） | `D:\Study\opencode` | 同 TS 栈、OpenTUI/SolidJS、客户端-服务端分离、Effect-TS |
-| OpenClaw | `D:\Study\openclaw` | ⚠️ **非 coding agent**（多渠道个人助手网关），只参考两块特色：① skill 的 `SKILL.md`+frontmatter 格式 + 懒加载注入 + **proposal 审批队列**（skill「自动归纳」实为纯正则、别抄）；② **systemRunPlan 审批守恒**（M4 bash 权限分级时抄，单文件即可）。Gateway/ACP/Canvas/跨设备 pairing 全是过度设计，别碰。详见 [OpenClaw参考研究](../20260806085241_OpenClaw参考研究.md) |
+| OpenClaw | `D:\Study\openclaw` | ⚠️ **非 coding agent**（多渠道个人助手网关），只参考两块特色：① skill 的 `SKILL.md`+frontmatter 格式 + 懒加载注入 + **proposal 审批队列**（skill「自动归纳」实为纯正则、别抄）；② **systemRunPlan 审批守恒**（M4 bash 权限分级时抄，单文件即可）。Gateway/ACP/Canvas/跨设备 pairing 全是过度设计，别碰。详见 [OpenClaw参考研究](../调研/20260806085241_OpenClaw参考研究.md) |
 | ECode（本项目） | `D:\Study\ECode` | 自身源码 |
 
 > 路径跨设备可能不同（用户名/盘符），核查时以实际为准。核查文档断言时遵循 [debugging.md #004](./debugging.md)：LLM 既有知识写"具体数值/行号"易失真，必须实读源码核对。

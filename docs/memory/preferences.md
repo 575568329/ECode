@@ -13,4 +13,4 @@
 4. **测试名诚实反映前置**：`/help 输出` 掩盖了它依赖「已进对话」；应叫 `对话中途 /help`，或拆成「首条 /help」「中途 /help」两条。
 5. **L2 之外保留真实冒烟**：`started` 这类「控制渲染分支」的状态机 bug，L2 单测未必覆盖；定期 `npm run dev` 或上 L3 tmux 过核心路径。
 
-关联：踩坑机理见 [debugging.md](./debugging.md)；方向 D 全文见 `docs/20260806173000_REPL交互优化-调研总览.md` 第六节。
+关联：踩坑机理见 [debugging.md](./debugging.md)；方向 D 全文见 `docs/调研/20260806173000_REPL交互优化-调研总览.md` 第六节。

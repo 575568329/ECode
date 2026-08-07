@@ -2,7 +2,7 @@
 // 纯函数：把 session.ts 落盘的 LLM messages 还原成 UI 渲染层 DisplayMessage。
 // 方向单向（LLM→UI）；严禁反向——types.ts line 1-3 注释明令不得从 DisplayMessage[] 重建 messages。
 //
-// 配对规则（详设 docs/20260806210000_历史会话切换-详设.md §3.5）：
+// 配对规则（详设 docs/详设/20260806210000_历史会话切换-详设.md §3.5）：
 //   assistant 的 tool_call block 记入 toolCallMap（按 id），等 user 的 tool_result block
 //   配对补全 name/input 后产 tool 消息。孤儿 tool_call（无配对 result）跳过；无配对 call 的
 //   result 用 tool_use_id 兜底 name。多 text block 合并为一条 assistant 文本。

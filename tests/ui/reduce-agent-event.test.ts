@@ -195,7 +195,7 @@ describe('reduceAgentEvent', () => {
 });
 
 // ---- 折叠组延迟冻结（reduce-agent-event 挂起连续只读工具，破坏时合并 flush）----
-// 详见 docs/20260806220000_折叠组延迟冻结-详设.md
+// 详见 docs/详设/20260806220000_折叠组延迟冻结-详设.md
 
 describe('flushReadSearch（延迟冻结合并纯函数）', () => {
   it('空 pending → 无操作', () => {

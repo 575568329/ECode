@@ -1,5 +1,5 @@
 // format-transcript —— DisplayMessage[] → 精简分组的转录纯文本（pager/less 输入）。
-// B+ 方案（docs/20260806232155）：按 user 提问分组，只输出「被折叠/裁剪的工具完整 content」——
+// B+ 方案（docs/详设/20260806232155）：按 user 提问分组，只输出「被折叠/裁剪的工具完整 content」——
 // 即主界面看不到的关键内容。跳过 assistant/warning/error/edit_file/未裁剪的单工具；
 // 无折叠工具的轮次整体跳过；空结果 → 空串（调用方据此不进 pager）。
 //

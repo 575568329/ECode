@@ -145,3 +145,53 @@ describe('ToolDefinition.dangerous 标记（M3.5 权限闸门消费）', () => {
     }
   });
 });
+
+describe('🔴-A 新增工具集（write_file/delete_file/move/ls）', () => {
+  it('副作用工具（write_file/delete_file/move）标记为 dangerous', () => {
+    const sideEffect = toolDefinitions.filter((t) =>
+      ['write_file', 'delete_file', 'move'].includes(t.name),
+    );
+    expect(sideEffect.length).toBe(3); // 三个都在
+    for (const t of sideEffect) {
+      expect(t.dangerous).toBe(true);
+    }
+  });
+
+  it('ls 工具未标 dangerous（只读放行）', () => {
+    const ls = toolDefinitions.find((t) => t.name === 'ls');
+    expect(ls?.dangerous ?? false).toBe(false);
+  });
+
+  it('每个新工具都有 execute 函数', () => {
+    const news = toolDefinitions.filter((t) =>
+      ['write_file', 'delete_file', 'move', 'ls'].includes(t.name),
+    );
+    expect(news.length).toBe(4);
+    for (const t of news) {
+      expect(typeof t.execute).toBe('function');
+    }
+  });
+});
+
+describe('🔴-A 新工具参数缺失校验（executor 统一 required）', () => {
+  it('write_file 缺 content 应返回 isError(参数缺失)', async () => {
+    const result = await executeTool('write_file', { path: '/a' });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('参数缺失');
+    expect(result.content).toContain('content');
+  });
+
+  it('delete_file 缺 path 应返回 isError(参数缺失)', async () => {
+    const result = await executeTool('delete_file', {});
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('参数缺失');
+    expect(result.content).toContain('path');
+  });
+
+  it('move 缺 destination 应返回 isError(参数缺失)', async () => {
+    const result = await executeTool('move', { source: '/a' });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('参数缺失');
+    expect(result.content).toContain('destination');
+  });
+});

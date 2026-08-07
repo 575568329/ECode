@@ -119,19 +119,20 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
       void openPager();
       return;
     }
-    if (key.escape && api.isRunning && !api.pendingPermission && !resumeOpen) {
-      api.abort();
-      return;
-    }
+    // Ctrl+C（详设 docs/20260807000318，2026-08-07 反转）：单击中断对话（streaming→abort），
+    // 双击(2s 内) 关闭对话（process.exit）。中断+退出都归 Ctrl+C；Esc 只退出弹窗+清空输入框。
+    // Esc 不再在此处理——弹窗内 Esc 由各 modal 组件自身 useInput 接（picker/permission/session），
+    // 主区 Esc 双击清空由 InputBar 接；故 App 全局对 Esc 无操作。
     if (key.ctrl && input === 'c') {
-      // Ctrl+C = 硬退出（专职）：双击(2s 内) process.exit；单击只记退出窗口（StatusBar 提示「再按退出」）。
-      // 不再 abort——中断专职交给 Esc（横向分工，详设 docs/20260807000318）。
       const now = Date.now();
       if (now - lastCtrlCRef.current < DOUBLE_CTRL_C_MS) {
-        process.exit(0);
+        process.exit(0); // 双击 → 关闭对话
       }
       lastCtrlCRef.current = now;
-      setLastCtrlC(now); // 触发重绘 → phase 重算进 exit-window（StatusBar 提示「再按退出」）
+      setLastCtrlC(now); // 单击进退出窗口（StatusBar 提示「再按 ctrl+c 退出」）
+      if (api.isRunning) {
+        api.abort(); // 单击：streaming 时中断对话
+      }
     }
   });
 

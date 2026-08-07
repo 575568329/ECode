@@ -39,7 +39,7 @@ function ctxColor(pct: number): string {
 function dynamicText(phase: StatusBarPhase): { text: string; color: string } {
   switch (phase) {
     case 'streaming':
-      return { text: 'esc to interrupt', color: T.warning };
+      return { text: 'ctrl+c to interrupt', color: T.warning };
     case 'exit-window':
       return { text: 'press ctrl+c again to exit', color: T.warning };
     case 'permission':

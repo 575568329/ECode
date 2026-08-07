@@ -38,7 +38,7 @@ describe('<StatusBar />', () => {
   it('Ctx >80% → Ctx% 变 warning 色（RGB 出现在 ANSI）+ streaming 动态段', () => {
     const { lastFrame } = render(<StatusBar {...base} ctxPercent={85} phase="streaming" />);
     const f = lastFrame() ?? '';
-    expect(f).toContain('esc to interrupt');
+    expect(f).toContain('ctrl+c to interrupt');
     // warning 色 #FAB387 经 ink 转 RGB truecolor（38;2;250;179;135），hex 字面量不会出现。
     expect(f).toContain(hexToRgb(T.warning));
   });

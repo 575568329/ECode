@@ -61,7 +61,7 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 **M3.5 交互式 CLI 进行中**（2026-08 起，单测 400 绿）：
 - ✅ 沉浸 Ink REPL（app/chat-view/input-bar/status-bar/welcome）+ 斜杠命令（/help /cost /sessions /clear /resume /exit）+ 斜杠补全 picker（↑↓）
 - ✅ 流式渲染（自写 markdown 富文本/表格/list）+ 工具折叠（Inline/Block，per-tool 阈值）+ **折叠组延迟冻结**（连续只读工具合并成 tool_group）
-- ✅ 中断分工（**Esc 专职中断 / Ctrl+C 专职退出**，2026-08-07，详设 docs/20260807000318，⚠️ breaking：streaming 时 Ctrl+C 单击不再中断，改 Esc）+ Ctrl+O pager（less 转录，alternate screen）+ 会话切换（/resume SessionPicker）
+- ✅ 键位分工（**Ctrl+C 单击中断/双击退出·Esc 退出弹窗+双击清空**，2026-08-07 二次修订反转 b972f13，详设 docs/20260807000318）+ Ctrl+O pager（less 转录，alternate screen）+ 会话切换（/resume SessionPicker）
 - 🟡 **Ctrl+O B+ 精简**（2026-08-06，详设 docs/20260806232155）：format-transcript 按对话分组只留折叠工具（D）+ 进 alternate 前等重绘修双❯（C）+「按 q 退出」提示（G）— 代码完成，**待真机确认**
 - ⬜ #40 真机冒烟（D/C/G）+ A 重复文本（streamingText 跨轮累加，待 reducer 日志验证）/ B 乱码（Windows find.exe+GBK）— 另立项
 

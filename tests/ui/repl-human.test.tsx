@@ -250,38 +250,56 @@ describe('REPL 人肉驱动 —— 快捷键（按实际反馈）', () => {
     await sim.waitFor((f) => f.includes('草稿'));
   });
 
-  it('Esc 中断运行中流（isRunning→false，输入栏恢复）', async () => {
+  it('Ctrl+C 中断运行中流（isRunning→false，输入栏恢复）', async () => {
+    // 键位分工（详设 docs/20260807000318，2026-08-07 反转）：Ctrl+C 专职中断（单击）+ 关闭对话（双击）。
     hangingRun();
     const sim = simulate(<App cwd={CWD} />);
     await sim.type('跑起来');
     await sim.enter();
     await sim.waitFor((f) => f.includes('interrupt')); // isRunning=true → InputBar 显 disabled
-    await sim.esc();
+    await sim.ctrlC();
     await sim.waitFor((f) => !f.includes('interrupt')); // abort → 恢复输入栏
   });
 
-  it('Ctrl+C 单击不中断流（中断专职 Esc），进退出窗口提示「再按退出」', async () => {
-    // 详设 docs/20260807000318：Esc 专职中断（软），Ctrl+C 专职退出（硬，双击）。
-    // 故 Ctrl+C 单击不再 abort——仅进退出窗口（StatusBar 提示再按退出），流仍在跑。
+  it('Esc 不中断流（中断专职 Ctrl+C）—— streaming 时 Esc 无效', async () => {
+    // Esc 只做「退出对话框（modal）+ 双击清空输入框」，不中断；中断归 Ctrl+C。
     hangingRun();
     const sim = simulate(<App cwd={CWD} />);
     await sim.type('跑起来');
     await sim.enter();
-    await sim.waitFor((f) => f.includes('interrupt')); // isRunning → InputBar disabled
-    await sim.ctrlC();
-    // Ctrl+C 不 abort：流仍 running；StatusBar 进退出窗口（phase exit-window 优先于 streaming）
-    await sim.waitFor((f) => f.includes('press ctrl+c again'));
-    expect(sim.plain()).toContain('interrupt'); // 仍 running（InputBar 仍 disabled，未中断）
-    sim.unmount(); // mock 挂起等 abort，不中断则手动卸载避免泄漏
+    await sim.waitFor((f) => f.includes('interrupt')); // running
+    await sim.esc(); // Esc 不再中断
+    await sim.waitFor((f) => f.includes('interrupt')); // 仍 running（Esc 无效，未 abort）
+    sim.unmount(); // 挂起 mock 不中断则手动卸载避免泄漏
   });
 
-  it('Ctrl+C 双击 → process.exit', async () => {
+  it('Ctrl+C 双击 → process.exit（关闭对话）', async () => {
     vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('EXIT');
     }) as never);
     const sim = simulate(<App cwd={CWD} />);
-    await sim.ctrlC(); // 单击：仅记退出窗口
-    await expect(sim.ctrlC()).rejects.toThrow('EXIT'); // 双击：退出
+    await sim.ctrlC(); // 单击：进退出窗口
+    await expect(sim.ctrlC()).rejects.toThrow('EXIT'); // 双击：关闭对话
+  });
+
+  it('双击 Esc 清空输入框（idle，有内容→清空）', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('一些草稿');
+    await sim.waitFor((f) => f.includes('一些草稿'));
+    await sim.esc();
+    await sim.esc(); // 双击 → 清空
+    await sim.waitFor((f) => !f.includes('一些草稿'));
+  });
+
+  it('picker 打开时 Esc 关 picker（不退出不清空，输入保留）', async () => {
+    const sim = simulate(<App cwd={CWD} />);
+    await enterConversation(sim);
+    await sim.type('/'); // 触发斜杠 picker
+    await sim.waitFor((f) => f.includes('esc 取消')); // picker 出现（hint 含「esc 取消」）
+    await sim.esc(); // 单击 Esc 关 picker
+    await sim.waitFor((f) => !f.includes('esc 取消')); // picker 消失
+    expect(sim.plain()).toContain('/'); // 输入框保留 '/'（Esc 关 picker 不清空）
   });
 });
 

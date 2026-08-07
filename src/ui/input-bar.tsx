@@ -6,7 +6,7 @@
 //   - 单一 useInput 分支（picker 态 / 非 picker 态），picker 不用独立 useInput，避免抢键。
 //   - 对齐 CC：去 Tab（选中即 Enter 执行，最短路径）；Esc 关 picker（与「中断流」状态互斥不冲突——
 //     app.tsx:66 中断流仅 isRunning 触发，picker 只 idle 出现）。
-import React, { useState, useReducer, useMemo, useEffect } from 'react';
+import React, { useState, useReducer, useMemo, useEffect, useRef } from 'react';
 import { Text, Box, useInput } from 'ink';
 import { T, SYMBOLS } from './theme.js';
 import { PickerList, type PickerItem } from './picker-list.js';
@@ -27,7 +27,8 @@ type HistoryAction =
   | { type: 'push'; text: string }
   | { type: 'up' }
   | { type: 'down' }
-  | { type: 'setDraft'; text: string };
+  | { type: 'setDraft'; text: string }
+  | { type: 'reset' };
 
 function historyReducer(state: HistoryState, action: HistoryAction): HistoryState {
   switch (action.type) {
@@ -46,11 +47,16 @@ function historyReducer(state: HistoryState, action: HistoryAction): HistoryStat
     }
     case 'setDraft':
       return state.index === -1 ? { ...state, draft: action.text } : state;
+    case 'reset':
+      // 双击 Esc 清空：保留已提交历史（items），回到当前草稿态（index=-1）。
+      return { ...state, index: -1, draft: '' };
   }
 }
 
 /** picker 显示的最多候选条数（对齐 CC OVERLAY_MAX_ITEMS，超出滚动）。 */
 const PICKER_MAX_ITEMS = 5;
+/** 双击 Esc 判定窗口（ms）：窗口内第二次 Esc → 清空输入框。单击 Esc 仅记时间、无操作。 */
+const DOUBLE_ESC_MS = 500;
 
 export function InputBar({ onSubmit, disabled = false }: InputBarProps): React.ReactElement {
   const [text, setText] = useState('');
@@ -58,6 +64,8 @@ export function InputBar({ onSubmit, disabled = false }: InputBarProps): React.R
   const [pickerIndex, setPickerIndex] = useState(0);
   // Esc 关 picker 后置位；继续编辑（字符/backspace）复位，使 picker 可重显。text 保留。
   const [pickerDismissed, setPickerDismissed] = useState(false);
+  // 双击 Esc 清空输入框：ref 记上次 Esc 时间（ref 即时判双击，不触发重绘；清空走 setText 才重绘）。
+  const lastEscRef = useRef(0);
 
   // 候选（派生）：/ 开头 + 无空格（带参不提示，对齐 CC hasCommandArgs）→ 前缀匹配。
   // useMemo 稳定引用：text 不变则 candidates 不变 → ↑↓ 改 pickerIndex 不会触发 reset effect。
@@ -103,7 +111,17 @@ export function InputBar({ onSubmit, disabled = false }: InputBarProps): React.R
         return;
       }
     } else {
-      // 非 picker：历史导航 + 提交（原逻辑）。
+      // 非 picker：Esc 双击清空 + 历史导航 + 提交。
+      if (key.escape) {
+        // 双击 Esc（DOUBLE_ESC_MS 内第二次）→ 清空输入框；单击仅记时间，无操作。
+        const now = Date.now();
+        if (now - lastEscRef.current < DOUBLE_ESC_MS) {
+          setText('');
+          dispatch({ type: 'reset' }); // 清当前输入 + 回到草稿态（浏览历史时也回到空白）
+        }
+        lastEscRef.current = now;
+        return;
+      }
       if (key.upArrow) {
         dispatch({ type: 'setDraft', text });
         dispatch({ type: 'up' });
@@ -142,7 +160,7 @@ export function InputBar({ onSubmit, disabled = false }: InputBarProps): React.R
     return (
       <Text color={T.warning}>
         {SYMBOLS.warning} running · {''}
-        <Text color={T.muted}>esc to interrupt</Text>
+        <Text color={T.muted}>ctrl+c to interrupt</Text>
       </Text>
     );
   }

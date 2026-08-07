@@ -60,7 +60,7 @@ describe('<InputBar />', () => {
     expect(lastFrame()).toContain('second');
   });
 
-  it('disabled=true → 显示 esc to interrupt，不显输入提示', () => {
+  it('disabled=true → 显示 ctrl+c to interrupt，不显输入提示', () => {
     const { lastFrame } = render(<InputBar onSubmit={vi.fn()} disabled />);
     const f = lastFrame() ?? '';
     expect(f.toLowerCase()).toContain('interrupt');

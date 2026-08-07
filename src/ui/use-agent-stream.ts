@@ -5,11 +5,13 @@
 //   - generation 计数器防竞态（§4.4）：abort A 后启 B，A 的 finally 不覆盖 B
 //   - 权限 gate 内部把 allow_always 映射成 allow + allow.add（§4.5，agent core 无感）
 import { useCallback, useRef, useState } from 'react';
-import { runAgentStream } from '../agent.js';
+import { runAgentStream, compactMessages } from '../agent.js';
 import type { RunAgentStreamOptions, ResumeContext } from '../agent.js';
 import { AllowList } from '../permission.js';
 import { reduceAgentEvent, initialStreamState } from './reduce-agent-event.js';
 import type { StreamState, DisplayMessage, PendingPermission } from './types.js';
+import { getDefaultModel } from '../providers/config.js';
+import { messagesToDisplayMessages } from './messages-to-display.js';
 
 export interface UseAgentStreamReturn {
   completedMessages: DisplayMessage[];
@@ -39,6 +41,8 @@ export interface UseAgentStreamReturn {
   addMessage: (msg: DisplayMessage) => void;
   /** 切换到指定会话：重置续接上下文（sessionRef）+ 用历史还原渲染态（/resume 载入用）。 */
   switchSession: (resume: ResumeContext, history: DisplayMessage[]) => void;
+  /** 手动触发上下文压缩（/compact 命令用，D2）。返回前后消息数；null = 无会话或熔断。 */
+  compact: () => Promise<{ before: number; after: number } | null>;
   /** 当前会话 id（sessionRef.current?.id）；null = 新会话未建立。/resume 过滤当前会话用。 */
   currentSessionId: () => string | null;
 }
@@ -175,6 +179,32 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     }));
   }, []);
 
+  // /compact 手动触发（D2）：调 compactMessages（agent.ts 导出，内部 createProvider+forceCompact）。
+  // 四盲点：① provider 路径由 compactMessages 封装 ② 进度反馈在 app.tsx case ③ sessionRef 显式同步
+  //        ④ staticKey++ 重灌历史。仿 switchSession 重置渲染态。
+  const compact = useCallback(async (): Promise<{ before: number; after: number } | null> => {
+    if (!sessionRef.current || sessionRef.current.messages.length === 0) return null;
+    const before = sessionRef.current.messages.length;
+    const compressed = await compactMessages(sessionRef.current.messages, {
+      model: opts.model ?? getDefaultModel(),
+      system: opts.system ?? '',
+    });
+    if (!compressed) return null; // 熔断（压到极限仍超限）
+    // 盲点③：sessionRef 显式同步（/compact 不走 agent loop，否则下次 submit 回喂旧 messages）
+    sessionRef.current = { ...sessionRef.current, messages: compressed };
+    const after = compressed.length;
+    // 盲点④⑤：staticKey++ + 重置渲染态，用压缩后历史重灌 completedMessages
+    setState((prev) => ({
+      ...prev,
+      completedMessages: messagesToDisplayMessages(compressed),
+      streamingText: null,
+      activeTools: [],
+      pendingReadSearch: [],
+      staticKey: prev.staticKey + 1,
+    }));
+    return { before, after };
+  }, [opts.model, opts.system]);
+
   const currentSessionId = useCallback(() => sessionRef.current?.id ?? null, []);
 
   return {
@@ -195,6 +225,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     clear,
     addMessage,
     switchSession,
+    compact,
     currentSessionId,
   };
 }

@@ -15,9 +15,11 @@ import { ChatView } from './chat-view.js';
 import { InputBar } from './input-bar.js';
 import { PermissionDialog } from './permission-dialog.js';
 import { SessionPicker } from './session-picker.js';
+import { ModelPicker } from './model-picker.js';
+import type { PickerItem } from './picker-list.js';
 import { StatusBar, type StatusBarPhase } from './status-bar.js';
 import { parseUserInput, SLASH_COMMANDS } from '../slash-commands.js';
-import { getContextWindow, getDefaultModel } from '../providers/config.js';
+import { getContextWindow, getDefaultModel, listAvailableModels } from '../providers/config.js';
 import { listSessions, loadSession } from '../session.js';
 import type { ECodeSessionSummary } from '../session.js';
 import { messagesToDisplayMessages } from './messages-to-display.js';
@@ -46,11 +48,16 @@ interface AppProps {
 }
 
 export function App({ model, cwd, loadStatus, system, version }: AppProps): React.ReactElement {
-  const api = useAgentStream({ model, system });
+  // currentModel：可变 model state（/model 切换 → 下一轮 submit 用新 model）。model prop 是初始值。
+  const [currentModel, setCurrentModel] = useState(model);
+  // /model 选择器（D1，照搬 SessionPicker）：modelOpen 时 ModelPicker 替换 InputBar。
+  const [modelOpen, setModelOpen] = useState(false);
+  const [modelOptions, setModelOptions] = useState<PickerItem[]>([]);
+  const api = useAgentStream({ model: currentModel, system });
 
   // 状态栏上下文百分比分母：用模型真实 contextWindow（config.json 可逐模型配置/覆盖），
   // 替代早期硬编码 60K——GLM 窗口 1M，硬编码会让百分比一眼顶到 99% 误报"超了"。
-  const contextWindow = getContextWindow(model ?? getDefaultModel());
+  const contextWindow = getContextWindow(currentModel ?? getDefaultModel());
 
   // started：用户是否已 submit 过（含被命令清空后——清空不回退到欢迎屏）。
   const [started, setStarted] = useState(false);
@@ -76,7 +83,7 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
   // 默认 loadStatus：CLAUDE.md 不确定时给 null，provider 用 model 推断。
   const status: LoadStatus = loadStatus ?? {
     claudeMd: null,
-    provider: { ok: true, label: model ?? 'default' },
+    provider: { ok: true, label: currentModel ?? 'default' },
   };
 
   // Ctrl+O → 进转录 pager 看完整会话（整段 completedMessages → less 全屏）。
@@ -156,14 +163,15 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
     if (!isExit) setStarted(true);
 
     if (parsed.type === 'command') {
-      handleCommand(parsed.name);
+      // 命令 dispatch 异步（/compact 内部 await api.compact()）；fire-and-forget 不阻塞 submit。
+      void handleCommand(parsed.name, parsed.args);
       return;
     }
     api.submit(parsed.text);
   };
 
   // 斜杠命令分发（§5.1：UI 拦截命令，不送 LLM）。
-  const handleCommand = (name: string) => {
+  const handleCommand = async (name: string, args: string[]): Promise<void> => {
     switch (name) {
       case 'clear':
         api.clear();
@@ -211,14 +219,58 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
         setResumeOpen(true);
         return;
       }
-      case 'compact':
-      case 'model':
-        api.addMessage({
-          kind: 'warning',
-          id: `sys-todo-${Date.now()}`,
-          text: `/${name} 命令尚未实现，将在后续版本补全。`,
-        });
+      case 'model': {
+        // D1 /model：`/model xxx` 直接切（精确或前缀匹配），`/model` 开 picker。
+        const direct = args[0];
+        const available = listAvailableModels();
+        if (direct) {
+          const hit = available.find((m) => m.model === direct || m.model.startsWith(direct));
+          if (hit) {
+            setCurrentModel(hit.model);
+            api.addMessage({
+              kind: 'warning',
+              id: `sys-model-${Date.now()}`,
+              text: `已切换到模型: ${hit.model}（${hit.provider}）`,
+            });
+            return;
+          }
+          // 未命中：提示 + 开 picker 让用户从列表选
+          api.addMessage({
+            kind: 'warning',
+            id: `sys-model-${Date.now()}`,
+            text: `未找到模型 "${direct}"，请从列表选择：`,
+          });
+        }
+        const opts = available
+          .filter((m) => m.model !== currentModel)
+          .map((m) => ({ name: m.model, description: m.provider }));
+        if (opts.length === 0) {
+          api.addMessage({ kind: 'warning', id: `sys-model-${Date.now()}`, text: '没有其他可选模型。' });
+          return;
+        }
+        setModelOptions(opts);
+        setModelOpen(true);
         return;
+      }
+      case 'compact': {
+        // D2 /compact：手动触发上下文压缩。盲点② 进度反馈（压缩耗时数秒~几十秒）。
+        api.addMessage({ kind: 'warning', id: `sys-compact-start-${Date.now()}`, text: '正在压缩上下文…' });
+        const result = await api.compact();
+        if (result === null) {
+          api.addMessage({
+            kind: 'warning',
+            id: `sys-compact-${Date.now()}`,
+            text: '压缩未执行：无活跃会话，或已达压缩极限。',
+          });
+        } else {
+          api.addMessage({
+            kind: 'warning',
+            id: `sys-compact-${Date.now()}`,
+            text: `已压缩上下文：${result.before} → ${result.after} 条消息。`,
+          });
+        }
+        return;
+      }
       default:
         return;
     }
@@ -268,6 +320,16 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
           onConfirm={handleResumeConfirm}
           onCancel={() => setResumeOpen(false)}
         />
+      ) : modelOpen ? (
+        <ModelPicker
+          options={modelOptions}
+          onConfirm={(modelName) => {
+            setCurrentModel(modelName);
+            setModelOpen(false);
+            api.addMessage({ kind: 'warning', id: `sys-model-${Date.now()}`, text: `已切换到模型: ${modelName}` });
+          }}
+          onCancel={() => setModelOpen(false)}
+        />
       ) : api.pendingPermission ? (
         <PermissionDialog
           permission={api.pendingPermission}
@@ -279,8 +341,8 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
 
       <StatusBar
         usage={api.usage}
-        model={model ?? 'default'}
-        provider={model ?? 'default'}
+        model={currentModel ?? 'default'}
+        provider={currentModel ?? 'default'}
         ctxPercent={Math.min(99, Math.round((api.latestInputTokens / contextWindow) * 100))}
         phase={phase}
         startedAt={startedAt}

@@ -206,6 +206,31 @@ function safeParseToolInput(s: string): Record<string, unknown> {
 }
 
 /**
+ * 手动触发上下文压缩（/compact 命令用，D2）。
+ * 不走 agent loop——UI 层直接调:内部 createProvider + 构造 summarize + forceCompact。
+ * 与 runAgentStream 内部的 compressOpts.summarize 同构（压缩器 system + 禁工具 + 取首个 text block），
+ * 不复用 runAgentStream 的闭包变量（保持其稳定，§1.7 不重构周边）。
+ * @returns 压缩后的 messages；null = 熔断（压到极限仍超限）或空 messages
+ */
+export async function compactMessages(
+  messages: ECodeMessage[],
+  opts: { model: string; system: string },
+): Promise<ECodeMessage[] | null> {
+  if (messages.length === 0) return messages;
+  const provider = createProvider(opts.model);
+  const summarize = async (prompt: string): Promise<string> => {
+    const resp = await provider.complete({
+      model: opts.model,
+      system: '你是对话历史压缩器。',
+      messages: [{ role: 'user', content: prompt }],
+      tools: [], // 压缩禁工具
+    });
+    return resp.content.find((b) => b.type === 'text')?.text ?? '';
+  };
+  return forceCompact(messages, { model: opts.model, system: opts.system, summarize });
+}
+
+/**
  * 事件化 agent loop。
  *
  * 用法：`for await (const event of runAgentStream(task, opts)) { ... }`

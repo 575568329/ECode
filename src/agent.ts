@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { toolDefinitions, executeTool } from './tools/index.js';
+import { validateAfterEdit } from './tools/validation.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { createProvider } from './providers/factory.js';
 import { getDefaultModel, hasCapability } from './providers/config.js';
@@ -457,6 +458,18 @@ export async function* runAgentStream(
             content: `工具执行异常: ${err instanceof Error ? err.message : String(err)}`,
             isError: true,
           };
+        }
+
+        // P0-5 后置验证：edit_file/write_file 成功后跑 build/test，失败回喂 LLM（降级不杀 agent）。
+        // projectRoot 用 process.cwd()（CLI 启动目录=项目根；工具 input 无 cwd 字段）。
+        if (!result.isError) {
+          const vfail = await validateAfterEdit(tc.name, process.cwd());
+          if (vfail) {
+            result = {
+              content: `文件已修改，但后置验证失败（${vfail.command}，${vfail.duration}ms）：\n${vfail.output}\n请根据上述输出修复。`,
+              isError: true,
+            };
+          }
         }
 
         logToolExecution(iteration, tc.name, tc.input, result.content, result.isError);

@@ -21,6 +21,8 @@ export interface ECodeConfig {
   defaultModel?: string;
   providers: Record<string, ProviderConfig>;
   models: Record<string, ModelConfig>;
+  /** P0-5 后置验证开关（edit/write 后跑 build/test，失败回喂）。默认 true；用户可设 false 关闭。 */
+  validation?: { enabled?: boolean };
 }
 
 const CONFIG_PATH = join(homedir(), '.ecode', 'config.json');
@@ -132,6 +134,11 @@ export function hasCapability(model: string, cap: ModelCapability): boolean {
 
 export function listAvailableModels(): Array<{ model: string; provider: string }> {
   return Object.entries(loadConfig().models).map(([model, mc]) => ({ model, provider: mc.provider }));
+}
+
+/** P0-5 后置验证是否启用（config.validation.enabled，默认 true）。validation.ts 集成层调用。 */
+export function isValidationEnabled(): boolean {
+  return loadConfig().validation?.enabled ?? true;
 }
 
 /** 获取模型上下文窗口大小（token），未配置时默认 128K */

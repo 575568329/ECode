@@ -16,6 +16,7 @@ import {
   hasCapability,
   listAvailableModels,
   resolveBaseURL,
+  isValidationEnabled,
   _resetConfigCacheForTest,
 } from '../../src/providers/config.js';
 
@@ -66,6 +67,11 @@ describe('config（默认配置，文件不存在）', () => {
     expect(getProviderConfig('deepseek').baseURLEnv).toBe('DEEPSEEK_BASE_URL');
     expect(getProviderConfig('claude').baseURLEnv).toBe('ANTHROPIC_BASE_URL');
   });
+
+  // P0-5 后置验证开关：默认配置无 validation 字段 → ?? true（开箱启用验证）
+  it('后置验证默认启用（DEFAULT_CONFIG 无 validation 字段，?? true）', () => {
+    expect(isValidationEnabled()).toBe(true);
+  });
 });
 
 describe('config（读取文件）', () => {
@@ -90,6 +96,20 @@ describe('config（读取文件）', () => {
     vi.mocked(existsSync).mockReturnValue(true);
     vi.mocked(readFileSync).mockReturnValue('{ 不是合法 json');
     expect(getDefaultModel()).toBe('glm-5.2');
+  });
+
+  // P0-5：用户在 config.json 设 validation.enabled=false → 关闭后置验证
+  it('validation.enabled=false → isValidationEnabled 返回 false', () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({
+        defaultModel: 'glm-5.2',
+        providers: {},
+        models: {},
+        validation: { enabled: false },
+      }),
+    );
+    expect(isValidationEnabled()).toBe(false);
   });
 
   // 真实 ~/.ecode/config.json 由 writeConfigTemplate 自动生成，带 // 注释头。

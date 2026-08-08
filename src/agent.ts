@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { toolDefinitions, executeTool } from './tools/index.js';
+import { createTaskTool } from './tools/subagent.js';
+import { loadAgents } from './subagent/loader.js';
+import { buildAgentsCatalog } from './subagent/prompt.js';
 import type { ToolDefinition } from './tools/types.js';
 import { validateAfterEdit } from './tools/validation.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -137,6 +140,8 @@ export interface RunAgentStreamOptions extends RunAgentOptions {
   /** 工具集覆盖（默认 toolDefinitions）。子代理限定子集、MCP 注入第三方工具用。
    *  不传 = 用内置 toolDefinitions（现有行为不变，零回归）。阶段 0 地基。 */
   tools?: ToolDefinition[];
+  /** 子代理嵌套深度（主代理 = 0；Task 工具递归子代理时 +1）。防递归爆炸，默认 0。阶段 1。 */
+  subagentDepth?: number;
 }
 
 /** consumeStream 的累积结果：逐 chunk yield 完 text_delta 后 return，供本轮 push messages / 日志用。 */
@@ -267,13 +272,37 @@ export async function* runAgentStream(
   // doom_loop 检测器（阶段5d）：跨轮持久，连续同 (tool,input) ≥3 触发，强制询问打破死循环。
   const doom = new DoomLoopDetector();
   const permissionMode: PermissionMode = opts.permissionMode ?? 'default';
-  const system = opts.system ?? buildSystemPrompt();
+  const baseSystem = opts.system ?? buildSystemPrompt();
+  // 阶段 1：把可派遣子代理 catalog 注入主 system（懒加载：只 name+description，不暴露人设正文）。
+  //   无 .ecode/agents → catalog 空 → system 不变（零影响）。主 LLM 据此决定派哪个具名人设。
+  const agentsCatalog = buildAgentsCatalog(loadAgents());
+  const system = agentsCatalog ? `${baseSystem}\n\n---\n\n${agentsCatalog}` : baseSystem;
 
   let messages: ECodeMessage[] = opts.resumed
     ? [...opts.resumed.messages, { role: 'user', content: task }]
     : [{ role: 'user', content: task }];
 
-  const tools = useTools ? (opts.tools ?? toolDefinitions) : [];
+  // 阶段 1：动态注入 Task 工具（闭包捕获本 runAgentStream 的权限上下文 + 深度）。
+  //   Task 不静态注册——静态 import 拿不到运行时 opts（allow/mode/gate/provider）。
+  //   闭包天然实现权限⊆（继承全部 + 人设 tools 收紧）+ 防递归（subagentDepth 累加，超限拒派）。
+  const baseTools = useTools ? opts.tools ?? toolDefinitions : [];
+  const tools = useTools
+    ? [
+        ...baseTools.filter((t) => t.name !== 'Task'),
+        createTaskTool({
+          // 子代理继承主 system（含 CLAUDE.md）但不含 agents catalog——它派不了子代理（深度限制），
+          // 看到 catalog 反而诱导它白调 Task（被拒、浪费一轮）。
+          system: baseSystem,
+          allow,
+          permissionMode,
+          denyRules: opts.denyRules,
+          gate: opts.permissionGate,
+          provider,
+          model: resolvedModel,
+          depth: opts.subagentDepth ?? 0,
+        }),
+      ]
+    : [];
   // runtime-log（CLAUDE.md §1.6：日志保存到文件供排查）—— 与原 runAgent 一致
   const logFile = initRuntimeLog(task, resolvedModel, provider.baseURL);
   // session 落盘上下文（与原 runAgent 一致：首轮/每轮末/压缩后/结束落盘）

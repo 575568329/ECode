@@ -13,6 +13,7 @@ import { WelcomeScreen } from './welcome-screen.js';
 import type { LoadStatus } from './welcome-screen.js';
 import { ChatView } from './chat-view.js';
 import { InputBar } from './input-bar.js';
+import { QueuedMessages } from './queued-messages.js';
 import { PermissionDialog } from './permission-dialog.js';
 import { SessionPicker } from './session-picker.js';
 import { ModelPicker } from './model-picker.js';
@@ -314,6 +315,8 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
         <ChatView state={api} />
       )}
 
+      <QueuedMessages messages={api.queuedMessages} />
+
       {inPager ? null : resumeOpen ? (
         <SessionPicker
           sessions={resumeSessions}
@@ -346,6 +349,7 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
         ctxPercent={Math.min(99, Math.round((api.latestInputTokens / contextWindow) * 100))}
         phase={phase}
         startedAt={startedAt}
+        pendingCount={api.pendingCount}
       />
     </Box>
   );

@@ -15,6 +15,8 @@ interface StatusBarProps {
   phase: StatusBarPhase;
   /** 会话起始时间（ms），算耗时。 */
   startedAt: number;
+  /** 待处理消息条数（>0 显示"待处理:N"，排队反馈）。 */
+  pendingCount?: number;
 }
 
 /** token 数 → 1.2K / 12.5K / 1.2M 简写。 */
@@ -50,7 +52,7 @@ function dynamicText(phase: StatusBarPhase): { text: string; color: string } {
   }
 }
 
-export function StatusBar({ usage, model, provider, ctxPercent, phase, startedAt }: StatusBarProps): React.ReactElement {
+export function StatusBar({ usage, model, provider, ctxPercent, phase, startedAt, pendingCount }: StatusBarProps): React.ReactElement {
   const elapsedSec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
   const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
   const ss = String(elapsedSec % 60).padStart(2, '0');
@@ -67,6 +69,12 @@ export function StatusBar({ usage, model, provider, ctxPercent, phase, startedAt
       <Text color={ctxColor(ctxPercent)}>Ctx {ctxPercent}%</Text>
       <Text>  </Text>
       <Text color={T.muted}>{model} @ {provider}</Text>
+      {pendingCount != null && pendingCount > 0 ? (
+        <>
+          <Text>  </Text>
+          <Text color={T.brand}>待处理 {pendingCount}</Text>
+        </>
+      ) : null}
       <Box flexGrow={1} />
       {dyn.text ? <Text color={dyn.color}>{dyn.text}</Text> : null}
     </Box>

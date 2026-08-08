@@ -18,6 +18,13 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('诚实报告');
   });
 
+  it('含 Platform + Shell + Cwd（Shell 与 executeBash 一致，治 #4 错配）', () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain(`Platform: ${process.platform}`);
+    expect(prompt).toContain('Shell:');
+    expect(prompt).toContain('Cwd:');
+  });
+
   it('传入 instructions 时拼入项目记忆段', () => {
     const prompt = buildSystemPrompt('## 项目记忆\n禁止用 any');
     expect(prompt).toContain('项目记忆');

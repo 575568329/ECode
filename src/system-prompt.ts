@@ -11,8 +11,19 @@
 //   后续按里程碑演进：加项目记忆注入（P1-1）、能力探测结果（M2）等。
 // ============================================================
 
+import { getShellInfo } from './tools/bash.js';
+
 const IDENTITY = `你是 ECode，一个用 TypeScript 手写的 AI coding agent（对标 Claude Code / opencode）。
 你在用户的终端中运行，通过工具读写文件、执行命令来完成编程任务。`;
+
+// 运行环境（治 #4 根因：LLM 不知平台 → 默认生成 Unix find 命中 Windows find.exe）。
+// Platform + Shell + Cwd 三件套，且 Shell 与 executeBash 实际用的 shell 一致
+// （有 Git Bash → POSIX → LLM 用 ls/find；否则 cmd → LLM 用 dir），避免 prompt 与
+// 执行层错配。进程内不变，模块级求值（§1.1 运行时自探测，零外部配置）。
+const ENVIRONMENT = `## 环境
+- Platform: ${process.platform}
+- Shell: ${getShellInfo().shell}
+- Cwd: ${process.cwd()}`;
 
 const BEHAVIOR = `## 行为准则
 - **先理解再动手**：修改代码前先 read 相关文件，搞清楚现状再改。
@@ -33,7 +44,7 @@ const TOOL_GUIDE = `## 工具使用
  * @param instructions 项目记忆（CLAUDE.md/ECODE.md 内容，Task 2 产出）；空则不拼该段。
  */
 export function buildSystemPrompt(instructions?: string): string {
-  const sections = [IDENTITY, BEHAVIOR, TOOL_GUIDE];
+  const sections = [IDENTITY, ENVIRONMENT, BEHAVIOR, TOOL_GUIDE];
   if (instructions && instructions.trim()) {
     sections.push(instructions.trim());
   }

@@ -1,7 +1,7 @@
 # ECode 项目代码审查报告
 
 > 审查日期：2026-08-07
-> 审查范围：`src/` 全量（45 文件 / ~5600 行）+ `tests/` 全量（44 文件 / ~5400 行）+ `docs/memory/` + `CLAUDE.md` + `00-开发规划.md`
+> 审查范围：`src/` 全量（45 文件 / ~5600 行）+ `tests/` 全量（44 文件 / ~5400 行）+ `docs/memory/` + `CLAUDE.md` + `00-开发规划[进行中].md`
 > 审查方法：实读全部源码 + 跑 `npx tsc --noEmit`（clean）+ 跑 `npx vitest run`（43 文件 400 测试全绿）
 > 严重度：🔴高（影响功能正确性/安全/可交付）/ 🟡中（影响可维护性/体验）/ 🟢低（打磨项）
 
@@ -236,9 +236,9 @@ src/index.ts                   CLI 入口（parseArgs → 三模式分流：REPL
 - **问题**：`process.on('SIGINT', ...)` 注册后不 off。CLI 一次性进程问题不大，但与 React render() 长期共存时若改架构会累积。
 - **建议**：保持现状（CLI 进程级），但加注释说明"process-level 一次性注册"。
 
-#### 🟢-6 `docs/项目使用指南.md` 未在 `MEMORY.md` 索引登记
+#### 🟢-6 `docs/项目使用指南[已完成].md` 未在 `MEMORY.md` 索引登记
 
-- **位置**：`docs/memory/MEMORY.md` + `docs/项目使用指南.md`（新增未跟踪文件）
+- **位置**：`docs/memory/MEMORY.md` + `docs/项目使用指南[已完成].md`（新增未跟踪文件）
 - **问题**：CLAUDE.md §8.6 要求"新建文件后在 MEMORY.md 索引登记"。该指南未登记。
 - **建议**：要么登记进索引，要么作为里程碑文档并入主三文档。
 

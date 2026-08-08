@@ -40,6 +40,10 @@ const DEFAULT_CONFIG: ECodeConfig = {
     'glm-5.2': { provider: 'glm', capabilities: ['tools'], contextWindow: 1_000_000 },
     'deepseek-chat': { provider: 'deepseek', capabilities: ['tools'], contextWindow: 128_000 },
   },
+  // P0-5 后置验证：edit/write 成功后自动跑 build/test，失败回喂 LLM。
+  // 默认 false（对齐 Aider auto-test：避免每次写文件阻塞验证拖慢体验）。
+  // 想开启：把 enabled 改成 true（首次启动后此文件已生成在 ~/.ecode/config.json）。
+  validation: { enabled: false },
 };
 
 let cachedConfig: ECodeConfig | null = null;
@@ -81,6 +85,9 @@ function writeConfigTemplate(): void {
     '//   1. 在 providers 中添加一个条目（protocol 选 "openai" 或 "anthropic"）',
     '//   2. 在 models 中添加一个条目（provider 指向上面的 key）',
     '//   3. 在 .env 中设置对应的 API Key 环境变量',
+    '//',
+    '// 后置验证（validation.enabled）：edit/write 后自动跑 build/test，失败回喂 LLM。',
+    '//   默认 false（对齐 Aider，避免每次写文件阻塞验证）。想开启：改成 true。',
     '',
   ].join('\n');
   const json = JSON.stringify(DEFAULT_CONFIG, null, 2);
@@ -136,9 +143,9 @@ export function listAvailableModels(): Array<{ model: string; provider: string }
   return Object.entries(loadConfig().models).map(([model, mc]) => ({ model, provider: mc.provider }));
 }
 
-/** P0-5 后置验证是否启用（config.validation.enabled，默认 true）。validation.ts 集成层调用。 */
+/** P0-5 后置验证是否启用（config.validation.enabled，默认 false，对齐 Aider）。validation.ts 集成层调用。 */
 export function isValidationEnabled(): boolean {
-  return loadConfig().validation?.enabled ?? true;
+  return loadConfig().validation?.enabled ?? false;
 }
 
 /** 获取模型上下文窗口大小（token），未配置时默认 128K */

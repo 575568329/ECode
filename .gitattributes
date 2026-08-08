@@ -1,0 +1,14 @@
+# 统一行尾为 LF——根治 CRLF 翻转（调试记录 #011）
+# text=auto：git 自动判定文本文件；eol=lf：check out 时强制 LF（不随平台变 CRLF）
+# 效果：无论谁/什么 OS/什么编辑器 clone，入库统一 LF，杜绝 Edit 写 CRLF 触发的全文件翻转 diff
+* text=auto eol=lf
+
+# 二进制文件不规范化（避免被当文本损坏）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary

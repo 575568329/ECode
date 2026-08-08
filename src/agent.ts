@@ -30,6 +30,7 @@ import { assertNever } from './assert-never.js';
 import { AllowList } from './permission.js';
 import type { PermissionGate } from './permission.js';
 import { check } from './permission/rule-engine.js';
+import { splitCompound, toAlwaysPattern } from './permission/arity.js';
 import type { PermissionMode } from './permission/types.js';
 
 // ============================================================
@@ -440,8 +441,18 @@ export async function* runAgentStream(
             if (decision === 'deny') {
               denied = `用户拒绝执行工具 ${tc.name}`;
             } else if (decision === 'allow_always') {
-              // 🔴-2 修复：仅 allow_always 记会话规则；allow_once 不记，下次仍询问
-              allow.add(tc.name);
+              // 🔴-2 修复：仅 allow_always 记会话规则；allow_once 不记，下次仍询问。
+              // 阶段 3：bash 按命令粒度记 pattern（防整工具放行过宽，'git checkout' 不该放行 'git push'）；
+              //   逐 compound 段生成 pattern 入库（仿 opencode per-node）。
+              //   非 bash 仍工具名粒度（阶段 2 语义不变）。
+              if (tc.name === 'bash') {
+                const command = String(tc.input.command ?? '');
+                for (const seg of splitCompound(command)) {
+                  allow.addBashPattern(toAlwaysPattern(seg));
+                }
+              } else {
+                allow.add(tc.name);
+              }
             }
           }
           // 无 gate = 默认放行（兼容无 UI / 测试）

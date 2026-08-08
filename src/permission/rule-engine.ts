@@ -1,6 +1,7 @@
 import type { PermissionMode, PermissionVerdict } from './types.js';
 import type { AllowList } from '../permission.js';
 import { checkPathSafety } from './path-guard.js';
+import { splitCompound } from './arity.js';
 
 /** acceptEdits 模式自动放行的编辑工具集 */
 const EDIT_TOOLS = new Set(['edit_file', 'write_file']);
@@ -21,7 +22,8 @@ export interface CheckOptions {
  * 判定顺序（短路，越靠前优先级越高）：
  *  1. bypass → 全放行（短路在 path-guard 之前，绕过硬安全网，仿 CC bypassPermissions 免疫 safetyCheck）
  *  2. path-guard：提取 input.path，越界或敏感文件 → ask（硬安全网，任何非 bypass 模式都问）
- *  3. session allow_always 命中（allow.has）→ allow
+ *  3. session allow_always 整工具命中（allow.has）→ allow
+ *  3.5 bash 专用：命令 pattern 分级（空命令 ask；compound 每段命中 pattern 才 allow，否则 ask）
  *  4. acceptEdits + 编辑工具（非敏感已在 2 拦下）→ allow
  *  5. isDangerous → ask
  *  6. 否则 → allow（只读工具）
@@ -48,9 +50,23 @@ export function check(opts: CheckOptions): PermissionVerdict {
     }
   }
 
-  // 3. session allow_always 命中 → 放行
+  // 3. session allow_always 命中 → 放行（整工具粒度，含 bash 的「整工具 always」逃生口）
   if (allow.has(toolName)) {
     return { action: 'allow', reason: `本会话已批准：${toolName}` };
+  }
+
+  // 3.5 bash 专用：按命令 pattern 分级（ls 与 rm -rf 不同待遇）。
+  // 空命令 → ask；有命令 → 拆 compound 段，每段都须命中已批准 pattern 才放行（防 && 绕过）。
+  if (toolName === 'bash') {
+    const command = typeof input.command === 'string' ? input.command : '';
+    if (!command) {
+      return { action: 'ask', reason: 'bash：空命令待审批' };
+    }
+    const segments = splitCompound(command);
+    if (allow.hasBashPermission(segments)) {
+      return { action: 'allow', reason: '本会话已批准的命令模式' };
+    }
+    return { action: 'ask', reason: `bash 命令待审批：${command}` };
   }
 
   // 4. acceptEdits：编辑工具自动放行（敏感文件已在 step 2 拦下）

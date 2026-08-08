@@ -6,11 +6,11 @@ import type { GateDecision } from '../../src/permission/types.js';
 import type { PermissionGate } from '../../src/permission.js';
 
 /**
- * 权限系统集成：check() 判定 + 三态 gate 接线 + 🔴-2 回归。
+ * 权限系统集成：check() 判定 + 三态 gate 接线 + 🔴-2 回归 + bash 命令分级。
  * 关键回归——allow_once vs allow_always 在「同工具二次调用」上的差异：
- *   round1 内连续两个 bash tool_call：
- *     - allow_once：第二个仍触发 gate.ask（gate 调 2 次）
- *     - allow_always：第一个后 allow.add('bash')，第二个命中会话规则免问（gate 仅调 1 次）
+ *   round1 内连续两个 bash tool_call（echo one / echo two，均归约到 echo *）：
+ *     - allow_once：不记会话规则，第二个仍触发 gate.ask（gate 调 2 次）
+ *     - allow_always：第一个后 addBashPattern('echo *')，第二个命中 pattern 免问（gate 仅调 1 次）
  */
 
 /** mock provider：round1 yield 给定 tool_call parts（末尾 stop tool-use 触发下一轮），round2 文本终止。 */
@@ -64,6 +64,15 @@ function editCall(id: string): ECodeStreamPart[] {
 /** 固定返回某决策的 gate。 */
 function gateReturning(decision: GateDecision): PermissionGate {
   return { ask: vi.fn(async () => decision) };
+}
+
+/** round1 内连续两个 bash tool_call（共享末尾一个 stop）。用于「同会话二次调用」场景。 */
+function twoBash(id1: string, cmd1: string, id2: string, cmd2: string): ECodeStreamPart[] {
+  return [
+    ...bashCall(id1, cmd1).slice(0, 3), // 去掉各 call 末尾的 stop
+    ...bashCall(id2, cmd2).slice(0, 3),
+    { type: 'stop', reason: { unified: 'tool-use', raw: 'tc' } },
+  ];
 }
 
 const collect = async (gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> => {
@@ -169,5 +178,44 @@ describe('权限系统集成（check + 三态 gate）', () => {
       { type: 'tool_result' }
     >;
     expect(tr?.isError).toBe(false);
+  });
+
+  // ── 阶段 3：bash 命令分级（arity 归约 + 命令 pattern） ──
+  // 注：allow_always 后命令会「真实执行」，故用只读 git 命令（git status/log/diff，瞬时无害、
+  //   git 在本仓库必可用）演示 pattern 逻辑；刻意避开 npm install（分钟级）/ git push（卡网络）
+  //   / rm -rf（破坏性），它们在 allow_always 下会被执行导致超时或副作用。
+
+  it('bash 命令分级：allow_always git status → 生成 git status *，下次 git status -s 免询问', async () => {
+    // 'git status' 归约保留（git arity=2），allow_always 生成 pattern 'git status *'。
+    // 同会话再跑 'git status -s' 命中 pattern → 免询问（gate 仅调 1 次）。
+    const provider = twoRoundProvider(twoBash('t1', 'git status', 't2', 'git status -s'));
+    const gate = gateReturning('allow_always');
+    await collect(runAgentStream('跑两次', { provider, permissionGate: gate }));
+    expect(gate.ask).toHaveBeenCalledTimes(1);
+  });
+
+  it('bash 命令分级：git status * 不放行 git log（不同 pattern 仍询问）', async () => {
+    // 'git log' 不匹配 'git status *' → 仍询问（gate 调 2 次）。
+    // 证明 bash 不再「整工具放行」，而是按命令前缀分级。
+    const provider = twoRoundProvider(twoBash('t1', 'git status', 't2', 'git log'));
+    const gate = gateReturning('allow_always');
+    await collect(runAgentStream('跑两次', { provider, permissionGate: gate }));
+    expect(gate.ask).toHaveBeenCalledTimes(2);
+  });
+
+  it('compound 防绕过：allow_always git status 后跑 git status && git log 仍询问', async () => {
+    // git log 段未批准 → 整条 ask。证明复合命令逐段审批，不被 'git status *' 贪婪放行（compound bypass 防护）。
+    const provider = twoRoundProvider(twoBash('t1', 'git status', 't2', 'git status && git log'));
+    const gate = gateReturning('allow_always');
+    await collect(runAgentStream('跑复合', { provider, permissionGate: gate }));
+    expect(gate.ask).toHaveBeenCalledTimes(2);
+  });
+
+  it('compound 全段批准 → 放行：allow_always git status 后跑 git status -s && git status -b 免询问', async () => {
+    // 两段都命中 'git status *' → 整条 allow（gate 仅调 1 次）。对照上一条，证明全段命中才放行。
+    const provider = twoRoundProvider(twoBash('t1', 'git status', 't2', 'git status -s && git status -b'));
+    const gate = gateReturning('allow_always');
+    await collect(runAgentStream('跑复合', { provider, permissionGate: gate }));
+    expect(gate.ask).toHaveBeenCalledTimes(1);
   });
 });

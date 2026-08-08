@@ -45,7 +45,7 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 | M2 多模型适配 | Provider 抽象、协议差异、能力探测 | ✅ 完成 |
 | M3 上下文压缩 + Session | token 计数、摘要压缩、结果截断、Session 持久化 | 🟡 P1-P4 完成，P5 待（✅ 超限响应式恢复 L3 已接线 2026-08-07）|
 | M3.5 交互式 CLI | 沉浸 REPL、slash 命令、流式渲染、中断、富文本/TUI | 🟡 进行中（REPL/斜杠/折叠组/pager/会话切换/**Esc-Ctrl+C 分工**已落地，Ctrl+O B+ 精简代码完成待真机）|
-| M4 权限系统 | 三档模式（砍 plan）+ 规则引擎（arity/last wins）+ 路径保护 + 修 🔴-2 | ⬜ 设计就绪待实现（四件套 + 三源交叉验证）|
+| M4 权限系统 | 三档模式（砍 plan）+ 规则引擎（arity/last wins）+ 路径保护 + 修 🔴-2 | 🟡 阶段 1+2 完成 2026-08-08（path-guard 硬安全网 + check() 三档判定 + 修 🔴-2 + edit_file 缺口）；待阶段 3 bash arity |
 | M5+ 进阶扩展 | P2: 子代理(9)/MCP(10)/Hooks(12) ｜ P3: Skills(13)/模型路由(22)/多渠道(23) | ⬜ 未开始 |
 
 ## 当前焦点
@@ -80,9 +80,9 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
   - [用户插话机制方案](../功能方案/用户插话机制方案.md)（抄 CC mid-turn drain：运行中排队，工具完成后注入）
   - [M4 权限系统三源交叉验证报告](../里程碑/M4-权限系统三源交叉验证报告.md)（CC/opencode/CCode 对比，建议以 opencode 为模板）
   - [ECode 项目审查报告](../总纲/ECode项目审查报告.md)（3 P0 / 8 🟡 / 7 🟢）
-- ⚠️ **3 个 P0（🔴-1/3 已修复 2026-08-07，🔴-2 defer M4）**：
+- ⚠️ **3 个 P0（🔴-1/2/3 全部已修复 2026-08-08）**：
   - 🔴-1 ~~L3 响应式恢复死代码~~（✅ 已修复：agent.ts 内 inner try-catch + forceCompact 重试 + 连续失败熔断，单测绿）
-  - 🔴-2 `allow` vs `allow_always` 语义塌陷（agent.ts:379 无条件 add）—— **defer M4**：修复需 UI 提供 allow_once/allow_always 双选项，属 M4 权限系统完整设计
+  - 🔴-2 ~~`allow` vs `allow_always` 语义塌陷~~（✅ 已修复 2026-08-08 M4 阶段 2）：gate 升级返回三态（allow_once/allow_always/deny），核心层仅 allow_always 时 `allow.add`，UI 透传三态不再 add；check-integration + use-agent-stream 双层回归单测绿
   - 🔴-3 ~~StatusBar Ctx% 累计 token~~（✅ 已修复：reducer latestInputTokens per-call 覆写，app.tsx Ctx% 改用）
 
 **M2 完成**（2026-08-02）：Provider 抽象层落地，agent 解耦 SDK。

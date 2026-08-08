@@ -1,5 +1,7 @@
-// 权限判定纯逻辑（档A：CCode 式 dangerous 二元）。
-// 只决定「是否需要询问」+ 记住「已批准」。询问/弹窗本身由 UI 层（阶段②）注入回调实现。
+// 权限判定纯逻辑（档A：CCode 式 dangerous 二元；M4 升三态 gate）。
+// 只决定「是否需要询问」+ 记住「已批准」。询问/弹窗本身由 UI 层注入回调实现。
+// 主判定入口是 ./permission/rule-engine.ts 的 check()；shouldAsk/AllowList 保留作档 A 兼容。
+import type { GateDecision } from './permission/types.js';
 
 /**
  * 会话级允许列表（always-allow）。
@@ -28,9 +30,12 @@ export function shouldAsk(toolName: string, isDangerous: boolean, allow: AllowLi
 }
 
 /**
- * 权限决策回调契约（注入式）：UI 层（阶段② Ink 的 PermissionDialog）实现 ask，
- * 阶段①测试用 mock。runAgentStream 遇 dangerous 工具时调它，据返回值放行/拒绝。
+ * 权限决策回调契约（注入式）：UI 层（Ink PermissionDialog）实现 ask，测试用 mock。
+ * runAgentStream 遇需询问的工具时调它，据返回值放行/拒绝。
+ *
+ * M4 升三态（修 🔴-2）：旧版仅 'allow'|'deny'，核心无法区分本次/永久 → 无条件 add → allow_once 下次不再问。
+ * 三态后核心仅在 allow_always 时记会话规则。
  */
 export interface PermissionGate {
-  ask(req: { toolName: string; input: Record<string, unknown> }): Promise<'allow' | 'deny'>;
+  ask(req: { toolName: string; input: Record<string, unknown> }): Promise<GateDecision>;
 }

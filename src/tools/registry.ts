@@ -52,6 +52,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'edit_file',
     description:
       '精确替换文件中的指定文本片段。oldText 必须在文件中唯一匹配（包括空格/换行）；匹配失败时会回显文件真实内容供你重试。',
+    dangerous: true,
     parameters: {
       type: 'object',
       properties: {

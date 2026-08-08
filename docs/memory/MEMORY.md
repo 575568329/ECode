@@ -10,7 +10,7 @@
 ## 当前状态（一眼概览）
 
 - **定位**：开源产品（对标 Claude Code），交付优先——2026-07-30 从"学习项目"转型
-- **里程碑**：M3 P1-P4 完成（含 L3 forceCompact 已接线 2026-08-07）；M3.5 交互式 CLI 进行中（REPL/斜杠/折叠/pager/会话/键位分工已落地）；下一 M4 权限系统（设计就绪待实现，🔴-2 defer 至此）
+- **里程碑**：M3 P1-P4 完成（含 L3 forceCompact 已接线 2026-08-07）；M3.5 交互式 CLI 进行中（REPL/斜杠/折叠/pager/会话/键位分工已落地）；**M4 权限系统阶段 1+2 完成 2026-08-08**（path-guard 硬安全网 + check() 三档判定 + 修 🔴-2 + edit_file 缺口，586 单测全绿），待阶段 3 bash arity
 - **已实现**：M1 全部 + Provider 层（双协议/config/factory/--model/**baseURL 三级可配）+ tools 协议中立化 + M3 上下文管理（含 L3 forceCompact 已接线 2026-08-07）+ **M3 P4 Session**；**404 单测**；tsc clean
 - **环境**：M2 起 config.json 驱动（`DEEPSEEK_API_KEY` / `ZHIPUAI_API_KEY` / `ANTHROPIC_API_KEY`，OpenAI 兼容协议）；`.env` 由 `npm run dev` 自动加载；会话落盘 `.ecode/sessions/`（已 gitignore）
 

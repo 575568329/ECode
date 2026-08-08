@@ -55,16 +55,23 @@ describe('useAgentStream', () => {
     expect(api().isRunning).toBe(false);
   });
 
-  it('permission_request → pendingPermission 挂起；resolvePermission(allow_always) → gate 返回 allow 且 allow 列表记住', async () => {
+  it('permission_request → pendingPermission 挂起；resolvePermission(allow_always) → 核心层 add，allow 列表记住', async () => {
     const mocked = runAgentStream as unknown as ReturnType<typeof vi.fn>;
     mocked.mockImplementation(
       async function* (
         task: string,
-        opts?: { permissionGate?: { ask: (r: unknown) => Promise<string> } },
+        opts?: {
+          permissionGate?: { ask: (r: unknown) => Promise<string> };
+          allow?: { add: (toolName: string) => void };
+        },
       ): AsyncGenerator<AgentEvent> {
         yield { type: 'start', task, model: 'm', provider: 'p' };
         yield { type: 'permission_request', toolUseId: 't1', toolName: 'bash', input: { command: 'x' } };
-        const decision = opts?.permissionGate ? await opts.permissionGate.ask({}) : 'allow';
+        // 模拟核心层（agent.ts）：仅 allow_always 记会话规则（🔴-2 修复后的契约，UI 不再 add）
+        const decision = opts?.permissionGate ? await opts.permissionGate.ask({}) : 'allow_once';
+        if (decision === 'allow_always' && opts?.allow) {
+          opts.allow.add('bash');
+        }
         yield { type: 'tool_call_start', id: 't1', name: 'bash' };
         yield { type: 'tool_result', id: 't1', name: 'bash', content: 'ok', isError: false };
         yield {
@@ -77,7 +84,6 @@ describe('useAgentStream', () => {
           task: '跑 bash',
           createdAt: '2026-01-01T00:00:00.000Z',
         };
-        void decision;
       } as never,
     );
 
@@ -97,6 +103,57 @@ describe('useAgentStream', () => {
 
     // allow_always 后 allow 列表含 bash（后续不再问）
     expect(api().isAllowAlways('bash')).toBe(true);
+    expect(api().pendingPermission).toBeNull();
+  });
+
+  it('🔴-2：resolvePermission(allow)（本次放行）→ allow 列表不记住，下次仍会询问', async () => {
+    // UI 侧 🔴-2 回归：旧版核心收到 'allow' 时无法区分本次/永久 → 无条件 add。
+    // 修复后 UI 把 'allow' 透传为 'allow_once'，核心不 add → isAllowAlways 仍为 false。
+    const mocked = runAgentStream as unknown as ReturnType<typeof vi.fn>;
+    mocked.mockImplementation(
+      async function* (
+        task: string,
+        opts?: {
+          permissionGate?: { ask: (r: unknown) => Promise<string> };
+          allow?: { add: (toolName: string) => void };
+        },
+      ): AsyncGenerator<AgentEvent> {
+        yield { type: 'start', task, model: 'm', provider: 'p' };
+        yield { type: 'permission_request', toolUseId: 't1', toolName: 'bash', input: { command: 'x' } };
+        const decision = opts?.permissionGate ? await opts.permissionGate.ask({}) : 'allow_once';
+        if (decision === 'allow_always' && opts?.allow) {
+          opts.allow.add('bash');
+        }
+        yield { type: 'tool_call_start', id: 't1', name: 'bash' };
+        yield { type: 'tool_result', id: 't1', name: 'bash', content: 'ok', isError: false };
+        yield {
+          type: 'completed',
+          rounds: 1,
+          toolCalls: 1,
+          reason: 'done',
+          sessionId: 'test-sess-perm-once',
+          messages: [
+            { role: 'user', content: '跑 bash' },
+            { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+          ],
+          task: '跑 bash',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        };
+      } as never,
+    );
+
+    const apiRef: React.MutableRefObject<Api | null> = { current: null };
+    render(<Harness apiRef={apiRef} />);
+    const api = () => apiRef.current as Api;
+
+    api().submit('跑 bash');
+    await new Promise((r) => setTimeout(r, 30));
+    await vi.waitFor(() => expect(api().pendingPermission).not.toBeNull());
+
+    api().resolvePermission('allow'); // 本次放行（UI 'allow' → 核心 'allow_once'）
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(api().isAllowAlways('bash')).toBe(false); // 🔴-2：本次放行不记住
     expect(api().pendingPermission).toBeNull();
   });
 

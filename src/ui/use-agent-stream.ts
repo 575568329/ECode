@@ -17,6 +17,7 @@ import { useCallback, useRef, useState } from 'react';
 import { runAgentStream, compactMessages } from '../agent.js';
 import type { ResumeContext } from '../agent.js';
 import { AllowList } from '../permission.js';
+import type { GateDecision } from '../permission/types.js';
 import { reduceAgentEvent, initialStreamState } from './reduce-agent-event.js';
 import { AgentLoopController } from './agent-loop-controller.js';
 import type { StreamState, DisplayMessage, PendingPermission } from './types.js';
@@ -76,12 +77,9 @@ export interface UseAgentStreamOptions {
 
 export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStreamReturn {
   const [state, setState] = useState<StreamState>(initialStreamState);
-  // stateRef：resolvePermission 读最新 pendingPermission（async 决策兑现时读当前值）
-  const stateRef = useRef(state);
-  stateRef.current = state;
   const allowRef = useRef(new AllowList());
   // 权限 gate 决策 resolver（permission_request 时挂起，resolvePermission 时兑现）
-  const permissionResolverRef = useRef<((d: 'allow' | 'deny') => void) | null>(null);
+  const permissionResolverRef = useRef<((d: GateDecision) => void) | null>(null);
 
   // model/system 经 ref 透传给 controller（/model 切换即时生效；controller 仅创建一次，闭包会固化首值，故走 ref）
   const modelRef = useRef(opts.model);
@@ -113,7 +111,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
         allow: allowRef.current,
         permissionGate: {
           ask: () =>
-            new Promise<'allow' | 'deny'>((resolve) => {
+            new Promise<GateDecision>((resolve) => {
               permissionResolverRef.current = resolve;
             }),
         },
@@ -160,10 +158,11 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   );
 
   const resolvePermission = useCallback((decision: 'allow' | 'deny' | 'allow_always') => {
-    if (decision === 'allow_always' && stateRef.current.pendingPermission) {
-      allowRef.current.add(stateRef.current.pendingPermission.toolName);
-    }
-    permissionResolverRef.current?.(decision === 'deny' ? 'deny' : 'allow');
+    // 🔴-2 修复：透传三态给核心层；allow_always 的 add 由 agent.ts 处理（收到 allow_always 即 add）。
+    // UI 不再 add，避免双写。AllowList 是同一实例（allowRef → opts.allow），核心层 add 即生效。
+    // UI 'allow'（本次放行，Yes）→ 核心 'allow_once'；allow_always/deny 直传。
+    const gate: GateDecision = decision === 'allow' ? 'allow_once' : decision;
+    permissionResolverRef.current?.(gate);
     permissionResolverRef.current = null;
     setState((prev) => ({ ...prev, pendingPermission: null }));
   }, []);

@@ -78,10 +78,13 @@ export function PermissionDialog({ permission, onResolve }: PermissionDialogProp
   );
 }
 
-/** 把 permission 渲染成可读摘要（bash→命令，edit/write/read→路径，其他→JSON）。 */
+/** 把 permission 渲染成可读摘要（bash→命令，路径类工具→路径，move→源→目标，其他→JSON）。 */
 function summarize(p: PendingPermission): string {
   if (p.toolName === 'bash') return String(p.input.command ?? '');
-  if (['edit_file', 'write_file', 'read_file'].includes(p.toolName)) {
+  if (p.toolName === 'move') {
+    return `${p.input.source ?? ''} → ${p.input.destination ?? ''}`;
+  }
+  if (['edit_file', 'write_file', 'read_file', 'delete_file'].includes(p.toolName)) {
     return String(p.input.path ?? '');
   }
   return JSON.stringify(p.input);

@@ -27,8 +27,10 @@ import { saveSession } from './session.js';
 import type { ECodeSession, ECodeSessionStats } from './session.js';
 import type { AgentEvent } from './agent-events.js';
 import { assertNever } from './assert-never.js';
-import { shouldAsk, AllowList } from './permission.js';
+import { AllowList } from './permission.js';
 import type { PermissionGate } from './permission.js';
+import { check } from './permission/rule-engine.js';
+import type { PermissionMode } from './permission/types.js';
 
 // ============================================================
 // Agent Loop — 理解 Agent 的心脏
@@ -125,6 +127,7 @@ export interface RunAgentStreamOptions extends RunAgentOptions {
   signal?: AbortSignal; // 中断
   allow?: AllowList; // 会话级允许列表（不传则内部 new）
   permissionGate?: PermissionGate; // 权限决策回调（不传 = 全部放行，兼容无 UI / 测试）
+  permissionMode?: PermissionMode; // 权限档（default/acceptEdits/bypass，默认 default）
   provider?: ModelProvider; // 依赖注入（测试用 mock；生产用 createProvider）
 }
 
@@ -252,6 +255,7 @@ export async function* runAgentStream(
   const provider = opts.provider ?? createProvider(resolvedModel);
   const useTools = hasCapability(resolvedModel, 'tools');
   const allow = opts.allow ?? new AllowList();
+  const permissionMode: PermissionMode = opts.permissionMode ?? 'default';
   const system = opts.system ?? buildSystemPrompt();
 
   let messages: ECodeMessage[] = opts.resumed
@@ -407,7 +411,20 @@ export async function* runAgentStream(
         const def = toolDefinitions.find((t) => t.name === tc.name);
         const isDangerous = def?.dangerous ?? false;
 
-        if (shouldAsk(tc.name, isDangerous, allow)) {
+        const verdict = check({
+          toolName: tc.name,
+          input: tc.input,
+          isDangerous,
+          mode: permissionMode,
+          allow,
+          roots: [process.cwd()],
+        });
+
+        // 拒绝原因（策略 deny 或用户 deny）；非 null 则回喂 LLM 并跳过执行
+        let denied: string | null = null;
+        if (verdict.action === 'deny') {
+          denied = `权限策略拒绝执行工具 ${tc.name}：${verdict.reason}`;
+        } else if (verdict.action === 'ask') {
           // 可观测事件：UI 据此渲染"是否允许"对话框；决策本身走 permissionGate 回调
           yield {
             type: 'permission_request',
@@ -421,30 +438,35 @@ export async function* runAgentStream(
               input: tc.input,
             });
             if (decision === 'deny') {
-              const denyMsg = `用户拒绝执行工具 ${tc.name}`;
-              yield {
-                type: 'tool_result',
-                id: tc.id,
-                name: tc.name,
-                content: denyMsg,
-                isError: true,
-              };
-              // 仍要 push tool_result 保配对（tool_use_id ↔ tool_use.id）
-              messages.push({
-                role: 'user',
-                content: [
-                  {
-                    type: 'tool_result',
-                    tool_use_id: tc.id,
-                    output: { type: 'error', value: denyMsg },
-                  },
-                ],
-              });
-              continue; // 跳过 executeTool
+              denied = `用户拒绝执行工具 ${tc.name}`;
+            } else if (decision === 'allow_always') {
+              // 🔴-2 修复：仅 allow_always 记会话规则；allow_once 不记，下次仍询问
+              allow.add(tc.name);
             }
-            allow.add(tc.name); // allow → 会话记住，后续同工具不再询问
           }
           // 无 gate = 默认放行（兼容无 UI / 测试）
+        }
+
+        if (denied) {
+          yield {
+            type: 'tool_result',
+            id: tc.id,
+            name: tc.name,
+            content: denied,
+            isError: true,
+          };
+          // 仍要 push tool_result 保配对（tool_use_id ↔ tool_use.id）
+          messages.push({
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: tc.id,
+                output: { type: 'error', value: denied },
+              },
+            ],
+          });
+          continue; // 跳过 executeTool
         }
 
         yield { type: 'tool_call_start', id: tc.id, name: tc.name, input: tc.input };

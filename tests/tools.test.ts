@@ -136,6 +136,11 @@ describe('ToolDefinition.dangerous 标记（M3.5 权限闸门消费）', () => {
     expect(bash?.dangerous).toBe(true);
   });
 
+  it('edit_file 标记为 dangerous（M4 缺口修复：编辑文件需审批，不再静默修改）', () => {
+    const edit = toolDefinitions.find((t) => t.name === 'edit_file');
+    expect(edit?.dangerous).toBe(true);
+  });
+
   it('只读工具（read_file/grep/glob）未标 dangerous', () => {
     const readonly = toolDefinitions.filter((t) =>
       ['read_file', 'grep', 'glob'].includes(t.name),

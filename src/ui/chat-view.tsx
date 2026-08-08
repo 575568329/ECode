@@ -8,6 +8,7 @@ import { MarkdownRenderer } from './markdown.js';
 import { ToolRunning, ToolDone, InlineTool, summarizeArg } from './tool-panel.js';
 import { summarizeGroup } from './read-search-group.js';
 import { leftBorder } from './borders.js';
+import { Spinner } from './spinner.js';
 import type { UseAgentStreamReturn } from './use-agent-stream.js';
 import type { DisplayMessage } from './types.js';
 
@@ -95,8 +96,16 @@ export function ChatView({ state }: ChatViewProps): React.ReactElement {
       </Static>
 
       {/* 动态区：流式文本 + 运行中工具 + 挂起的只读折叠组（延迟冻结） */}
-      {(state.streamingText || state.activeTools.length > 0 || state.pendingReadSearch.length > 0) && (
+      {(state.isRunning || state.streamingText || state.activeTools.length > 0 || state.pendingReadSearch.length > 0) && (
         <Box flexDirection="column" paddingLeft={4}>
+          {/* thinking loader：streaming 前（agent 思考首 token），◆ + 星形 spinner + 思考中；首 token 到达切 streaming */}
+          {state.isRunning && !state.streamingText && state.activeTools.length === 0 && state.pendingReadSearch.length === 0 ? (
+            <Box>
+              <Text color={T.brand} bold>{SYMBOLS.brand} </Text>
+              <Spinner />
+              <Text color={T.muted}> 思考中</Text>
+            </Box>
+          ) : null}
           {state.streamingText ? (
             <Box flexDirection="column">
               <Text color={T.brand} bold>{SYMBOLS.brand}</Text>

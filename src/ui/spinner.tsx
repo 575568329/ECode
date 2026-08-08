@@ -1,4 +1,4 @@
-// braille spinner —— 工具运行态指示。80ms/帧循环。
+// 星形 spinner —— 工具运行态 + thinking loader 指示。80ms/帧循环。
 import { useState, useEffect } from 'react';
 import { Text } from 'ink';
 import { SPINNER_FRAMES, T } from './theme.js';

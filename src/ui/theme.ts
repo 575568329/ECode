@@ -41,5 +41,5 @@ export const SYMBOLS = {
   pointer: '›',
 } as const;
 
-/** braille spinner 帧序列（品牌色）。 */
-export const SPINNER_FRAMES = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+/** 星形 spinner 帧序列（CC 风格，品牌色；thinking + 工具 spinner 统一）。 */
+export const SPINNER_FRAMES = '·✢✳✶✻✽';

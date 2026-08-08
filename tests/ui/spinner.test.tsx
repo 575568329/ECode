@@ -18,7 +18,7 @@ describe('<Spinner />', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('首帧渲染 braille 第一帧', () => {
+  it('首帧渲染星形第一帧', () => {
     const { lastFrame } = render(<Spinner />);
     // lastFrame 含 ANSI 颜色码，断言子串即可
     expect(lastFrame()).toContain(SPINNER_FRAMES[0]);
@@ -34,7 +34,7 @@ describe('<Spinner />', () => {
 
   it('循环到最后帧后回到第一帧', async () => {
     const { lastFrame } = render(<Spinner />);
-    await vi.advanceTimersByTimeAsync(80 * 10); // 走完 10 帧
+    await vi.advanceTimersByTimeAsync(80 * SPINNER_FRAMES.length); // 走完一整轮（帧数自适应）
     await vi.advanceTimersByTimeAsync(0);
     expect(lastFrame()).toContain(SPINNER_FRAMES[0]); // 回到首帧
   });

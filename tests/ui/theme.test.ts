@@ -36,8 +36,8 @@ describe('视觉基础', () => {
     }
   });
 
-  it('SPINNER_FRAMES 是 braille 序列', () => {
-    expect(SPINNER_FRAMES).toBe('⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏');
-    expect([...SPINNER_FRAMES].length).toBe(10);
+  it('SPINNER_FRAMES 是星形序列（CC 风格，thinking + 工具统一）', () => {
+    expect(SPINNER_FRAMES).toBe('·✢✳✶✻✽');
+    expect([...SPINNER_FRAMES].length).toBe(6);
   });
 });

@@ -73,6 +73,15 @@ describe('<ChatView />', () => {
     expect(lastFrame()).toContain('正在打字');
   });
 
+  it('动态区显示 thinking loader（思考中，streaming 前）', () => {
+    // isRunning 且无 streamingText/activeTools → ◆ + 星形 spinner + 思考中
+    const state = makeState({ isRunning: true });
+    const { lastFrame } = render(<ChatView state={state} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain('思考中');
+    expect(f).toContain(SYMBOLS.brand);
+  });
+
   it('动态区显示运行中工具（▸ + spinner）', () => {
     const state = makeState({
       isRunning: true,

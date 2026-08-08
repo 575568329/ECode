@@ -1,9 +1,9 @@
 // format-transcript —— DisplayMessage[] → 精简分组的转录纯文本（pager/less 输入）。
 // B+ 方案（docs/详设/20260806232155）：按 user 提问分组，只输出「被折叠/裁剪的工具完整 content」——
-// 即主界面看不到的关键内容。跳过 assistant/warning/error/edit_file/未裁剪的单工具；
+// 即主界面看不到的关键内容。跳过 assistant/warning/error/未折叠的单工具；
 // 无折叠工具的轮次整体跳过；空结果 → 空串（调用方据此不进 pager）。
 //
-// 「是否折叠」复用 tool-panel 的 foldContent 裁剪判定（单一规则源，transcript 展开的 = 主界面裁掉的）。
+// 「是否折叠」单一规则源：foldContent().folded 标志（策略表驱动，不再 per-tool if-else）。
 import { T, SYMBOLS } from './theme.js';
 import { summarizeArg, foldContent } from './tool-panel.js';
 import type { DisplayMessage } from './types.js';
@@ -47,13 +47,9 @@ interface FoldedTool {
 }
 
 /** 判定单个 tool 在主界面是否被折叠/裁剪（→ 该进 less 展开看完整 content）。
- *  read_file 总是被摘要行数（content 全丢）；glob ≥2 文件被摘要成 Found N files；
- *  bash/grep/write_file 被 foldContent 裁剪尾部（omitted>0）；edit_file 完整 diff 从不折叠。 */
+ *  单一规则源：直接读 foldContent 的 folded 标志，不再自行 if-else 判断。 */
 function isToolFolded(name: string, isError: boolean, content: string): boolean {
-  if (name === 'read_file') return true;
-  if (name === 'edit_file') return false;
-  if (name === 'glob') return content.replace(/\n+$/, '').split('\n').length >= 2;
-  return foldContent(name, isError, content).omitted > 0;
+  return foldContent(name, isError, content).folded;
 }
 
 /** 单个工具 → 转录行块（完整 content，不裁剪——pager 的意义就是看主界面丢掉的完整内容）。 */

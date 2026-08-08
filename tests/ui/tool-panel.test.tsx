@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render } from 'ink-testing-library';
-import { ToolRunning, ToolDone } from '../../src/ui/tool-panel.js';
+import { ToolRunning, ToolDone, foldContent } from '../../src/ui/tool-panel.js';
 import { SYMBOLS } from '../../src/ui/theme.js';
 
 describe('ToolRunning', () => {
@@ -33,14 +33,15 @@ describe('ToolDone', () => {
     expect(lastFrame()).not.toContain('more lines');
   });
 
-  it('bash 错误 → 前 5 行（错误栈关键信息常在后面，多给几行）', () => {
+  it('bash 错误 → 前 3 行（统一阈值，不区分 error/success，对标 CC/opencode）', () => {
     const content = Array.from({ length: 8 }, (_, i) => `err${i}`).join('\n');
     const { lastFrame } = render(<ToolDone name="bash" content={content} isError={true} />);
     const f = lastFrame() ?? '';
     expect(f).toContain(SYMBOLS.error);
     expect(f).toContain('err0');
-    expect(f).toContain('err4');
-    expect(f).toContain('… +3 more lines'); // 8-5=3
+    expect(f).toContain('err2');
+    expect(f).toContain('… +5 more lines'); // 8-3=5（统一 3 行，不再 isError 多给）
+    expect(f).not.toContain('err3');
   });
 
   it('read_file → 只显 "Read N lines"（不显内容主体）', () => {
@@ -104,6 +105,23 @@ describe('ToolDone', () => {
     expect(f).not.toContain('Found');
   });
 
+  it('ls 多条目 → 折叠 "Listed N entries" 单行（对标 glob，不逐条铺屏）', () => {
+    const content = '.claude\n.ecode\nsrc\ntests\ndocs';
+    const { lastFrame } = render(<ToolDone name="ls" content={content} isError={false} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain('Listed 5 entries');
+    expect(f).not.toContain('.claude'); // 不逐条列（清单去 Ctrl+O 转录看）
+    expect(f).not.toContain('more lines');
+  });
+
+  it('ls 单条目 → 原样（不报 Listed 1 entries）', () => {
+    const content = 'only-one';
+    const { lastFrame } = render(<ToolDone name="ls" content={content} isError={false} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain('only-one');
+    expect(f).not.toContain('Listed');
+  });
+
   it('bash content 尾部空行 → 不渲染空 ↳ 行（execSync 输出常带尾 \\n）', () => {
     const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
     const content = 'line1\nline2\n'; // 尾 \n → split 出末尾空串 → 渲染空 ↳ 行（噪声）
@@ -142,11 +160,84 @@ describe('ToolDone Inline/Block 双模式（Phase 2）', () => {
     expect(f).toContain('npm test');
   });
 
-  it('error → Block（含左边框字符 │，error 图标）', () => {
+  it('error → Block（含左边框字符 │，error 图标，统一 3 行截断）', () => {
     const content = Array.from({ length: 8 }, (_, i) => `err${i}`).join('\n');
     const { lastFrame } = render(<ToolDone name="bash" content={content} isError={true} />);
     const f = lastFrame() ?? '';
     expect(f).toContain('│');
     expect(f).toContain(SYMBOLS.error);
+    expect(f).toContain('… +5 more lines');
+  });
+});
+
+// ---- foldContent 策略表 + folded 标志直接测试 ----
+
+describe('foldContent 策略表', () => {
+  it('summary 模式 ≥2 条目 → 折叠成单行摘要 + folded=true', () => {
+    const r = foldContent('read_file', false, 'line1\nline2\nline3');
+    expect(r.lines).toEqual(['Read 3 lines']);
+    expect(r.omitted).toBe(0);
+    expect(r.folded).toBe(true);
+  });
+
+  it('summary 模式 read_file 单行 → 仍摘要（minEntries=1）+ folded=true', () => {
+    const r = foldContent('read_file', false, 'single line');
+    expect(r.lines).toEqual(['Read 1 lines']);
+    expect(r.folded).toBe(true);
+  });
+
+  it('summary 模式 glob 多文件 → Found N files', () => {
+    const r = foldContent('glob', false, 'a.ts\nb.ts\nc.ts');
+    expect(r.lines).toEqual(['Found 3 files']);
+    expect(r.folded).toBe(true);
+  });
+
+  it('summary 模式 ls 多条目 → Listed N entries', () => {
+    const r = foldContent('ls', false, 'src\ntests\ndocs');
+    expect(r.lines).toEqual(['Listed 3 entries']);
+    expect(r.folded).toBe(true);
+  });
+
+  it('head 模式 grep 超行 → 截断 + label 含总命中数 + folded=true', () => {
+    const r = foldContent('grep', false, 'a.ts:1: x\nb.ts:2: x\nc.ts:3: x\nd.ts:4: x');
+    expect(r.lines.length).toBe(3);
+    expect(r.omitted).toBe(1);
+    expect(r.label).toBe('of 4 matches'); // N 被替换
+    expect(r.folded).toBe(true);
+  });
+
+  it('head 模式 bash 超行 → 前 3 行 + more lines', () => {
+    const r = foldContent('bash', false, 'a\nb\nc\nd\ne');
+    expect(r.lines).toEqual(['a', 'b', 'c']);
+    expect(r.omitted).toBe(2);
+    expect(r.label).toBe('more lines');
+    expect(r.folded).toBe(true);
+  });
+
+  it('head 模式不超行 → 完整 + folded=false', () => {
+    const r = foldContent('bash', false, 'a\nb\nc');
+    expect(r.lines).toEqual(['a', 'b', 'c']);
+    expect(r.omitted).toBe(0);
+    expect(r.folded).toBe(false);
+  });
+
+  it('full 模式 edit_file → 完整不折叠 + folded=false', () => {
+    const r = foldContent('edit_file', false, '- old\n+ new\n+ newer');
+    expect(r.lines).toEqual(['- old', '+ new', '+ newer']);
+    expect(r.folded).toBe(false);
+  });
+
+  it('未知工具 → 默认 head(3) 兜底 + folded=true', () => {
+    const r = foldContent('mcp_custom_tool', false, 'a\nb\nc\nd');
+    expect(r.lines).toEqual(['a', 'b', 'c']);
+    expect(r.omitted).toBe(1);
+    expect(r.label).toBe('more lines');
+    expect(r.folded).toBe(true);
+  });
+
+  it('未知工具 ≤3 行 → 完整 + folded=false', () => {
+    const r = foldContent('unknown_tool', false, 'a\nb');
+    expect(r.lines).toEqual(['a', 'b']);
+    expect(r.folded).toBe(false);
   });
 });

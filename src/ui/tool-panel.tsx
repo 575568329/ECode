@@ -1,7 +1,9 @@
 // ToolPanel —— 工具调用可视化（spec §5.5 / §8.4③④⑤）。
 // 三态：running（spinner+计时）/ done-Inline（单行摘要）/ done-Block（左边框面板）。
-// 折叠策略 per-tool 差异化（不一刀切）：
-//   bash 成功=前3行 / bash 错误=前5行 / edit_file/write_file=完整 / read_file=只显行数 / grep=前3行
+// 折叠策略：声明式策略表 FOLD_STRATEGIES + 统一 fold() 函数（不再 per-tool if-else）。
+//   summary=完全折叠成摘要行 / head=截断前 N 行 / full=不折叠。
+//   新工具只需加一行声明；未知工具兜底 head(3)（对标 CC 统一 3 行）。
+//   Folded.folded 标志供 format-transcript 判断 Ctrl+O 展开（单一规则源）。
 // 模式判定（Phase 2）：foldContent 折叠后 ≤1 行 → Inline；≥2 行 → Block。
 import React from 'react';
 import { Text, Box } from 'ink';
@@ -32,58 +34,91 @@ export function ToolRunning({ name, arg }: ToolRunningProps): React.ReactElement
   );
 }
 
-/** 折叠标签：空串=不显示折叠提示。 */
-interface Folded {
+// ---- 折叠策略表（声明式，新工具加一行即可） ----
+
+/** 折叠策略三态。
+ *  summary: 完全折叠成 "<verb> <count> <unit>" 单行摘要（≥2 条目时；单条/空原样）。
+ *  head:    截断前 N 行 + "more" 提示（对标 CC 统一 3 行，不区分 error/success）。
+ *  full:    不折叠（diff 等精华内容）。 */
+type FoldStrategy =
+  | { mode: 'summary'; verb: string; unit: string; minEntries?: number }
+  | { mode: 'head'; lines: number; label: string }
+  | { mode: 'full' };
+
+/** 默认兜底：未知工具走 head(3)（对标 CC terminal.ts MAX_LINES_TO_SHOW=3）。 */
+const DEFAULT_STRATEGY: FoldStrategy = { mode: 'head', lines: 3, label: 'more lines' };
+
+/**
+ * 策略表：每工具一行声明。新工具（含 MCP）加一行即可获得折叠行为。
+ * 显式 full = opt-out（如 edit_file diff 精华不折叠）。
+ *
+ * 参考：
+ *   CC: Tool 接口多态 renderToolResultMessage + terminal.ts 统一 3 行截断。
+ *   opencode: 各组件硬编码 maxLines（GenericTool=3, Shell=10），无统一表。
+ *   ECode 取折中：声明式策略表 + 统一 fold() 函数，比 CC 轻量、比 opencode 集中。
+ */
+const FOLD_STRATEGIES: Record<string, FoldStrategy> = {
+  // 摘要类：列举型工具，内容量大但用户只关心数量，详情去 Ctrl+O 看
+  // minEntries: 触发摘要折叠的最小条目数（默认 2，避免 "Found 1 files" 尴尬）。
+  // read_file 设 1：即使 1 行也摘要（主界面 "Read 1 lines" 不显内容，需 Ctrl+O 看）。
+  read_file:      { mode: 'summary', verb: 'Read',   unit: 'lines', minEntries: 1 },
+  glob:           { mode: 'summary', verb: 'Found',  unit: 'files' },
+  ls:             { mode: 'summary', verb: 'Listed', unit: 'entries' },
+  list_directory: { mode: 'summary', verb: 'Listed', unit: 'entries' },
+
+  // 截断类：输出型工具，前几行有价值，后面截断
+  grep:       { mode: 'head', lines: 3,  label: 'of N matches' },  // N 运行时替换为总命中数
+  bash:       { mode: 'head', lines: 3,  label: 'more lines' },
+  write_file: { mode: 'head', lines: 10, label: 'more lines' },   // 对齐 CC write 阈值
+
+  // 不折叠：变更型工具，每行都是精华
+  edit_file: { mode: 'full' },
+};
+
+/** 折叠结果。folded 标志供 format-transcript 判断 Ctrl+O 展开（单一规则源）。 */
+export interface Folded {
   lines: string[];
   omitted: number;
   label: string;
+  /** 内容是否被折叠（summary ≥2 条目 / head 有 omitted → true）。format-transcript 读此字段。 */
+  folded: boolean;
 }
 
-/** write_file 折叠阈值：对齐 CC MAX_LINES_TO_RENDER=10（FileWriteTool/UI.tsx:26）。 */
-const WRITE_HEAD = 10;
+/** 根据策略表查找工具策略（未知工具走 DEFAULT_STRATEGY兜底）。 */
+function getStrategy(name: string): FoldStrategy {
+  return FOLD_STRATEGIES[name] ?? DEFAULT_STRATEGY;
+}
 
-/** 把多行内容按工具折叠策略裁剪。
- *  导出：format-transcript 复用 omitted 判定「该工具是否被折叠」→ 决定是否进 less 展开（单一规则源）。 */
+/** 统一折叠函数：策略驱动，不再 per-tool if-else。
+ *  label 中的 'N' 占位符在 head 模式下替换为实际总行数（如 grep 的 "of 5 matches"）。
+ *  导出：format-transcript 复用 folded 判定是否进 less 展开（单一规则源）。 */
 export function foldContent(name: string, isError: boolean, content: string): Folded {
-  // 去尾部换行：execSync 等输出常带尾 \n，split 会产出末尾空串 → 渲染空 ↳ 行（噪声）。
+  // isError 保留签名兼容（调用方均传），当前策略不区分错误行数（对标 CC/opencode 统一阈值）。
+  void isError;
+  // 去尾部换行：输出常带尾 \n，split 会产出末尾空串 → 渲染空 ↳ 行（噪声）。
   const all = content.replace(/\n+$/, '').split('\n');
-  // read_file：只报行数，不显内容
-  if (name === 'read_file') {
-    return { lines: [`Read ${all.length} lines`], omitted: 0, label: '' };
-  }
-  // edit_file：完整 diff 不折叠（diff 是精华）
-  if (name === 'edit_file') {
-    return { lines: all, omitted: 0, label: '' };
-  }
-  // write_file：前 10 行（写文件正文超长时折叠；对齐 CC write 阈值）
-  if (name === 'write_file') {
-    return all.length > WRITE_HEAD
-      ? { lines: all.slice(0, WRITE_HEAD), omitted: all.length - WRITE_HEAD, label: 'more lines' }
-      : { lines: all, omitted: 0, label: '' };
-  }
-  // bash：成功前 3 行，错误前 5 行（错误栈关键信息常在后面，多给几行）
-  if (name === 'bash') {
-    const head = isError ? 5 : 3;
-    return all.length > head
-      ? { lines: all.slice(0, head), omitted: all.length - head, label: 'more lines' }
-      : { lines: all, omitted: 0, label: '' };
-  }
-  // grep：前 3 行匹配，提示含总命中数（用户关心共找到多少）
-  if (name === 'grep') {
-    return all.length > 3
-      ? { lines: all.slice(0, 3), omitted: all.length - 3, label: `of ${all.length} matches` }
-      : { lines: all, omitted: 0, label: '' };
-  }
-  // glob：多文件完全折叠成 "Found N files" 单行（对齐 CC；文件清单去 Ctrl+O 转录看）。
-  //   单文件 / 空命中原样——避免 "Found 1 files" 这种尴尬文案，且空命中 "未找到匹配文件。" 需直显。
-  if (name === 'glob') {
-    if (all.length >= 2) {
-      return { lines: [`Found ${all.length} files`], omitted: 0, label: '' };
+  const strategy = getStrategy(name);
+
+  switch (strategy.mode) {
+    case 'summary': {
+      // 条目 ≥ minEntries 时折叠成 "<verb> <count> <unit>" 单行；否则原样。
+      const min = strategy.minEntries ?? 2;
+      if (all.length >= min) {
+        return { lines: [`${strategy.verb} ${all.length} ${strategy.unit}`], omitted: 0, label: '', folded: true };
+      }
+      return { lines: all, omitted: 0, label: '', folded: false };
     }
-    return { lines: all, omitted: 0, label: '' };
+    case 'head': {
+      const head = strategy.lines;
+      if (all.length > head) {
+        const label = strategy.label.replace('N', String(all.length));
+        return { lines: all.slice(0, head), omitted: all.length - head, label, folded: true };
+      }
+      return { lines: all, omitted: 0, label: '', folded: false };
+    }
+    case 'full':
+      return { lines: all, omitted: 0, label: '', folded: false };
   }
-  // 其他：完整
-  return { lines: all, omitted: 0, label: '' };
 }
 
 /** 工具展示模式（Phase 2）。由 foldContent 折叠行数驱动，单一规则源。 */

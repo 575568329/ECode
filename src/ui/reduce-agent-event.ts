@@ -38,6 +38,30 @@ function flushIfNeeded(state: StreamState): StreamState {
 }
 
 /**
+ * 把 streamingText 落地成 assistant msg + 清空（completed 与 tool_call_start 复用）。
+ * 防 #2 跨轮累加：start/completed 是每 run 一次（非每轮），若不在轮边界（tool_call_start）
+ * flush，多轮 text 会全堆在动态区 streamingText 里越拼越长。无 streamingText 时不 push（避免空 assistant）。
+ */
+function flushStreamingText(state: StreamState): Pick<StreamState, 'completedMessages' | 'streamingText'> {
+  if (!state.streamingText) {
+    return { completedMessages: state.completedMessages, streamingText: state.streamingText };
+  }
+  return {
+    completedMessages: [
+      ...state.completedMessages,
+      {
+        kind: 'assistant',
+        id: nextId(),
+        text: state.streamingText,
+        model: state.currentModel ?? undefined,
+        durationMs: state.runStartedAt != null ? Date.now() - state.runStartedAt : undefined,
+      },
+    ],
+    streamingText: null,
+  };
+}
+
+/**
  * 把一个 AgentEvent 折进 state，返回新 state（不可变）。
  * - text_delta → streamingText 累加
  * - tool_call_start → activeTools 追加
@@ -59,11 +83,16 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
       return { ...s, streamingText: (s.streamingText ?? '') + event.text };
     }
 
-    case 'tool_call_start':
+    case 'tool_call_start': {
+      // 本轮 text 结束（开始干活）→ 先把 streamingText 落地 + 清空，防 #2 跨轮累加。
+      const flushed = flushStreamingText(state);
       return {
         ...state,
+        completedMessages: flushed.completedMessages,
+        streamingText: flushed.streamingText,
         activeTools: [...state.activeTools, { id: event.id, name: event.name, startedAt: Date.now(), input: event.input }],
       };
+    }
 
     case 'tool_result': {
       const activeTools = state.activeTools.filter((t) => t.id !== event.id);
@@ -98,22 +127,12 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
 
     case 'completed': {
       const s = flushIfNeeded(state);
-      const msgs = [...s.completedMessages];
-      if (s.streamingText) {
-        // 落地助手文本时附带 MetaLine 数据：模型名 + 本轮耗时（start→completed）。
-        msgs.push({
-          kind: 'assistant',
-          id: nextId(),
-          text: s.streamingText,
-          model: s.currentModel ?? undefined,
-          durationMs:
-            s.runStartedAt != null ? Date.now() - s.runStartedAt : undefined,
-        });
-      }
+      // streamingText 落地复用 flushStreamingText（与 tool_call_start 同源，#2）
+      const flushed = flushStreamingText(s);
       return {
         ...s,
-        completedMessages: msgs,
-        streamingText: null,
+        completedMessages: flushed.completedMessages,
+        streamingText: flushed.streamingText,
         isRunning: false,
         lastCompleted: { rounds: event.rounds, reason: event.reason },
       };

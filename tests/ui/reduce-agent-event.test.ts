@@ -93,6 +93,29 @@ describe('reduceAgentEvent', () => {
     expect(s.activeTools[0].input).toEqual({ command: 'npm test' });
   });
 
+  it('tool_call_start → streamingText 落地 assistant + 清空（防跨轮累加 #2）', () => {
+    let s = reduceAgentEvent(initialStreamState, { type: 'text_delta', text: '第一句' });
+    expect(s.streamingText).toBe('第一句');
+    s = reduceAgentEvent(s, { type: 'tool_call_start', id: 't1', name: 'bash', input: { command: 'ls' } });
+    expect(s.streamingText).toBeNull(); // 清空，不再堆动态区
+    const asst = s.completedMessages.find((m) => m.kind === 'assistant');
+    expect(asst?.kind === 'assistant' && asst.text).toBe('第一句'); // 落地历史
+    expect(s.activeTools[0].id).toBe('t1'); // activeTools 仍正常追加
+    // 下一轮新 text 不累加旧的（#2 核心：跨轮不拼接）
+    s = reduceAgentEvent(s, { type: 'text_delta', text: '第二句' });
+    expect(s.streamingText).toBe('第二句');
+  });
+
+  it('tool_call_start 无 streamingText → 不落地空 assistant', () => {
+    const s = reduceAgentEvent(initialStreamState, {
+      type: 'tool_call_start',
+      id: 't1',
+      name: 'bash',
+    });
+    expect(s.completedMessages.find((m) => m.kind === 'assistant')).toBeUndefined();
+    expect(s.activeTools).toHaveLength(1);
+  });
+
   it('tool_result → DisplayMessage 携带 input（历史区摘要 §9.5）', () => {
     let s = reduceAgentEvent(initialStreamState, {
       type: 'tool_call_start',

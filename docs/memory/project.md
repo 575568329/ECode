@@ -45,8 +45,8 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 | M2 多模型适配 | Provider 抽象、协议差异、能力探测 | ✅ 完成 |
 | M3 上下文压缩 + Session | token 计数、摘要压缩、结果截断、Session 持久化 | 🟡 P1-P4 完成，P5 待（✅ 超限响应式恢复 L3 已接线 2026-08-07）|
 | M3.5 交互式 CLI | 沉浸 REPL、slash 命令、流式渲染、中断、富文本/TUI | 🟡 进行中（REPL/斜杠/折叠组/pager/会话切换/**Esc-Ctrl+C 分工**已落地，Ctrl+O B+ 精简代码完成待真机）|
-| M4 权限系统 | 三档模式（砍 plan）+ 规则引擎（arity/last wins）+ 路径保护 + 修 🔴-2 | 🟡 阶段 1+2 完成 2026-08-08（path-guard 硬安全网 + check() 三档判定 + 修 🔴-2 + edit_file 缺口）；待阶段 3 bash arity |
-| M5+ 进阶扩展 | P2: 子代理(9)/MCP(10)/Hooks(12) ｜ P3: Skills(13)/模型路由(22)/多渠道(23) | ⬜ 未开始 |
+| M4 权限系统 | 三档模式（砍 plan）+ 规则引擎（arity/last wins）+ 路径保护 + 修 🔴-2 + 命令分级 + UI 三态审批 + doom-loop | ✅ 完成 2026-08-08（5 阶段全提交：2e754f4 阶段4 + b60c36b 阶段5；683 单测全绿） |
+| M5+ 进阶扩展 | P2: 子代理(9)/MCP(10)/Hooks(12) ｜ P3: Skills(13)/模型路由(22)/多渠道(23) | 📄 **M5 设计完成 2026-08-08**（三文档：技术选型/实施方案/方案解析，三源联网核实），代码未开始 |
 
 ## 当前焦点
 
@@ -70,6 +70,17 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 - ✅ **foldContent 统一**（2026-08-08）：if-else 链→策略表 + Folded.folded 标志 + isToolFolded 简化 + 新工具一行声明 + 默认 head(3) 兜底
 - ✅ **多行输入**（2026-08-08，详设 docs/详设/20260808150000）：ink 7 原生 Kitty 键盘协议（反转 CCode ink 6「拿不到 shift」旧判，详设 §2 有源码证据链），Shift+Enter/Alt+Enter/反斜杠续行 三键全接 + cursorIndex 多行编辑（中间插入/左右/Home/End/上下门控/Backspace 跨行合并）；index.ts render 开 `kittyKeyboard:{mode:'auto'}`。单测 +6 共 537 绿，tsc clean
 - ⬜ 真机冒烟：Ctrl+O pager + bash 跨平台 + 消息不重复 + **多行 Shift+Enter（WT）**
+
+**M4 权限系统完成 + M5 设计完成**（2026-08-08，用户休息，自主推进，待审核）：
+- ✅ **M4 全 5 阶段提交**（b60c36b）：①path-guard 硬安全网 + check() 三档判定 + 修 🔴-2 ②edit_file dangerous 缺口 ③bash 命令分级（arity 字典归约 + compound 逐段审批，**禁 tree-sitter 用字符串拆分**，§9.3 红线）④settings-loader + CLI flag + Shift+Tab 模式切换 + deny 接线 ⑤体验增强（二次确认 + reject 反馈 + doom-loop 检测 + 危险命令高亮 + UI 三态审批弹窗）。**683 单测全绿**
+- 📄 **M5 三文档写完**（设计层，代码未开始）：[技术选型](../里程碑/M5-技术选型与理由[待实现].md) + [实施方案](../里程碑/M5-实施方案[待实现].md) + [方案解析](../里程碑/M5-方案解析[待实现].md)
+  - 范围 = 支点9 子代理 + 支点10 MCP + 支点12 Hooks（三 L4 扩展挂载点，复用 runAgentStream 不动核心 loop）
+  - **三源联网核实**（2026-08-08）：MCP 规范 `2026-07-28` / SDK v1.30.0 / HTTP+SSE 废弃自 `2025-03-26`（非 2025-11-25）/ DCR 废弃 / CC hooks 30+ 事件 + 5 handler + hookSpecificOutput 嵌套红线 + 权限求值 6 步 / 子代理 frontmatter 17 字段（无 glob）/ 嵌套默认深度 3 / 并发 20 / stdio RCE CVE（OX Security 2026-04-15）
+  - 核心设计：子代理=递归 runAgentStream（侦察兵模式只回结论，权限⊆，防递归双保险）；MCP=官方 SDK + 独立注册表 + 只做 Tools + stdio→Streamable HTTP + stdio RCE 命令 allowlist；Hooks=CC settings.json 式（非 opencode TS 插件）+ 6 核心事件 + Pre/Post Promise-await + 系统hooks强制叠加 + hook 只能收紧不能放宽
+  - **⚠️ 两处待用户拍板**：①子代理权限继承 A（继承全部）/B（只继承 deny，倾向 B）②MCP 配置 A（独立注册表，倾向）/B（进 config）
+  - 角色 agent 审阅**完成**（结果见 [M5-文档审阅问题清单](../里程碑/M5-文档审阅问题清单[待审阅].md)）：3 致命（F1 resolveDataDir 待新建/F2 mcp_tool 凭空捏造已删/F3 权限继承悄悄改了已锁定决策）/ 15 改进（多数源码行号精度）。**本轮已修**：F1（阶段0加前置）/F2/I1（deny>ask>allow 无 defer）/I3（**复核 683 正确**，审阅者误数为 542，实测 `vitest run`=683/61 文件全绿）/I4/I6/I7。**待用户拍板**：F3（子代理权限 A→B 是否反转支点9）/I13（MCP 独立注册已锁定，去待审阅标）。MCP 规范/SDK/挂点/安全核心经核查**全部成立**。
+  - ✅ **测试实测全绿**：`npx vitest run` = **683 passed / 61 文件**（M4 完成态，tsc clean）
+- 🐛 踩坑：见 [debugging.md #015](./debugging.md)（M5 三源联网研究推翻 7 处早先假设——HTTP+SSE 废弃日期/DCR 废弃/hook 事件数+handler 种类/hookSpecificOutput 嵌套/子代理 frontmatter 字段/嵌套深度，"不要瞎想"的实证教训）
 
 **2026-08-07 夜间产出（用户休息，自主推进，待审核）**：
 - ✅ 代码 4 commits：① config 首启自动生成模板+JSON注释兼容（787fad8）② 折叠组延迟冻结—连续只读工具合并摘要（fd56e5a）③ Ctrl+O 转录按对话分组精简+修双❯/退出键/蜂鸣音（8485b08）④ **Esc/Ctrl+C 横向分工**（b972f13，⚠️ breaking）

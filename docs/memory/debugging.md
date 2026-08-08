@@ -643,3 +643,46 @@ const aborted = opts.signal?.aborted || isAbortError(err);
 - 同轮修复：[[#013]]（ink exitOnCtrlC 启用 app.tsx 中断逻辑后，本 bug 才暴露——此前 app.tsx 中断逻辑是死代码，根本走不到这里）
 - 测试盲区同类：[[#003]]（现有中断测试 mock runAgent 主动 yield aborted completed，不抛错 → 测不到 SDK 抛非 DOMException 错误的路径；本条补了 provider.stream 抛 `Error` + `signal.aborted` 的回归测试）
 - 实现：`src/agent.ts` catch 段、回归测试 `tests/agent-stream.test.ts`
+
+---
+
+## #015 M5 三源联网研究推翻多处早先假设——"不瞎想"的实证教训
+
+**日期**：2026-08-08
+**性质**：方法论（[[#004]] 的又一活案例），M5 设计阶段
+**影响**：M5 三文档（子代理/MCP/Hooks）初稿凭"源码阅读 + LLM 知识"写了若干断言，联网核实官方规范后**多处被推翻**，若不核实就进 TDD 编码会走偏。
+
+### 现象（被推翻的断言）
+
+| # | 早先假设（错） | 联网核实（对） | 出处 |
+|---|---------------|---------------|------|
+| 1 | HTTP+SSE 在 `2025-11-25` 废弃 | **废弃自 `2025-03-26`**（`2025-11-25` 是引入带 session 的 Streamable HTTP，session 机制 `2026-07-28` 又移除） | [MCP Streamable HTTP spec](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http) |
+| 2 | Dynamic Client Registration（RFC 7591）当前可用 | 已于 `2026-07-28` **废弃**，由 Client ID Metadata Documents 取代 | MCP Changelog |
+| 3 | "CSA Labs 推荐切 Streamable HTTP 更安全" | **不成立**——CSA Labs 页面 403 读不到；OX Security 推荐的是 SDK 级命令白名单/沙箱，**不是换传输** | OX Security / The Hacker News |
+| 4 | CC hook 事件 ~27 个 + handler 只 command | 实际 **30+ 事件、5 种 handler**（command/http/mcp_tool/prompt/agent） | code.claude.com/docs/en/plugins-reference |
+| 5 | PreToolUse 的 `permissionDecision` 放 JSON 顶层 | **必须嵌套在 `hookSpecificOutput` 下**，顶层平铺静默丢弃（CC #48760） | code.claude.com/docs/en/hooks |
+| 6 | 子代理 frontmatter 主要 4 字段 | 实际 **17 字段**；且 **不存在 `glob` 字段**（访问控制走 tools/disallowedTools + hooks） | code.claude.com/docs/en/sub-agents |
+| 7 | "CC 把 Agent 工具放进 disallow 列表 → 默认禁子代理嵌套" | **嵌套允许**，默认深度 3，Agent 工具在子代理默认可用（仅深度受限时移除） | code.claude.com/docs/en/sub-agents |
+
+### 根因
+
+- **源码阅读 ≠ 官方规范真相**：读 `coreTypes.ts` 统计出"27 事件"是源码枚举口径，官方文档是 30+；读 `constants/tools.ts` 以为"Agent 工具被禁"是没理解 disallow 列表的条件性（仅深度受限时生效）。
+- **LLM 既有知识对"快速演进的协议/产品"必然失真**：MCP 规范半年内从 2025-03-26 → 2025-11-25 → 2026-07-28 三次大改，DCR 从支持到废弃，子代理 frontmatter 字段持续扩张——这类"快速变化的具体事实"是 LLM 知识的最弱区（呼应 [[#004]]）。
+- **"研究核实"必须落到权威一手源**：CC/opencode 源码是"实现真相"，但官方文档是"产品真相"，两者口径可能漂移；MCP 规范站是"协议真相"。三者交叉，以**官方文档 + 规范站**为最终裁决。
+
+### 解决（已在 M5 文档修正）
+
+1. 三文档所有被推翻断言全部改为核实值（带 URL + 核实日期 2026-08-08）。
+2. 每条加"🔴 核实纠偏"标注，保留"早先假设 vs 核实结论"对照——**不掩盖失真过程**，让读者知道哪些是易错点。
+3. 不确定的一律标"⚠️ 待审阅/待用户拍板"（如子代理权限继承 A/B、MCP 配置 A/B），不强行下结论。
+
+### 教训
+
+> **"不要自己瞎想"= 三源交叉核实，且以官方文档/规范站为最终裁决。** 源码阅读能拿到"实现真相"，但官方文档是"产品真相"、规范站是"协议真相"，三者口径会漂移（源码枚举 vs 文档枚举、条件性 disallow vs 无条件）。写设计文档时：(1) 协议/规范类（MCP 版本、废弃时间、字段定义）查规范站；(2) 产品行为类（hook 事件、frontmatter 字段）查官方文档；(3) 实现细节类（file:line）查源码。三者冲突时标出分歧、以官方为准，不强行统一。
+>
+> **快演进的协议/产品（MCP/CC）半年内可能大改**——写"具体版本号/字段/废弃时间"这类断言时，LLM 知识的失真概率最高，必须联网核实时效。这正是用户要求"在网上查资料不要自己瞎想"的原因。
+
+### 关联
+
+- 同类方法论：[[#004]]（LLM 知识数值失真）、[[#010]]（文档 file:line 漂移 + 状态滞后）
+- 产物：[M5-技术选型 §10-T2/T6/T7](../里程碑/M5-技术选型与理由[待实现].md) + [M5-方案解析 Q4/Q18/Q20](../里程碑/M5-方案解析[待实现].md)（均含🔴核实纠偏）

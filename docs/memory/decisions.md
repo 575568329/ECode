@@ -84,3 +84,45 @@ Anthropic 侧可选 `count_tokens` API 校准，但 OpenAI-compatible 侧无统�
 
 - 实施细节：[M3-实施方案[已完成].md](../里程碑/M3-实施方案[已完成].md) §6.1 / §6.5 / §6.9（已同步修订）
 - 代码：[src/session.ts](../../src/session.ts) saveSession / [src/agent.ts](../../src/agent.ts) ResumeContext
+
+---
+
+## 决策 #003：M5 三支点（子代理/MCP/Hooks）核心选型（2026-08-08，设计层，代码未开始）
+
+**日期**：2026-08-08
+**状态**：✅ 已决策（设计层锁定；2 处子项待用户拍板）
+**影响范围**：M5 = 支点9 子代理 + 支点10 MCP + 支点12 Hooks。详尽选型/理由见 [M5-技术选型](../里程碑/M5-技术选型与理由[待实现].md)，本条只记核心决策 + 推翻项。
+
+### 锁定的核心决策
+
+| 支点 | 决策 | 关键理由 | 推翻/放弃项 |
+|------|------|---------|------------|
+| **9 子代理** | **递归 `runAgentStream`**（换 system+tools 子集+空 messages），侦察兵模式（只回最终结论，中间 tool 不外泄） | 复用核心 loop（总纲 4.3 loop 不动）；CC 同构（递归 query）；ECode `runAgentStream(opts)` 天然可重入 | ❌ 独立 session 实体（opencode parentID 式）——子代理可观测归支点 17 |
+| **9 权限** | 子代理权限 **⊆ 主代理**，**只能收紧不能放宽** | 防权限代持绕过审批（主派子偷偷改文件） | — |
+| **9 防递归** | 深度限制（默认 **1**）+ 子代理默认无 Task 工具 | 取 opencode 保守默认（CC 默认 3 太松） | — |
+| **10 协议** | **官方 `@modelcontextprotocol/sdk` v1.30.0**，不自造 | 生态红利（白嫖 CC/Cursor server）；CC/opencode 都用官方 SDK | ❌ 自造协议 |
+| **10 原语** | **只做 Tools**，砍 Prompts（归 Skill）/Resources（后置） | YAGNI + 功能收敛 | ❌ HTTP+SSE（规范废弃 2025-03-26）/ DCR（废弃 2026-07-28）/ Sampling·Logging（Deprecated） |
+| **10 传输** | 阶段1 stdio → 阶段2 Streamable HTTP+OAuth | 个人 CLI 起步 stdio；远程跟标准 | — |
+| **12 形态** | **CC settings.json command hook**（非 opencode TS 插件） | 贴 CC 生态（配置可迁移）；shell 门槛低 | ❌ opencode TS 插件 hook（后置借鉴） |
+| **12 事件** | **只做 6 核心**（SessionStart/End + UserPromptSubmit + Pre/PostToolUse + Stop） | YAGNI（CC 30+，80% 是协作/内部） | — |
+| **12 安全** | hook 只能收紧不能放宽；系统 hooks 代码注册强制叠加 | 权限 deny 是硬边界，hook allow 翻不了盘（CC 安全核心） | — |
+
+### 🔴 安全红线（M5 三个不可妥协）
+
+1. **子代理权限⊆**：防权限代持（主派子偷偷改文件绕审批）。
+2. **MCP stdio RCE 命令 allowlist**：补 opencode 没做的防护（OX Security 2026-04-15 CVE，150M+ downloads 受影响）。
+3. **hookSpecificOutput 嵌套**：PreToolUse 结构化决策须嵌套在 `hookSpecificOutput` 下，顶层平铺静默丢弃（CC #48760）。
+
+### ⚠️ 待用户拍板的 2 处子项（非阻塞，倾向已给）
+
+| 子项 | 选项 A | 选项 B | ECode 倾向 |
+|------|--------|--------|-----------|
+| 子代理权限继承 | 继承全部规则（含 allow） | 只继承 deny（opencode 式，allow 子代理自决） | **B**（更严，子代理是"不可信分身"给最小权限） |
+| MCP 配置存储 | 独立注册表 registry.json（不进 config） | 进 config.json（CC/opencode 式） | **A**（防替换 config 连坐删 MCP） |
+
+### 关联
+
+- 详尽理由 + 放弃方案：[M5-技术选型与理由](../里程碑/M5-技术选型与理由[待实现].md)
+- 实施步骤 + 接口/挂点：[M5-实施方案](../里程碑/M5-实施方案[待实现].md)（阶段 0-4）
+- 原理答疑：[M5-方案解析](../里程碑/M5-方案解析[待实现].md)
+- 核实教训：[debugging.md #015](./debugging.md)（7 处早先假设被联网研究推翻）

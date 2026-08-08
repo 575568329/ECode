@@ -133,6 +133,21 @@ async function startRepl(model: string | undefined, system: string): Promise<voi
       system,
       version,
     }),
+    {
+      // exitOnCtrlC: false —— 关掉 ink 默认的「Ctrl+C 直接退出」（render.js 默认 true）。
+      // 默认 true 时 ink 在 stdin 层（components/App.js:151 拦 \x03）直接 process.exit，
+      // app.tsx 的「单击中断对话 / 双击退出」逻辑（详设 docs/详设/20260807000318）变成死代码、
+      // 一次 Ctrl+C 就退。关掉后 Ctrl+C 交给 app.tsx useInput 处理：
+      //   单击 = 中断流（streaming→abort，非 streaming 仅进退出窗口）
+      //   双击(2s 内) = process.exit(0)
+      //   Esc 只清空输入/关弹窗，不中断对话（与 Ctrl+C 分工）
+      exitOnCtrlC: false,
+      // Kitty 键盘协议（详设 docs/详设/20260808150000 §3.1）：auto 模式自动检测终端支持，
+      // 启用后 Shift+Enter 发 \x1b[13;2u 被 ink 原生解析为 {return, shift:true}，
+      // 使多行输入的换行键可用。不支持 Kitty 的终端静默跳过（ink auto 不误开），
+      // 靠 Alt+Enter / 反斜杠续行兜底。ink 在 unmount 时自动发还原序列，无需手动清理。
+      kittyKeyboard: { mode: 'auto', flags: ['disambiguateEscapeCodes'] },
+    },
   );
 }
 

@@ -141,6 +141,9 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
       setLastCtrlC(now); // 单击进退出窗口（StatusBar 提示「再按 ctrl+c 退出」）
       if (api.isRunning) {
         api.abort(); // 单击：streaming 时中断对话
+        // §3.5 中断 warning（纯 UI）：addMessage 只改 completedMessages，不进 controller messagesRef，
+        // 对抗「中断后零反馈、不知为何停」的困惑。用户重 submit 即新一轮。
+        api.addMessage({ kind: 'warning', id: `sys-abort-${Date.now()}`, text: '— 已中断 —' });
       }
     }
   });

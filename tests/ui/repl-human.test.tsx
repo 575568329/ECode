@@ -259,6 +259,7 @@ describe('REPL 人肉驱动 —— 快捷键（按实际反馈）', () => {
     await sim.waitFor((f) => f.includes('interrupt')); // isRunning=true → InputBar 显 disabled
     await sim.ctrlC();
     await sim.waitFor((f) => !f.includes('interrupt')); // abort → 恢复输入栏
+    await sim.waitFor((f) => f.includes('— 已中断 —')); // §3.5：中断 warning（纯 UI 反馈）
   });
 
   it('Esc 不中断流（中断专职 Ctrl+C）—— streaming 时 Esc 无效', async () => {

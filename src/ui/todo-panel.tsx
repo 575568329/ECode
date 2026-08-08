@@ -22,6 +22,9 @@ const STATUS_ORDER: Record<TodoItem['status'], number> = {
   completed: 2,
 };
 
+/** 面板最多直显的 active 条数（§7.4 防顶屏：header 1 + active 6 + completed 1 ≈ 8 行上限）。 */
+const MAX_ACTIVE = 6;
+
 export function TodoPanel({ todos }: TodoPanelProps): React.ReactElement | null {
   if (todos.length === 0) return null; // 空 → 不渲染（不占位）
 
@@ -29,12 +32,16 @@ export function TodoPanel({ todos }: TodoPanelProps): React.ReactElement | null 
   const active = todos
     .filter((t) => t.status !== 'completed')
     .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]);
+  // 面板高度上限（§7.4 防顶屏）：active 超 MAX_ACTIVE 只显前 N 条（排序后 in_progress 靠前优先保留），
+  // 余下折叠为「… +M 条待办」。completed 已单行折叠，active 是唯一可能膨胀的部分。
+  const shown = active.slice(0, MAX_ACTIVE);
+  const hiddenCount = active.length - shown.length;
 
   return (
     <Box flexDirection="column">
       <Text color={T.muted}>待办 ({done}/{todos.length})</Text>
       {/* key 用 index：todos 是整表替换的临时派生列表，无稳定 id；纯展示无内部状态，index 安全。 */}
-      {active.map((t, i) => (
+      {shown.map((t, i) => (
         <Box key={i}>
           <Text color={t.status === 'in_progress' ? T.brand : T.muted}>
             {t.status === 'in_progress' ? SYMBOLS.todoProgress : SYMBOLS.todoPending}{' '}
@@ -44,6 +51,9 @@ export function TodoPanel({ todos }: TodoPanelProps): React.ReactElement | null 
           </Text>
         </Box>
       ))}
+      {hiddenCount > 0 ? (
+        <Text color={T.muted}>  … +{hiddenCount} 条待办</Text>
+      ) : null}
       {done > 0 ? (
         <Box>
           <Text color={T.success}>{SYMBOLS.success} </Text>

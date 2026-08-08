@@ -2,6 +2,8 @@
 // 这些类型只服务于渲染层；LLM history 仍由 agent core 自己累加管理，
 // 严禁从 DisplayMessage[] 反向重建 LLM messages。
 
+import type { BusyState } from './agent-loop-controller.js';
+
 /** 单条工具调用在动态区的运行态表示。 */
 export interface ActiveTool {
   id: string;
@@ -73,6 +75,12 @@ export interface StreamState {
    *  组被破坏(text_delta/非只读 tool/completed/warning/error)时合并成 tool_group flush。
    *  详见 docs/详设/20260806220000_折叠组延迟冻结-详设.md。 */
   pendingReadSearch: DisplayMessage[];
+  /** 调度状态机镜像（controller 真相源）：idle/running/compacting。isRunning/isCompacting 据此派生。 */
+  busy: BusyState;
+  /** 待处理队列镜像（排队灰显预览数据源，= controller.pendingQueue）。 */
+  queuedMessages: string[];
+  /** 待处理条数（StatusBar "待处理:N"）。 */
+  pendingCount: number;
 }
 
 export const initialStreamState: StreamState = {
@@ -89,4 +97,7 @@ export const initialStreamState: StreamState = {
   runStartedAt: null,
   staticKey: 0,
   pendingReadSearch: [],
+  busy: 'idle',
+  queuedMessages: [],
+  pendingCount: 0,
 };

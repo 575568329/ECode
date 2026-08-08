@@ -14,7 +14,6 @@ import { SLASH_COMMANDS } from '../slash-commands.js';
 
 interface InputBarProps {
   onSubmit: (text: string) => void;
-  disabled?: boolean;
 }
 
 interface HistoryState {
@@ -58,7 +57,7 @@ const PICKER_MAX_ITEMS = 5;
 /** 双击 Esc 判定窗口（ms）：窗口内第二次 Esc → 清空输入框。单击 Esc 仅记时间、无操作。 */
 const DOUBLE_ESC_MS = 500;
 
-export function InputBar({ onSubmit, disabled = false }: InputBarProps): React.ReactElement {
+export function InputBar({ onSubmit }: InputBarProps): React.ReactElement {
   const [text, setText] = useState('');
   const [hist, dispatch] = useReducer(historyReducer, { items: [], index: -1, draft: '' });
   const [pickerIndex, setPickerIndex] = useState(0);
@@ -87,8 +86,6 @@ export function InputBar({ onSubmit, disabled = false }: InputBarProps): React.R
   const safeIndex = candidates.length === 0 ? 0 : Math.min(pickerIndex, candidates.length - 1);
 
   useInput((input, key) => {
-    if (disabled) return;
-
     if (pickerVisible) {
       // picker 活跃：↑↓ 导航、Enter 直接执行、Esc 关闭；字符/backspace 落共用段继续编辑。
       if (key.upArrow) {
@@ -155,15 +152,6 @@ export function InputBar({ onSubmit, disabled = false }: InputBarProps): React.R
 
   // 历史浏览时显示历史项，否则当前输入。
   const displayed = hist.index === -1 ? text : hist.items[hist.index] ?? '';
-
-  if (disabled) {
-    return (
-      <Text color={T.warning}>
-        {SYMBOLS.warning} running · {''}
-        <Text color={T.muted}>ctrl+c to interrupt</Text>
-      </Text>
-    );
-  }
 
   return (
     <Box flexDirection="column">

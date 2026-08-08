@@ -336,7 +336,7 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
           onResolve={api.resolvePermission}
         />
       ) : (
-        <InputBar onSubmit={handleSubmit} disabled={api.isRunning} />
+        <InputBar onSubmit={handleSubmit} />
       )}
 
       <StatusBar

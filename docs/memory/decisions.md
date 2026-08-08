@@ -90,7 +90,7 @@ Anthropic 侧可选 `count_tokens` API 校准，但 OpenAI-compatible 侧无统�
 ## 决策 #003：M5 三支点（子代理/MCP/Hooks）核心选型（2026-08-08，设计层，代码未开始）
 
 **日期**：2026-08-08
-**状态**：✅ 已决策（设计层锁定；2 处子项待用户拍板）
+**状态**：✅ 已决策（设计层锁定；2 处子项 2026-08-09 用户确认：权限继承=A、MCP 配置=A）
 **影响范围**：M5 = 支点9 子代理 + 支点10 MCP + 支点12 Hooks。详尽选型/理由见 [M5-技术选型](../里程碑/M5-技术选型与理由[待实现].md)，本条只记核心决策 + 推翻项。
 
 ### 锁定的核心决策
@@ -113,12 +113,12 @@ Anthropic 侧可选 `count_tokens` API 校准，但 OpenAI-compatible 侧无统�
 2. **MCP stdio RCE 命令 allowlist**：补 opencode 没做的防护（OX Security 2026-04-15 CVE，150M+ downloads 受影响）。
 3. **hookSpecificOutput 嵌套**：PreToolUse 结构化决策须嵌套在 `hookSpecificOutput` 下，顶层平铺静默丢弃（CC #48760）。
 
-### ⚠️ 待用户拍板的 2 处子项（非阻塞，倾向已给）
+### ✅ 已确认的 2 处子项（2026-08-09 用户拍板）
 
-| 子项 | 选项 A | 选项 B | ECode 倾向 |
-|------|--------|--------|-----------|
-| 子代理权限继承 | 继承全部规则（含 allow） | 只继承 deny（opencode 式，allow 子代理自决） | **B**（更严，子代理是"不可信分身"给最小权限） |
-| MCP 配置存储 | 独立注册表 registry.json（不进 config） | 进 config.json（CC/opencode 式） | **A**（防替换 config 连坐删 MCP） |
+| 子项 | 选项 A | 选项 B | 用户决策（2026-08-09） |
+|------|--------|--------|----------------------|
+| 子代理权限继承 | 继承全部规则（含 allow）✅ 选 | 只继承 deny（opencode 式，allow 子代理自决） | **A**（夜间自动化子代理须带权限跑；权限⊆+deny继承+人设tools收紧保底） |
+| MCP 配置存储 | 独立注册表 registry.json（不进 config）✅ 选 | 进 config.json（CC/opencode 式） | **A**（防替换 config 连坐删 MCP；夜间自动化配置稳定） |
 
 ### 关联
 

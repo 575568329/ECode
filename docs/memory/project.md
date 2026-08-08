@@ -77,8 +77,8 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
   - 范围 = 支点9 子代理 + 支点10 MCP + 支点12 Hooks（三 L4 扩展挂载点，复用 runAgentStream 不动核心 loop）
   - **三源联网核实**（2026-08-08）：MCP 规范 `2026-07-28` / SDK v1.30.0 / HTTP+SSE 废弃自 `2025-03-26`（非 2025-11-25）/ DCR 废弃 / CC hooks 30+ 事件 + 5 handler + hookSpecificOutput 嵌套红线 + 权限求值 6 步 / 子代理 frontmatter 17 字段（无 glob）/ 嵌套默认深度 3 / 并发 20 / stdio RCE CVE（OX Security 2026-04-15）
   - 核心设计：子代理=递归 runAgentStream（侦察兵模式只回结论，权限⊆，防递归双保险）；MCP=官方 SDK + 独立注册表 + 只做 Tools + stdio→Streamable HTTP + stdio RCE 命令 allowlist；Hooks=CC settings.json 式（非 opencode TS 插件）+ 6 核心事件 + Pre/Post Promise-await + 系统hooks强制叠加 + hook 只能收紧不能放宽
-  - **⚠️ 两处待用户拍板**：①子代理权限继承 A（继承全部）/B（只继承 deny，倾向 B）②MCP 配置 A（独立注册表，倾向）/B（进 config）
-  - 角色 agent 审阅**完成**（结果见 [M5-文档审阅问题清单](../里程碑/M5-文档审阅问题清单[待审阅].md)）：3 致命（F1 resolveDataDir 待新建/F2 mcp_tool 凭空捏造已删/F3 权限继承悄悄改了已锁定决策）/ 15 改进（多数源码行号精度）。**本轮已修**：F1（阶段0加前置）/F2/I1（deny>ask>allow 无 defer）/I3（**复核 683 正确**，审阅者误数为 542，实测 `vitest run`=683/61 文件全绿）/I4/I6/I7。**待用户拍板**：F3（子代理权限 A→B 是否反转支点9）/I13（MCP 独立注册已锁定，去待审阅标）。MCP 规范/SDK/挂点/安全核心经核查**全部成立**。
+  - **✅ 两处已确认（2026-08-09 用户）**：①子代理权限继承 = **A（继承全部）**——夜间自动化子代理须带权限跑 ②MCP 配置 = **A（独立注册表）**——防 config 连坐删
+  - 角色 agent 审阅**完成**（结果见 [M5-文档审阅问题清单](../里程碑/M5-文档审阅问题清单[待审阅].md)）：3 致命（F1 resolveDataDir 待新建/F2 mcp_tool 凭空捏造已删/F3 权限继承悄悄改了已锁定决策）/ 15 改进（多数源码行号精度）。**本轮已修**：F1（阶段0加前置）/F2/I1（deny>ask>allow 无 defer）/I3（**复核 683 正确**，审阅者误数为 542，实测 `vitest run`=683/61 文件全绿）/I4/I6/I7。**已确认（2026-08-09 用户）**：F3=权限继承 **A**（继承全部）/I13=MCP **独立注册**（已去待审阅标）。MCP 规范/SDK/挂点/安全核心经核查**全部成立**。
   - ✅ **测试实测全绿**：`npx vitest run` = **683 passed / 61 文件**（M4 完成态，tsc clean）
 - 🐛 踩坑：见 [debugging.md #015](./debugging.md)（M5 三源联网研究推翻 7 处早先假设——HTTP+SSE 废弃日期/DCR 废弃/hook 事件数+handler 种类/hookSpecificOutput 嵌套/子代理 frontmatter 字段/嵌套深度，"不要瞎想"的实证教训）
 

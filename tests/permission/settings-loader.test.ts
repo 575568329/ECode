@@ -1,7 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   parseRuleString,
   buildRulesFromSettings,
+  loadPermissionSettings,
   type PermissionSettingsFile,
 } from '../../src/permission/settings-loader.js';
 
@@ -86,5 +90,77 @@ describe('buildRulesFromSettings（settings 对象 → Rule[]）', () => {
   it('空 / 缺失数组 → []', () => {
     expect(buildRulesFromSettings({}, 'user')).toEqual([]);
     expect(buildRulesFromSettings({ allow: [] }, 'user')).toEqual([]);
+  });
+});
+
+describe('loadPermissionSettings — 注释解析 + 模板自动生成', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'ecode-perm-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('带 // 注释的 settings.json 能正确解析（strip 生效）', () => {
+    const userDir = join(root, 'user');
+    mkdirSync(userDir, { recursive: true });
+    writeFileSync(
+      join(userDir, 'settings.json'),
+      [
+        '// 顶部注释',
+        '// 说明注释',
+        '{',
+        '  "defaultMode": "acceptEdits",',
+        '  "deny": ["Bash(rm -rf *)"]',
+        '}',
+      ].join('\n'),
+    );
+    const { mode, rules } = loadPermissionSettings({
+      userDir,
+      projectDir: join(root, 'no-proj'),
+    });
+    expect(mode).toBe('acceptEdits');
+    expect(rules).toContainEqual({
+      tool: 'bash',
+      pattern: 'rm -rf *',
+      action: 'deny',
+      source: 'user',
+    });
+  });
+
+  it('user 层不存在 → 自动生成带注释模板', () => {
+    const userDir = join(root, 'user');
+    loadPermissionSettings({ userDir, projectDir: join(root, 'no-proj') });
+    const generated = join(userDir, 'settings.json');
+    expect(existsSync(generated)).toBe(true);
+    const content = readFileSync(generated, 'utf-8');
+    expect(content).toContain('//'); // 带注释
+    expect(content).toContain('defaultMode');
+    expect(content).toContain('allow');
+    expect(content).toContain('deny');
+  });
+
+  it('project 层不存在 → 自动生成带注释模板', () => {
+    const projectDir = join(root, 'proj');
+    loadPermissionSettings({ userDir: join(root, 'user-empty'), projectDir });
+    expect(existsSync(join(projectDir, 'settings.json'))).toBe(true);
+  });
+
+  it('已存在的配置不被覆盖（保护用户已编辑内容）', () => {
+    const userDir = join(root, 'user');
+    mkdirSync(userDir, { recursive: true });
+    const custom = '{ "defaultMode": "bypass" }';
+    writeFileSync(join(userDir, 'settings.json'), custom);
+    loadPermissionSettings({ userDir, projectDir: join(root, 'p') });
+    expect(readFileSync(join(userDir, 'settings.json'), 'utf-8')).toBe(custom);
+  });
+
+  it('生成的模板不污染默认档（无 defaultMode，mode 仍为 default）', () => {
+    const userDir = join(root, 'user');
+    const { mode } = loadPermissionSettings({ userDir, projectDir: join(root, 'p') });
+    expect(mode).toBe('default');
   });
 });

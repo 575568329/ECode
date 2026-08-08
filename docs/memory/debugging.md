@@ -686,3 +686,25 @@ const aborted = opts.signal?.aborted || isAbortError(err);
 
 - 同类方法论：[[#004]]（LLM 知识数值失真）、[[#010]]（文档 file:line 漂移 + 状态滞后）
 - 产物：[M5-技术选型 §10-T2/T6/T7](../里程碑/M5-技术选型与理由[待实现].md) + [M5-方案解析 Q4/Q18/Q20](../里程碑/M5-方案解析[待实现].md)（均含🔴核实纠偏）
+
+---
+
+## #016 `npm test` 是 watch 模式（vitest 无 `run`）——全量测试挂着不退出
+
+**日期**：2026-08-09
+**性质**：工具配置坑（影响所有「跑全量测试」场景）
+**影响**：在 Claude Code / CI / 脚本里跑 `npm test` 期望「跑完全套自动退出」，实际 vitest 进 watch 模式永久挂着，被误判为卡死/超时，被迫 kill。
+
+### 现象
+`npm test` 跑 5+ 分钟不结束，`TaskOutput` 一直 `running`，以为测试 hang 住。
+
+### 根因
+`package.json` 的 `"test": "vitest"`（无 `run`）→ vitest 默认 **watch 模式**，监听文件变化不退出。
+`CLAUDE.md`「常用命令」表写 `npm test` = 全套测试，与实际 watch 语义矛盾（误导）。
+
+### 解决
+- **全量一次性**（跑完退出，CI/验证用）：`npx vitest run`
+- **单文件**：`npx vitest run tests/xxx.test.ts`
+- **watch**（开发时随改随跑）：`npm test`（或 `npx vitest`）
+
+> 提示：`CLAUDE.md`「常用命令」表的 `npm test` 宜标注 watch，全量验证统一用 `npx vitest run`。

@@ -15,7 +15,7 @@
  *   - Rule 匹配逻辑（bash 按 arity 段匹配、文件工具按路径匹配）。
  *   - 内存层会话规则（AllowList，运行时 allow_always 累积，不写盘）。
  */
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { PermissionMode, Rule, RuleAction } from './types.js';
@@ -82,7 +82,12 @@ function readSettingsJson(path: string): PermissionSettingsFile | undefined {
   try {
     if (!existsSync(path)) return undefined;
     const raw = readFileSync(path, 'utf-8');
-    const parsed = JSON.parse(raw) as PermissionSettingsFile;
+    // 兼容带 // 注释行（JSON 标准不含注释，逐行 strip，与 providers/config.ts 一致）
+    const stripped = raw
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('//'))
+      .join('\n');
+    const parsed = JSON.parse(stripped) as PermissionSettingsFile;
     return parsed && typeof parsed === 'object' ? parsed : undefined;
   } catch {
     return undefined; // 解析失败静默降级（记日志的活儿留上层，本层零依赖）
@@ -104,8 +109,56 @@ export interface LoadedPermissionSettings {
 }
 
 /**
+ * 首启自动生成的默认权限配置（带安全网示例规则，用户可编辑覆盖）。
+ * 刻意不含 defaultMode：自动生成的骨架不应表达 mode 偏好，否则 last wins 语义下
+ * 「project 层每次不存在就重新生成」会用默认值覆盖用户在 user 层显式选的档。
+ * mode 由 initialMode(=default) 或用户显式写的 defaultMode 决定。三档说明见注释头。
+ */
+const DEFAULT_SETTINGS: PermissionSettingsFile = {
+  allow: ['Bash(npm run *)', 'Bash(git status)', 'Bash(ls)'],
+  deny: ['Bash(rm -rf *)', 'Bash(git push --force *)', 'Edit(.env)', 'Edit(.env.*)'],
+  ask: ['Bash(git push *)'],
+};
+
+/** 模板注释头（行首 //；readSettingsJson 会 strip 掉，与 providers/config.ts 同风格）。 */
+const SETTINGS_HEADER_LINES = [
+  '// ECode 权限配置（首次启动自动生成）',
+  '// 修改后重启 ECode 生效。',
+  '// 本文件 = 用户级全局默认；项目级覆盖见 <项目>/.ecode/settings.json。',
+  '// 入不入 git 由你决定：.ecode/ 默认被 .gitignore 忽略，想入库自行 git add -f 或改自己的 .gitignore。',
+  '//',
+  '// 三档模式（defaultMode）：',
+  '//   default     默认，危险操作弹窗询问（推荐）',
+  '//   acceptEdits 自动放行文件编辑（bash 仍按规则），敏感文件 .env/.git 仍询问',
+  '//   bypass      跳过全部审批（仅可信环境，等同 --dangerously-skip-permissions）',
+  '// CLI 临时覆盖：--permission-mode <default|acceptEdits|bypass>；REPL 中按 Shift+Tab 循环切换。',
+  '//',
+  '// 规则语法：Tool(pattern)',
+  '//   工具名：Bash / Edit / Write / Read / Glob / Grep（首字母大写）',
+  '//   pattern：精确 "npm run test"，或通配 "npm run *"（* 匹配任意）',
+  '//   allow 放行 / deny 拒绝 / ask 强制询问；bash 复合命令（&&/|/;）逐段校验。',
+];
+
+/** 首次启动生成带注释模板（user/project 两层各自「不存在才生成」；已存在不覆盖）。失败静默降级。 */
+function writeSettingsTemplate(dir: string, layer: 'user' | 'project'): void {
+  try {
+    mkdirSync(dir, { recursive: true });
+    const lines =
+      layer === 'project'
+        ? ['// （项目级：覆盖 ~/.ecode/settings.json，写本项目特有规则即可）', ...SETTINGS_HEADER_LINES]
+        : SETTINGS_HEADER_LINES;
+    const header = lines.join('\n') + '\n';
+    const json = JSON.stringify(DEFAULT_SETTINGS, null, 2);
+    writeFileSync(resolve(dir, 'settings.json'), header + json + '\n', 'utf-8');
+  } catch {
+    // 生成失败（目录权限等）不阻塞启动，静默降级（对齐 providers/config.ts writeConfigTemplate）
+  }
+}
+
+/**
  * 读 ~/.ecode/settings.json（user）+ 项目 .ecode/settings.json（project），合并。
  * 默认路径自探测（§9.3：数据目录走 .ecode，不依赖外部环境）。
+ * 首启自动生成：任一层文件不存在 → 写入带注释模板（对齐 config.json 开箱即用，已存在不覆盖）。
  */
 export function loadPermissionSettings(
   opts: LoadPermissionSettingsOptions = {},
@@ -115,17 +168,20 @@ export function loadPermissionSettings(
   const initialMode = opts.initialMode ?? 'default';
 
   // 两层按 [user, project] 顺序加载；project 后加载 → defaultMode 取后者（project 胜）。
-  const layers: Array<{ file: PermissionSettingsFile | undefined; source: Rule['source'] }> = [
-    { file: readSettingsJson(resolve(userDir, 'settings.json')), source: 'user' },
-    { file: readSettingsJson(resolve(projectDir, 'settings.json')), source: 'project' },
+  // 每层文件不存在 → 首启自动生成带注释模板（对齐 config.json 开箱即用体验）。
+  const layers: Array<{ path: string; dir: string; layer: 'user' | 'project' }> = [
+    { path: resolve(userDir, 'settings.json'), dir: userDir, layer: 'user' },
+    { path: resolve(projectDir, 'settings.json'), dir: projectDir, layer: 'project' },
   ];
 
   let mode = initialMode;
   const rules: Rule[] = [];
-  for (const layer of layers) {
-    if (!layer.file) continue;
-    if (layer.file.defaultMode) mode = layer.file.defaultMode;
-    rules.push(...buildRulesFromSettings(layer.file, layer.source));
+  for (const l of layers) {
+    if (!existsSync(l.path)) writeSettingsTemplate(l.dir, l.layer);
+    const file = readSettingsJson(l.path);
+    if (!file) continue;
+    if (file.defaultMode) mode = file.defaultMode;
+    rules.push(...buildRulesFromSettings(file, l.layer));
   }
   return { mode, rules };
 }

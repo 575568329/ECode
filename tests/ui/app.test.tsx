@@ -17,6 +17,8 @@ vi.mock('../../src/agent.js', () => ({
   runAgentStream: vi.fn(async function* (): AsyncGenerator<never> {
     // 测试里默认不真跑 agent
   }),
+  // controller 构造期访问 compactMessages（render 时），mock 必须导出它
+  compactMessages: vi.fn(),
 }));
 
 describe('<App />', () => {
@@ -52,15 +54,17 @@ describe('<App />', () => {
 
   it('/exit → 调 process.exit', async () => {
     vi.useFakeTimers();
+    // ink useInput 回调异步节流：process.exit 在 flush 后才触发。用 spy 空实现 + 断言被调，
+    // 避免 throw mock 在异步回调里成 unhandled error（旧写法 expect(sync).toThrow 已不成立）。
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
-      throw new Error('EXIT');
+      /* 空实现：阻止真退出，仅观测被调 */
     }) as never);
     const { stdin } = render(<App cwd="~/x" />);
     stdin.write('/exit');
     await vi.advanceTimersByTimeAsync(0); // text='/exit' 落地
-    expect(() => {
-      stdin.write('\r');
-    }).toThrow('EXIT');
+    stdin.write('\r');
+    await vi.advanceTimersByTimeAsync(0); // flush useInput → handleCommand('exit') → process.exit(0)
+    expect(exitSpy).toHaveBeenCalledWith(0);
     exitSpy.mockRestore();
   });
 

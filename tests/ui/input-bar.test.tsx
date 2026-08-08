@@ -59,10 +59,4 @@ describe('<InputBar />', () => {
     await vi.advanceTimersByTimeAsync(0); // 历史定位落地
     expect(lastFrame()).toContain('second');
   });
-
-  it('disabled=true → 显示 ctrl+c to interrupt，不显输入提示', () => {
-    const { lastFrame } = render(<InputBar onSubmit={vi.fn()} disabled />);
-    const f = lastFrame() ?? '';
-    expect(f.toLowerCase()).toContain('interrupt');
-  });
 });

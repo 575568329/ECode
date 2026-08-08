@@ -8,6 +8,8 @@ import type { AgentEvent } from '../../src/agent-events.js';
 // 把"用户消息落地"逻辑也测到：submit 后 completedMessages 含 user 消息。
 vi.mock('../../src/agent.js', () => ({
   runAgentStream: vi.fn(),
+  // controller 构造期访问 compactMessages（render 时），mock 必须导出它，否则 vitest mock 严格模式抛错
+  compactMessages: vi.fn(),
 }));
 
 type Api = ReturnType<typeof useAgentStream>;

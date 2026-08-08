@@ -23,6 +23,8 @@ vi.mock('../../src/agent.js', () => ({
   runAgentStream: vi.fn(async function* (): AsyncGenerator<never> {
     // 默认空转；个别用例在 beforeEach / 用例内 mockImplementation 覆盖
   }),
+  // controller 构造期访问 compactMessages（render 时），mock 必须导出它
+  compactMessages: vi.fn(),
 }));
 // App 用 listSessions（/resume /sessions）+ loadSession（/resume 载入历史）。
 // agent.ts 虽 import saveSession 但 agent.js 已被整替，不执行 → 此处给 listSessions/loadSession。
@@ -178,24 +180,22 @@ describe('REPL 人肉驱动 —— 斜杠命令（按实际反馈）', () => {
     await sim.waitFor((f) => f.includes('清除后新消息'));
   });
 
-  it('/model /compact → 尚未实现 提示（/resume 已实现，见方向 C 用例）', async () => {
-    for (const cmd of ['model', 'compact']) {
-      const sim = simulate(<App cwd={CWD} />);
-      await enterConversation(sim);
-      await sim.type(`/${cmd}`);
-      await sim.enter();
-      await sim.waitFor((f) => f.includes('尚未实现'));
-      expect(sim.plain()).toContain(`/${cmd}`);
-    }
-  });
+  // /model（D1）与 /compact（D2）均已实现，不再提示「尚未实现」——原断言已过时，移除。
 
   it('/exit → process.exit', async () => {
-    vi.spyOn(process, 'exit').mockImplementation((() => {
-      throw new Error('EXIT');
+    // ink useInput 异步节流：process.exit 在 flush 后触发。spy 空实现 + 断言被调，
+    // 避免 throw mock 在异步回调成 unhandled error。
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      /* 空实现：阻止真退出，仅观测被调 */
     }) as never);
-    const sim = simulate(<App cwd={CWD} />);
-    await sim.type('/exit');
-    await expect(sim.enter()).rejects.toThrow('EXIT');
+    try {
+      const sim = simulate(<App cwd={CWD} />);
+      await sim.type('/exit');
+      await sim.enter(); // flush useInput → handleCommand('exit') → process.exit(0)
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    } finally {
+      exitSpy.mockRestore();
+    }
   });
 
   it('未知命令 /foobar → 静默忽略（无落地、无崩溃）', async () => {

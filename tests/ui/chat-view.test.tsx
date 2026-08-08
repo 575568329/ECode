@@ -25,19 +25,19 @@ function makeState(over: Partial<UseAgentStreamReturn> = {}): UseAgentStreamRetu
 }
 
 describe('<ChatView />', () => {
-  it('渲染已完成用户消息（❯ 你 前缀）', () => {
+  it('渲染已完成用户消息（› 前缀 + 浅背景气泡）', () => {
     const state = makeState({
       completedMessages: [{ kind: 'user', id: 'u1', text: '帮我' }],
     });
     const { lastFrame } = render(<ChatView state={state} />);
     const f = lastFrame() ?? '';
-    expect(f).toContain(SYMBOLS.user);
+    expect(f).toContain(SYMBOLS.pointer);
     expect(f).toContain('帮我');
   });
 
-  it('用户消息渲染左边框 │（角色区分，M3.5 Phase 1）', () => {
+  it('助手消息渲染 brand 左竖线 │（角色区分）', () => {
     const state = makeState({
-      completedMessages: [{ kind: 'user', id: 'u1', text: '帮我' }],
+      completedMessages: [{ kind: 'assistant', id: 'a1', text: '好的' }],
     });
     const { lastFrame } = render(<ChatView state={state} />);
     expect(lastFrame()).toContain('│');
@@ -57,7 +57,7 @@ describe('<ChatView />', () => {
     expect(f).toContain('出错了');
   });
 
-  it('渲染已完成助手消息（◆ ECode 前缀 + markdown）', () => {
+  it('渲染已完成助手消息（◆ 前缀 + markdown）', () => {
     const state = makeState({
       completedMessages: [{ kind: 'assistant', id: 'a1', text: '好的' }],
     });

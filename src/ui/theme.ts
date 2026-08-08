@@ -38,6 +38,7 @@ export const SYMBOLS = {
   prompt: '▶',
   todoPending: '◻',
   todoProgress: '◾',
+  pointer: '›',
 } as const;
 
 /** braille spinner 帧序列（品牌色）。 */

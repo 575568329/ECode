@@ -22,32 +22,20 @@ function pendingToolNames(msgs: DisplayMessage[]): { name: string }[] {
 function renderCompleted(msg: DisplayMessage): React.ReactNode {
   switch (msg.kind) {
     case 'user':
-      // 角色区分：仅左边框（与 BlockTool 同款去背景色），让用户消息一眼可辨又不抢眼。
+      // 角色区分：› 前缀 + 浅背景气泡（userBg），去"你"字（对齐 CC 气泡风格）。
+      // 背景在多数终端整行渲染；长文本不稳时可降级首行背景（ui-preview 验证）。
       return (
-        <Box
-          flexDirection="column"
-          {...leftBorder}
-          borderColor={T.border}
-          paddingLeft={1}
-          marginTop={1}
-        >
-          <Text>
-            <Text color={T.user} bold>
-              {SYMBOLS.user} 你
-            </Text>
-          </Text>
-          <Text color={T.muted}>{msg.text}</Text>
+        <Box marginTop={1} paddingLeft={1} backgroundColor={T.userBg}>
+          <Text color={T.user} bold>{SYMBOLS.pointer} </Text>
+          <Text>{msg.text}</Text>
         </Box>
       );
     case 'assistant':
+      // ◆ 前缀 + brand 左竖线（角色区分），去"ECode"字。
       return (
         <Box flexDirection="column" marginTop={1}>
-          <Text>
-            <Text color={T.brand} bold>
-              {SYMBOLS.brand} ECode
-            </Text>
-          </Text>
-          <Box paddingLeft={4}>
+          <Text color={T.brand} bold>{SYMBOLS.brand}</Text>
+          <Box {...leftBorder} borderColor={T.brand} paddingLeft={1}>
             <MarkdownRenderer text={msg.text} />
           </Box>
         </Box>
@@ -110,11 +98,12 @@ export function ChatView({ state }: ChatViewProps): React.ReactElement {
       {(state.streamingText || state.activeTools.length > 0 || state.pendingReadSearch.length > 0) && (
         <Box flexDirection="column" paddingLeft={4}>
           {state.streamingText ? (
-            <Text>
-              <Text color={T.brand} bold>{SYMBOLS.brand} ECode</Text>
-              {'\n'}
-              <MarkdownRenderer text={state.streamingText} streaming />
-            </Text>
+            <Box flexDirection="column">
+              <Text color={T.brand} bold>{SYMBOLS.brand}</Text>
+              <Box {...leftBorder} borderColor={T.brand} paddingLeft={1}>
+                <MarkdownRenderer text={state.streamingText} streaming />
+              </Box>
+            </Box>
           ) : null}
           {state.activeTools.map((t) => (
             <ToolRunning key={t.id} name={t.name} arg={summarizeArg(t.name, t.input)} />

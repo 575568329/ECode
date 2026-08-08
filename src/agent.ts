@@ -31,7 +31,7 @@ import { AllowList } from './permission.js';
 import type { PermissionGate } from './permission.js';
 import { check } from './permission/rule-engine.js';
 import { splitCompound, toAlwaysPattern } from './permission/arity.js';
-import type { PermissionMode } from './permission/types.js';
+import type { PermissionMode, Rule } from './permission/types.js';
 
 // ============================================================
 // Agent Loop — 理解 Agent 的心脏
@@ -129,6 +129,8 @@ export interface RunAgentStreamOptions extends RunAgentOptions {
   allow?: AllowList; // 会话级允许列表（不传则内部 new）
   permissionGate?: PermissionGate; // 权限决策回调（不传 = 全部放行，兼容无 UI / 测试）
   permissionMode?: PermissionMode; // 权限档（default/acceptEdits/bypass，默认 default）
+  /** settings.json 配置的 deny 规则（阶段 4：user+project 两层合并，启动时加载一次）。 */
+  denyRules?: Rule[];
   provider?: ModelProvider; // 依赖注入（测试用 mock；生产用 createProvider）
 }
 
@@ -419,6 +421,7 @@ export async function* runAgentStream(
           mode: permissionMode,
           allow,
           roots: [process.cwd()],
+          denyRules: opts.denyRules,
         });
 
         // 拒绝原因（策略 deny 或用户 deny）；非 null 则回喂 LLM 并跳过执行

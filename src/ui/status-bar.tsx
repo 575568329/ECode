@@ -3,6 +3,7 @@
 import React from 'react';
 import { Text, Box } from 'ink';
 import { T } from './theme.js';
+import type { PermissionMode } from '../permission/types.js';
 
 export type StatusBarPhase = 'idle' | 'streaming' | 'exit-window' | 'permission';
 
@@ -17,6 +18,8 @@ interface StatusBarProps {
   startedAt: number;
   /** 待处理消息条数（>0 显示"待处理:N"，排队反馈）。 */
   pendingCount?: number;
+  /** 当前权限档（非 default 时显示徽标，Shift+Tab 切换的可见反馈）。 */
+  permissionMode?: PermissionMode;
 }
 
 /** token 数 → 1.2K / 12.5K / 1.2M 简写。 */
@@ -52,11 +55,25 @@ function dynamicText(phase: StatusBarPhase): { text: string; color: string } {
   }
 }
 
-export function StatusBar({ usage, model, provider, ctxPercent, phase, startedAt, pendingCount }: StatusBarProps): React.ReactElement {
+/** 权限档徽标文本/颜色：default 不显示（省空间）；acceptEdits 提示；bypass 警告（红）。 */
+function modeBadge(mode: PermissionMode | undefined): { text: string; color: string } | null {
+  switch (mode) {
+    case 'acceptEdits':
+      return { text: 'accept-edits', color: T.warning };
+    case 'bypass':
+      return { text: '⚠ bypass', color: T.error };
+    case 'default':
+    default:
+      return null; // default 不占位，StatusBar 保持简洁
+  }
+}
+
+export function StatusBar({ usage, model, provider, ctxPercent, phase, startedAt, pendingCount, permissionMode }: StatusBarProps): React.ReactElement {
   const elapsedSec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
   const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
   const ss = String(elapsedSec % 60).padStart(2, '0');
   const dyn = dynamicText(phase);
+  const badge = modeBadge(permissionMode);
   return (
     <Box>
       <Text color={T.muted}>⏱ {mm}:{ss}</Text>
@@ -73,6 +90,12 @@ export function StatusBar({ usage, model, provider, ctxPercent, phase, startedAt
         <>
           <Text>  </Text>
           <Text color={T.brand}>待处理 {pendingCount}</Text>
+        </>
+      ) : null}
+      {badge ? (
+        <>
+          <Text>  </Text>
+          <Text color={badge.color}>{badge.text}</Text>
         </>
       ) : null}
       <Box flexGrow={1} />

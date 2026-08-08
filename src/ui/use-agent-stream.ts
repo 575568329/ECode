@@ -17,7 +17,7 @@ import { useCallback, useRef, useState } from 'react';
 import { runAgentStream, compactMessages } from '../agent.js';
 import type { ResumeContext } from '../agent.js';
 import { AllowList } from '../permission.js';
-import type { GateDecision } from '../permission/types.js';
+import type { GateDecision, PermissionMode, Rule } from '../permission/types.js';
 import { reduceAgentEvent, initialStreamState } from './reduce-agent-event.js';
 import { AgentLoopController } from './agent-loop-controller.js';
 import type { StreamState, DisplayMessage, PendingPermission } from './types.js';
@@ -57,6 +57,10 @@ export interface UseAgentStreamReturn {
   abort: () => void;
   /** 查某工具是否已 allow_always（测试 + 状态栏可用）。 */
   isAllowAlways: (toolName: string) => boolean;
+  /** 当前权限档（default/acceptEdits/bypass），StatusBar 显示用。 */
+  permissionMode: PermissionMode;
+  /** Shift+Tab 循环切换权限档（下轮 submit 生效）。 */
+  cyclePermissionMode: () => void;
   /** 清空已完成消息（/clear 命令用）。 */
   clear: () => void;
   /** 注入系统消息到聊天（/help /cost /sessions 等命令输出用，不送 LLM）。 */
@@ -73,6 +77,10 @@ export interface UseAgentStreamOptions {
   model?: string;
   /** 预拼 system（含 CLAUDE.md）。 */
   system?: string;
+  /** 初始权限档（CLI flag / settings.defaultMode 注入；Shift+Tab 运行时可改）。 */
+  permissionMode?: PermissionMode;
+  /** settings.json 加载的 deny 规则（启动一次，整会话静态）。 */
+  denyRules?: Rule[];
 }
 
 export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStreamReturn {
@@ -86,6 +94,13 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   modelRef.current = opts.model;
   const systemRef = useRef(opts.system);
   systemRef.current = opts.system;
+  // 权限档：state 驱动 StatusBar 显示；ref 供 getRunOpts 闭包即时读（Shift+Tab 改 ref+state，下轮 submit 生效）。
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(opts.permissionMode ?? 'default');
+  const permissionModeRef = useRef<PermissionMode>(opts.permissionMode ?? 'default');
+  permissionModeRef.current = permissionMode;
+  // denyRules 启动一次、整会话静态（来自 settings.json），用 ref 透传给 getRunOpts。
+  const denyRulesRef = useRef<Rule[] | undefined>(opts.denyRules);
+  denyRulesRef.current = opts.denyRules;
 
   // apply = 事件分发。todo_write 单独拦截（§6）：从 input.todos 派生 state.todos，不进 reducer
   // （避免 activeTools 残留 todo_write + completedMessages 多一条 tool 行）。其余事件走 reducer。
@@ -109,6 +124,8 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
         model: modelRef.current,
         system: systemRef.current,
         allow: allowRef.current,
+        permissionMode: permissionModeRef.current,
+        denyRules: denyRulesRef.current,
         permissionGate: {
           ask: () =>
             new Promise<GateDecision>((resolve) => {
@@ -173,6 +190,21 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
 
   const isAllowAlways = useCallback((toolName: string) => allowRef.current.has(toolName), []);
 
+  // Shift+Tab 循环权限档：default → acceptEdits → bypass → default（仿 CC getNextPermissionMode）。
+  // 改 state（驱动 StatusBar 重绘）+ 同步 ref（下轮 submit 的 getRunOpts 即时读新档）。
+  const cyclePermissionMode = useCallback(() => {
+    const NEXT: Record<PermissionMode, PermissionMode> = {
+      default: 'acceptEdits',
+      acceptEdits: 'bypass',
+      bypass: 'default',
+    };
+    setPermissionMode((prev) => {
+      const next = NEXT[prev];
+      permissionModeRef.current = next;
+      return next;
+    });
+  }, []);
+
   const clear = useCallback(() => {
     // controller 重置真相源（session/messages/queue）+ onQueueChange([])；UI 清空 + staticKey++ 在此。
     controller.clear();
@@ -233,6 +265,8 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     resolvePermission,
     abort,
     isAllowAlways,
+    permissionMode,
+    cyclePermissionMode,
     clear,
     addMessage,
     switchSession,

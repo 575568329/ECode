@@ -36,6 +36,8 @@ import type { ECodeSession } from './session.js';
 import { loadInstructions } from './instructions-loader.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { selectEntryMode } from './repl-mode.js';
+import { loadPermissionSettings } from './permission/settings-loader.js';
+import type { PermissionMode, Rule } from './permission/types.js';
 
 const { values, positionals } = parseArgs({
   options: {
@@ -45,9 +47,32 @@ const { values, positionals } = parseArgs({
     continue: { type: 'boolean', short: 'c' }, // -c 简写
     resume: { type: 'string' },
     repl: { type: 'boolean' }, // 强制 REPL 模式（即便非 TTY）
+    // M4 阶段 4：权限档 CLI flag。
+    'permission-mode': { type: 'string' }, // default | acceptEdits | bypass
+    'dangerously-skip-permissions': { type: 'boolean' }, // = bypass（便捷别名，跳过全部审批）
   },
   allowPositionals: true,
 });
+
+/**
+ * 推导初始权限档 + 加载 deny 规则（M4 阶段 4）。
+ * 优先级：--dangerously-skip-permissions（=bypass）> --permission-mode > settings.defaultMode > default。
+ * fatal：非法 mode 值直接退出（早暴露，避免静默回退 default 误导）。
+ */
+function resolvePermission(): { mode: PermissionMode; denyRules: Rule[] } {
+  const VALID: PermissionMode[] = ['default', 'acceptEdits', 'bypass'];
+  if (values['dangerously-skip-permissions']) {
+    return { mode: 'bypass', denyRules: [] }; // bypass 免疫 deny，无需加载
+  }
+  const cliMode = values['permission-mode'] as PermissionMode | undefined;
+  if (cliMode !== undefined) {
+    if (!VALID.includes(cliMode)) {
+      fatal(`非法 --permission-mode 值 "${cliMode}"，可选：default | acceptEdits | bypass`);
+    }
+  }
+  const settings = loadPermissionSettings({ initialMode: cliMode });
+  return { mode: settings.mode, denyRules: settings.rules.filter((r) => r.action === 'deny') };
+}
 
 // ============================================================
 // 工具函数
@@ -89,6 +114,8 @@ function printUsage(): void {
   console.error('  ecode --sessions                  列出全部会话');
   console.error('  ecode --model <name> "<任务>"     指定模型');
   console.error('  ecode --list-models               列出可用模型');
+  console.error('  ecode --permission-mode <mode>    权限档: default|acceptEdits|bypass');
+  console.error('  ecode --dangerously-skip-permissions  跳过全部审批 (=bypass)');
 }
 
 /**
@@ -118,8 +145,15 @@ function readAppVersion(): string {
  *
  * @param model --model 指定的模型名（缺省交由 agent core 自选默认）
  * @param system 预拼 system prompt（含 CLAUDE.md/ECODE.md 注入）
+ * @param permissionMode 初始权限档（CLI flag / settings.defaultMode 推导）
+ * @param denyRules settings.json 加载的 deny 规则
  */
-async function startRepl(model: string | undefined, system: string): Promise<void> {
+async function startRepl(
+  model: string | undefined,
+  system: string,
+  permissionMode: PermissionMode,
+  denyRules: Rule[],
+): Promise<void> {
   const projectRoot = process.cwd();
   const version = readAppVersion();
   const { render } = await import('ink');
@@ -132,6 +166,8 @@ async function startRepl(model: string | undefined, system: string): Promise<voi
       cwd: projectRoot,
       system,
       version,
+      permissionMode,
+      denyRules,
     }),
     {
       // exitOnCtrlC: false —— 关掉 ink 默认的「Ctrl+C 直接退出」（render.js 默认 true）。
@@ -185,6 +221,9 @@ if (values.sessions) {
 // ---- --continue / --resume:续接族 ----
 const wantContinue = values['continue'] === true;
 const wantResume = values.resume !== undefined;
+
+// M4 阶段 4：一次性解析权限档 + 加载 deny 规则（非法 mode 早 fatal；bypass 跳过加载）。
+const perm = resolvePermission();
 
 if (wantContinue || wantResume) {
   // 确定 id:--continue 取最近;--resume 用指定值
@@ -246,6 +285,8 @@ if (wantContinue || wantResume) {
     },
     signal: controller.signal,
     system,
+    permissionMode: perm.mode,
+    denyRules: perm.denyRules,
   }).catch((err) => {
     console.error('\n💥 致命错误:', err instanceof Error ? err.message : String(err));
     process.exit(1);
@@ -274,7 +315,7 @@ if (wantContinue || wantResume) {
   if (mode === 'repl') {
     // REPL：渲染 <App>，进程常驻至用户退出。render() 内部接管 stdout，
     // 故这里用 .catch 兜底动态 import 失败（如 ink 缺包），不 silent hang。
-    startRepl(values.model, system).catch((err) => {
+    startRepl(values.model, system, perm.mode, perm.denyRules).catch((err) => {
       console.error('\n💥 REPL 启动失败:', err instanceof Error ? err.message : String(err));
       process.exit(1);
     });
@@ -290,7 +331,12 @@ if (wantContinue || wantResume) {
       if (!controller.signal.aborted) controller.abort();
     });
 
-    runAgent(task, values.model, { signal: controller.signal, system }).catch((err) => {
+    runAgent(task, values.model, {
+      signal: controller.signal,
+      system,
+      permissionMode: perm.mode,
+      denyRules: perm.denyRules,
+    }).catch((err) => {
       console.error('\n💥 致命错误:', err instanceof Error ? err.message : String(err));
       process.exit(1);
     });

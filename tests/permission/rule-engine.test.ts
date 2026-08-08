@@ -123,4 +123,69 @@ describe('check', () => {
       }
     });
   });
+
+  describe('deny 规则（settings.json 配置，阶段 4）', () => {
+    const denyBashRm = { tool: 'bash', pattern: 'rm -rf *', action: 'deny' as const, source: 'user' as const };
+    const denyEditEnv = { tool: 'edit_file', pattern: '.env', action: 'deny' as const, source: 'user' as const };
+    const denyAllBash = { tool: 'bash', pattern: '*', action: 'deny' as const, source: 'project' as const };
+
+    it('bash 命中 deny pattern（rm -rf /tmp）→ deny', () => {
+      const v = run({ toolName: 'bash', input: { command: 'rm -rf /tmp' }, denyRules: [denyBashRm] });
+      expect(v.action).toBe('deny');
+    });
+
+    it('bash deny：compound 含危险段（echo hi && rm -rf /x）→ deny（任一段命中即拒）', () => {
+      const v = run({
+        toolName: 'bash',
+        input: { command: 'echo hi && rm -rf /x' },
+        denyRules: [denyBashRm],
+      });
+      expect(v.action).toBe('deny');
+    });
+
+    it('bash 未命中 deny（ls -la）→ 不被 deny 拦（走后续 dangerous→ask）', () => {
+      const v = run({ toolName: 'bash', input: { command: 'ls -la' }, denyRules: [denyBashRm] });
+      expect(v.action).toBe('ask');
+    });
+
+    it('edit_file 命中 deny（.env）→ deny（path-guard 的 ask 被更强 deny 覆盖）', () => {
+      const v = run({
+        toolName: 'edit_file',
+        input: { path: join(root, '.env') },
+        isDangerous: true,
+        denyRules: [denyEditEnv],
+      });
+      expect(v.action).toBe('deny');
+    });
+
+    it('工具名通配 deny（pattern=* 放行所有 bash）→ 所有 bash 命令 deny', () => {
+      const v = run({ toolName: 'bash', input: { command: 'echo hi' }, denyRules: [denyAllBash] });
+      expect(v.action).toBe('deny');
+    });
+
+    it('deny 规则不波及其他工具（deny bash 不影响 edit_file）', () => {
+      const v = run({
+        toolName: 'edit_file',
+        input: { path: join(root, 'a.ts') },
+        isDangerous: true,
+        denyRules: [denyBashRm],
+      });
+      expect(v.action).toBe('ask'); // 未 deny，走 dangerous→ask
+    });
+
+    it('bypass 免疫 deny（即使配了 deny 规则，bypass 仍全放行）', () => {
+      const v = run({
+        mode: 'bypass',
+        toolName: 'bash',
+        input: { command: 'rm -rf /tmp' },
+        denyRules: [denyBashRm],
+      });
+      expect(v.action).toBe('allow');
+    });
+
+    it('无 denyRules（undefined）→ 行为同阶段 2/3（不破坏现有语义）', () => {
+      const v = run({ toolName: 'bash', input: { command: 'rm -rf /tmp' } });
+      expect(v.action).toBe('ask'); // 无 deny 源 → 走 dangerous→ask（非 deny）
+    });
+  });
 });

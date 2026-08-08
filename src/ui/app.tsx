@@ -29,6 +29,7 @@ import { shortSessionId } from './format-session.js';
 import { sessionMessagesToTranscript } from './format-transcript.js';
 import { runLess } from './pager.js';
 import type { ResumeContext } from '../agent.js';
+import type { PermissionMode, Rule } from '../permission/types.js';
 
 /** 双击 Ctrl+C 退出窗口（ms）：窗口内第二次 Ctrl+C → process.exit。 */
 const DOUBLE_CTRL_C_MS = 2000;
@@ -47,15 +48,19 @@ interface AppProps {
   system?: string;
   /** REPL 欢迎屏版本号；缺省时回退到 APP_VERSION_FALLBACK。由 index.ts 读 package.json 注入。 */
   version?: string;
+  /** 初始权限档（CLI flag / settings.defaultMode 推导，由 index.ts 注入；Shift+Tab 运行时可改）。 */
+  permissionMode?: PermissionMode;
+  /** settings.json 加载的 deny 规则（启动一次，整会话静态）。 */
+  denyRules?: Rule[];
 }
 
-export function App({ model, cwd, loadStatus, system, version }: AppProps): React.ReactElement {
+export function App({ model, cwd, loadStatus, system, version, permissionMode, denyRules }: AppProps): React.ReactElement {
   // currentModel：可变 model state（/model 切换 → 下一轮 submit 用新 model）。model prop 是初始值。
   const [currentModel, setCurrentModel] = useState(model);
   // /model 选择器（D1，照搬 SessionPicker）：modelOpen 时 ModelPicker 替换 InputBar。
   const [modelOpen, setModelOpen] = useState(false);
   const [modelOptions, setModelOptions] = useState<PickerItem[]>([]);
-  const api = useAgentStream({ model: currentModel, system });
+  const api = useAgentStream({ model: currentModel, system, permissionMode, denyRules });
 
   // 状态栏上下文百分比分母：用模型真实 contextWindow（config.json 可逐模型配置/覆盖），
   // 替代早期硬编码 60K——GLM 窗口 1M，硬编码会让百分比一眼顶到 99% 误报"超了"。
@@ -128,6 +133,12 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
     if (inPagerRef.current) return; // pager 期间让位
     if (key.ctrl && input === 'o') {
       void openPager();
+      return;
+    }
+    // Shift+Tab：循环权限档 default → acceptEdits → bypass → default（仿 CC Shift+Tab）。
+    // 仅在非弹窗态切换（pendingPermission/各 picker 打开时不抢键）；下一轮 submit 生效。
+    if (key.tab && key.shift && !api.pendingPermission && !resumeOpen && !modelOpen) {
+      api.cyclePermissionMode();
       return;
     }
     // Ctrl+C（详设 docs/详设/20260807000318，2026-08-07 反转）：单击中断对话（streaming→abort），
@@ -357,6 +368,7 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
         phase={phase}
         startedAt={startedAt}
         pendingCount={api.pendingCount}
+        permissionMode={api.permissionMode}
       />
     </Box>
   );

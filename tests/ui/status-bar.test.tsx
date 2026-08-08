@@ -52,4 +52,21 @@ describe('<StatusBar />', () => {
     const { lastFrame } = render(<StatusBar {...base} ctxPercent={45} phase="idle" />);
     expect(lastFrame()).toContain('$');
   });
+
+  it('permissionMode=acceptEdits → 显示 accept-edits 徽标', () => {
+    const { lastFrame } = render(<StatusBar {...base} ctxPercent={45} phase="idle" permissionMode="acceptEdits" />);
+    expect(lastFrame()).toContain('accept-edits');
+  });
+
+  it('permissionMode=bypass → 显示 ⚠ bypass 徽标', () => {
+    const { lastFrame } = render(<StatusBar {...base} ctxPercent={45} phase="idle" permissionMode="bypass" />);
+    expect(lastFrame()).toContain('bypass');
+  });
+
+  it('permissionMode=default → 不显示权限徽标（保持简洁）', () => {
+    const { lastFrame } = render(<StatusBar {...base} ctxPercent={45} phase="idle" permissionMode="default" />);
+    const f = lastFrame() ?? '';
+    expect(f).not.toContain('accept-edits');
+    expect(f).not.toContain('bypass');
+  });
 });

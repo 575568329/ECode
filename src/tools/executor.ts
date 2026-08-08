@@ -1,4 +1,4 @@
-import { ToolResult } from './types.js';
+import { ToolResult, ToolDefinition } from './types.js';
 import { toolDefinitions } from './registry.js';
 
 /**
@@ -9,9 +9,10 @@ import { toolDefinitions } from './registry.js';
 export async function executeTool(
   name: string,
   input: Record<string, unknown>,
+  defs: ToolDefinition[] = toolDefinitions,
 ): Promise<ToolResult> {
-  // 按 name 查找工具定义
-  const definition = toolDefinitions.find((t) => t.name === name);
+  // 按 name 查找工具定义（从传入 defs；找不到 → 未知工具 isError）
+  const definition = defs.find((t) => t.name === name);
   if (!definition) {
     return { content: `未知工具: ${name}`, isError: true };
   }

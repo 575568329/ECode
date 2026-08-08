@@ -17,7 +17,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { homedir } from 'node:os';
+import { resolveDataDir } from '../paths.js';
 import type { PermissionMode, Rule, RuleAction } from './types.js';
 
 /** 公开（测试/复用）的 settings.json 形状。 */
@@ -163,7 +163,7 @@ function writeSettingsTemplate(dir: string, layer: 'user' | 'project'): void {
 export function loadPermissionSettings(
   opts: LoadPermissionSettingsOptions = {},
 ): LoadedPermissionSettings {
-  const userDir = opts.userDir ?? resolve(homedir(), '.ecode');
+  const userDir = opts.userDir ?? resolveDataDir();
   const projectDir = opts.projectDir ?? resolve(process.cwd(), '.ecode');
   const initialMode = opts.initialMode ?? 'default';
 

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { toolDefinitions, executeTool } from './tools/index.js';
+import type { ToolDefinition } from './tools/types.js';
 import { validateAfterEdit } from './tools/validation.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { createProvider } from './providers/factory.js';
@@ -133,6 +134,9 @@ export interface RunAgentStreamOptions extends RunAgentOptions {
   /** settings.json 配置的 deny 规则（阶段 4：user+project 两层合并，启动时加载一次）。 */
   denyRules?: Rule[];
   provider?: ModelProvider; // 依赖注入（测试用 mock；生产用 createProvider）
+  /** 工具集覆盖（默认 toolDefinitions）。子代理限定子集、MCP 注入第三方工具用。
+   *  不传 = 用内置 toolDefinitions（现有行为不变，零回归）。阶段 0 地基。 */
+  tools?: ToolDefinition[];
 }
 
 /** consumeStream 的累积结果：逐 chunk yield 完 text_delta 后 return，供本轮 push messages / 日志用。 */
@@ -269,7 +273,7 @@ export async function* runAgentStream(
     ? [...opts.resumed.messages, { role: 'user', content: task }]
     : [{ role: 'user', content: task }];
 
-  const tools = useTools ? toolDefinitions : [];
+  const tools = useTools ? (opts.tools ?? toolDefinitions) : [];
   // runtime-log（CLAUDE.md §1.6：日志保存到文件供排查）—— 与原 runAgent 一致
   const logFile = initRuntimeLog(task, resolvedModel, provider.baseURL);
   // session 落盘上下文（与原 runAgent 一致：首轮/每轮末/压缩后/结束落盘）
@@ -415,7 +419,7 @@ export async function* runAgentStream(
 
       // ---- 执行每个工具（含权限拦截）----
       for (const tc of toolCalls) {
-        const def = toolDefinitions.find((t) => t.name === tc.name);
+        const def = tools.find((t) => t.name === tc.name);
         const isDangerous = def?.dangerous ?? false;
 
         const verdict = check({
@@ -511,7 +515,7 @@ export async function* runAgentStream(
         // 防御：工具实现抛异常时降级为 isError 回喂 LLM（与原 runAgent 一致）
         let result: { content: string; isError: boolean };
         try {
-          result = await executeTool(tc.name, tc.input);
+          result = await executeTool(tc.name, tc.input, tools);
         } catch (err) {
           result = {
             content: `工具执行异常: ${err instanceof Error ? err.message : String(err)}`,

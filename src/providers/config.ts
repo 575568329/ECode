@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { resolveDataDir } from '../paths.js';
 import type { ModelCapability, ModelConfig } from './types.js';
 
 // ============================================================
@@ -25,7 +25,7 @@ export interface ECodeConfig {
   validation?: { enabled?: boolean };
 }
 
-const CONFIG_PATH = join(homedir(), '.ecode', 'config.json');
+const CONFIG_PATH = join(resolveDataDir(), 'config.json');
 
 /** 内置默认配置（无 config.json 时用，保证开箱可用） */
 const DEFAULT_CONFIG: ECodeConfig = {

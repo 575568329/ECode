@@ -135,6 +135,8 @@ const files = await fg(pattern, { ... });
 
 ## #005 上下文超限死局——"超限后无法压缩"的响应式恢复
 
+> **✅ 2026-08-07 二次复核：已接线**——`agent.ts:312` 实际调用 `forceCompact`（grep 命中），L3 响应式恢复**已落地**。下方「从未接线 / 零命中」为修复**前**快照，保留作历史脉络（也是 [[#010]] 文档滞后的活案例）。
+>
 > **⚠️ 2026-08-07 复核纠正（实读源码核实，非 LLM 推断）**
 >
 > 本文 §"ECode 实现"（L161）/ §"验证"（L174）声称「L3 响应式恢复已实现 + 全量测试通过」**部分失真**——下次会话**勿据此假设超限已能自恢复**：
@@ -186,7 +188,7 @@ const files = await fg(pattern, { ... });
 ### 关联
 
 - 设计出处核查：`D:\Study\claude-code-main\src\services\compact\{autoCompact,microCompact}.ts`、`src\query.ts:1065-1183`、`src\services\api\errors.ts:62-77`、`D:\Study\CCode\cCli\src\core\context-manager.ts:200-246`
-- [M3-方案解析 §五](../里程碑/M3-方案解析.md) 踩坑预警（本文补充其 §5.5 未覆盖的"API 报超限后恢复"）
+- [M3-方案解析 §五](../里程碑/M3-方案解析[已完成].md) 踩坑预警（本文补充其 §5.5 未覆盖的"API 报超限后恢复"）
 
 ---
 
@@ -222,7 +224,7 @@ P4 真机落盘验证时 GLM 持续 429，一度归因配额耗尽。核查端�
 ### 关联
 
 - 参考：CCode `D:\Study\CCode\cCli\src\config\config-manager.ts:53`（GLM 默认 coding 端点）
-- 实现：[M2-方案解析 §Provider baseURL Q&A](../里程碑/M2-方案解析.md)、`src/providers/config.ts` `resolveBaseURL`
+- 实现：[M2-方案解析 §Provider baseURL Q&A](../里程碑/M2-方案解析[已完成].md)、`src/providers/config.ts` `resolveBaseURL`
 - 方法论：#004（LLM 知识失真——因果断言同属核查红线）
 
 ---
@@ -403,3 +405,241 @@ key 一变，React 卸载旧 `<Static>`、挂载全新的 → 内部「已写出
 
 - 实现位置：`src/ui/types.ts`（`staticKey` 字段）、`src/ui/use-agent-stream.ts`（`switchSession`/`clear` 自增）、`src/ui/chat-view.tsx`（`<Static key>`）、`src/ui/app.tsx`（`handleResumeConfirm` 清屏）
 - 触发场景：C 方向 `/resume`（详设 `docs/详设/20260806210000_历史会话切换-详设.md` §八 预见了此风险，本坑是其落地）
+
+---
+
+## #010 文档 `file:line` 随代码漂移 + 文档状态滞后于实现——易腐数据红线
+
+**日期**：2026-08-07
+**性质**：文档维护（方法论），跨项目通用
+**影响**：功能架构设计[进行中].md 三角色审阅时发现两类失真——① 行号错（🔴-1 写 `agent.ts:459` 实际 `:312`、🔴-2 写 `:379` 实际 `:412`）；② 状态错（[[#005]] 复核段写「forceCompact 从未接线」，实读 `:312` 早已接线）。读者按行号跳转找错位置、按状态断言误判"做没做"。
+
+### 根因
+
+- **行号是易腐数据**：代码增删一行，下方行号全位移；文档 `file:line` 不会自动跟随，停留在写文档时的快照。
+- **文档状态滞后于实现**：实现推进后文档不复查，标"待补"的可能早做了（🔴-1）、标"已完成/未接线"的可能已变（[[#005]]）。**文档状态 ≠ 实现状态**是反复踩的坑。
+
+### 解决
+
+1. **行号当快照不当锚点**：文档 `file:line` 加日期注（`agent.ts:312 @2026-08-07`）让读者知时效；永久引用优先用**符号名**（"forceCompact 调用处"比 ":312" 稳）。
+2. **进新里程碑前核查**：grep 核对关键 `file:line` + 实读源码核实 P0/🔴 状态断言（本次审阅就这么发现 459→312、379→412、#005 反转的）。
+3. **状态断言同属核查红线**（呼应 [[#004]]）：写"已实现/未接线/待补"和写"具体数值"一样，要么核查要么标注时效。
+
+### 教训
+
+> **行号是易腐数据，文档里当快照用、注明时效；永久引用优先用符号名。更要警惕"文档说待补/已完成"与代码实际脱节——进新里程碑前扫一遍"文档状态 vs 代码实际"，避免基于过时文档决策**（如以为某 P0 没修不敢进下阶段，或以为某功能就绪其实没接线）。
+
+### 关联
+
+- 同类：[[#004]]（LLM 知识数值失真）、[[#005]]（文档"未接线"实际已接线——本文档滞后活案例，本条即由其触发）
+- 触发场景：功能架构设计[进行中].md 三角色审阅，核查 `src/agent.ts` 行号发现漂移
+
+---
+
+## #011 Windows：Edit/Write 工具写 CRLF，仓库 LF → git diff 全替换污染历史
+
+**日期**：2026-08-07
+**性质**：开发环境 / 工程基础设施（跨任务反复踩）
+**影响**：C 组提交前发现 `git diff --stat` 显示 `transform.ts 532 行 / claude.ts 245 行`（≈2× 文件行数），实际语义改动仅 17/2。直接提交会把整个文件标记为「全删全加」，diff 噪声淹没真实改动、污染历史、阻碍 code review。
+
+### 现象
+
+- `git diff --stat` 某文件改动行数 ≈ 2× 文件总行数（如 types.ts 116 行显示 245 改动）。
+- `git diff` 里整块 `-foo` / `+foo`（同内容却标记改了）。
+- `git diff --ignore-all-space`（或 `--ignore-cr-at-eol`）瞬间缩到真实改动量（如 17/2）→ 确认是空白/行尾差异。
+
+### 根因
+
+- **Edit/Write 工具在 Windows 上把文件写成 CRLF（`\r\n`），仓库历史是 LF（`\n`）**。
+- 项目 `core.autocrlf=false` + **无 `.gitattributes`** → git 不自动 normalize，工作树 CRLF 与 HEAD LF 每行都判不同 → 全替换视图。
+- `grep -c $'\r'` **检测不可靠**（bash 转义/按行分割问题），曾显示 `0` 但文件实含 `\r`——**判断行尾用 `od -c`，不用 grep**。
+
+### 判断方法（看到异常大 diff 时）
+
+```bash
+# 1. 看真实改动量（忽略空白）——若缩到正常，确认是行尾
+git diff --stat --ignore-all-space src/providers/types.ts
+# 2. od 看字节真相（\r\n = CRLF，\n = LF）——不靠 grep
+head -2 src/providers/types.ts | od -c | head -4
+git cat-file -p HEAD:src/providers/types.ts | head -2 | od -c | head -4
+```
+
+### 解决
+
+**临时 SOP（每次提交前）**：对本次 Edit/Write 改动的文件 sed 转 LF：
+```bash
+for f in <改动的文件...>; do sed -i 's/\r$//' "$f"; done
+# 转后 git diff --stat 应回到真实改动量（几十行而非几百行）
+```
+（C 组提交前已用此法把 589→ 真实改动，commit `1fed920` 干净。）
+
+**根治建议（待用户决策）**：加 `.gitattributes` 统一行尾策略——
+```
+* text=auto eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.md text eol=lf
+```
+再加 `git add --renormalize .` 一次性把全仓库 normalize 到 LF。这是 git 官方推荐做法，但会触发全仓库文件行尾重写（一个大批次 commit），**属项目级决策，需用户确认后执行**。
+
+### 教训
+
+> **Windows 开发 + git，行尾策略必须显式声明（`.gitattributes`），不能依赖工具默认。** 否则编辑器/AI 工具写 CRLF、CI/Linux 假定 LF，每次提交都全替换。判断行尾用 `od -c` 看字节，不用 `grep $'\r'`（不可靠）。AI 工具（Edit/Write）在 Windows 默认产 CRLF，提交前必须 sed 转 LF，否则 diff 全替换、历史污染。
+>
+> **诊断信号**：`git diff --stat` 改动行数 ≈ 2× 文件行数 = 八成是行尾翻转，立刻 `--ignore-all-space` 验证。
+
+### 关联
+
+- 触发：C 组（P5 errors/usage）提交前发现 diff 异常
+- 影响：D/E 组后续每次 Edit/Write 都会踩——**提交前必须 sed 转换改动文件**（已成 SOP）
+- 同类环境坑：[[#002]]（`env -i` 清 TMPDIR）、CLAUDE.md §9.3（WSL↔Windows 混合环境）
+
+---
+
+## #012 Windows bash 三连坑：同步阻塞 + find.exe + GBK 乱码
+
+**日期**：2026-08-08
+**影响**：agent 运行时 UI 卡死 / 命令报错 / 输出乱码 / 死循环误触发——四个连锁问题
+
+### 现象（runtime-log 030028 实证）
+
+1. **UI 卡死**：loader 消失，程序无响应（execSync 阻塞主线程，ink spinner setInterval 冻结）
+2. **bash find 报错**：`find tests -name "*.test.ts"` → Windows find.exe 输出 `拒绝访问` / `找不到文件`（不是 Unix find）
+3. **输出乱码**：cmd.exe 默认 GBK 代码页，UTF-8 终端显示 `╧┘─╧` 之类乱码
+4. **死循环误触发**：vitest 全量测试超 30s 被 execSync 卡死 → agent 重试相同命令 → 签名一致 → 误判死循环
+
+### 根因
+
+四个问题共享一个根因链：**execSync + Windows 默认 shell（cmd.exe）+ LLM 不知平台生成 Unix 命令**。
+
+| 问题 | 根因 |
+|------|------|
+| UI 卡死 | execSync 同步阻塞 Node 事件循环 → ink 无法刷新 spinner |
+| find 报错 | LLM 生成 `find tests -name ...` → 命中 Windows 内置 find.exe（不是 Unix find） |
+| GBK 乱码 | cmd.exe 默认代码页 936(GBK)，UTF-8 终端无法正确解码 |
+| 死循环误触发 | 30s 超时杀进程 → agent 重试同命令 → 死循环检测签名匹配 → 误判终止 |
+
+### 解决
+
+**四个问题一个方案**（`src/tools/bash.ts` 完整重写）：
+
+1. **execSync → spawn 异步**：Promise + child_process.spawn，不阻塞事件循环 → UI 不卡
+2. **Git Bash 自动探测**：`where bash.exe` + `\Git\` 过滤（避开 WSL 伪入口），有 → `bash -c`（POSIX）
+3. **cmd 兜底 UTF-8**：无 Git Bash 时 `cmd /c "chcp 65001 >nul & command"`（强制 UTF-8 代码页）
+4. **system-prompt 注入环境**：`src/system-prompt.ts` 注入 `Platform/Shell/Cwd`（Shell 与 executeBash 一致）
+5. **超时 120s**：足够跑全量测试
+
+**关键设计**：
+- `getShellInfo()` 导出供 system-prompt，确保 LLM 看到的 Shell 与实际执行一致（有 Git Bash → LLM 用 ls/find；无 → LLM 用 dir/findstr）
+- 不硬编码路径（git 可能在 `D:\Tool\Git` 而非 `C:\Program Files\Git`），用 `where` 探测
+
+### 教训
+
+> **Windows 上的 bash 工具不能直接 execSync + cmd.exe。** 必须异步（不卡 UI）+ POSIX shell 兜底（避 find.exe/GBK）+ 告知 LLM 实际 Shell（防 prompt 与执行错配）。三者缺一会连锁爆雷。
+>
+> 硬编码安装路径不可靠（用户自定义安装位置），用 `where` / `which` 探测。
+
+### 关联
+
+- 实现：`src/tools/bash.ts`（完整重写）、`src/system-prompt.ts`（ENVIRONMENT 段）
+- 测试：`tests/bash.test.ts`（7 测试：Promise/echo/多行/尾部换行/错误/管道/stderr）
+- 诊断证据：`docs/logs/runtime/2026-08-08/2026-08-08_030028.md`
+
+---
+
+## #013 ink 默认 `exitOnCtrlC:true` 让应用层 Ctrl+C 逻辑成死代码（+ testing 硬编码 false 造成测试盲区）
+
+**日期**：2026-08-08
+**性质**：框架默认值陷阱 / 测试盲区（TUI 层，跨项目通用）
+**影响**：用户报告「Ctrl+C 一次就直接退出整个程序」，而设计要求是「单击中断对话、双击(2s 内)退出」。app.tsx 早就写好了正确的分工逻辑，但从没生效过。
+
+### 现象
+
+REPL 里按一次 Ctrl+C，整个进程立即退出。app.tsx 的「单击 `api.abort()` 中断流 + 双击 `process.exit(0)`」useInput 回调看上去完全正确，但**从未触发过**。
+
+### 根因（实读 ink 源码，非推断）
+
+ink 的 `render()` 默认 `exitOnCtrlC: true`（`node_modules/ink/build/render.js:14`）。此开关让 ink **在 useInput 之前的 stdin 层**就拦截 Ctrl+C：
+
+- `ink/build/components/App.js:151`：`if (input === '\x03' && exitOnCtrlC)` → 直接走 `handleExit` → unmount + `process.exit`。
+- `ink/build/hooks/use-input.js:104`：`if (input === 'c' && key.ctrl && internal_exitOnCtrlC) return` → 即便到了 useInput，也提前 return 不调应用回调。
+
+两道闸门都在「应用 useInput 回调」之前。ECode 的 `src/index.ts` render 调用**从没传 `exitOnCtrlC: false`** → 用默认 `true` → `\x03` 在最外层被 ink 拦走退出 → **app.tsx 的 Ctrl+C 分工逻辑是死代码**。这就是「一次就退出」的原因。
+
+### 测试为何抓不到（关键盲区）
+
+`ink-testing-library` 在 `build/index.js:75` **硬编码 `exitOnCtrlC: false`**——跟真机的默认 `true` **不一致**：
+
+| 环境 | exitOnCtrlC | `\x03` 去向 | app.tsx 分工逻辑 | 单测 |
+|------|-------------|-----------|----------------|------|
+| **ink-testing** | 硬编码 false | 流到 useInput | 一直生效 | 恒绿 |
+| **真机**（修复前） | 默认 true | ink stdin 层拦走 | 死代码 | — |
+
+测试环境一直让 `\x03` 能到 useInput，所以这块逻辑「测了就绿」，真机却被 ink 拦了。**测试与真机的默认开关不一致 = bug 长期潜伏**。
+
+### 解决
+
+1. **`src/index.ts`** render 加 `exitOnCtrlC: false`（一行），把 Ctrl+C 放给 app.tsx useInput 处理。真机与测试两端配置就此拉齐。
+2. **补回归测试**（`tests/ui/app.test.tsx`）：双击 Ctrl+C(2s 内) → `process.exit(0)`；单击 Ctrl+C → 中断运行中流（出「— 已中断 —」）。守护 app.tsx 分工逻辑，防未来改坏。
+   - 注：这两测试在 testing 环境（恒 false）跑，**无法复现真机 bug**——真机的「一次退出」只能手动冒烟验证。
+
+### 教训
+
+> **框架的「默认开关」类配置（尤其是会拦截 stdin / 改变进程退出行为的），必须显式核对默认值是否符合预期**——不能假设「我不传就用合理默认」。ink 默认 `exitOnCtrlC:true` 对普通 CLI 合理（该 Ctrl+C 退出），但对「要自定义 Ctrl+C 行为」的应用就是陷阱：默认值会让应用层逻辑变**死代码**，且代码看起来完全正确，极难发现。
+>
+> **配套盲区：测试库可能 hardcode 与真机不同的默认值。** ink-testing-library 硬编码 `exitOnCtrlC:false`，让单测里 Ctrl+C 一直能到应用回调 → 测试恒绿 → 真机坏的 bug 长期潜伏。诊断「逻辑写对了但从没生效」类问题，**优先怀疑框架在更外层（stdin/事件层）拦截/吞掉了输入**，并核对「测试环境的框架配置 == 真机配置」。
+
+### 关联
+
+- 实现：`src/index.ts`（render options `exitOnCtrlC:false`）、`src/ui/app.tsx` Ctrl+C 分工（原为死代码）
+- 设计：[EscCtrlC 横向分工详设](../详设/20260807000318_EscCtrlC横向分工-详设[已完成].md)（单击中断 / 双击退出 / Esc 清空不中断）
+- 同类「框架默认值 / 语义陷阱」：[[#001]]（Node `--env-file` 不覆盖既有 env）、[[#009]]（ink `<Static>` append-only 语义陷阱）
+
+---
+
+## #014 中断错误识别不能只靠 `instanceof DOMException`——SDK 包装的 abort 错误会漏判
+
+**日期**：2026-08-08
+**性质**：错误处理 / SDK 兼容（agent 层）
+**影响**：Ctrl+C 中断后，UI 除了预期的「— 已中断 —」还多显示一行 `✗ Request was aborted.`（英文、重复）。修 [[#013]] 启用 app.tsx 中断逻辑后暴露。
+
+### 现象
+
+中断流程：app.tsx `api.abort()` → controller.abort() → fetch 被 abort → openai SDK 抛错。agent.ts 外层 catch 只识别 `err instanceof DOMException && err.name==='AbortError'`，但 SDK 抛的**不是** DOMException（message 形如 "Request was aborted"）→ 漏判 → 当真错误 `yield {type:'error', error:'Request was aborted'}` → UI 显示 `✗ Request was aborted.`。
+
+### 根因
+
+`instanceof DOMException` 是**类型判断**，依赖错误对象的精确类型。但中断错误在不同层形态不一：
+
+| 来源 | 错误形态 | instanceof DOMException |
+|------|---------|------------------------|
+| Node 原生 fetch + AbortController | `DOMException { name:'AbortError' }` | ✅ 被识别 |
+| **openai SDK 包装** | 普通 `Error`（message "Request was aborted"） | ❌ 漏判 |
+| 其它 SDK / 运行时 | APIError / 自定义类型 | ❌ 漏判 |
+
+用类型判断中断 = 把"是不是中断"押在"SDK 把错误包装成哪个类"上——换 SDK/运行时就漏。
+
+### 解决（`src/agent.ts` catch）
+
+改用**状态判断优先**：
+
+```ts
+const isAbortError = (e: unknown): boolean =>
+  e instanceof Error && (e.name === 'AbortError' || /abort/i.test(e.message));
+const aborted = opts.signal?.aborted || isAbortError(err);
+```
+
+- `signal.aborted` 最可靠：不管 SDK 包装成什么类型/message，只要 signal 已 abort 就是中断（**状态 > 类型**）。
+- `isAbortError` 兜底：无 signal 场景（测试直接抛 AbortError）按 name/message 识别。
+
+### 教训
+
+> **判断"是不是中断/取消"用状态（`signal.aborted`）不用类型（`instanceof`）。** 中断错误在不同运行时/SDK 形态不一（DOMException / Error / APIError），`instanceof` 类型判断换层就漏。`signal.aborted` 是与错误形态解耦的状态，最可靠。
+>
+> **通用延伸**：判断"是不是某类错误"时，优先用**语义信号**（状态字段 / message 关键词 / 错误码），而非**类型**（instanceof）——后者把判断耦合到了具体错误类，跨 SDK/运行时易碎。
+
+### 关联
+
+- 同轮修复：[[#013]]（ink exitOnCtrlC 启用 app.tsx 中断逻辑后，本 bug 才暴露——此前 app.tsx 中断逻辑是死代码，根本走不到这里）
+- 测试盲区同类：[[#003]]（现有中断测试 mock runAgent 主动 yield aborted completed，不抛错 → 测不到 SDK 抛非 DOMException 错误的路径；本条补了 provider.stream 抛 `Error` + `signal.aborted` 的回归测试）
+- 实现：`src/agent.ts` catch 段、回归测试 `tests/agent-stream.test.ts`

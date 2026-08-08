@@ -76,7 +76,7 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
   // resumeOpen 时 SessionPicker 替换 InputBar（Modal 三元前置）。sessions 已过滤当前会话。
   const [resumeOpen, setResumeOpen] = useState(false);
   const [resumeSessions, setResumeSessions] = useState<ECodeSessionSummary[]>([]);
-  // Ctrl+O 转录 pager（方向 B，详设 docs/详设/20260806230000_工具折叠-详设.md §5.4/§5.5）：
+  // Ctrl+O 转录 pager（方向 B，详设 docs/详设/20260806213000_工具折叠-详设[已完成].md §5.4/§5.5）：
   // inPager=true 时底部交互区卸载（消除 InputBar 等的 useInput 抢键）+ 全局 useInput 让位给 less。
   // ref 同步防重入/防按键串台（state 异步、ref 即时）；state 驱动渲染。
   const [inPager, setInPager] = useState(false);
@@ -120,7 +120,9 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
   };
 
   // 全局按键（与 InputBar/PermissionDialog/SessionPicker 的 useInput 并存；ink 按挂载序分发）：
-  //   Ctrl+O → 转录 pager（方向 B）；Esc → 中断当前流（专职软中断）；Ctrl+C → 双击退出（专职硬退出，单击仅进退出窗口）。
+  //   Ctrl+O → 转录 pager（方向 B）；Ctrl+C → 单击中断对话（streaming→abort）/ 双击(2s 内) process.exit 退出。
+  //   Esc 不在此全局接——弹窗内由各 modal 自身 useInput 接（picker/permission/session），
+  //   主区 Esc 双击(500ms)清空输入框由 InputBar 接；两路都不中断对话（中断归 Ctrl+C）。
   //   pager 期间（inPagerRef）全部让位给 less（less inherit stdio 独占按键）。
   useInput((input, key) => {
     if (inPagerRef.current) return; // pager 期间让位

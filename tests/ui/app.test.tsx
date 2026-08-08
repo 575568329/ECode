@@ -87,4 +87,48 @@ describe('<App />', () => {
     }
     expect(frame).toContain('Permission Required');
   });
+
+  // --- 键位分工：Ctrl+C 单击中断 / 双击退出（详设 docs/详设/20260807000318）---
+  //
+  // 为何之前没有这类测试、且这类测试抓不到「一次 Ctrl+C 就退出」真机 bug：
+  //   ink-testing-library 的 render 硬编码 exitOnCtrlC:false（build/index.js:75），
+  //   故测试里 \x03 永远能到 useInput、app.tsx 的 Ctrl+C 逻辑一直生效 → 单测恒绿。
+  //   但真机 index.ts render 没传 exitOnCtrlC:false → ink 默认 true → 在 stdin 层
+  //   （node_modules/ink/build/components/App.js:151 拦 \x03）直接 process.exit，
+  //   app.tsx 逻辑成死代码、一次就退。两者配置不一致是真机 bug 的根因；已在 index.ts
+  //   render 加 exitOnCtrlC:false 拉齐。这两个测试守护 app.tsx 的分工逻辑（防止
+  //   未来有人改坏单击/双击判定），但无法复现真机 bug——真机仍需手动冒烟。
+
+  it('双击 Ctrl+C(2s 内) → process.exit(0)', async () => {
+    vi.useFakeTimers();
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      /* 阻止真退出，仅观测被调 */
+    }) as never);
+    const { stdin } = render(<App cwd="~/x" />);
+    stdin.write('\x03'); // 第一次 → 进退出窗口（setLastCtrlC）
+    await vi.advanceTimersByTimeAsync(0);
+    stdin.write('\x03'); // 第二次（fake timers 下 Date.now() 几乎不变，< DOUBLE_CTRL_C_MS=2000）→ exit
+    await vi.advanceTimersByTimeAsync(0);
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    exitSpy.mockRestore();
+  });
+
+  it('单击 Ctrl+C → 中断运行中流（— 已中断 —）', async () => {
+    vi.useFakeTimers();
+    const mocked = runAgentStream as unknown as ReturnType<typeof vi.fn>;
+    // 产 start 后永远挂起：保持 busy='running'（api.isRunning=true），模拟流式进行中
+    mocked.mockImplementation(async function* (): AsyncGenerator<any> {
+      yield { type: 'start', task: 'x', model: 'm', provider: 'p' };
+      await new Promise(() => {}); // 永久挂起，不 completed → busy 不回 idle
+    });
+    const { stdin, lastFrame } = render(<App cwd="~/x" />);
+    stdin.write('跑');
+    await vi.advanceTimersByTimeAsync(0);
+    stdin.write('\r'); // submit → ensureRunLoop → busy='running'
+    // 多轮 flush：让 start 事件消费 + busy='running' 经 onBusyChange 落到 state（isRunning=true）
+    for (let i = 0; i < 30; i++) await vi.advanceTimersByTimeAsync(1);
+    stdin.write('\x03'); // 单击 Ctrl+C → isRunning=true 走 abort 分支 + 「— 已中断 —」warning
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lastFrame() ?? '').toContain('已中断');
+  });
 });

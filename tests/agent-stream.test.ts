@@ -362,4 +362,32 @@ describe('runAgentStream', () => {
     expect(streamCall).toBe(2);
   });
 
+  it('中断：SDK 抛非 DOMException 的 abort 错误 + signal.aborted → completed(aborted)，不 yield error', async () => {
+    // 回归「中断后显示 ✗ Request was aborted」（debugging #013 同源 bug）：
+    // openai SDK 在 fetch 被 abort 时抛的错误【不是】DOMException（message "Request was aborted"），
+    // 旧 agent.ts 的 `instanceof DOMException` 判断漏掉 → 当真错误 yield {type:'error'} → UI 显示
+    // ✗ Request was aborted（与 app.tsx 的「— 已中断 —」warning 重复且英文）。
+    // 修：catch 改用 signal.aborted 优先判断（不管 SDK 包装成什么类型，signal 已 abort 即中断）。
+    const controller = new AbortController();
+    const provider: ModelProvider = {
+      name: 'mock',
+      protocol: 'openai',
+      baseURL: 'http://mock',
+      complete: vi.fn(async () => ({
+        content: [{ type: 'text', text: 'x' }],
+        stopReason: { unified: 'stop' },
+        usage: { inputTokens: 0, outputTokens: 0 },
+      })),
+      // 模拟 openai SDK 中断：用户 Ctrl+C → controller.abort()，SDK 抛非 DOMException 错误
+      stream: async function* (): AsyncIterable<ECodeStreamPart> {
+        controller.abort(); // signal.aborted = true（先于错误到达 catch，符合真实时序）
+        throw new Error('Request was aborted'); // SDK 包装的 abort 错误（非 DOMException）
+      },
+    };
+    const events = await collect(runAgentStream('跑', { provider, signal: controller.signal }));
+    expect(events.some((e) => e.type === 'error')).toBe(false); // 不再显示 ✗ Request was aborted
+    const done = events.find((e) => e.type === 'completed');
+    expect(done?.type === 'completed' && done.reason).toBe('aborted');
+  });
+
 });

@@ -540,7 +540,16 @@ export async function* runAgentStream(
     // 记录错误事件 + 落盘，不破坏既有配对历史。
     // （真正需要补配对的场景——工具执行中途被中断——留 M4 配合更完整的 abort 语义细化。）
     persistSession(buildSession());
-    const aborted = err instanceof DOMException && err.name === 'AbortError';
+    // 中断识别（放宽，修「中断后显示 ✗ Request was aborted」）：
+    // openai SDK 在 fetch 被 abort 时抛的错误【不是】DOMException（message 形如
+    // "Request was aborted" / "The user aborted a request"），旧的 instanceof DOMException
+    // 判断会漏掉 → 被当真错误 yield {type:'error'} → UI 显示 ✗ Request was aborted
+    // （与 app.tsx 的「— 已中断 —」warning 重复且为英文）。改用 signal.aborted 优先判断
+    // （最可靠：不管 SDK 把错误包装成什么类型/message，只要 signal 已 abort 就是中断），
+    // 再兜底 name/message 含 abort（无 signal 场景，如测试直接抛 AbortError）。
+    const isAbortError = (e: unknown): boolean =>
+      e instanceof Error && (e.name === 'AbortError' || /abort/i.test(e.message));
+    const aborted = opts.signal?.aborted || isAbortError(err);
     if (aborted) {
       yield {
         type: 'completed',

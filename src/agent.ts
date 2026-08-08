@@ -3,6 +3,11 @@ import { toolDefinitions, executeTool } from './tools/index.js';
 import { createTaskTool } from './tools/subagent.js';
 import { loadAgents } from './subagent/loader.js';
 import { buildAgentsCatalog } from './subagent/prompt.js';
+import { createHookGate } from './hooks/inject.js';
+import { getEffectiveHooks } from './hooks/system-hooks.js';
+import type { HookDef } from './hooks/types.js';
+import type { HookGate } from './hooks/inject.js';
+import type { ShellExec } from './hooks/runner.js';
 import type { ToolDefinition } from './tools/types.js';
 import { validateAfterEdit } from './tools/validation.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -142,6 +147,17 @@ export interface RunAgentStreamOptions extends RunAgentOptions {
   tools?: ToolDefinition[];
   /** 子代理嵌套深度（主代理 = 0；Task 工具递归子代理时 +1）。防递归爆炸，默认 0。阶段 1。 */
   subagentDepth?: number;
+  /**
+   * Hooks（支点 12）：用户/项目配置的 hook 列表。系统 hook（SYSTEM_HOOKS）恒前置叠加，不可移除。
+   * 不传 / 有效集为空 → 不注入 gate，核心循环字节级不变（零回归）。阶段 2。
+   * 配置加载（settings.json hooks 字段）后置审阅；一期经此字段注入可测。
+   */
+  hooks?: HookDef[];
+  /**
+   * hook 执行器注入（同 opts.provider/tools 的注入模式）：测试用 mock exec 免真 spawn；
+   * 生产留作自定义执行器（沙箱 / dry-run）的接入口。不传 → runner 默认 spawn。
+   */
+  hooksExec?: ShellExec;
 }
 
 /** consumeStream 的累积结果：逐 chunk yield 完 text_delta 后 return，供本轮 push messages / 日志用。 */
@@ -303,6 +319,13 @@ export async function* runAgentStream(
         }),
       ]
     : [];
+
+  // 阶段 2：构建 hook gate（Pre/Post 决策聚合）。系统 hook 恒前置叠加不可移除。
+  //   有效集为空 → hookGate=undefined，循环内各注入点用 `if (hookGate)` 守卫，字节级零回归。
+  const effectiveHooks = getEffectiveHooks(opts.hooks ?? []);
+  const hookGate: HookGate | undefined =
+    effectiveHooks.length > 0 ? createHookGate(effectiveHooks, { exec: opts.hooksExec }) : undefined;
+
   // runtime-log（CLAUDE.md §1.6：日志保存到文件供排查）—— 与原 runAgent 一致
   const logFile = initRuntimeLog(task, resolvedModel, provider.baseURL);
   // session 落盘上下文（与原 runAgent 一致：首轮/每轮末/压缩后/结束落盘）
@@ -451,9 +474,40 @@ export async function* runAgentStream(
         const def = tools.find((t) => t.name === tc.name);
         const isDangerous = def?.dangerous ?? false;
 
+        // ---- PreToolUse hook（支点 12）：可拦 / 可改输入，收紧优先（deny 即终态，等同权限拒绝）。
+        //   hookGate 仅在有有效 hook 时存在 → 无 hook 时 effectiveInput 恒等于 tc.input，核心循环字节级不变。
+        //   modifiedInput → 整体替换工具输入（后续 check/doom/gate/execute 全走改后输入）；
+        //   deny → 回喂 LLM 并 continue（与权限 deny 路径同构，保 tool_use_id 配对不断裂）。
+        let effectiveInput: Record<string, unknown> = tc.input;
+        if (hookGate) {
+          const pre = await hookGate.preToolUse(tc.name, tc.input);
+          if (pre.decision === 'deny') {
+            const hookDenied = `hook 拒绝执行工具 ${tc.name}${pre.reason ? `：${pre.reason}` : ''}`;
+            yield {
+              type: 'tool_result',
+              id: tc.id,
+              name: tc.name,
+              content: hookDenied,
+              isError: true,
+            };
+            messages.push({
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: tc.id,
+                  output: { type: 'error', value: hookDenied },
+                },
+              ],
+            });
+            continue;
+          }
+          if (pre.modifiedInput) effectiveInput = pre.modifiedInput;
+        }
+
         const verdict = check({
           toolName: tc.name,
-          input: tc.input,
+          input: effectiveInput,
           isDangerous,
           mode: permissionMode,
           allow,
@@ -463,7 +517,7 @@ export async function* runAgentStream(
 
         // doom_loop（阶段5d）：连续同 (tool,input) 达阈值即嫌疑死循环。
         // 即便 check 放行也升级为 ask（交还用户决策），但 deny 策略更强，仍按 deny 走。
-        const repeatCount = doom.observe(tc.name, tc.input);
+        const repeatCount = doom.observe(tc.name, effectiveInput);
         const doomTriggered = isDoomLoop(repeatCount);
         const forceAsk = doomTriggered && verdict.action !== 'deny';
 
@@ -483,7 +537,7 @@ export async function* runAgentStream(
             type: 'permission_request',
             toolUseId: tc.id,
             toolName: tc.name,
-            input: tc.input,
+            input: effectiveInput,
             reason: doomTriggered
               ? `疑似死循环（连续 ${repeatCount} 次相同调用），确认继续？`
               : undefined,
@@ -493,7 +547,7 @@ export async function* runAgentStream(
             // { decision, feedback? }（deny 携带用户反馈）。归一两种形式。
             const raw = await opts.permissionGate.ask({
               toolName: tc.name,
-              input: tc.input,
+              input: effectiveInput,
             });
             const decision: GateDecision = typeof raw === 'string' ? raw : raw.decision;
             const feedback = typeof raw === 'string' ? undefined : raw.feedback;
@@ -505,7 +559,7 @@ export async function* runAgentStream(
               //   逐 compound 段生成 pattern 入库（仿 opencode per-node）。
               //   非 bash 仍工具名粒度（阶段 2 语义不变）。
               if (tc.name === 'bash') {
-                const command = String(tc.input.command ?? '');
+                const command = String(effectiveInput.command ?? '');
                 for (const seg of splitCompound(command)) {
                   allow.addBashPattern(toAlwaysPattern(seg));
                 }
@@ -539,12 +593,12 @@ export async function* runAgentStream(
           continue; // 跳过 executeTool
         }
 
-        yield { type: 'tool_call_start', id: tc.id, name: tc.name, input: tc.input };
+        yield { type: 'tool_call_start', id: tc.id, name: tc.name, input: effectiveInput };
 
         // 防御：工具实现抛异常时降级为 isError 回喂 LLM（与原 runAgent 一致）
         let result: { content: string; isError: boolean };
         try {
-          result = await executeTool(tc.name, tc.input, tools);
+          result = await executeTool(tc.name, effectiveInput, tools);
         } catch (err) {
           result = {
             content: `工具执行异常: ${err instanceof Error ? err.message : String(err)}`,
@@ -564,14 +618,26 @@ export async function* runAgentStream(
           }
         }
 
-        logToolExecution(iteration, tc.name, tc.input, result.content, result.isError);
+        // ---- PostToolUse hook（支点 12）：工具已执行不可撤销——deny 仅把 reason 回喂 LLM。
+        //   无 hookGate / hook 放行 → result 不变，零回归。isError 保持（工具确已跑），只追加反馈文本。
+        if (hookGate) {
+          const post = await hookGate.postToolUse(tc.name, effectiveInput, result.content);
+          if (post.decision === 'deny') {
+            result = {
+              content: `${result.content}\n\n[PostToolUse hook 反馈] ${post.reason ?? '操作被 hook 标记'}`,
+              isError: result.isError,
+            };
+          }
+        }
+
+        logToolExecution(iteration, tc.name, effectiveInput, result.content, result.isError);
         yield {
           type: 'tool_result',
           id: tc.id,
           name: tc.name,
           content: result.content,
           isError: result.isError,
-          input: tc.input,
+          input: effectiveInput,
         };
 
         // 回传 tool_result（id 必须配对！）

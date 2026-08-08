@@ -46,7 +46,7 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 | M3 上下文压缩 + Session | token 计数、摘要压缩、结果截断、Session 持久化 | 🟡 P1-P4 完成，P5 待（✅ 超限响应式恢复 L3 已接线 2026-08-07）|
 | M3.5 交互式 CLI | 沉浸 REPL、slash 命令、流式渲染、中断、富文本/TUI | 🟡 进行中（REPL/斜杠/折叠组/pager/会话切换/**Esc-Ctrl+C 分工**已落地，Ctrl+O B+ 精简代码完成待真机）|
 | M4 权限系统 | 三档模式（砍 plan）+ 规则引擎（arity/last wins）+ 路径保护 + 修 🔴-2 + 命令分级 + UI 三态审批 + doom-loop | ✅ 完成 2026-08-08（5 阶段全提交：2e754f4 阶段4 + b60c36b 阶段5；683 单测全绿） |
-| M5+ 进阶扩展 | P2: 子代理(9)/MCP(10)/Hooks(12) ｜ P3: Skills(13)/模型路由(22)/多渠道(23) | 🚧 **M5 实施中**：阶段0 地基 + **阶段1 子代理已落地**（Task 工具递归 runAgentStream + 侦察兵黑盒 + 权限⊆A + 防递归 + agents/*.md 人设，719 测试零回归）；阶段2 Hooks/阶段3 MCP 待 |
+| M5+ 进阶扩展 | P2: 子代理(9)/MCP(10)/Hooks(12) ｜ P3: Skills(13)/模型路由(22)/多渠道(23) | 🚧 **M5 实施中**：阶段0 地基 + **阶段1 子代理**（76abd74）+ **阶段2 Hooks Pre/Post 引擎**（e7148a4：runner CC 三通道 + inject 多 hook 聚合 + system 强制叠加 + agent Pre/Post 注入零回归，749 测试）；⏸ Hooks settings.json 配置加载/SYSTEM_HOOKS 内容/4 事件流钩子 + 阶段3 MCP 待审阅 |
 | M6 远期能力 | Skills(13)+模型路由(22)+多渠道(23) | 📄 **M6 设计完成 2026-08-09**（三文档+审阅改定：6 致命+8 改进全修；D1-D7 待审阅），代码未开始 |
 
 ## 当前焦点

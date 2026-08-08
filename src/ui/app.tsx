@@ -14,6 +14,7 @@ import type { LoadStatus } from './welcome-screen.js';
 import { ChatView } from './chat-view.js';
 import { InputBar } from './input-bar.js';
 import { QueuedMessages } from './queued-messages.js';
+import { TodoPanel } from './todo-panel.js';
 import { PermissionDialog } from './permission-dialog.js';
 import { SessionPicker } from './session-picker.js';
 import { ModelPicker } from './model-picker.js';
@@ -315,6 +316,7 @@ export function App({ model, cwd, loadStatus, system, version }: AppProps): Reac
         <ChatView state={api} />
       )}
 
+      <TodoPanel todos={api.todos} />
       <QueuedMessages messages={api.queuedMessages} />
 
       {inPager ? null : resumeOpen ? (

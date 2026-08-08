@@ -8,6 +8,7 @@ import { executeWriteFile } from './write-file.js';
 import { executeDeleteFile } from './delete-file.js';
 import { executeMove } from './move.js';
 import { executeLs } from './ls.js';
+import { executeTodoWrite } from './todo.js';
 
 /**
  * 声明式工具清单（v2）：每个工具自带 schema + execute。
@@ -154,5 +155,37 @@ export const toolDefinitions: ToolDefinition[] = [
       required: [],
     },
     execute: (input) => executeLs(input as { path?: string; pattern?: string }),
+  },
+  {
+    name: 'todo_write',
+    description:
+      '更新任务清单(整表替换)。仅用于复杂任务(3 步以上):先规划 todo,推进时标 in_progress、完成标 completed 再继续。简单问答/单步任务禁用(污染常驻面板)。todos 为全量清单(替换当前清单,非增量)。',
+    parameters: {
+      type: 'object',
+      properties: {
+        todos: {
+          type: 'array',
+          description: '全量 todo 列表(替换当前清单)。每项 {content, status, activeForm?}',
+          items: {
+            type: 'object',
+            properties: {
+              content: { type: 'string', description: '任务描述' },
+              status: {
+                type: 'string',
+                enum: ['pending', 'in_progress', 'completed'],
+                description: 'pending=待办 / in_progress=进行中(同时只一项)/ completed=已完成',
+              },
+              activeForm: {
+                type: 'string',
+                description: '进行时描述(可选,in_progress 时优先显示,如「正在读取配置」)',
+              },
+            },
+            required: ['content', 'status'],
+          },
+        },
+      },
+      required: ['todos'],
+    },
+    execute: executeTodoWrite,
   },
 ];

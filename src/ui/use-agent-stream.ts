@@ -23,6 +23,7 @@ import type { StreamState, DisplayMessage, PendingPermission } from './types.js'
 import type { AgentEvent } from '../agent-events.js';
 import { getDefaultModel } from '../providers/config.js';
 import { messagesToDisplayMessages } from './messages-to-display.js';
+import { extractTodos, type TodoItem } from '../tools/todo.js';
 
 export interface UseAgentStreamReturn {
   completedMessages: DisplayMessage[];
@@ -45,6 +46,8 @@ export interface UseAgentStreamReturn {
   queuedMessages: string[];
   /** 待处理条数（StatusBar "待处理:N"）。 */
   pendingCount: number;
+  /** 任务清单（UI 派生自 todo_write，常驻面板渲染；空数组=无 todo）。 */
+  todos: TodoItem[];
   /** submit 用户输入（命令在 App 层拦截，这里只处理纯消息 → 入 controller 队列）。 */
   submit: (text: string) => void;
   /** 用户在 PermissionDialog 选了决策。allow_always → allow.add(toolName) 后 resolve allow。 */
@@ -86,7 +89,14 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   const systemRef = useRef(opts.system);
   systemRef.current = opts.system;
 
+  // apply = 事件分发。todo_write 单独拦截（§6）：从 input.todos 派生 state.todos，不进 reducer
+  // （避免 activeTools 残留 todo_write + completedMessages 多一条 tool 行）。其余事件走 reducer。
   const apply = useCallback((event: AgentEvent) => {
+    if ((event.type === 'tool_call_start' || event.type === 'tool_result') && event.name === 'todo_write') {
+      const todos = extractTodos(event.input);
+      if (todos) setState((prev) => ({ ...prev, todos }));
+      return; // 不进 reducer
+    }
     setState((prev) => reduceAgentEvent(prev, event));
   }, []);
 
@@ -219,6 +229,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     error: state.error,
     queuedMessages: state.queuedMessages,
     pendingCount: state.pendingCount,
+    todos: state.todos,
     submit,
     resolvePermission,
     abort,

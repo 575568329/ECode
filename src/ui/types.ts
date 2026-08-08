@@ -3,6 +3,7 @@
 // 严禁从 DisplayMessage[] 反向重建 LLM messages。
 
 import type { BusyState } from './agent-loop-controller.js';
+import type { TodoItem } from '../tools/todo.js';
 
 /** 单条工具调用在动态区的运行态表示。 */
 export interface ActiveTool {
@@ -81,6 +82,8 @@ export interface StreamState {
   queuedMessages: string[];
   /** 待处理条数（StatusBar "待处理:N"）。 */
   pendingCount: number;
+  /** 任务清单（UI 派生自 todo_write 工具输入，常驻面板渲染；详见消息队列与交互重做方案 §6）。 */
+  todos: TodoItem[];
 }
 
 export const initialStreamState: StreamState = {
@@ -100,4 +103,5 @@ export const initialStreamState: StreamState = {
   busy: 'idle',
   queuedMessages: [],
   pendingCount: 0,
+  todos: [],
 };

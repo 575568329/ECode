@@ -36,6 +36,8 @@ export const SYMBOLS = {
   warning: '▲',
   thinking: '◐',
   prompt: '▶',
+  todoPending: '◻',
+  todoProgress: '◾',
 } as const;
 
 /** braille spinner 帧序列（品牌色）。 */

@@ -48,6 +48,8 @@ export interface PendingPermission {
   toolUseId: string;
   toolName: string;
   input: Record<string, unknown>;
+  /** 额外原因（如 doom_loop 触发），弹窗醒目提示；undefined = 普通审批。 */
+  reason?: string;
 }
 
 /** reducer 的状态形状（不含命令方法；命令在 hook 层）。 */

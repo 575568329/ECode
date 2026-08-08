@@ -31,7 +31,8 @@ import { AllowList } from './permission.js';
 import type { PermissionGate } from './permission.js';
 import { check } from './permission/rule-engine.js';
 import { splitCompound, toAlwaysPattern } from './permission/arity.js';
-import type { PermissionMode, Rule } from './permission/types.js';
+import { DoomLoopDetector, isDoomLoop } from './permission/doom-loop.js';
+import type { PermissionMode, Rule, GateDecision } from './permission/types.js';
 
 // ============================================================
 // Agent Loop — 理解 Agent 的心脏
@@ -245,7 +246,8 @@ export async function compactMessages(
  *
  * 终止路径：
  *   - LLM 给出最终文本回答（无 tool_call）→ completed(reason: 'done')
- *   - 连续两轮工具签名重复 → completed(reason: 'repeated')
+ *   - 连续两轮工具签名重复 且无 permissionGate（非交互）→ completed(reason: 'repeated')
+ *     （交互模式由 doom_loop 在阈值 3 时弹窗询问用户 continue/abort，不在此硬终止）
  *   - signal aborted → completed(reason: 'aborted')
  *   - MAX_ITERATIONS 跑满 → completed(reason: 'max-iterations')
  *   - 任意其它异常 → yield error（不 re-throw，消费方决定如何提示）
@@ -258,6 +260,8 @@ export async function* runAgentStream(
   const provider = opts.provider ?? createProvider(resolvedModel);
   const useTools = hasCapability(resolvedModel, 'tools');
   const allow = opts.allow ?? new AllowList();
+  // doom_loop 检测器（阶段5d）：跨轮持久，连续同 (tool,input) ≥3 触发，强制询问打破死循环。
+  const doom = new DoomLoopDetector();
   const permissionMode: PermissionMode = opts.permissionMode ?? 'default';
   const system = opts.system ?? buildSystemPrompt();
 
@@ -424,25 +428,44 @@ export async function* runAgentStream(
           denyRules: opts.denyRules,
         });
 
+        // doom_loop（阶段5d）：连续同 (tool,input) 达阈值即嫌疑死循环。
+        // 即便 check 放行也升级为 ask（交还用户决策），但 deny 策略更强，仍按 deny 走。
+        const repeatCount = doom.observe(tc.name, tc.input);
+        const doomTriggered = isDoomLoop(repeatCount);
+        const forceAsk = doomTriggered && verdict.action !== 'deny';
+
         // 拒绝原因（策略 deny 或用户 deny）；非 null 则回喂 LLM 并跳过执行
         let denied: string | null = null;
         if (verdict.action === 'deny') {
           denied = `权限策略拒绝执行工具 ${tc.name}：${verdict.reason}`;
-        } else if (verdict.action === 'ask') {
+        } else if (verdict.action === 'ask' || forceAsk) {
+          if (doomTriggered) {
+            yield {
+              type: 'warning',
+              message: `检测到连续 ${repeatCount} 次相同调用 ${tc.name}，疑似死循环`,
+            };
+          }
           // 可观测事件：UI 据此渲染"是否允许"对话框；决策本身走 permissionGate 回调
           yield {
             type: 'permission_request',
             toolUseId: tc.id,
             toolName: tc.name,
             input: tc.input,
+            reason: doomTriggered
+              ? `疑似死循环（连续 ${repeatCount} 次相同调用），确认继续？`
+              : undefined,
           };
           if (opts.permissionGate) {
-            const decision = await opts.permissionGate.ask({
+            // 阶段5b：gate 结果可能是纯 GateDecision（无反馈，向后兼容）或
+            // { decision, feedback? }（deny 携带用户反馈）。归一两种形式。
+            const raw = await opts.permissionGate.ask({
               toolName: tc.name,
               input: tc.input,
             });
+            const decision: GateDecision = typeof raw === 'string' ? raw : raw.decision;
+            const feedback = typeof raw === 'string' ? undefined : raw.feedback;
             if (decision === 'deny') {
-              denied = `用户拒绝执行工具 ${tc.name}`;
+              denied = `用户拒绝执行工具 ${tc.name}${feedback ? `，反馈：${feedback}` : ''}`;
             } else if (decision === 'allow_always') {
               // 🔴-2 修复：仅 allow_always 记会话规则；allow_once 不记，下次仍询问。
               // 阶段 3：bash 按命令粒度记 pattern（防整工具放行过宽，'git checkout' 不该放行 'git push'）；
@@ -529,11 +552,13 @@ export async function* runAgentStream(
       }
 
       // ---- 重复动作检测（防死循环）：连续两轮工具签名相同 → 终止 ----
+      // 仅非交互模式（无 permissionGate）硬终止：交互模式下重复由 doom_loop（阈值 3）
+      // 弹窗询问用户 continue/abort 接管，避免在用户可决策时过早硬断。
       const signature = toolCalls
         .map((t) => `${t.name}:${JSON.stringify(t.input)}`)
         .sort()
         .join(' || ');
-      if (signature === lastSignature) {
+      if (!opts.permissionGate && signature === lastSignature) {
         yield {
           type: 'warning',
           message: '检测到连续重复的工具调用，终止以防死循环',

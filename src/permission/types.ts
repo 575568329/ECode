@@ -35,3 +35,11 @@ export type PermissionVerdict =
  * 三态后：核心层仅在 allow_always 时记会话规则，allow_once 不记。
  */
 export type GateDecision = 'allow_once' | 'allow_always' | 'deny';
+
+/**
+ * 权限门返回值（阶段5b reject 反馈）。
+ * - 字符串形式：兼容旧契约，无反馈时 resolve 纯决策（现有 mock/UI 调用零改动）。
+ * - 对象形式：deny 时携带用户反馈，agent.ts 拼进 denied tool_result 回喂 LLM。
+ * 两种形式经 agent.ts 归一为 { decision, feedback? }。
+ */
+export type GateResult = GateDecision | { decision: GateDecision; feedback?: string };

@@ -122,6 +122,7 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
           toolUseId: event.toolUseId,
           toolName: event.toolName,
           input: event.input,
+          reason: event.reason,
         },
       };
 

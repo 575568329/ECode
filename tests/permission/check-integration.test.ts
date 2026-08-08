@@ -66,6 +66,55 @@ function gateReturning(decision: GateDecision): PermissionGate {
   return { ask: vi.fn(async () => decision) };
 }
 
+/** 连续 N 轮都跑同一条 bash 命令（每轮 tool-use stop 触发下一轮），第 N+1 轮文本终止。用于 doom_loop。 */
+function repeatBashProvider(rounds: number, command: string): ModelProvider {
+  let call = 0;
+  return {
+    name: 'mock',
+    protocol: 'openai',
+    baseURL: 'http://mock',
+    complete: vi.fn(async () => ({
+      content: [{ type: 'text', text: '摘要' }],
+      stopReason: { unified: 'stop' },
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })),
+    stream: async function* (): AsyncIterable<ECodeStreamPart> {
+      call++;
+      if (call <= rounds) {
+        for (const p of bashCall(`t${call}`, command)) yield p; // 末尾 tool-use stop → 下一轮
+      } else {
+        yield { type: 'text_delta', text: '完成' };
+        yield { type: 'stop', reason: { unified: 'stop', raw: 'stop' } };
+      }
+    },
+  };
+}
+
+/** 每轮跑不同 bash 命令（commands[call-1]），用于 doom_loop 对照（输入变化 → 不触发）。 */
+function varyingBashProvider(commands: string[]): ModelProvider {
+  let call = 0;
+  return {
+    name: 'mock',
+    protocol: 'openai',
+    baseURL: 'http://mock',
+    complete: vi.fn(async () => ({
+      content: [{ type: 'text', text: '摘要' }],
+      stopReason: { unified: 'stop' },
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })),
+    stream: async function* (): AsyncIterable<ECodeStreamPart> {
+      const cmd = commands[call];
+      call++;
+      if (cmd !== undefined) {
+        for (const p of bashCall(`t${call}`, cmd)) yield p;
+      } else {
+        yield { type: 'text_delta', text: '完成' };
+        yield { type: 'stop', reason: { unified: 'stop', raw: 'stop' } };
+      }
+    },
+  };
+}
+
 /** round1 内连续两个 bash tool_call（共享末尾一个 stop）。用于「同会话二次调用」场景。 */
 function twoBash(id1: string, cmd1: string, id2: string, cmd2: string): ECodeStreamPart[] {
   return [
@@ -217,5 +266,56 @@ describe('权限系统集成（check + 三态 gate）', () => {
     const gate = gateReturning('allow_always');
     await collect(runAgentStream('跑复合', { provider, permissionGate: gate }));
     expect(gate.ask).toHaveBeenCalledTimes(1);
+  });
+
+  // ── 阶段 5b：reject 反馈回喂 LLM ──
+  it('5b：gate 返回 {decision:deny, feedback} → tool_result 含反馈文本（回喂 LLM）', async () => {
+    const provider = twoRoundProvider(bashCall('t1', 'echo hi'));
+    const gate: PermissionGate = {
+      ask: vi.fn(async () => ({ decision: 'deny' as const, feedback: '别用 rm' })),
+    };
+    const events = await collect(runAgentStream('跑', { provider, permissionGate: gate }));
+    const tr = events.find((e) => e.type === 'tool_result') as Extract<
+      AgentEvent,
+      { type: 'tool_result' }
+    >;
+    expect(tr).toBeDefined();
+    expect(tr.isError).toBe(true);
+    expect(tr.content).toContain('别用 rm'); // 反馈拼进 denied 回喂
+    expect(tr.content).toContain('反馈');
+  });
+
+  // ── 阶段 5d：doom_loop 检测 ──
+  // 注：echo hi 在 allow_once 下会真实执行（瞬时无害，与「无 gate」用例一致）。
+  it('5d：连续 3 次相同 bash 调用 → 第 3 次触发 warning + permission_request 带 reason', async () => {
+    const provider = repeatBashProvider(3, 'echo hi');
+    const gate = gateReturning('allow_once');
+    const events = await collect(runAgentStream('死循环', { provider, permissionGate: gate }));
+    // 第 3 次（count=3）触发 doom：发 warning 事件
+    const warnings = events.filter((e) => e.type === 'warning') as Extract<
+      AgentEvent,
+      { type: 'warning' }
+    >[];
+    expect(warnings.some((w) => w.message.includes('死循环'))).toBe(true);
+    // 第 3 次的 permission_request 带 reason
+    const doomReq = events.find(
+      (e) => e.type === 'permission_request' && e.reason,
+    ) as Extract<AgentEvent, { type: 'permission_request' }> | undefined;
+    expect(doomReq?.reason).toContain('死循环');
+    // gate 3 次（每轮 allow_once 都问；第 3 次 doom 强制 ask 也是 ask）
+    expect(gate.ask).toHaveBeenCalledTimes(3);
+  });
+
+  it('5d：不同输入不触发 doom（第 3 次换命令 → 无 reason、无死循环 warning）', async () => {
+    // 命令逐轮变化 → doom 计数每轮重置，第 3 轮 count=1，不触发。
+    const provider = varyingBashProvider(['echo a', 'echo b', 'echo c']);
+    const gate = gateReturning('allow_once');
+    const events = await collect(runAgentStream('不重复', { provider, permissionGate: gate }));
+    const warnings = events.filter((e) => e.type === 'warning') as Extract<
+      AgentEvent,
+      { type: 'warning' }
+    >[];
+    expect(warnings.some((w) => w.message.includes('死循环'))).toBe(false);
+    expect(events.some((e) => e.type === 'permission_request' && e.reason)).toBe(false);
   });
 });

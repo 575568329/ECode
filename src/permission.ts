@@ -1,7 +1,7 @@
 // 权限判定纯逻辑（档A：CCode 式 dangerous 二元；M4 升三态 gate）。
 // 只决定「是否需要询问」+ 记住「已批准」。询问/弹窗本身由 UI 层注入回调实现。
 // 主判定入口是 ./permission/rule-engine.ts 的 check()；shouldAsk/AllowList 保留作档 A 兼容。
-import type { GateDecision } from './permission/types.js';
+import type { GateResult } from './permission/types.js';
 import { match } from './permission/wildcard.js';
 
 /**
@@ -59,5 +59,9 @@ export function shouldAsk(toolName: string, isDangerous: boolean, allow: AllowLi
  * 三态后核心仅在 allow_always 时记会话规则。
  */
 export interface PermissionGate {
-  ask(req: { toolName: string; input: Record<string, unknown> }): Promise<GateDecision>;
+  /**
+   * 返回用户决策（阶段5b）：纯 GateDecision 字符串（无反馈，向后兼容）或
+   * { decision, feedback? }（deny 时携带反馈回喂 LLM）。agent.ts 归一两种形式。
+   */
+  ask(req: { toolName: string; input: Record<string, unknown> }): Promise<GateResult>;
 }

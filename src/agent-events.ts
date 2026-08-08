@@ -14,6 +14,8 @@ export interface PermissionRequestEvent {
   toolUseId: string;
   toolName: string;
   input: Record<string, unknown>;
+  /** 额外原因（如 doom_loop 触发），UI 据此在弹窗里醒目提示；undefined = 普通审批。 */
+  reason?: string;
 }
 
 /** agent 终止原因 */

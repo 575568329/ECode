@@ -17,7 +17,7 @@ import { useCallback, useRef, useState } from 'react';
 import { runAgentStream, compactMessages } from '../agent.js';
 import type { ResumeContext } from '../agent.js';
 import { AllowList } from '../permission.js';
-import type { GateDecision, PermissionMode, Rule } from '../permission/types.js';
+import type { GateDecision, GateResult, PermissionMode, Rule } from '../permission/types.js';
 import { reduceAgentEvent, initialStreamState } from './reduce-agent-event.js';
 import { AgentLoopController } from './agent-loop-controller.js';
 import type { StreamState, DisplayMessage, PendingPermission } from './types.js';
@@ -51,8 +51,9 @@ export interface UseAgentStreamReturn {
   todos: TodoItem[];
   /** submit 用户输入（命令在 App 层拦截，这里只处理纯消息 → 入 controller 队列）。 */
   submit: (text: string) => void;
-  /** 用户在 PermissionDialog 选了决策。allow_always → allow.add(toolName) 后 resolve allow。 */
-  resolvePermission: (decision: 'allow' | 'deny' | 'allow_always') => void;
+  /** 用户在 PermissionDialog 选了决策。allow_always → allow.add(toolName) 后 resolve allow。
+   *  feedback（可选，仅 deny）：作为 user 反馈回喂 LLM（阶段5b reject 反馈框）。 */
+  resolvePermission: (decision: 'allow' | 'deny' | 'allow_always', feedback?: string) => void;
   /** 中断当前流（Ctrl+C 触发；controller.abort，runLoop 继续 drain queue，非抢占）。 */
   abort: () => void;
   /** 查某工具是否已 allow_always（测试 + 状态栏可用）。 */
@@ -86,8 +87,9 @@ export interface UseAgentStreamOptions {
 export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStreamReturn {
   const [state, setState] = useState<StreamState>(initialStreamState);
   const allowRef = useRef(new AllowList());
-  // 权限 gate 决策 resolver（permission_request 时挂起，resolvePermission 时兑现）
-  const permissionResolverRef = useRef<((d: GateDecision) => void) | null>(null);
+  // 权限 gate 决策 resolver（permission_request 时挂起，resolvePermission 时兑现）。
+  // 阶段5b：resolver 兑现 GateResult——无反馈时纯 GateDecision 字符串，有反馈时 { decision, feedback }。
+  const permissionResolverRef = useRef<((r: GateResult) => void) | null>(null);
 
   // model/system 经 ref 透传给 controller（/model 切换即时生效；controller 仅创建一次，闭包会固化首值，故走 ref）
   const modelRef = useRef(opts.model);
@@ -128,7 +130,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
         denyRules: denyRulesRef.current,
         permissionGate: {
           ask: () =>
-            new Promise<GateDecision>((resolve) => {
+            new Promise<GateResult>((resolve) => {
               permissionResolverRef.current = resolve;
             }),
         },
@@ -174,15 +176,22 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     [controller],
   );
 
-  const resolvePermission = useCallback((decision: 'allow' | 'deny' | 'allow_always') => {
-    // 🔴-2 修复：透传三态给核心层；allow_always 的 add 由 agent.ts 处理（收到 allow_always 即 add）。
-    // UI 不再 add，避免双写。AllowList 是同一实例（allowRef → opts.allow），核心层 add 即生效。
-    // UI 'allow'（本次放行，Yes）→ 核心 'allow_once'；allow_always/deny 直传。
-    const gate: GateDecision = decision === 'allow' ? 'allow_once' : decision;
-    permissionResolverRef.current?.(gate);
-    permissionResolverRef.current = null;
-    setState((prev) => ({ ...prev, pendingPermission: null }));
-  }, []);
+  const resolvePermission = useCallback(
+    (decision: 'allow' | 'deny' | 'allow_always', feedback?: string) => {
+      // 🔴-2 修复：透传三态给核心层；allow_always 的 add 由 agent.ts 处理（收到 allow_always 即 add）。
+      // UI 不再 add，避免双写。AllowList 是同一实例（allowRef → opts.allow），核心层 add 即生效。
+      // UI 'allow'（本次放行，Yes）→ 核心 'allow_once'；allow_always/deny 直传。
+      // 阶段5b：deny 携带 feedback 时 resolve 对象形式（agent.ts 拼进 denied 回喂 LLM）；
+      //   无 feedback 时 resolve 纯 GateDecision 字符串（向后兼容现有 mock/测试）。
+      const coreDecision: GateDecision = decision === 'allow' ? 'allow_once' : decision;
+      const gate: GateResult =
+        decision === 'deny' && feedback ? { decision: coreDecision, feedback } : coreDecision;
+      permissionResolverRef.current?.(gate);
+      permissionResolverRef.current = null;
+      setState((prev) => ({ ...prev, pendingPermission: null }));
+    },
+    [],
+  );
 
   const abort = useCallback(() => {
     controller.abort();

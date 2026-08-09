@@ -26,3 +26,16 @@ export interface SkillDefinition {
   /** 文件绝对路径（调试 / name 兜底用 stem）。 */
   filePath: string;
 }
+
+/**
+ * Skills 自动生成（阶段2）产出的 SKILL.md 提案（Stop hook 归纳，待 accept 转正）。
+ * security-scan 扫危险模式；/accept 前跑 scan，命中拦截强制人工 review（决策点 D7）。
+ */
+export interface SkillProposal {
+  id: string;
+  name: string;
+  description: string;
+  /** SKILL.md 正文草稿（generator LLM 归纳产出，security-scan 扫此 + name + description）。 */
+  body: string;
+  createdAt: string;
+}

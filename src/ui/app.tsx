@@ -21,7 +21,9 @@ import { ModelPicker } from './model-picker.js';
 import type { PickerItem } from './picker-list.js';
 import { StatusBar, type StatusBarPhase } from './status-bar.js';
 import { parseUserInput, SLASH_COMMANDS, registerCommandHandler, findCommandHandler } from '../slash-commands.js';
-import { getContextWindow, getDefaultModel, listAvailableModels } from '../providers/config.js';
+import { getContextWindow, getDefaultModel, getModelConfig, listAvailableModels } from '../providers/config.js';
+import { computeCost } from '../providers/cost.js';
+import type { ModelCost } from '../providers/types.js';
 import { maskSecret, type McpRegistryEntry } from '../mcp/registry.js';
 import type { McpServerState } from '../mcp/manager.js';
 import { listSessions, loadSession } from '../session.js';
@@ -70,6 +72,18 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
   // 状态栏上下文百分比分母：用模型真实 contextWindow（config.json 可逐模型配置/覆盖），
   // 替代早期硬编码 60K——GLM 窗口 1M，硬编码会让百分比一眼顶到 99% 误报"超了"。
   const contextWindow = getContextWindow(currentModel ?? getDefaultModel());
+  // 当前模型单价（$/M token）；订阅制/未配 cost → undefined（StatusBar 显示 $--）。
+  // 命令 handler 只注册一次（ref-guard），闭包会 stale，故额外用 ref 让 /cost 读到最新单价。
+  let modelCost: ModelCost | undefined;
+  if (currentModel) {
+    try {
+      modelCost = getModelConfig(currentModel).cost;
+    } catch {
+      modelCost = undefined; // 未知模型不计费（防御，正常 currentModel 来自 listAvailableModels）
+    }
+  }
+  const modelCostRef = useRef(modelCost);
+  modelCostRef.current = modelCost;
 
   // started：用户是否已 submit 过（含被命令清空后——清空不回退到欢迎屏）。
   const [started, setStarted] = useState(false);
@@ -216,8 +230,17 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
       api.addMessage({ kind: 'warning', id: `sys-help-${Date.now()}`, text: `可用命令:\n${lines.join('\n')}` });
     });
     registerCommandHandler('cost', () => {
-      const { inputTokens, outputTokens } = api.usage;
-      api.addMessage({ kind: 'warning', id: `sys-cost-${Date.now()}`, text: `Token 用量: ${inputTokens.toLocaleString()} 输入 / ${outputTokens.toLocaleString()} 输出 (${(inputTokens + outputTokens).toLocaleString()} 总计)` });
+      const u = api.usage;
+      const total = u.inputTokens + u.outputTokens;
+      const lines = [
+        `Token 用量：输入 ${u.inputTokens.toLocaleString()} · 输出 ${u.outputTokens.toLocaleString()} · 总计 ${total.toLocaleString()}`,
+      ];
+      if (u.cacheReadTokens) lines.push(`  缓存命中 ${u.cacheReadTokens.toLocaleString()}（按折扣价计费）`);
+      if (u.cacheWriteTokens) lines.push(`  缓存写入 ${u.cacheWriteTokens.toLocaleString()}`);
+      if (u.reasoningTokens) lines.push(`  推理 ${u.reasoningTokens.toLocaleString()}（含于输出）`);
+      const mc = modelCostRef.current; // ref 读最新（避免 handler 闭包 stale）
+      if (mc) lines.push(`费用：$${computeCost(u, mc).toFixed(4)}`);
+      api.addMessage({ kind: 'warning', id: `sys-cost-${Date.now()}`, text: lines.join('\n') });
     });
     registerCommandHandler('sessions', () => {
       const sessions: ECodeSessionSummary[] = listSessions();
@@ -478,6 +501,7 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
         startedAt={startedAt}
         pendingCount={api.pendingCount}
         permissionMode={api.permissionMode}
+        cost={modelCost}
       />
     </Box>
   );

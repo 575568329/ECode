@@ -3,12 +3,14 @@
 import React from 'react';
 import { Text, Box } from 'ink';
 import { T } from './theme.js';
+import { computeCost } from '../providers/cost.js';
 import type { PermissionMode } from '../permission/types.js';
+import type { ECodeUsage, ModelCost } from '../providers/types.js';
 
 export type StatusBarPhase = 'idle' | 'streaming' | 'exit-window' | 'permission';
 
 interface StatusBarProps {
-  usage: { inputTokens: number; outputTokens: number };
+  usage: ECodeUsage;
   model: string;
   provider: string;
   /** 上下文占用百分比（0-100）。≤80 muted / >80 warning / >95 error。 */
@@ -20,6 +22,8 @@ interface StatusBarProps {
   pendingCount?: number;
   /** 当前权限档（非 default 时显示徽标，Shift+Tab 切换的可见反馈）。 */
   permissionMode?: PermissionMode;
+  /** 当前模型单价（$/M token），缺省显示 $--（不计费，如订阅制 GLM）。 */
+  cost?: ModelCost;
 }
 
 /** token 数 → 1.2K / 12.5K / 1.2M 简写。 */
@@ -29,10 +33,10 @@ function fmtTok(n: number): string {
   return String(n);
 }
 
-/** 粗略费用估算（deepseek 价格档：$0.27/M input, $1.1/M output 的量级，仅示意）。 */
-function estimateCost(inputTokens: number, outputTokens: number): string {
-  const cost = (inputTokens * 0.27 + outputTokens * 1.1) / 1_000_000;
-  return `$${cost.toFixed(2)}`;
+/** 费用显示：无单价（订阅制/未配 cost）显示 $--;否则按 computeCost 精确计算（支点17）。 */
+function fmtCost(usage: ECodeUsage, cost: ModelCost | undefined): string {
+  if (!cost) return '$--';
+  return `$${computeCost(usage, cost).toFixed(2)}`;
 }
 
 function ctxColor(pct: number): string {
@@ -68,7 +72,7 @@ function modeBadge(mode: PermissionMode | undefined): { text: string; color: str
   }
 }
 
-export function StatusBar({ usage, model, provider, ctxPercent, phase, startedAt, pendingCount, permissionMode }: StatusBarProps): React.ReactElement {
+export function StatusBar({ usage, model, provider, ctxPercent, phase, startedAt, pendingCount, permissionMode, cost }: StatusBarProps): React.ReactElement {
   const elapsedSec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
   const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
   const ss = String(elapsedSec % 60).padStart(2, '0');
@@ -81,7 +85,7 @@ export function StatusBar({ usage, model, provider, ctxPercent, phase, startedAt
       <Text color={T.info}>↑{fmtTok(usage.inputTokens)}</Text>
       <Text color={T.muted}> ↓{fmtTok(usage.outputTokens)} tok</Text>
       <Text>  </Text>
-      <Text color={T.success}>{estimateCost(usage.inputTokens, usage.outputTokens)}</Text>
+      <Text color={T.success}>{fmtCost(usage, cost)}</Text>
       <Text>  </Text>
       <Text color={ctxColor(ctxPercent)}>Ctx {ctxPercent}%</Text>
       <Text>  </Text>

@@ -196,7 +196,7 @@ describe('reduceAgentEvent', () => {
   it('usage → 累加 token（↑↓ 费用用累计值）', () => {
     let s = reduceAgentEvent(initialStreamState, { type: 'usage', inputTokens: 100, outputTokens: 10 });
     s = reduceAgentEvent(s, { type: 'usage', inputTokens: 50, outputTokens: 5 });
-    expect(s.usage).toEqual({ inputTokens: 150, outputTokens: 15 });
+    expect(s.usage).toEqual({ inputTokens: 150, outputTokens: 15, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 });
   });
 
   it('usage → latestInputTokens 是 per-call 覆写（非累计，供 Ctx% 用）', () => {

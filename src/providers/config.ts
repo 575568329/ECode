@@ -37,8 +37,16 @@ const DEFAULT_CONFIG: ECodeConfig = {
     claude: { protocol: 'anthropic', baseURL: 'https://api.anthropic.com', apiKeyEnv: 'ANTHROPIC_API_KEY', baseURLEnv: 'ANTHROPIC_BASE_URL' },
   },
   models: {
+    // GLM coding plan 为订阅制（bigmodel coding 套餐），不按 token 量计费；如需显示估算费用，
+    // 用户可在 ~/.ecode/config.json 给 glm-5.2 补 cost 字段（$/M token）。
     'glm-5.2': { provider: 'glm', capabilities: ['tools'], contextWindow: 1_000_000 },
-    'deepseek-chat': { provider: 'deepseek', capabilities: ['tools'], contextWindow: 128_000 },
+    'deepseek-chat': {
+      provider: 'deepseek',
+      capabilities: ['tools'],
+      contextWindow: 128_000,
+      // deepseek 公开价（$/M token，2024-2025 档）：cacheRead 为命中缓存折扣价
+      cost: { input: 0.27, output: 1.1, cacheRead: 0.07 },
+    },
   },
   // P0-5 后置验证：edit/write 成功后自动跑 build/test，失败回喂 LLM。
   // 默认 false（对齐 Aider auto-test：避免每次写文件阻塞验证拖慢体验）。

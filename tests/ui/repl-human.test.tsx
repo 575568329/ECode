@@ -108,7 +108,7 @@ describe('REPL 人肉驱动 —— 斜杠命令（按实际反馈）', () => {
     await sim.type('/cost');
     await sim.enter();
     await sim.waitFor((f) => f.includes('Token 用量'));
-    expect(sim.plain()).toContain('0 输入 / 0 输出 (0 总计)');
+    expect(sim.plain()).toContain('输入 0 · 输出 0 · 总计 0');
   });
 
   it('/sessions 无会话 → 提示暂无', async () => {
@@ -376,7 +376,7 @@ describe('REPL 人肉驱动 —— 斜杠补全 picker（方向 A）', () => {
     await sim.down(); // 选中 cost
     await sim.enter(); // 直接执行（不先 Tab）
     await sim.waitFor((f) => f.includes('Token 用量'));
-    expect(sim.plain()).toContain('0 输入 / 0 输出');
+    expect(sim.plain()).toContain('输入 0 · 输出 0 · 总计 0');
   });
 
   it('Esc 关闭 picker 不执行（text 保留、无命令输出）', async () => {

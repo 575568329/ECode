@@ -146,6 +146,10 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
         usage: {
           inputTokens: state.usage.inputTokens + event.inputTokens,
           outputTokens: state.usage.outputTokens + event.outputTokens,
+          // cacheRead/cacheWrite/reasoning 按档累加（支点17：cost 精确化 + /cost 拆分显示）
+          cacheReadTokens: (state.usage.cacheReadTokens ?? 0) + (event.cacheReadTokens ?? 0),
+          cacheWriteTokens: (state.usage.cacheWriteTokens ?? 0) + (event.cacheWriteTokens ?? 0),
+          reasoningTokens: (state.usage.reasoningTokens ?? 0) + (event.reasoningTokens ?? 0),
         },
         latestInputTokens: event.inputTokens, // per-call 覆写，供 Ctx% 计算
       };

@@ -48,9 +48,17 @@ describe('<StatusBar />', () => {
     expect(lastFrame()).toContain('press ctrl+c again');
   });
 
-  it('费用段显示（token 计费估算，非零）', () => {
+  it('无单价（订阅制/未配 cost）→ 显示 $--', () => {
     const { lastFrame } = render(<StatusBar {...base} ctxPercent={45} phase="idle" />);
-    expect(lastFrame()).toContain('$');
+    expect(lastFrame()).toContain('$--');
+  });
+
+  it('配置单价 → 按 computeCost 精确计费（deepseek 价档）', () => {
+    // base: input 12500 + output 3200, deepseek cost → (12500*0.27 + 3200*1.1)/1e6 = 0.006895 → $0.01
+    const { lastFrame } = render(
+      <StatusBar {...base} ctxPercent={45} phase="idle" cost={{ input: 0.27, output: 1.1, cacheRead: 0.07 }} />,
+    );
+    expect(lastFrame()).toContain('$0.01');
   });
 
   it('permissionMode=acceptEdits → 显示 accept-edits 徽标', () => {

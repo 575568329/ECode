@@ -19,6 +19,7 @@ export {
 export { ClaudeProvider } from './claude.js';
 export { OpenAIProvider } from './openai.js';
 export { createProvider } from './factory.js';
+export { computeCost } from './cost.js';
 export {
   getDefaultModel,
   getModelConfig,

@@ -4,6 +4,7 @@
 
 import type { BusyState } from './agent-loop-controller.js';
 import type { TodoItem } from '../tools/todo.js';
+import type { ECodeUsage } from '../providers/types.js';
 
 /** 单条工具调用在动态区的运行态表示。 */
 export interface ActiveTool {
@@ -59,7 +60,7 @@ export interface StreamState {
   activeTools: ActiveTool[];
   pendingPermission: PendingPermission | null;
   /** 累计 token（每轮 usage 事件累加，供 ↑↓ 费用显示）。 */
-  usage: { inputTokens: number; outputTokens: number };
+  usage: ECodeUsage;
   /** 最近一次 API 调用的 inputTokens（per-call 覆写，供 Ctx% 计算）。
    *  区别于 usage.inputTokens（累计）：Ctx% 反映当前上下文占用，不是历史总和。 */
   latestInputTokens: number;

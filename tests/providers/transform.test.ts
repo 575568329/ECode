@@ -116,7 +116,8 @@ describe('fromAnthropicResponse', () => {
       },
     } as unknown as Anthropic.Message;
     expect(fromAnthropicResponse(fakeRes).usage).toEqual({
-      inputTokens: 100,
+      // inputTokens 统一为总输入（input 100 + cache_read 80 + cache_creation 20 = 200）
+      inputTokens: 200,
       outputTokens: 50,
       cacheReadTokens: 80,
       cacheWriteTokens: 20,

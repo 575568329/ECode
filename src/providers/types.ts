@@ -121,10 +121,24 @@ export interface ModelProvider {
 /** 模型能力（静态声明，不做 runtime 探测） */
 export type ModelCapability = 'tools' | 'vision' | 'thinking' | 'fast_mode';
 
+/** 模型单价（$/M token，支点17 cost 精确化）。未配置时该档按 0 计费（兼容旧 config）。 */
+export interface ModelCost {
+  /** 非缓存输入 token 单价 */
+  input?: number;
+  /** 输出 token 单价（含 reasoning，DeepSeek-R1 等推理 token 计入 completion） */
+  output?: number;
+  /** 命中缓存的输入 token 单价（通常远低于 input） */
+  cacheRead?: number;
+  /** 写入缓存的输入 token 单价（Anthropic cache_creation） */
+  cacheWrite?: number;
+}
+
 /** 单个模型的配置（config.json 的 models[modelName]） */
 export interface ModelConfig {
   provider: string; // 指向 config.providers 的 key
   capabilities: ModelCapability[];
   /** 模型上下文窗口大小（token），供 ContextManager 算压缩阈值 */
   contextWindow?: number;
+  /** 模型单价（$/M token），缺省则该模型不计费显示 --。 */
+  cost?: ModelCost;
 }

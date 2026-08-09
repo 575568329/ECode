@@ -95,7 +95,13 @@ export function fromAnthropicResponse(res: Anthropic.Message): ECodeResponse {
     content: blocks,
     stopReason: mapAnthropicStopReason(res.stop_reason),
     usage: {
-      inputTokens: res.usage.input_tokens,
+      // inputTokens 统一为「总输入（含 cache）」，与 OpenAI 的 prompt_tokens 语义对齐——
+      // 支点17 cost 精确化前提：两家 inputTokens 含义一致，computeCost 才能用统一公式
+      // （非缓存 = 总输入 - cacheRead - cacheWrite）正确计费，且 ctx% 把 cache 也算进窗口。
+      inputTokens:
+        res.usage.input_tokens +
+        (cacheU.cache_read_input_tokens ?? 0) +
+        (cacheU.cache_creation_input_tokens ?? 0),
       outputTokens: res.usage.output_tokens,
       ...(cacheU.cache_read_input_tokens != null && {
         cacheReadTokens: cacheU.cache_read_input_tokens,

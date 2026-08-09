@@ -20,7 +20,7 @@ import { SessionPicker } from './session-picker.js';
 import { ModelPicker } from './model-picker.js';
 import type { PickerItem } from './picker-list.js';
 import { StatusBar, type StatusBarPhase } from './status-bar.js';
-import { parseUserInput, SLASH_COMMANDS } from '../slash-commands.js';
+import { parseUserInput, SLASH_COMMANDS, registerCommandHandler, findCommandHandler } from '../slash-commands.js';
 import { getContextWindow, getDefaultModel, listAvailableModels } from '../providers/config.js';
 import { listSessions, loadSession } from '../session.js';
 import type { ECodeSessionSummary } from '../session.js';
@@ -189,108 +189,84 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
   };
 
   // 斜杠命令分发（§5.1：UI 拦截命令，不送 LLM）。
+  // 阶段 3 MCP 前置：内置命令 handler 注册（ref-guard 只注册一次，闭包捕获 UI 状态）。
+  const handlersRegistered = useRef(false);
+  if (!handlersRegistered.current) {
+    handlersRegistered.current = true;
+    registerCommandHandler('clear', () => api.clear());
+    registerCommandHandler('exit', () => process.exit(0));
+    registerCommandHandler('help', () => {
+      const lines = SLASH_COMMANDS.map((c) => `  /${c.name.padEnd(10)} ${c.description}`);
+      api.addMessage({ kind: 'warning', id: `sys-help-${Date.now()}`, text: `可用命令:\n${lines.join('\n')}` });
+    });
+    registerCommandHandler('cost', () => {
+      const { inputTokens, outputTokens } = api.usage;
+      api.addMessage({ kind: 'warning', id: `sys-cost-${Date.now()}`, text: `Token 用量: ${inputTokens.toLocaleString()} 输入 / ${outputTokens.toLocaleString()} 输出 (${(inputTokens + outputTokens).toLocaleString()} 总计)` });
+    });
+    registerCommandHandler('sessions', () => {
+      const sessions: ECodeSessionSummary[] = listSessions();
+      if (sessions.length === 0) {
+        api.addMessage({ kind: 'warning', id: `sys-sessions-${Date.now()}`, text: '暂无历史会话。' });
+        return;
+      }
+      const lines = sessions.slice(0, 10).map(
+        (s, i) => `${i + 1}. ${s.task.slice(0, 40)} (${s.model}, ${s.stats.rounds}轮) · ${shortSessionId(s.id)}`,
+      );
+      const footer = sessions.length > 10 ? `\n...共 ${sessions.length} 个会话(显示前 10)` : `\n共 ${sessions.length} 个会话`;
+      api.addMessage({ kind: 'warning', id: `sys-sessions-${Date.now()}`, text: `历史会话:\n${lines.join('\n')}${footer}` });
+    });
+    registerCommandHandler('resume', () => {
+      const currentId = api.currentSessionId();
+      const sessions = listSessions().filter((s) => s.id !== currentId);
+      if (sessions.length === 0) {
+        api.addMessage({ kind: 'warning', id: `sys-resume-${Date.now()}`, text: '暂无历史会话。' });
+        return;
+      }
+      setResumeSessions(sessions);
+      setResumeOpen(true);
+    });
+    registerCommandHandler('model', async (args) => {
+      const direct = args[0];
+      const available = listAvailableModels();
+      if (direct) {
+        const hit = available.find((m) => m.model === direct || m.model.startsWith(direct));
+        if (hit) {
+          setCurrentModel(hit.model);
+          api.addMessage({ kind: 'warning', id: `sys-model-${Date.now()}`, text: `已切换到模型: ${hit.model}（${hit.provider}）` });
+          return;
+        }
+        api.addMessage({ kind: 'warning', id: `sys-model-${Date.now()}`, text: `未找到模型 "${direct}"，请从列表选择：` });
+      }
+      const opts = available
+        .filter((m) => m.model !== currentModel)
+        .map((m) => ({ name: m.model, description: m.provider }));
+      if (opts.length === 0) {
+        api.addMessage({ kind: 'warning', id: `sys-model-${Date.now()}`, text: '没有其他可选模型。' });
+        return;
+      }
+      setModelOptions(opts);
+      setModelOpen(true);
+    });
+    registerCommandHandler('compact', async () => {
+      api.addMessage({ kind: 'warning', id: `sys-compact-start-${Date.now()}`, text: '正在压缩上下文…' });
+      const result = await api.compact();
+      if (result === null) {
+        api.addMessage({ kind: 'warning', id: `sys-compact-${Date.now()}`, text: '压缩未执行：无活跃会话，或已达压缩极限。' });
+      } else {
+        api.addMessage({ kind: 'warning', id: `sys-compact-${Date.now()}`, text: `已压缩上下文：${result.before} → ${result.after} 条消息。` });
+      }
+    });
+  }
+
+  // handleCommand：dispatch 查表（内置 + 动态/MCP 命令统一入口）。
   const handleCommand = async (name: string, args: string[]): Promise<void> => {
-    switch (name) {
-      case 'clear':
-        api.clear();
-        return;
-      case 'exit':
-        // 走 process.exit（ink 的 useApp.exit 在测试/某些环境不触进程退出）。
-        process.exit(0);
-        return;
-      case 'help': {
-        const lines = SLASH_COMMANDS.map((c) => `  /${c.name.padEnd(10)} ${c.description}`);
-        api.addMessage({ kind: 'warning', id: `sys-help-${Date.now()}`, text: `可用命令:\n${lines.join('\n')}` });
-        return;
-      }
-      case 'cost': {
-        const { inputTokens, outputTokens } = api.usage;
-        api.addMessage({
-          kind: 'warning',
-          id: `sys-cost-${Date.now()}`,
-          text: `Token 用量: ${inputTokens.toLocaleString()} 输入 / ${outputTokens.toLocaleString()} 输出 (${(inputTokens + outputTokens).toLocaleString()} 总计)`,
-        });
-        return;
-      }
-      case 'sessions': {
-        const sessions: ECodeSessionSummary[] = listSessions();
-        if (sessions.length === 0) {
-          api.addMessage({ kind: 'warning', id: `sys-sessions-${Date.now()}`, text: '暂无历史会话。' });
-        } else {
-          const lines = sessions.slice(0, 10).map(
-            (s, i) => `${i + 1}. ${s.task.slice(0, 40)} (${s.model}, ${s.stats.rounds}轮) · ${shortSessionId(s.id)}`,
-          );
-          const footer = sessions.length > 10 ? `\n...共 ${sessions.length} 个会话(显示前 10)` : `\n共 ${sessions.length} 个会话`;
-          api.addMessage({ kind: 'warning', id: `sys-sessions-${Date.now()}`, text: `历史会话:\n${lines.join('\n')}${footer}` });
-        }
-        return;
-      }
-      case 'resume': {
-        // 过滤当前会话（对齐 CC filterResumableSessions：当前 session 不在列表，其文件不动）。
-        const currentId = api.currentSessionId();
-        const sessions = listSessions().filter((s) => s.id !== currentId);
-        if (sessions.length === 0) {
-          api.addMessage({ kind: 'warning', id: `sys-resume-${Date.now()}`, text: '暂无历史会话。' });
-          return;
-        }
-        setResumeSessions(sessions);
-        setResumeOpen(true);
-        return;
-      }
-      case 'model': {
-        // D1 /model：`/model xxx` 直接切（精确或前缀匹配），`/model` 开 picker。
-        const direct = args[0];
-        const available = listAvailableModels();
-        if (direct) {
-          const hit = available.find((m) => m.model === direct || m.model.startsWith(direct));
-          if (hit) {
-            setCurrentModel(hit.model);
-            api.addMessage({
-              kind: 'warning',
-              id: `sys-model-${Date.now()}`,
-              text: `已切换到模型: ${hit.model}（${hit.provider}）`,
-            });
-            return;
-          }
-          // 未命中：提示 + 开 picker 让用户从列表选
-          api.addMessage({
-            kind: 'warning',
-            id: `sys-model-${Date.now()}`,
-            text: `未找到模型 "${direct}"，请从列表选择：`,
-          });
-        }
-        const opts = available
-          .filter((m) => m.model !== currentModel)
-          .map((m) => ({ name: m.model, description: m.provider }));
-        if (opts.length === 0) {
-          api.addMessage({ kind: 'warning', id: `sys-model-${Date.now()}`, text: '没有其他可选模型。' });
-          return;
-        }
-        setModelOptions(opts);
-        setModelOpen(true);
-        return;
-      }
-      case 'compact': {
-        // D2 /compact：手动触发上下文压缩。盲点② 进度反馈（压缩耗时数秒~几十秒）。
-        api.addMessage({ kind: 'warning', id: `sys-compact-start-${Date.now()}`, text: '正在压缩上下文…' });
-        const result = await api.compact();
-        if (result === null) {
-          api.addMessage({
-            kind: 'warning',
-            id: `sys-compact-${Date.now()}`,
-            text: '压缩未执行：无活跃会话，或已达压缩极限。',
-          });
-        } else {
-          api.addMessage({
-            kind: 'warning',
-            id: `sys-compact-${Date.now()}`,
-            text: `已压缩上下文：${result.before} → ${result.after} 条消息。`,
-          });
-        }
-        return;
-      }
-      default:
-        return;
+    const handler = findCommandHandler(name);
+    if (handler) {
+      // CommandContext.addMessage 用 rest unknown 绕类型依赖；Parameters<> 保证 dispatch 侧类型安全。
+      const ctx: { addMessage: (...args: unknown[]) => void } = {
+        addMessage: (...a: unknown[]) => api.addMessage(...(a as Parameters<typeof api.addMessage>)),
+      };
+      await handler(args, ctx);
     }
   };
 

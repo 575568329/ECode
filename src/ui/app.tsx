@@ -31,6 +31,7 @@ import { sessionMessagesToTranscript } from './format-transcript.js';
 import { runLess } from './pager.js';
 import type { ResumeContext } from '../agent.js';
 import type { PermissionMode, Rule } from '../permission/types.js';
+import type { HookDef } from '../hooks/types.js';
 
 /** 双击 Ctrl+C 退出窗口（ms）：窗口内第二次 Ctrl+C → process.exit。 */
 const DOUBLE_CTRL_C_MS = 2000;
@@ -53,15 +54,17 @@ interface AppProps {
   permissionMode?: PermissionMode;
   /** settings.json 加载的 deny 规则（启动一次，整会话静态）。 */
   denyRules?: Rule[];
+  /** settings.json 加载的 hooks 配置（启动一次，整会话静态）。 */
+  hooks?: HookDef[];
 }
 
-export function App({ model, cwd, loadStatus, system, version, permissionMode, denyRules }: AppProps): React.ReactElement {
+export function App({ model, cwd, loadStatus, system, version, permissionMode, denyRules, hooks }: AppProps): React.ReactElement {
   // currentModel：可变 model state（/model 切换 → 下一轮 submit 用新 model）。model prop 是初始值。
   const [currentModel, setCurrentModel] = useState(model);
   // /model 选择器（D1，照搬 SessionPicker）：modelOpen 时 ModelPicker 替换 InputBar。
   const [modelOpen, setModelOpen] = useState(false);
   const [modelOptions, setModelOptions] = useState<PickerItem[]>([]);
-  const api = useAgentStream({ model: currentModel, system, permissionMode, denyRules });
+  const api = useAgentStream({ model: currentModel, system, permissionMode, denyRules, hooks });
 
   // 状态栏上下文百分比分母：用模型真实 contextWindow（config.json 可逐模型配置/覆盖），
   // 替代早期硬编码 60K——GLM 窗口 1M，硬编码会让百分比一眼顶到 99% 误报"超了"。
@@ -87,6 +90,10 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
   // ref 同步防重入/防按键串台（state 异步、ref 即时）；state 驱动渲染。
   const [inPager, setInPager] = useState(false);
   const inPagerRef = useRef(false);
+  // exit-window 自动消失：Ctrl+C 单击进退出窗口后，起 timer 到期清零 → 强制重绘让 phase 退回。
+  // 🔴 不可省：exit-window 靠 Date.now()-lastCtrlC 时间戳比较派生，2s 窗口过期后若无 setState 触发
+  //   重绘，提示 `press ctrl+c again to exit` 永久常驻（尤其中断 agent 后无事件流、React 不重绘时）。
+  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 默认 loadStatus：CLAUDE.md 不确定时给 null，provider 用 model 推断。
   const status: LoadStatus = loadStatus ?? {
@@ -153,6 +160,13 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
       }
       lastCtrlCRef.current = now;
       setLastCtrlC(now); // 单击进退出窗口（StatusBar 提示「再按 ctrl+c 退出」）
+      // 窗口到期主动清零 → 强制重绘让 phase 重算退出 exit-window。否则 agent 静止（无事件流）时
+      // React 不重绘，时间戳比较派生的 exit-window 永久常驻（提示不消失）。双击退出走 process.exit，无需清。
+      if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
+      exitTimerRef.current = setTimeout(() => {
+        exitTimerRef.current = null;
+        setLastCtrlC(0);
+      }, DOUBLE_CTRL_C_MS);
       if (api.isRunning) {
         api.abort(); // 单击：streaming 时中断对话
         // §3.5 中断 warning（纯 UI）：addMessage 只改 completedMessages，不进 controller messagesRef，

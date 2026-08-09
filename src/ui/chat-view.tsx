@@ -117,9 +117,14 @@ export function ChatView({ state }: ChatViewProps): React.ReactElement {
           {state.activeTools.map((t) => (
             <ToolRunning key={t.id} name={t.name} arg={summarizeArg(t.name, t.input)} />
           ))}
-          {/* 挂起的连续只读组：实时合并摘要（muted 灰 + ··· 进行中感），组破坏时 flush 进 Static */}
+          {/* 挂起的连续只读组：实时合并摘要（muted 灰 + spinner 进行中感），组破坏时 flush 进 Static。
+              🔴 spinner 不可省：连续只读工具执行期间 agent 仍在忙（isRunning=true），
+              静态 `· · ·` 会让人误以为 loading 没了（与 ToolRunning/thinking loader 同构，保持动画常驻）。 */}
           {state.pendingReadSearch.length > 0 ? (
-            <Text color={T.muted}>· · · {summarizeGroup(pendingToolNames(state.pendingReadSearch))} …</Text>
+            <Box>
+              <Spinner color={T.brand} />
+              <Text color={T.muted}> · · · {summarizeGroup(pendingToolNames(state.pendingReadSearch))} …</Text>
+            </Box>
           ) : null}
         </Box>
       )}

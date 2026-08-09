@@ -16,8 +16,10 @@ import { AllowList } from '../permission.js';
 import type { PermissionGate } from '../permission.js';
 import type { ModelProvider, ECodeMessage } from '../providers/types.js';
 import type { PermissionMode, Rule } from '../permission/types.js';
-import { resolveModelForScenario } from '../router/rules.js';
-import type { RoutingConfig } from '../router/rules.js';
+import { resolveModelForSubagent } from '../router/rules.js';
+import type { RoutingConfig, RoutingSource } from '../router/rules.js';
+import { createProvider } from '../providers/factory.js';
+import { logWarning } from '../runtime-logger.js';
 
 /** 默认子代理嵌套深度上限：子代理默认不能再派子代理（防递归爆炸）。 */
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 1;
@@ -102,6 +104,44 @@ export function createTaskTool(ctx: TaskToolContext): ToolDefinition {
         ? toolDefinitions.filter((t) => persona.tools!.includes(t.name)) // 人设收紧工具子集
         : toolDefinitions;
 
+      // 路由解析（R3）：complexityRouting 分支 + 跨 provider 解耦 + 来源标注（供 UI 气泡 §16.5）。
+      // 有 routingConfig → resolveModelForSubagent（persona > complexity > rule > default，provider 从落点取）；
+      //   落点 provider 与主不同 → 建独立 provider（不再继承主，支持跨 provider 子代理）。
+      // 无 routingConfig → 回退 ctx.model ?? persona.model（行为不变，测试/未配路由路径）。
+      let subProvider = ctx.provider;
+      let subModel: string | undefined;
+      let routingSource: RoutingSource | undefined;
+      if (ctx.routingConfig) {
+        const r = resolveModelForSubagent(
+          { personaModel: persona?.model, taskDesc: prompt },
+          ctx.routingConfig,
+        );
+        subModel = r.model;
+        routingSource = r.source;
+        // 跨 provider：主 provider 存在且落点 provider 不同 → 按新 model 建独立 provider（解耦）。
+        // 落点 provider 未配置（API Key/模型缺失）→ 退回主 provider（鲁棒降级，§9.3）：
+        //   主 provider 不识别落点 model 时会在 LLM 调用层报错（不静默吞），测试 mock provider 也不校验 model；
+        //   清空 routingSource：实际未按落点 provider 执行，避免 UI 气泡标注误导。
+        if (ctx.provider && r.provider !== ctx.provider.name) {
+          try {
+            subProvider = createProvider(r.model);
+          } catch (err) {
+            // 降级到主 provider（§9.3）：落点 provider 建立失败（model 未配置 / API Key 缺失）。
+            // 记 warning 供排查（非 isError——子代理仍可跑，只是没按路由落点执行）。
+            logWarning(
+              'subagent-route',
+              `跨 provider 路由降级：落点 ${r.model}(${r.provider}) provider 建立失败（${
+                err instanceof Error ? err.message : String(err)
+              }），回退主 provider ${ctx.provider.name}`,
+            );
+            subProvider = ctx.provider;
+            routingSource = undefined;
+          }
+        }
+      } else {
+        subModel = ctx.model ?? persona?.model;
+      }
+
       // 递归 runAgentStream（黑盒：drain 只取最终 assistant text，不泄露中间 tool 调用到主上下文）。
       let conclusion = '';
       for await (const event of runAgentStream(prompt, {
@@ -111,20 +151,19 @@ export function createTaskTool(ctx: TaskToolContext): ToolDefinition {
         permissionMode: ctx.getPermissionMode(),
         denyRules: ctx.denyRules,
         permissionGate: ctx.gate, // ask 归主对话
-        provider: ctx.provider,
-        // 子代理 model 走 subagent 场景路由（支点22）：persona.model（人设 alias）优先 > rules.subagent > default。
-        // ⚠️ provider 继承主代理（ctx.provider）：仅同 provider 不同 model 生效（如 glm-5.2→glm-4.6）；
-        //   跨 provider（cheap=deepseek 而主=zhipuai）需 provider 也路由，触及继承设计，留后续。
-        //   测试不传 routingConfig → 回退 ctx.model ?? persona.model（行为不变）。
-        model: ctx.routingConfig
-          ? resolveModelForScenario('subagent', { agentModel: persona?.model }, ctx.routingConfig).model
-          : ctx.model ?? persona?.model,
+        provider: subProvider,
+        model: subModel,
         subagentDepth: ctx.depth + 1, // 子代理深度 +1，其 Task 闭包据此拦再递归
       })) {
         if (event.type === 'completed') conclusion = extractFinalText(event.messages);
         if (event.type === 'error') return { content: `子代理执行失败: ${event.error}`, isError: true };
       }
-      return { content: conclusion || '（子代理未产出文本结论）', isError: false };
+      const result: ToolResult = { content: conclusion || '（子代理未产出文本结论）', isError: false };
+      // 有路由来源 → 填 metadata（供 Task 气泡显示模型+来源，§16.5）；无 routingConfig 不填（向后兼容）。
+      if (routingSource) {
+        result.metadata = { model: subModel, provider: subProvider?.name, routingSource };
+      }
+      return result;
     },
   };
 }

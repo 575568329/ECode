@@ -8,6 +8,7 @@
 // 规避 providers/config 单例缓存的测试困境。本函数只接收已解析的 RoutingConfig。
 import { resolveAlias } from './resolver.js';
 import type { ModelAlias, AliasTarget, RoutingScenario } from './types.js';
+import { assessComplexity, type Complexity } from './complexity.js';
 
 /** 路由配置（router/config.ts 从 config.json routing 块读出，传给本纯函数）。 */
 export interface RoutingConfig {
@@ -17,6 +18,10 @@ export interface RoutingConfig {
   rules: Partial<Record<RoutingScenario, ModelAlias>>;
   /** global 回退落点（顶层 defaultModel 解析出的 { provider, model }）。 */
   defaultTarget: AliasTarget;
+  /** 启发式复杂度路由开关（默认 false，向后兼容；§11）。true 时 subagent 按任务难度动态选档。 */
+  complexityRouting: boolean;
+  /** 复杂度档位 → alias（仅 complexityRouting=true 生效；§11）。 */
+  complexity?: Partial<Record<Complexity, ModelAlias>>;
 }
 
 /** 场景上下文：显式 model 字段（优先级最高，覆盖规则）。compress/global 场景无显式来源。 */
@@ -59,4 +64,62 @@ export function resolveModelForScenario(
   }
   // 全兜底：global default
   return config.defaultTarget;
+}
+
+/** 子代理路由来源（供 UI 气泡标注，§16.5）。 */
+export type RoutingSource = 'persona' | 'complexity' | 'rule' | 'default';
+
+/** resolveModelForSubagent 入参。 */
+export interface SubagentRoutingInput {
+  /** 人设 frontmatter model（最高优先级）。 */
+  personaModel?: ModelAlias;
+  /** 子任务描述（供 assessComplexity 评估难度）。 */
+  taskDesc: string;
+  /** 预估工具数（可选，传给 assessComplexity）。 */
+  toolCount?: number;
+}
+
+/** resolveModelForSubagent 出参：落点 + 来源（供 UI 标注）。 */
+export interface SubagentRoutingResult {
+  provider: string;
+  model: string;
+  source: RoutingSource;
+}
+
+/**
+ * 子代理路由（R3）：complexityRouting 分支 + 跨 provider 解耦。
+ *
+ * 优先级：persona.model > complexity 动态档（complexityRouting=true 时）> rules.subagent > default。
+ * provider 一律从解析出的 AliasTarget 取（**不继承主 provider**），支持跨 provider 子代理
+ * （如 cheap→deepseek 而主=zhipu）。
+ *
+ * **不改 resolveModelForScenario**（向后兼容 compress/skill/global 场景），仅 subagent 用本函数。
+ */
+export function resolveModelForSubagent(
+  input: SubagentRoutingInput,
+  config: RoutingConfig,
+): SubagentRoutingResult {
+  // 1. persona 显式优先
+  if (input.personaModel) {
+    const t = resolveAlias(input.personaModel, config.aliases, config.defaultTarget);
+    return { provider: t.provider, model: t.model, source: 'persona' };
+  }
+  // 2. complexityRouting=true → assessComplexity → 档位 alias
+  if (config.complexityRouting && config.complexity) {
+    const complexity = assessComplexity(input.taskDesc, { toolCount: input.toolCount });
+    const alias = config.complexity[complexity];
+    if (alias) {
+      const t = resolveAlias(alias, config.aliases, config.defaultTarget);
+      return { provider: t.provider, model: t.model, source: 'complexity' };
+    }
+    // 该档未配置 → 落到 rules/default
+  }
+  // 3. rules.subagent（支点22 静态规则）
+  const ruleAlias = config.rules.subagent;
+  if (ruleAlias) {
+    const t = resolveAlias(ruleAlias, config.aliases, config.defaultTarget);
+    return { provider: t.provider, model: t.model, source: 'rule' };
+  }
+  // 4. 全兜底：global default
+  return { provider: config.defaultTarget.provider, model: config.defaultTarget.model, source: 'default' };
 }

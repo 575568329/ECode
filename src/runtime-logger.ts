@@ -177,6 +177,21 @@ export function logError(source: string, err: unknown): void {
   ].join('\n'));
 }
 
+/**
+ * 记录非致命警告（如跨 provider 路由降级、配置缺失的优雅回退）。
+ * 与 logError 区别：这是「能继续跑但偏离预期」的情况，供排查「为何子任务没按路由落点执行」。
+ * runtime-log 未初始化时静默（对齐 logSessionSave 兜底，避免降级路径上无谓抛错）。
+ */
+export function logWarning(source: string, message: string): void {
+  if (!logPath) return;
+  appendFileSync(logPath, [
+    `### [${ts()}] ⚠️ WARNING [${source}]`,
+    ``,
+    message,
+    ``,
+  ].join('\n'));
+}
+
 /** 记录 session 落盘事件（路径、ID、task、消息数、轮数），便于排查文件重复/丢失问题。 */
 export function logSessionSave(
   filePath: string,

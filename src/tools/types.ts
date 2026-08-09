@@ -28,9 +28,19 @@ export interface ToolDefinition {
  * 工具返回结果（v2: 与 ECodeToolResultOutput 对齐）。
  * 工具函数返回 ToolResult，executor/agent 将其转为 ECodeContentBlock(type:'tool_result')。
  */
+/** 工具结果元数据（可选；子代理 Task 工具填充，供气泡显示模型+路由来源，§16.5）。 */
+export interface ToolResultMetadata {
+  model?: string;
+  provider?: string;
+  /** 路由来源（宽松 string，避免 tools→router 反向依赖）：persona|complexity|rule|default。 */
+  routingSource?: string;
+}
+
 export interface ToolResult {
   content: string;
   isError: boolean;
+  /** 可选元数据（向后兼容，其他工具不填）。 */
+  metadata?: ToolResultMetadata;
 }
 
 /** 工具输出截断上限，防止撑爆 LLM 上下文 */

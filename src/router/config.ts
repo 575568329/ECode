@@ -16,6 +16,7 @@ import { loadConfig } from '../providers/config.js';
 import type { ECodeConfig } from '../providers/config.js';
 import type { RoutingConfig } from './rules.js';
 import type { AliasTarget, ModelAlias, RoutingScenario } from './types.js';
+import type { Complexity } from './complexity.js';
 
 /** config.json routing 块原始结构（providers 层宽松持有，本文件强类型解析）。 */
 interface RoutingRaw {
@@ -23,6 +24,10 @@ interface RoutingRaw {
   aliases?: Record<string, AliasTarget>;
   /** 场景 → alias（key 为 RoutingScenario 字面量，宽松 string 兼容用户手写）。 */
   rules?: Partial<Record<RoutingScenario, ModelAlias>>;
+  /** 启发式复杂度路由开关（缺省 false）。 */
+  complexityRouting?: boolean;
+  /** 复杂度档位 → alias。 */
+  complexity?: Partial<Record<Complexity, ModelAlias>>;
 }
 
 /**
@@ -41,7 +46,13 @@ export function buildRoutingConfig(cfg: ECodeConfig): RoutingConfig {
   const defaultTarget: AliasTarget = mc
     ? { provider: mc.provider, model: defaultModel }
     : { provider: '', model: defaultModel };
-  return { aliases, rules, defaultTarget };
+  return {
+    aliases,
+    rules,
+    defaultTarget,
+    complexityRouting: routing.complexityRouting ?? false,
+    complexity: routing.complexity,
+  };
 }
 
 /**

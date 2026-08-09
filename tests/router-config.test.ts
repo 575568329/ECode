@@ -69,3 +69,29 @@ describe('buildRoutingConfig', () => {
     expect(r.defaultTarget).toEqual({ provider: '', model: '' });
   });
 });
+
+describe('buildRoutingConfig · complexity（R2）', () => {
+  it('无 complexityRouting → 默认 false + complexity undefined（向后兼容）', () => {
+    const r = buildRoutingConfig(cfg());
+    expect(r.complexityRouting).toBe(false);
+    expect(r.complexity).toBeUndefined();
+  });
+
+  it('complexityRouting=true + complexity 档位 → 解析', () => {
+    const r = buildRoutingConfig(
+      cfg({
+        routing: {
+          complexityRouting: true,
+          complexity: { simple: 'cheap', medium: 'strong', complex: 'reasoning' },
+        },
+      }),
+    );
+    expect(r.complexityRouting).toBe(true);
+    expect(r.complexity).toEqual({ simple: 'cheap', medium: 'strong', complex: 'reasoning' });
+  });
+
+  it('complexityRouting 缺省时即使配了 complexity 也为 false（开关默认关）', () => {
+    const r = buildRoutingConfig(cfg({ routing: { complexity: { simple: 'cheap' } } }));
+    expect(r.complexityRouting).toBe(false);
+  });
+});

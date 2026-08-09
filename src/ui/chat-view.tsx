@@ -37,7 +37,7 @@ function renderCompleted(msg: DisplayMessage): React.ReactNode {
     case 'tool':
       return (
         <Box paddingLeft={4}>
-          <ToolDone name={msg.name} content={msg.content} isError={msg.isError} input={msg.input} />
+          <ToolDone name={msg.name} content={msg.content} isError={msg.isError} input={msg.input} metadata={msg.metadata} />
         </Box>
       );
     case 'tool_group': {

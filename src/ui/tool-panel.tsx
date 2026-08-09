@@ -9,6 +9,7 @@ import React from 'react';
 import { Text, Box } from 'ink';
 import { T, SYMBOLS } from './theme.js';
 import { leftBorder } from './borders.js';
+import type { ToolResultMetadata } from '../tools/types.js';
 
 /** 计时显示占位：实时秒数留给 M4（useEffect+setInterval），本任务非关键视觉糖。 */
 function useElapsed(startedAt: number): string {
@@ -161,6 +162,14 @@ export function InlineTool({ name, isError, summary, arg }: InlineToolProps): Re
 
 // ---- BlockTool：左边框面板 + 深色背景 ----
 
+/** 子代理路由来源 → 中文标签（供 Task 气泡 via-line 标注，§16.5）。
+ *  default 不在表内 → 不显示 via-line（避免噪声，default = 等于没路由）。 */
+const SOURCE_LABELS: Record<string, string> = {
+  persona: '人设',
+  complexity: '复杂度路由',
+  rule: '路由规则',
+};
+
 interface BlockToolProps {
   name: string;
   isError: boolean;
@@ -168,11 +177,14 @@ interface BlockToolProps {
   lines: string[];
   omitted: number;
   label: string;
+  /** 子代理路由元数据（仅 Task 工具填充）；存在且来源非 default 时渲染 via-line。 */
+  metadata?: ToolResultMetadata;
 }
 
-function BlockTool({ name, isError, arg, lines, omitted, label }: BlockToolProps): React.ReactElement {
+function BlockTool({ name, isError, arg, lines, omitted, label, metadata }: BlockToolProps): React.ReactElement {
   const icon = isError ? SYMBOLS.error : SYMBOLS.success;
   const iconColor = isError ? T.error : T.success;
+  const sourceLabel = metadata?.routingSource ? SOURCE_LABELS[metadata.routingSource] : undefined;
   return (
     <Box
       {...leftBorder}
@@ -186,6 +198,10 @@ function BlockTool({ name, isError, arg, lines, omitted, label }: BlockToolProps
         <Text color={T.tool}>{name}</Text>
         {arg ? <Text color={T.muted}> ({arg})</Text> : null}
       </Text>
+      {/* via-line：子代理用的模型 + 路由来源（仅 Task 且来源非 default 时显示，§16.5） */}
+      {sourceLabel ? (
+        <Text color={T.muted}>  via {sourceLabel} → {metadata?.model}</Text>
+      ) : null}
       {/* 内容行 */}
       {lines.map((l, i) => (
         <Text key={i}>
@@ -251,9 +267,10 @@ interface ToolDoneProps {
   content: string;
   isError: boolean;
   input?: Record<string, unknown>;
+  metadata?: ToolResultMetadata;
 }
 
-export function ToolDone({ name, content, isError, input }: ToolDoneProps): React.ReactElement {
+export function ToolDone({ name, content, isError, input, metadata }: ToolDoneProps): React.ReactElement {
   const arg = summarizeArg(name, input);
   // edit_file 成功 → 渲染 +/- 着色 diff（成功 content 含 unified diff，对标 CC StructuredDiff）。
   // 失败仍走下方 foldContent（A2：isError 降级 head 折叠，避免整文件带行号刷屏）。
@@ -281,6 +298,7 @@ export function ToolDone({ name, content, isError, input }: ToolDoneProps): Reac
       lines={folded.lines}
       omitted={folded.omitted}
       label={folded.label}
+      metadata={metadata}
     />
   );
 }

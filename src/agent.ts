@@ -10,7 +10,7 @@ import { getEffectiveHooks } from './hooks/system-hooks.js';
 import type { HookDef } from './hooks/types.js';
 import type { HookGate } from './hooks/inject.js';
 import type { ShellExec } from './hooks/runner.js';
-import type { ToolDefinition } from './tools/types.js';
+import type { ToolDefinition, ToolResult } from './tools/types.js';
 import { validateAfterEdit } from './tools/validation.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { createProvider } from './providers/factory.js';
@@ -18,6 +18,8 @@ import { hasCapability } from './providers/config.js';
 import { getRoutingConfig } from './router/config.js';
 import { resolveAlias } from './router/resolver.js';
 import { resolveModelForScenario } from './router/rules.js';
+import { recordObservation } from './skill-capture/recorder.js';
+import { getSkillCaptureConfig } from './skill-capture/config.js';
 import type {
   ECodeMessage,
   ECodeToolResultOutput,
@@ -373,6 +375,11 @@ export async function* runAgentStream(
     await hookGate.emit('UserPromptSubmit', { prompt: task });
   }
 
+  // 技能捕获记录（M6 阶段D §3）：UserPromptSubmit 时机记录用户修正/偏好到 .ecode/observations.jsonl。
+  //   独立于 hook——M5 hook 是 spawn shell 处理器，无法 JS 写 JSONL（§17🔴1），故直接 JS 回调。
+  //   skillCapture.enabled=false 时 recordObservation 首检即 return（零开销）；失败内部静默降级。
+  recordObservation(task, { session: sessionId }, getSkillCaptureConfig());
+
   let lastSignature = '';
   let iteration: number;
 
@@ -645,7 +652,7 @@ export async function* runAgentStream(
         yield { type: 'tool_call_start', id: tc.id, name: tc.name, input: effectiveInput };
 
         // 防御：工具实现抛异常时降级为 isError 回喂 LLM（与原 runAgent 一致）
-        let result: { content: string; isError: boolean };
+        let result: ToolResult;
         try {
           result = await executeTool(tc.name, effectiveInput, tools);
         } catch (err) {
@@ -673,6 +680,7 @@ export async function* runAgentStream(
           const post = await hookGate.postToolUse(tc.name, effectiveInput, result.content);
           if (post.decision === 'deny') {
             result = {
+              ...result,
               content: `${result.content}\n\n[PostToolUse hook 反馈] ${post.reason ?? '操作被 hook 标记'}`,
               isError: result.isError,
             };
@@ -687,6 +695,7 @@ export async function* runAgentStream(
           content: result.content,
           isError: result.isError,
           input: effectiveInput,
+          metadata: result.metadata,
         };
 
         // 回传 tool_result（id 必须配对！）

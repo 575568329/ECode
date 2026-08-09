@@ -265,3 +265,69 @@ describe('foldContent 策略表', () => {
     expect(r.folded).toBe(false);
   });
 });
+
+// ---- 子代理路由 via-line（R4）：Task 气泡显示模型 + 路由来源，§16.5 ----
+
+describe('ToolDone · 子代理路由 via-line（R4）', () => {
+  const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+
+  it('Task + complexity 来源 → 渲染 via-line（via 复杂度路由 → model）', () => {
+    const { lastFrame } = render(
+      <ToolDone
+        name="Task"
+        content={'子代理结论行1\n子代理结论行2'}
+        isError={false}
+        metadata={{ routingSource: 'complexity', model: 'glm-5.2', provider: 'zhipu' }}
+      />,
+    );
+    const f = stripAnsi(lastFrame() ?? '');
+    expect(f).toContain('via 复杂度路由');
+    expect(f).toContain('glm-5.2');
+  });
+
+  it('Task + persona 来源 → via 人设', () => {
+    const { lastFrame } = render(
+      <ToolDone
+        name="Task"
+        content={'结论A\n结论B'}
+        isError={false}
+        metadata={{ routingSource: 'persona', model: 'glm-4.6' }}
+      />,
+    );
+    const f = stripAnsi(lastFrame() ?? '');
+    expect(f).toContain('via 人设');
+    expect(f).toContain('glm-4.6');
+  });
+
+  it('Task + rule 来源 → via 路由规则', () => {
+    const { lastFrame } = render(
+      <ToolDone
+        name="Task"
+        content={'x\ny'}
+        isError={false}
+        metadata={{ routingSource: 'rule', model: 'deepseek-chat' }}
+      />,
+    );
+    const f = stripAnsi(lastFrame() ?? '');
+    expect(f).toContain('via 路由规则');
+  });
+
+  it('Task + default 来源 → 不渲染 via-line（default=没路由，避免噪声）', () => {
+    const { lastFrame } = render(
+      <ToolDone
+        name="Task"
+        content={'x\ny'}
+        isError={false}
+        metadata={{ routingSource: 'default', model: 'glm-5.2' }}
+      />,
+    );
+    const f = stripAnsi(lastFrame() ?? '');
+    expect(f).not.toContain('via ');
+  });
+
+  it('Task 无 metadata → 不渲染 via-line（向后兼容，其他工具不填 metadata）', () => {
+    const { lastFrame } = render(<ToolDone name="Task" content={'x\ny'} isError={false} />);
+    const f = stripAnsi(lastFrame() ?? '');
+    expect(f).not.toContain('via ');
+  });
+});

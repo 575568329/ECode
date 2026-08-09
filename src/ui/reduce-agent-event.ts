@@ -105,6 +105,7 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
         content: event.content,
         isError: event.isError,
         input: event.input ?? fallbackInput,
+        metadata: event.metadata,
       };
       // 延迟冻结：可合并工具 → 挂起 pendingReadSearch（不进 Static，动态区实时显示合并摘要）。
       // C3：门控从「只读搜索类」扩到「所有 bash」（isMergeableTool），连续 bash 探索场景

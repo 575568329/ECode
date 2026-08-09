@@ -25,6 +25,8 @@ export interface ECodeConfig {
   validation?: { enabled?: boolean };
   /** M6 模型路由块（router 层 buildRoutingConfig 解析为 RoutingConfig；此处宽松持有，避免 providers→router 分层耦合）。 */
   routing?: Record<string, unknown>;
+  /** M6 技能捕获块（skill-capture 层 buildSkillCaptureConfig 解析；宽松持有，避免 providers→skill-capture 反向耦合）。 */
+  skillCapture?: Record<string, unknown>;
 }
 
 const CONFIG_PATH = join(resolveDataDir(), 'config.json');
@@ -54,21 +56,69 @@ const DEFAULT_CONFIG: ECodeConfig = {
   // 默认 false（对齐 Aider auto-test：避免每次写文件阻塞验证拖慢体验）。
   // 想开启：把 enabled 改成 true（首次启动后此文件已生成在 ~/.ecode/config.json）。
   validation: { enabled: false },
+  // M6 技能捕获（skill-capture §3）：UserPromptSubmit 时机记录用户修正/偏好到 .ecode/observations.jsonl，
+  // /skill-gen 归纳生成提案 → /skill 审批。默认关闭（隐私 + 噪声）；开启后 patterns 与内置 correction/preference 合并命中即记。
+  skillCapture: { enabled: false, patterns: [], maxBytes: 1_048_576, maxObservations: 1000 },
 };
 
 let cachedConfig: ECodeConfig | null = null;
+
+/**
+ * 剥离 JSONC 注释（行注释 + 块注释），零依赖状态机。
+ * 关键：字符串字面量内的注释符号不被剥（如 URL https://、正则模式），正确处理转义引号；
+ *      换行符保留（行号对齐，解析错误时信息可读）。
+ * 标准 JSON 是合法 JSONC，故无注释时原样可解析（config.json 零迁移，§7）。
+ */
+export function stripJsonComments(raw: string): string {
+  let out = '';
+  let i = 0;
+  const len = raw.length;
+  let inString = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  while (i < len) {
+    const ch = raw[i];
+    const next = raw[i + 1];
+
+    if (inLineComment) {
+      // 行注释：跳过本行剩余，遇到换行回 normal 并保留换行（行号对齐）
+      if (ch === '\n') { inLineComment = false; out += ch; }
+      i++;
+      continue;
+    }
+    if (inBlockComment) {
+      // 块注释：跳过直到结束符；跨行时保留换行（行号对齐）
+      if (ch === '*' && next === '/') { inBlockComment = false; i += 2; continue; }
+      if (ch === '\n') out += ch;
+      i++;
+      continue;
+    }
+    if (inString) {
+      // 字符串内：转义符原样输出下一字符（防 \" 被当作字符串结束）；遇 " 结束字符串
+      if (ch === '\\') { out += ch + (next ?? ''); i += 2; continue; }
+      if (ch === '"') inString = false;
+      out += ch;
+      i++;
+      continue;
+    }
+    // normal：识别字符串起点与两种注释起点
+    if (ch === '"') { inString = true; out += ch; i++; continue; }
+    if (ch === '/' && next === '/') { inLineComment = true; i += 2; continue; }
+    if (ch === '/' && next === '*') { inBlockComment = true; i += 2; continue; }
+    out += ch;
+    i++;
+  }
+  return out;
+}
 
 export function loadConfig(): ECodeConfig {
   if (cachedConfig) return cachedConfig;
   if (existsSync(CONFIG_PATH)) {
     try {
       const raw = readFileSync(CONFIG_PATH, 'utf-8');
-      // 兼容首次生成的带 // 注释行（JSON 标准不含注释，手动 strip）
-      const stripped = raw
-        .split('\n')
-        .filter((line) => !line.trimStart().startsWith('//'))
-        .join('\n');
-      cachedConfig = JSON.parse(stripped) as ECodeConfig;
+      // JSONC：剥离行注释与块注释（字符串内不误剥），支持用户在 config.json 写注释（§7）。
+      cachedConfig = JSON.parse(stripJsonComments(raw)) as ECodeConfig;
       return cachedConfig;
     } catch (err) {
       console.error(
@@ -98,6 +148,13 @@ function writeConfigTemplate(): void {
     '//',
     '// 后置验证（validation.enabled）：edit/write 后自动跑 build/test，失败回喂 LLM。',
     '//   默认 false（对齐 Aider，避免每次写文件阻塞验证）。想开启：改成 true。',
+    '//',
+    '// 技能捕获（skillCapture，M6）：enabled=true 后自动记录用户修正/偏好，',
+    '//   /skill-gen 归纳成提案、/skill 审批落盘。默认 false。详见 docs/详设 技能生成与模型路由。',
+    '//',
+    '// 模型路由（routing，M6，可选块）：按场景/复杂度把子任务路由到不同模型。',
+    '//   不配 = 主模型一刀切（compress/skill/subagent 都走当前模型）。',
+    '//   示例：{"rules":{"subagent":"deepseek-chat"},"complexityRouting":true,"complexity":{"low":"deepseek-chat","high":"glm-5.2"}}',
     '',
   ].join('\n');
   const json = JSON.stringify(DEFAULT_CONFIG, null, 2);

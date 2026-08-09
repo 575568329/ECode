@@ -135,6 +135,7 @@ describe('createTaskTool', () => {
         aliases: { cheap: { provider: 'mock', model: 'cheap-model' } },
         rules: { subagent: 'cheap' },
         defaultTarget: { provider: 'mock', model: 'main-model' },
+        complexityRouting: false,
       },
       depth: 0,
     });
@@ -156,11 +157,106 @@ describe('createTaskTool', () => {
         aliases: {},
         rules: {},
         defaultTarget: { provider: 'mock', model: 'fallback-model' },
+        complexityRouting: false,
       },
       depth: 0,
     });
     await tool.execute!({ description: 'd', prompt: 'p' });
     // 无规则无显式 → defaultTarget.model（路由分支）；若回退 ctx.model 会是 main-model。
     expect(seen.current).toBe('fallback-model');
+  });
+});
+
+describe('createTaskTool · 路由元数据 metadata（R3）', () => {
+  it('rules.subagent 路由 → metadata { routingSource: rule, model, provider }', async () => {
+    const seen: { current?: string } = {};
+    const subProvider = spyProvider(seen);
+    const tool = createTaskTool({
+      system: 's',
+      allow: new AllowList(),
+      getPermissionMode: () => 'default',
+      provider: subProvider,
+      model: 'main-model',
+      routingConfig: {
+        aliases: { cheap: { provider: 'mock', model: 'cheap-model' } },
+        rules: { subagent: 'cheap' },
+        defaultTarget: { provider: 'mock', model: 'main-model' },
+        complexityRouting: false,
+      },
+      depth: 0,
+    });
+    const res = await tool.execute!({ description: 'd', prompt: 'p' });
+    expect(res.metadata).toEqual({ model: 'cheap-model', provider: 'mock', routingSource: 'rule' });
+  });
+
+  it('complexityRouting=true + complex 任务 → metadata routingSource: complexity', async () => {
+    const seen: { current?: string } = {};
+    const subProvider = spyProvider(seen);
+    const tool = createTaskTool({
+      system: 's',
+      allow: new AllowList(),
+      getPermissionMode: () => 'default',
+      provider: subProvider,
+      model: 'main-model',
+      routingConfig: {
+        aliases: {
+          strong: { provider: 'mock', model: 'strong-model' },
+          reasoning: { provider: 'mock', model: 'reasoning-model' },
+        },
+        rules: {},
+        defaultTarget: { provider: 'mock', model: 'main-model' },
+        complexityRouting: true,
+        complexity: { complex: 'reasoning', medium: 'strong' },
+      },
+      depth: 0,
+    });
+    const res = await tool.execute!({ description: 'd', prompt: '重构整个模块' });
+    expect(res.metadata?.routingSource).toBe('complexity');
+    expect(res.metadata?.model).toBe('reasoning-model');
+  });
+
+  it('无 routingConfig → metadata 不填（向后兼容）', async () => {
+    const subProvider = mockProvider([
+      { type: 'text_delta', text: '结论' },
+      { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
+    ]);
+    const tool = createTaskTool({
+      system: 's',
+      allow: new AllowList(),
+      getPermissionMode: () => 'default',
+      provider: subProvider,
+      model: 'mock-model',
+      depth: 0,
+    });
+    const res = await tool.execute!({ description: 'd', prompt: 'p' });
+    expect(res.metadata).toBeUndefined();
+  });
+});
+
+describe('createTaskTool · 跨 provider 降级（§9.3）', () => {
+  it('落点 provider 建立失败 → 降级主 provider + 清 routingSource（非 isError）', async () => {
+    const seen: { current?: string } = {};
+    const subProvider = spyProvider(seen);
+    const tool = createTaskTool({
+      system: 's',
+      allow: new AllowList(),
+      getPermissionMode: () => 'default',
+      provider: subProvider,
+      model: 'main-model',
+      routingConfig: {
+        // 落点 provider='other' ≠ 主 'mock' → 进跨 provider 分支；
+        //   createProvider('nonexistent-model') 因模型未配置 throw → 降级。
+        aliases: { cheap: { provider: 'other', model: 'nonexistent-model' } },
+        rules: { subagent: 'cheap' },
+        defaultTarget: { provider: 'mock', model: 'main-model' },
+        complexityRouting: false,
+      },
+      depth: 0,
+    });
+    const res = await tool.execute!({ description: 'd', prompt: 'p' });
+    // 非 isError：降级后子代理仍跑（回退主 provider），只是没按落点执行。
+    expect(res.isError).toBe(false);
+    // routingSource 清空 → 不填 metadata（避免 UI 气泡标注误导：实际走了主 provider）。
+    expect(res.metadata).toBeUndefined();
   });
 });

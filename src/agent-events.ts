@@ -7,6 +7,7 @@
 // 后续 task 若需要在 completed 事件中透传底层 stopReason，再行引入。见 task-1-report.md。
 
 import type { ECodeMessage, ECodeUsage } from './providers/types.js';
+import type { ToolResultMetadata } from './tools/types.js';
 
 /** 请求权限的事件（可观测用，决策本身走 permissionGate 回调） */
 export interface PermissionRequestEvent {
@@ -26,7 +27,7 @@ export type AgentEvent =
   | { type: 'start'; task: string; model: string; provider: string; logFile?: string }
   | { type: 'text_delta'; text: string }
   | { type: 'tool_call_start'; id: string; name: string; input?: Record<string, unknown> }
-  | { type: 'tool_result'; id: string; name: string; content: string; isError: boolean; input?: Record<string, unknown> }
+  | { type: 'tool_result'; id: string; name: string; content: string; isError: boolean; input?: Record<string, unknown>; metadata?: ToolResultMetadata }
   | PermissionRequestEvent
   | { type: 'warning'; message: string }
   | {

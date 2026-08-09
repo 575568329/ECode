@@ -10,6 +10,8 @@ export interface PickerItem {
   /** 主标签（A=命令名，渲染时补 prefix；C=会话标题） */
   name: string;
   description: string;
+  /** 可选右侧 muted 元信息（/skill 审批 picker 放 version，§16.2）。不设则不渲染。 */
+  meta?: string;
 }
 
 interface PickerListProps {
@@ -70,12 +72,13 @@ export function PickerList({
           );
         }
 
-        // 单行（A 命令）：指示符 + 标签(padEnd 对齐) + 描述
+        // 单行（A 命令）：指示符 + 标签(padEnd 对齐) + 描述 + 可选 meta（muted）
         return (
           <Text key={start + i} wrap="truncate">
             <Text color={selected ? T.accent : T.muted}>{indicator}</Text>
             <Text color={selected ? T.accent : T.suggestion}>{label.padEnd(nameWidth)}</Text>
             <Text color={selected ? T.suggestion : T.muted}>{item.description}</Text>
+            {item.meta ? <Text color={T.muted}>  {item.meta}</Text> : null}
           </Text>
         );
       })}

@@ -34,6 +34,10 @@ import { messagesToDisplayMessages } from './messages-to-display.js';
 import { shortSessionId } from './format-session.js';
 import { sessionMessagesToTranscript } from './format-transcript.js';
 import { runLess } from './pager.js';
+import { createProvider } from '../providers/factory.js';
+import { generateProposals, MAX_PENDING } from '../skill-capture/generator.js';
+import { loadProposals, acceptProposal, rejectProposal, promoteProposal, type ProposalRecord } from '../skill-capture/proposal.js';
+import { SkillDialog, type SkillAction } from './skill-dialog.js';
 import type { ResumeContext } from '../agent.js';
 import type { PermissionMode, Rule } from '../permission/types.js';
 import type { HookDef } from '../hooks/types.js';
@@ -66,6 +70,10 @@ interface AppProps {
 export function App({ model, cwd, loadStatus, system, version, permissionMode, denyRules, hooks }: AppProps): React.ReactElement {
   // currentModel：可变 model state（/model 切换 → 下一轮 submit 用新 model）。model prop 是初始值。
   const [currentModel, setCurrentModel] = useState(model);
+  // currentModel 的 ref 镜像：斜杠命令 handler（ref-guard 只注册一次）需读最新 model，
+  // 直接闭包捕获 currentModel 会固化首值；handler 内统一走 currentModelRef.current（如 /skill-gen 归纳用模型）。
+  const currentModelRef = useRef(currentModel);
+  currentModelRef.current = currentModel;
   // /model 选择器（D1，照搬 SessionPicker）：modelOpen 时 ModelPicker 替换 InputBar。
   const [modelOpen, setModelOpen] = useState(false);
   const [modelOptions, setModelOptions] = useState<PickerItem[]>([]);
@@ -108,6 +116,8 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
   // resumeOpen 时 SessionPicker 替换 InputBar（Modal 三元前置）。sessions 已过滤当前会话。
   const [resumeOpen, setResumeOpen] = useState(false);
   const [resumeSessions, setResumeSessions] = useState<ECodeSessionSummary[]>([]);
+  // skillProposals 非 null → SkillDialog 替换 InputBar（/skill 无参 + 有 pending 时开启；§16）。
+  const [skillProposals, setSkillProposals] = useState<ProposalRecord[] | null>(null);
   // Ctrl+O 转录 pager（方向 B，详设 docs/详设/20260806213000_工具折叠-详设[已完成].md §5.4/§5.5）：
   // inPager=true 时底部交互区卸载（消除 InputBar 等的 useInput 抢键）+ 全局 useInput 让位给 less。
   // ref 同步防重入/防按键串台（state 异步、ref 即时）；state 驱动渲染。
@@ -227,6 +237,33 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
     api.submit(parsed.text);
   };
 
+  // ---- skill 审批操作（命令式 /skill accept/reject/promote 与 SkillDialog 共用）----
+  // 纯 IO + 反馈，不刷新列表（调用方按需刷新：dialog 操作后 reload，命令式时 dialog 未开）。
+  const skillId = () => `sys-skill-${Date.now()}`;
+  const doSkillOp = (op: SkillAction, name: string, force: boolean): void => {
+    if (op === 'accept') {
+      const res = acceptProposal(name);
+      if (res.ok) api.addMessage({ kind: 'warning', id: skillId(), text: `✓ ${name} 已落盘（项目级 .ecode/skills/），下次会话生效。` });
+      else if (res.reason === 'critical') api.addMessage({ kind: 'warning', id: skillId(), text: `⛔ ${name} 检测到 critical 风险，已 quarantine，不可 apply。` });
+      else api.addMessage({ kind: 'warning', id: skillId(), text: `未找到提案 ${name}（/skill-gen 生成后再审）。` });
+    } else if (op === 'promote') {
+      const res = promoteProposal(name, { force });
+      if (res.ok) api.addMessage({ kind: 'warning', id: skillId(), text: `✓ ${name} 已提升到用户级（跨项目复用）。` });
+      else if (res.reason === 'exists') api.addMessage({ kind: 'warning', id: skillId(), text: `⏭ 用户级已存在 ${name}，跳过（/skill promote ${name} --force 覆盖）。` });
+      else if (res.reason === 'critical') api.addMessage({ kind: 'warning', id: skillId(), text: `⛔ ${name} 检测到 critical 风险，拒绝 promote。` });
+      else api.addMessage({ kind: 'warning', id: skillId(), text: `未找到提案 ${name}（/skill-gen 生成后再审）。` });
+    } else if (op === 'reject') {
+      const res = rejectProposal(name);
+      api.addMessage({ kind: 'warning', id: skillId(), text: res.ok ? `✗ 已删除提案 ${name}。` : `未找到提案 ${name}。` });
+    }
+  };
+  // SkillDialog 的操作回调：执行 + 刷新提案列表（accept/reject 删记录；空则关 dialog）。
+  const handleSkillAction = (action: SkillAction, record: ProposalRecord): void => {
+    doSkillOp(action, record.name, false);
+    const refreshed = loadProposals();
+    setSkillProposals(refreshed.length > 0 ? refreshed : null);
+  };
+
   // 斜杠命令分发（§5.1：UI 拦截命令，不送 LLM）。
   // 阶段 3 MCP 前置：内置命令 handler 注册（ref-guard 只注册一次，闭包捕获 UI 状态）。
   const handlersRegistered = useRef(false);
@@ -305,24 +342,44 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
       }
     });
     registerCommandHandler('skill', (args) => {
-      const name = args[0];
-      const skills = loadSkills();
       const id = () => `sys-skill-${Date.now()}`;
-      if (skills.length === 0) {
-        api.addMessage({ kind: 'warning', id: id(), text: '暂无可用技能（在 ~/.ecode/skills/ 或 .ecode/skills/ 放 *.md，frontmatter 含 name+description）。' });
+      const sub = args[0];
+
+      // 子命令：accept/reject/promote <name> [--force]（命令式审批，§5；非交互场景或快速操作）
+      if (sub === 'accept' || sub === 'reject' || sub === 'promote') {
+        const name = args[1];
+        if (!name) {
+          api.addMessage({ kind: 'warning', id: id(), text: `用法: /skill ${sub} <name>${sub === 'promote' ? ' [--force]' : ''}` });
+          return;
+        }
+        doSkillOp(sub, name, args.includes('--force'));
         return;
       }
-      if (!name) {
+
+      // 无参：pending 提案 >0 → 开审批 picker（§16.2）；否则列已安装技能（向后兼容浏览）
+      if (!sub) {
+        const pending = loadProposals();
+        if (pending.length > 0) {
+          setSkillProposals(pending);
+          return;
+        }
+        const skills = loadSkills();
+        if (skills.length === 0) {
+          api.addMessage({ kind: 'warning', id: id(), text: '暂无待审批提案，也无已安装技能。用 /skill-gen 从观察记录归纳生成提案。' });
+          return;
+        }
         const lines = skills.map((s) => `  /skill ${s.name.padEnd(12)} ${s.description}`);
-        api.addMessage({ kind: 'warning', id: id(), text: `可用技能:\n${lines.join('\n')}` });
+        api.addMessage({ kind: 'warning', id: id(), text: `暂无待审批提案。已安装技能:\n${lines.join('\n')}\n（用 /skill-gen 从观察记录归纳生成提案）` });
         return;
       }
-      const body = getSkillBody(name, skills);
+
+      // /skill <name>：apply 已安装技能（原行为；skill 正文送 LLM 执行）
+      const skills = loadSkills();
+      const body = getSkillBody(sub, skills);
       if (!body) {
-        api.addMessage({ kind: 'warning', id: id(), text: `未找到技能 "${name}"。可用：${skills.map((s) => s.name).join(', ')}` });
+        api.addMessage({ kind: 'warning', id: id(), text: `未找到技能 "${sub}"。可用：${skills.map((s) => s.name).join(', ')}（或 /skill 进审批 picker）` });
         return;
       }
-      // 命中：skill 正文作为用户消息送 LLM（主 LLM 据菜谱执行）。正文即用户可见输入（透明）。
       api.submit(body);
     });
     registerCommandHandler('mcp', async (args) => {
@@ -442,6 +499,41 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
         text: `MCP servers:\n${lines.join('\n')}\n子命令: /mcp info|tools|reconnect|enable|disable|add|remove <name>`,
       });
     });
+
+    // /skill-gen —— 读 .ecode/observations.jsonl，LLM Ratchet 归纳生成技能提案（§4）。
+    // provider/model 用当前会话模型（currentModelRef 读最新值，避免闭包固化）；无 API key → 降级提示。
+    // generateProposals 内部已对单批 LLM 失败 / 单候选解析失败静默降级（§15），此处只兜顶层异常。
+    registerCommandHandler('skill-gen', async () => {
+      const id = () => `sys-skill-gen-${Date.now()}`;
+      const model = currentModelRef.current ?? getDefaultModel();
+      let provider;
+      try {
+        provider = createProvider(model);
+      } catch (e) {
+        api.addMessage({ kind: 'warning', id: id(), text: `归纳失败：无法为模型 ${model} 创建 provider（${(e as Error).message}）。` });
+        return;
+      }
+      api.addMessage({ kind: 'warning', id: id(), text: `正在用 ${model} 归纳观察记录…` });
+      try {
+        const result = await generateProposals({ provider, model });
+        if (result.batches === 0) {
+          api.addMessage({ kind: 'warning', id: id(), text: '暂无观察记录可归纳。多表达「下次/记住/总是」等意图会自动记录（见 .ecode/observations.jsonl）。' });
+          return;
+        }
+        const critical = result.proposals.filter((p) => p.scan.hasCritical).length;
+        const safeText = critical > 0 ? `${critical} 个含严重安全告警` : '均通过安全扫描';
+        const baseText = result.proposals.length === 0
+          ? `读了 ${result.totalObservations} 条记录（${result.batches} 批），但 LLM 判定素材不足，未产出提案（继续记录后会重试）。`
+          : `已生成 ${result.proposals.length} 个技能提案（${result.batches} 批，${safeText}）。用 /skill 审批（accept / reject / promote）。`;
+        // §4 限额：pending 达 MAX_PENDING → 提示先审批（FIFO 已在 generator 截断最老，避免无限堆积）
+        const limitHint = result.pendingAfter >= MAX_PENDING
+          ? `\n⚠️ 待审批已达上限 ${MAX_PENDING}，已自动裁剪最旧的提案。建议先 /skill 审批后再归纳。`
+          : '';
+        api.addMessage({ kind: 'warning', id: id(), text: baseText + limitHint });
+      } catch (e) {
+        api.addMessage({ kind: 'warning', id: id(), text: `归纳过程异常：${(e as Error).message}` });
+      }
+    });
   }
 
   // handleCommand：dispatch 查表（内置 + 动态/MCP 命令统一入口）。
@@ -512,6 +604,12 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
             api.addMessage({ kind: 'warning', id: `sys-model-${Date.now()}`, text: `已切换到模型: ${modelName}` });
           }}
           onCancel={() => setModelOpen(false)}
+        />
+      ) : skillProposals ? (
+        <SkillDialog
+          proposals={skillProposals}
+          onAction={handleSkillAction}
+          onClose={() => setSkillProposals(null)}
         />
       ) : api.pendingPermission ? (
         <PermissionDialog

@@ -5,6 +5,7 @@
 import type { BusyState } from './agent-loop-controller.js';
 import type { TodoItem } from '../tools/todo.js';
 import type { ECodeUsage } from '../providers/types.js';
+import type { ToolResultMetadata } from '../tools/types.js';
 
 /** 单条工具调用在动态区的运行态表示。 */
 export interface ActiveTool {
@@ -33,6 +34,7 @@ export type DisplayMessage =
       content: string;
       isError: boolean;
       input?: Record<string, unknown>;
+      metadata?: ToolResultMetadata;
     }
   | {
       // 折叠组：连续只读工具合并成的单条冻结消息（延迟冻结，详见

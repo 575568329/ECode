@@ -69,6 +69,10 @@ export interface UseAgentStreamReturn {
   pendingCount: number;
   /** 任务清单（UI 派生自 todo_write，常驻面板渲染；空数组=无 todo）。 */
   todos: TodoItem[];
+  /** 中断撤回回填文本（情况 A，配 draftVersion 用）。 */
+  draftText: string;
+  /** 中断撤回回填信号（递增触发 InputBar useEffect 回填）。 */
+  draftVersion: number;
   /** submit 用户输入（命令在 App 层拦截，这里只处理纯消息 → 入 controller 队列）。 */
   submit: (text: string) => void;
   /** 用户在 PermissionDialog 选了决策。allow_always → allow.add(toolName) 后 resolve allow。
@@ -130,6 +134,9 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   // hooks 启动一次、整会话静态（来自 settings.json），用 ref 透传给 getRunOpts。
   const hooksRef = useRef<HookDef[] | undefined>(opts.hooks);
   hooksRef.current = opts.hooks;
+  // 中断撤回回填信号（情况 A）：draftVersion 递增 → InputBar useEffect 回填 draftText 到输入框。
+  // hook 内部持（不透传 App），用 controlled prop 替代 ref（forwardRef 在 React 19+ink7 破坏 useInput）。
+  const [draft, setDraft] = useState<{ text: string; version: number }>({ text: '', version: 0 });
 
   // MCP server（改线 McpManager：连接池 + 互斥锁 + onChange 重注册）。
   // manager 用 ref 持守（整会话一次）；tools 经 ref 喂 getRunOpts，prompts 注册斜杠命令。
@@ -279,6 +286,30 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
             pendingReadSearch: [],
             staticKey: prev.staticKey + 1,
           })),
+        // 中断分情况 A（未回应）→ 移最后 user 气泡 + 递增 draftVersion 回填输入框（不显示中断标记）
+        onTurnReverted: (text) => {
+          setState((prev) => {
+            // 从末尾移除最后一条 user 气泡（本轮 onUserTurn 落的），让界面像「没发过」
+            const msgs = [...prev.completedMessages];
+            for (let i = msgs.length - 1; i >= 0; i--) {
+              if (msgs[i].kind === 'user') {
+                msgs.splice(i, 1);
+                break;
+              }
+            }
+            return { ...prev, completedMessages: msgs };
+          });
+          setDraft((prev) => ({ text, version: prev.version + 1 }));
+        },
+        // 中断分情况 B（已回应）→ 显示「— 已中断 —」（替代旧 app.tsx 同步 addMessage：同步瞬间无法区分 A/B）
+        onTurnAborted: () =>
+          setState((prev) => ({
+            ...prev,
+            completedMessages: [
+              ...prev.completedMessages,
+              { kind: 'warning', id: `sys-abort-${Date.now()}`, text: '— 已中断 —' },
+            ],
+          })),
       },
     });
   }
@@ -330,12 +361,19 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   }, []);
 
   const clear = useCallback(() => {
-    // controller 重置真相源（session/messages/queue）+ onQueueChange([])；UI 清空 + staticKey++ 在此。
+    // controller 重置真相源（session/messages/queue）+ onQueueChange([])；UI 彻底重置对齐 switchSession：
+    // usage/latestInputTokens 归零（/cost 不串台）+ streamingText/activeTools/pendingReadSearch/todos/error 清空。
     controller.clear();
     setState((prev) => ({
       ...prev,
       completedMessages: [],
+      streamingText: null,
+      activeTools: [],
       pendingReadSearch: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+      latestInputTokens: 0,
+      todos: [],
+      error: null,
       staticKey: prev.staticKey + 1,
     }));
   }, [controller]);
@@ -407,6 +445,8 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     queuedMessages: state.queuedMessages,
     pendingCount: state.pendingCount,
     todos: state.todos,
+    draftText: draft.text,
+    draftVersion: draft.version,
     submit,
     resolvePermission,
     abort,

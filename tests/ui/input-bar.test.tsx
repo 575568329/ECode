@@ -166,4 +166,42 @@ describe('<InputBar />', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(lastFrame()).toContain('hist');
   });
+
+  // --- 中断撤回回填（draftText + draftVersion，controlled prop 替代 ref）---
+
+  it('draftVersion 递增 → 回填 draftText 到输入框', async () => {
+    const { lastFrame, rerender } = render(<InputBar onSubmit={vi.fn()} />);
+    // 初版无回填信号，输入框空白
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lastFrame()).not.toContain('被中断的内容');
+    // 中断撤回：递增 version → useEffect 回填
+    rerender(<InputBar onSubmit={vi.fn()} draftText="被中断的内容" draftVersion={1} />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lastFrame()).toContain('被中断的内容');
+  });
+
+  it('回填后是草稿态可继续编辑（回填不锁定，cursor 落末尾）', async () => {
+    const onSubmit = vi.fn();
+    const { stdin, rerender } = render(<InputBar onSubmit={onSubmit} />);
+    rerender(<InputBar onSubmit={onSubmit} draftText="撤回的文本" draftVersion={1} />);
+    await vi.advanceTimersByTimeAsync(0);
+    // 继续输入 + 提交（证明回填后输入框可编辑，且追加在末尾）
+    stdin.write('追');
+    await vi.advanceTimersByTimeAsync(0);
+    stdin.write('\r');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onSubmit).toHaveBeenCalledWith('撤回的文本追');
+  });
+
+  it('相同 draftVersion 不重复回填（版本号防抖）', async () => {
+    const { lastFrame, rerender } = render(<InputBar onSubmit={vi.fn()} />);
+    rerender(<InputBar onSubmit={vi.fn()} draftText="A" draftVersion={1} />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lastFrame()).toContain('A');
+    // 同 version 再 render（draftText 变了但 version 没递增）→ 不回填
+    rerender(<InputBar onSubmit={vi.fn()} draftText="B" draftVersion={1} />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lastFrame()).toContain('A');
+    expect(lastFrame()).not.toContain('B');
+  });
 });

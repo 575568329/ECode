@@ -57,13 +57,28 @@ async function enterConversation(sim: Awaited<ReturnType<typeof simulate>>): Pro
   await sim.waitFor((f) => f.includes('开始对话'));
 }
 
-/** 造一个「已启动并挂起」的 agent：yield start 置 isRunning=true，随后等 abort 信号才结束。 */
+/** 造一个「已启动并挂起」的 agent：yield start + text_delta 置 isRunning=true（LLM 已回应=情况 B），
+ *  随后等 abort 信号才 yield completed(aborted)——对齐真实 agent（abort→completed，非 throw）。 */
 function hangingRun(): void {
   mockedRun.mockImplementation(async function* (text: string, opts: { signal: AbortSignal }) {
     yield { type: 'start', task: text, model: 'glm-5.2', provider: 'glm' };
-    await new Promise<void>((_resolve, reject) => {
-      opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+    yield { type: 'text_delta', text: '部分' }; // 模拟 LLM 已回应 → 中断走情况 B（显示已中断）
+    await new Promise<void>((resolve) => {
+      opts.signal.addEventListener('abort', () => resolve());
     });
+    yield {
+      type: 'completed',
+      rounds: 1,
+      toolCalls: 0,
+      reason: 'aborted',
+      sessionId: 's',
+      task: text,
+      createdAt: 't',
+      messages: [
+        { role: 'user', content: text },
+        { role: 'assistant', content: [{ type: 'text', text: '部分' }] },
+      ],
+    };
   });
 }
 

@@ -39,8 +39,11 @@ function completed(
   };
 }
 
-/** 编排式 mock runAgent：每条 text 挂起在专属 gate，释放后按 signal 状态产出 done/aborted 序列。 */
-function makeRunAgent() {
+/** 编排式 mock runAgent：每条 text 挂起在专属 gate，释放后按 signal 状态产出 done/aborted 序列。
+ *  abortedResponded（默认 true）控制中断分情况：true=情况 B（LLM 已回应，先 text_delta 再带 partial 的 completed）；
+ *  false=情况 A（LLM 未回应，无 text_delta，completed 仅孤立 user）—— 验证撤回逻辑。 */
+function makeRunAgent(makeOpts: { abortedResponded?: boolean } = {}) {
+  const abortedResponded = makeOpts.abortedResponded ?? true;
   const calls: Array<{ text: string; signal?: AbortSignal; resumedMessages?: ECodeMessage[] }> = [];
   const gates = new Map<string, { resolve: () => void }>();
   const runAgent = async function* (
@@ -53,15 +56,21 @@ function makeRunAgent() {
     await gate.promise; // 挂起，直到测试释放
     yield { type: 'start', task: text, model: 'm', provider: 'p' };
     if (opts.signal?.aborted) {
-      // 中断：yield aborted completed，messages 含中断前 partial assistant（验证不丢历史）
-      yield completed(
-        text,
-        [
-          { role: 'user', content: text },
-          { role: 'assistant', content: [{ type: 'text', text: '部分' }] },
-        ],
-        'aborted',
-      );
+      if (abortedResponded) {
+        // 情况 B：LLM 已回应（发过 text_delta）→ messages 含中断前 partial assistant（验证不丢历史）
+        yield { type: 'text_delta', text: '部分' };
+        yield completed(
+          text,
+          [
+            { role: 'user', content: text },
+            { role: 'assistant', content: [{ type: 'text', text: '部分' }] },
+          ],
+          'aborted',
+        );
+      } else {
+        // 情况 A：LLM 未回应（无 text_delta/tool_call_start）→ completed messages 仅孤立 user
+        yield completed(text, [{ role: 'user', content: text }], 'aborted');
+      }
       return;
     }
     yield { type: 'text_delta', text: `回复:${text}` };
@@ -80,25 +89,34 @@ interface Harness {
   userTurns: string[];
   busy: BusyState[];
   messagesResets: ECodeMessage[][];
+  /** 情况 A 撤回通知（onTurnReverted 收到的 user 文本）。 */
+  reverted: string[];
+  /** 情况 B 中断通知次数（onTurnAborted 调用次数）。 */
+  abortedNotifs: number[];
   runAgent: ReturnType<typeof makeRunAgent>;
   compactMessages: ReturnType<typeof vi.fn>;
 }
 
-/** 标准测试 harness：gate 式 runAgent + 默认压成 1 条的 compactMessages + 全回调 spy。 */
-function makeHarness(): Harness {
-  const runAgent = makeRunAgent();
+/** 标准测试 harness：gate 式 runAgent + 默认压成 1 条的 compactMessages + 全回调 spy。
+ *  abortedResponded 透传给 makeRunAgent（控制中断分情况 mock）。 */
+function makeHarness(harnessOpts: { abortedResponded?: boolean } = {}): Harness {
+  const runAgent = makeRunAgent({ abortedResponded: harnessOpts.abortedResponded });
   const compactMessages = vi.fn(async (m: ECodeMessage[]) => [m[0] ?? { role: 'user', content: '压缩后' }]);
   const events: AgentEvent[] = [];
   const queue: string[][] = [];
   const userTurns: string[] = [];
   const busy: BusyState[] = [];
   const messagesResets: ECodeMessage[][] = [];
+  const reverted: string[] = [];
+  const abortedNotifs: number[] = [];
   const callbacks: ControllerCallbacks = {
     onEvent: (e) => events.push(e),
     onQueueChange: (q) => queue.push([...q]),
     onUserTurn: (t) => userTurns.push(t),
     onBusyChange: (b) => busy.push(b),
     onMessagesReset: (m) => messagesResets.push([...m]),
+    onTurnReverted: (t) => reverted.push(t),
+    onTurnAborted: () => abortedNotifs.push(1),
   };
   const controller = new AgentLoopController({
     runAgent: runAgent.runAgent,
@@ -107,7 +125,7 @@ function makeHarness(): Harness {
     getCompactOpts: () => ({ model: 'm', system: '' }),
     callbacks,
   });
-  return { controller, events, queue, userTurns, busy, messagesResets, runAgent, compactMessages };
+  return { controller, events, queue, userTurns, busy, messagesResets, reverted, abortedNotifs, runAgent, compactMessages };
 }
 
 describe('AgentLoopController', () => {
@@ -201,6 +219,44 @@ describe('AgentLoopController', () => {
     h.runAgent.gates.get('B')!.resolve();
     await nextTick();
     expect(h.controller.busy).toBe('idle');
+  });
+
+  it('中断且本轮 LLM 未回应（情况 A）→ 撤回：不回填孤立 user + onTurnReverted 通知 + 不显示中断', async () => {
+    const h = makeHarness({ abortedResponded: false });
+    h.controller.submit('A');
+    await nextTick();
+    h.controller.abort(); // signal.aborted（LLM 还没回：mock 不发 text_delta）
+    h.runAgent.gates.get('A')!.resolve(); // mock 见 aborted → completed 仅孤立 user（无 text_delta）
+    await nextTick();
+    expect(h.reverted).toEqual(['A']); // 情况 A → 通知 UI 撤回（移气泡 + 回填输入框）
+    expect(h.abortedNotifs).toHaveLength(0); // 不显示「— 已中断 —」
+
+    // messagesRef 未回填孤立 user：下一轮 resumed 不带 A 的 user（撤回干净）
+    h.controller.submit('B');
+    await nextTick();
+    h.runAgent.gates.get('B')!.resolve();
+    await nextTick();
+    const bCall = h.runAgent.calls.find((c) => c.text === 'B')!;
+    const resumedHasA = bCall.resumedMessages?.some((m) => m.role === 'user' && m.content === 'A');
+    expect(resumedHasA).toBeFalsy();
+  });
+
+  it('中断但本轮 LLM 已回应（情况 B）→ 保留 partial + onTurnAborted 显示中断（不撤回）', async () => {
+    const h = makeHarness(); // 默认 abortedResponded=true（情况 B：先 text_delta 再带 partial 的 completed）
+    h.controller.submit('A');
+    await nextTick();
+    h.controller.abort();
+    h.runAgent.gates.get('A')!.resolve();
+    await nextTick();
+    expect(h.abortedNotifs).toHaveLength(1); // 情况 B → 显示中断标记
+    expect(h.reverted).toEqual([]); // 不撤回
+    // messagesRef 含 partial（回填）—— 下一轮 resumed 带 assistant（与 aborted 保留 partial 同语义）
+    h.controller.submit('B');
+    await nextTick();
+    h.runAgent.gates.get('B')!.resolve();
+    await nextTick();
+    const bCall = h.runAgent.calls.find((c) => c.text === 'B')!;
+    expect(bCall.resumedMessages!.some((m) => m.role === 'assistant')).toBe(true);
   });
 
   it('error → 落 error 事件 + 继续 drain 下一条（不重跑同一条）', async () => {

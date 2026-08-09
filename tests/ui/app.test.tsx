@@ -116,19 +116,37 @@ describe('<App />', () => {
   it('单击 Ctrl+C → 中断运行中流（— 已中断 —）', async () => {
     vi.useFakeTimers();
     const mocked = runAgentStream as unknown as ReturnType<typeof vi.fn>;
-    // 产 start 后永远挂起：保持 busy='running'（api.isRunning=true），模拟流式进行中
-    mocked.mockImplementation(async function* (): AsyncGenerator<any> {
-      yield { type: 'start', task: 'x', model: 'm', provider: 'p' };
-      await new Promise(() => {}); // 永久挂起，不 completed → busy 不回 idle
+    // 情况 B：yield start + text_delta（LLM 已回应）置 busy='running'；abort → completed(aborted)。
+    // 对齐真实 agent（abort→completed，非 throw）；中断走情况 B → 显示「— 已中断 —」。
+    mocked.mockImplementation(async function* (text: string, opts: { signal: AbortSignal }): AsyncGenerator<any> {
+      yield { type: 'start', task: text, model: 'm', provider: 'p' };
+      yield { type: 'text_delta', text: '部分' }; // LLM 已回应 → 情况 B
+      await new Promise<void>((resolve) => {
+        opts.signal.addEventListener('abort', () => resolve());
+      });
+      yield {
+        type: 'completed',
+        rounds: 1,
+        toolCalls: 0,
+        reason: 'aborted',
+        sessionId: 's',
+        task: text,
+        createdAt: 't',
+        messages: [
+          { role: 'user', content: text },
+          { role: 'assistant', content: [{ type: 'text', text: '部分' }] },
+        ],
+      };
     });
     const { stdin, lastFrame } = render(<App cwd="~/x" />);
     stdin.write('跑');
     await vi.advanceTimersByTimeAsync(0);
     stdin.write('\r'); // submit → ensureRunLoop → busy='running'
-    // 多轮 flush：让 start 事件消费 + busy='running' 经 onBusyChange 落到 state（isRunning=true）
+    // 多轮 flush：让 start/text_delta 事件消费 + busy='running' 经 onBusyChange 落到 state（isRunning=true）
     for (let i = 0; i < 30; i++) await vi.advanceTimersByTimeAsync(1);
-    stdin.write('\x03'); // 单击 Ctrl+C → isRunning=true 走 abort 分支 + 「— 已中断 —」warning
-    await vi.advanceTimersByTimeAsync(0);
+    stdin.write('\x03'); // 单击 Ctrl+C → abort → mock 响应 completed(aborted，情况 B)→「— 已中断 —」
+    // 多轮 flush：abort resolve → generator yield completed → onTurnAborted setState → ink 重绘
+    for (let i = 0; i < 30; i++) await vi.advanceTimersByTimeAsync(1);
     expect(lastFrame() ?? '').toContain('已中断');
   });
 });

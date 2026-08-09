@@ -69,7 +69,13 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
   // /model 选择器（D1，照搬 SessionPicker）：modelOpen 时 ModelPicker 替换 InputBar。
   const [modelOpen, setModelOpen] = useState(false);
   const [modelOptions, setModelOptions] = useState<PickerItem[]>([]);
-  const api = useAgentStream({ model: currentModel, system, permissionMode, denyRules, hooks });
+  const api = useAgentStream({
+    model: currentModel,
+    system,
+    permissionMode,
+    denyRules,
+    hooks,
+  });
 
   // 状态栏上下文百分比分母：用模型真实 contextWindow（config.json 可逐模型配置/覆盖），
   // 替代早期硬编码 60K——GLM 窗口 1M，硬编码会让百分比一眼顶到 99% 误报"超了"。
@@ -186,9 +192,10 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
       }, DOUBLE_CTRL_C_MS);
       if (api.isRunning) {
         api.abort(); // 单击：streaming 时中断对话
-        // §3.5 中断 warning（纯 UI）：addMessage 只改 completedMessages，不进 controller messagesRef，
-        // 对抗「中断后零反馈、不知为何停」的困惑。用户重 submit 即新一轮。
-        api.addMessage({ kind: 'warning', id: `sys-abort-${Date.now()}`, text: '— 已中断 —' });
+        // 中断标记不再同步 addMessage——改由 controller completed 后按 A/B 分情况驱动（同步瞬间
+        // 无法知道 LLM 回没回）：
+        //   情况 A（本轮 LLM 未回应）→ onTurnReverted：回填输入框 + 移 user 气泡 + 不显示中断
+        //   情况 B（本轮 LLM 已回应）→ onTurnAborted：显示「— 已中断 —」（hook 内部 addMessage）
       }
     }
   });
@@ -512,7 +519,7 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
           onResolve={api.resolvePermission}
         />
       ) : (
-        <InputBar onSubmit={handleSubmit} />
+        <InputBar draftText={api.draftText} draftVersion={api.draftVersion} onSubmit={handleSubmit} />
       )}
 
       <StatusBar

@@ -34,6 +34,12 @@ export interface ControllerCallbacks {
   onBusyChange: (busy: BusyState) => void;
   /** messages 真相源被替换（compact 后）→ hook 用新 messages 重灌 completedMessages + staticKey++。 */
   onMessagesReset: (messages: ECodeMessage[]) => void;
+  /** 中断且本轮 LLM 未回应（情况 A，turnResponded=false）：撤回——不回填 messagesRef 的孤立 user，
+   *  hook 据此移除刚落的 user 气泡 + 回填输入框（onTurnReverted prop 透传 App）。不显示中断标记。 */
+  onTurnReverted?: (text: string) => void;
+  /** 中断但本轮 LLM 已回应（情况 B，turnResponded=true）：messagesRef 正常回填（含 user+partial），
+   *  hook 据此显示「— 已中断 —」（替代旧 app.tsx 同步 addMessage——同步瞬间无法区分 A/B）。 */
+  onTurnAborted?: () => void;
 }
 
 export interface ControllerDeps {
@@ -63,6 +69,9 @@ export class AgentLoopController {
   private busyRef: BusyState = 'idle';
   private abortRef: AbortController | null = null;
   private compactQueued = false;
+  /** 本轮 LLM 是否已回应（收到 text_delta/tool_call_start 即 true）。每轮 shift 后重置。
+   *  中断分情况依据：aborted + 未回应 → 撤回（情况 A）；aborted + 已回应 → 显示中断（情况 B）。 */
+  private turnResponded = false;
   /** clear/resetSession 序号：runLoop 回填前检测，若期间被重置则丢弃回填（避免"复活"已清历史）。 */
   private epoch = 0;
 
@@ -140,6 +149,7 @@ export class AgentLoopController {
       while (this.pendingQueue.length > 0) {
         const turnEpoch = this.epoch;
         const text = this.pendingQueue.shift()!;
+        this.turnResponded = false; // 本轮 LLM 回应标志重置（中断分情况依据）
         // 该 user 从"排队"转"正式"：队列变短 + 落正式气泡（不与 queuedMessages 双显）
         this.deps.callbacks.onQueueChange([...this.pendingQueue]);
         this.deps.callbacks.onUserTurn(text);
@@ -157,6 +167,8 @@ export class AgentLoopController {
             signal: controller.signal,
             resumed,
           })) {
+            // 跟踪本轮 LLM 是否回应（text_delta=输出文本 / tool_call_start=开始用工具）→ 中断分情况依据
+            if (event.type === 'text_delta' || event.type === 'tool_call_start') this.turnResponded = true;
             this.deps.callbacks.onEvent(event);
             if (event.type === 'completed') {
               completedEvent = event;
@@ -174,17 +186,24 @@ export class AgentLoopController {
         // 期间被 clear/resetSession（epoch 变）→ 丢弃回填，跳出（避免"复活"已清历史）
         if (turnEpoch !== this.epoch) break;
 
-        // 回填真相源：任何 completed（done/repeated/max-iterations/aborted）都带回会话元信息
-        // + 全量 messages。aborted 也续接同会话——中断前 partial 必须保留，下次 submit 经 resumed
-        // 带上，这才真正"不丢中断前历史"（若 aborted 不设 sessionRef，resumed 会是 undefined，
-        // messagesRef 里的 partial 白存）。非抢占：不自动重跑被中断的任务，仅保留历史供用户续接。
+        // 回填真相源：任何 completed（done/repeated/max-iterations/aborted）都带回会话元信息。
+        // sessionRef 始终更新（续接同会话）；messagesRef 按中断分情况：
+        //   - aborted + 本轮 LLM 未回应（情况 A）→ 不回填（丢弃孤立 user），onTurnReverted 通知 UI 撤回；
+        //   - 其余（done/repeated/max + aborted 已回应）→ 回填全量 messages（aborted 含中断前 partial，
+        //     下次 submit 经 resumed 带上，不丢历史；若 aborted 不设 sessionRef，resumed 会 undefined，
+        //     partial 白存）。非抢占：不自动重跑被中断的任务，仅保留历史供用户续接。
         if (completedEvent) {
           this.sessionRef = {
             id: completedEvent.sessionId,
             task: completedEvent.task,
             createdAt: completedEvent.createdAt,
           };
-          this.messagesRef = completedEvent.messages;
+          if (completedEvent.reason === 'aborted' && !this.turnResponded) {
+            this.deps.callbacks.onTurnReverted?.(text);
+          } else {
+            this.messagesRef = completedEvent.messages;
+            if (completedEvent.reason === 'aborted') this.deps.callbacks.onTurnAborted?.();
+          }
         }
       }
     } finally {

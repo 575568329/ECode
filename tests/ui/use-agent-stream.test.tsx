@@ -236,4 +236,43 @@ describe('useAgentStream', () => {
     const thirdOpts = mocked.mock.calls[2][1] as { resumed?: unknown };
     expect(thirdOpts.resumed).toBeUndefined(); // clear 后重置
   });
+
+  it('/clear 彻底重置：usage 归零 + streamingText 清空（不残留旧会话状态）', async () => {
+    // bug：旧 clear 只清 completedMessages，残留 usage（/cost 串台）/streamingText/todos。
+    // 对齐 switchSession 重置范围（usage/latestInputTokens 归零 + transient 态清空）。
+    const mocked = runAgentStream as unknown as ReturnType<typeof vi.fn>;
+    mocked.mockImplementation(
+      async function* (task: string): AsyncGenerator<AgentEvent> {
+        yield { type: 'start', task, model: 'm', provider: 'p' };
+        yield { type: 'usage', inputTokens: 100, outputTokens: 50 }; // 造非零 usage
+        yield {
+          type: 'completed',
+          rounds: 1,
+          toolCalls: 0,
+          reason: 'done',
+          sessionId: 's-reset',
+          task,
+          messages: [
+            { role: 'user', content: task },
+            { role: 'assistant', content: [{ type: 'text', text: '回' }] },
+          ],
+          createdAt: 't',
+        };
+      } as never,
+    );
+
+    const apiRef: React.MutableRefObject<Api | null> = { current: null };
+    render(<Harness apiRef={apiRef} />);
+    const api = () => apiRef.current as Api;
+
+    api().submit('任务');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(api().usage.inputTokens).toBe(100); // 造出非零（前置）
+
+    api().clear();
+    await new Promise((r) => setTimeout(r, 20)); // 等 setState 提交 + 重渲染（clear setState 异步）
+    expect(api().usage.inputTokens).toBe(0); // usage 归零（/cost 不串台）
+    expect(api().usage.outputTokens).toBe(0);
+    expect(api().streamingText).toBeNull();
+  });
 });

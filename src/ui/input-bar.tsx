@@ -17,6 +17,11 @@ import { SLASH_COMMANDS } from '../slash-commands.js';
 
 interface InputBarProps {
   onSubmit: (text: string) => void;
+  /** 回填文本（中断撤回用）：draftVersion 递增时填入输入框（草稿态，cursor 落末尾）。
+   *  用 controlled prop + 版本信号替代 ref 命令式回填——React 19 + ink 7 下 forwardRef 破坏 useInput。 */
+  draftText?: string;
+  /** 回填信号：递增触发回填（版本号避免相同文本重复触发；undefined/0 不触发）。 */
+  draftVersion?: number;
 }
 
 interface EditState {
@@ -119,7 +124,7 @@ const DOUBLE_ESC_MS = 500;
 /** 多行输入框最大显示行数（超出按 cursor 窗口滚动，抄 opencode 下限，防顶掉对话历史区）。 */
 const INPUT_MAX_HEIGHT = 6;
 
-export function InputBar({ onSubmit }: InputBarProps): React.ReactElement {
+export function InputBar({ onSubmit, draftText, draftVersion }: InputBarProps): React.ReactElement {
   const [edit, setEdit] = useState<EditState>({ text: '', cursor: 0 });
   const [hist, dispatch] = useReducer(historyReducer, {
     items: [],
@@ -129,6 +134,15 @@ export function InputBar({ onSubmit }: InputBarProps): React.ReactElement {
   const [pickerIndex, setPickerIndex] = useState(0);
   const [pickerDismissed, setPickerDismissed] = useState(false);
   const lastEscRef = useRef(0);
+  // 回填信号（中断撤回）：draftVersion 递增 → 回草稿态 + 填入 draftText（controlled prop 替代 ref，
+  //   forwardRef 在 React 19 + ink 7 下破坏 useInput 按键提交，见 InputBarProps.draftText 注释）。
+  const lastDraftVersionRef = useRef(0);
+  useEffect(() => {
+    if (draftVersion === undefined || draftVersion <= lastDraftVersionRef.current) return;
+    lastDraftVersionRef.current = draftVersion;
+    dispatch({ type: 'reset' }); // 回草稿态（index=-1 不翻历史；保留已提交 items）
+    setEdit({ text: draftText ?? '', cursor: (draftText ?? '').length });
+  }, [draftVersion, draftText]);
 
   // 候选（派生）：/ 开头 + 无空格 + 无换行 → picker 与多行互斥。
   const candidates: PickerItem[] = useMemo(() => {

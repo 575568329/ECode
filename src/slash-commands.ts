@@ -39,6 +39,7 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: 'compact', description: '手动触发上下文压缩', source: 'builtin' },
   { name: 'resume', description: '显示会话恢复面板', source: 'builtin' },
   { name: 'sessions', description: '列出项目会话', source: 'builtin' },
+  { name: 'mcp', description: '查看/管理 MCP servers', source: 'builtin' },
 ];
 
 // ---- 动态命令注册表（MCP prompt 等运行时注册）----

@@ -13,7 +13,7 @@
 //   - model/system 经 ref 透传给 controller 的 getRunOpts/getCompactOpts（/model 切换即时生效）
 //   - reducer 的 state.isRunning 保留（start/completed 设，reducer 单测覆盖）；但 hook return 的
 //     isRunning 改由 busy 派生（整体，不抖动），不再用 reducer 那份。
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { runAgentStream, compactMessages } from '../agent.js';
 import type { ResumeContext } from '../agent.js';
 import { AllowList } from '../permission.js';
@@ -25,6 +25,9 @@ import type { AgentEvent } from '../agent-events.js';
 import { getDefaultModel } from '../providers/config.js';
 import { messagesToDisplayMessages } from './messages-to-display.js';
 import { extractTodos, type TodoItem } from '../tools/todo.js';
+import type { ToolDefinition } from '../tools/types.js';
+import { loadMcpServers, unloadMcpServers } from '../mcp/loader.js';
+import type { McpConnection } from '../mcp/client.js';
 
 export interface UseAgentStreamReturn {
   completedMessages: DisplayMessage[];
@@ -104,6 +107,30 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   const denyRulesRef = useRef<Rule[] | undefined>(opts.denyRules);
   denyRulesRef.current = opts.denyRules;
 
+  // MCP server 加载（阶段3：启动时连一次，tools 合并进 getRunOpts，退出时断开）。
+  const mcpToolsRef = useRef<ToolDefinition[]>([]);
+  const mcpConnectionsRef = useRef<McpConnection[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    loadMcpServers().then((result) => {
+      if (cancelled) {
+        // 组件已卸载，直接断开
+        void unloadMcpServers(result.connections);
+        return;
+      }
+      mcpToolsRef.current = result.tools;
+      mcpConnectionsRef.current = result.connections;
+    });
+    return () => {
+      cancelled = true;
+      // 组件卸载时断开所有 MCP 连接
+      const conns = mcpConnectionsRef.current;
+      if (conns.length > 0) {
+        void unloadMcpServers(conns);
+      }
+    };
+  }, []);
+
   // apply = 事件分发。todo_write 单独拦截（§6）：从 input.todos 派生 state.todos，不进 reducer
   // （避免 activeTools 残留 todo_write + completedMessages 多一条 tool 行）。其余事件走 reducer。
   const apply = useCallback((event: AgentEvent) => {
@@ -128,6 +155,10 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
         allow: allowRef.current,
         permissionMode: permissionModeRef.current,
         denyRules: denyRulesRef.current,
+        // MCP 工具合并（阶段3：加载完成前 ref 为空，加载后追加到内置工具后面）
+        tools: mcpToolsRef.current.length > 0
+          ? [...mcpToolsRef.current]
+          : undefined,
         permissionGate: {
           ask: () =>
             new Promise<GateResult>((resolve) => {

@@ -22,6 +22,7 @@ import type { PickerItem } from './picker-list.js';
 import { StatusBar, type StatusBarPhase } from './status-bar.js';
 import { parseUserInput, SLASH_COMMANDS, registerCommandHandler, findCommandHandler } from '../slash-commands.js';
 import { getContextWindow, getDefaultModel, listAvailableModels } from '../providers/config.js';
+import { loadMcpRegistry, saveMcpRegistry } from '../mcp/registry.js';
 import { listSessions, loadSession } from '../session.js';
 import type { ECodeSessionSummary } from '../session.js';
 import { messagesToDisplayMessages } from './messages-to-display.js';
@@ -255,6 +256,38 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
       } else {
         api.addMessage({ kind: 'warning', id: `sys-compact-${Date.now()}`, text: `已压缩上下文：${result.before} → ${result.after} 条消息。` });
       }
+    });
+    registerCommandHandler('mcp', (args) => {
+      const entries = loadMcpRegistry();
+      if (entries.length === 0) {
+        api.addMessage({ kind: 'warning', id: `sys-mcp-${Date.now()}`, text: '无 MCP server 配置。registry.json 为空或不存在。' });
+        return;
+      }
+      // 子命令：enable / disable
+      const sub = args[0];
+      if (sub === 'enable' || sub === 'disable') {
+        const name = args[1];
+        if (!name) {
+          api.addMessage({ kind: 'warning', id: `sys-mcp-${Date.now()}`, text: `用法: /mcp ${sub} <server-name>` });
+          return;
+        }
+        const entry = entries.find((e) => e.name === name);
+        if (!entry) {
+          api.addMessage({ kind: 'warning', id: `sys-mcp-${Date.now()}`, text: `未找到 server "${name}"` });
+          return;
+        }
+        entry.enabled = sub === 'enable';
+        saveMcpRegistry(entries);
+        api.addMessage({ kind: 'warning', id: `sys-mcp-${Date.now()}`, text: `已${sub === 'enable' ? '启用' : '禁用'} ${name}（重启生效）` });
+        return;
+      }
+      // 默认：列出所有 server
+      const lines = entries.map((e) => {
+        const status = e.enabled ? '✓' : '✗';
+        const cmd = e.command ?? '(无)';
+        return `  ${status} ${e.name.padEnd(16)} ${e.transport.padEnd(6)} ${cmd}`;
+      });
+      api.addMessage({ kind: 'warning', id: `sys-mcp-${Date.now()}`, text: `MCP servers:\n${lines.join('\n')}\n用法: /mcp enable|disable <name>` });
     });
   }
 

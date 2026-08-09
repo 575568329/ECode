@@ -50,7 +50,9 @@ describe('SLASH_COMMANDS 注册表', () => {
     expect(names).toContain('compact');
     expect(names).toContain('resume');
     expect(names).toContain('sessions');
-    expect(names).toHaveLength(9);
+    expect(names).toContain('mcp');
+    expect(names).toContain('skill');
+    expect(names).toHaveLength(10);
   });
 });
 

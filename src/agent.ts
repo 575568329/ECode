@@ -3,6 +3,8 @@ import { toolDefinitions, executeTool } from './tools/index.js';
 import { createTaskTool } from './tools/subagent.js';
 import { loadAgents } from './subagent/loader.js';
 import { buildAgentsCatalog } from './subagent/prompt.js';
+import { loadSkills } from './skills/loader.js';
+import { buildSkillsCatalog } from './skills/catalog.js';
 import { createHookGate } from './hooks/inject.js';
 import { getEffectiveHooks } from './hooks/system-hooks.js';
 import type { HookDef } from './hooks/types.js';
@@ -295,10 +297,13 @@ export async function* runAgentStream(
   // 而非 runAgentStream 启动时绑定一次。getPermissionMode 优先（UI 传 ref.current），回退 permissionMode 值。
   const resolveMode = (): PermissionMode => opts.getPermissionMode?.() ?? opts.permissionMode ?? 'default';
   const baseSystem = opts.system ?? buildSystemPrompt();
-  // 阶段 1：把可派遣子代理 catalog 注入主 system（懒加载：只 name+description，不暴露人设正文）。
-  //   无 .ecode/agents → catalog 空 → system 不变（零影响）。主 LLM 据此决定派哪个具名人设。
+  // 阶段 1：可派遣子代理 + 可用技能 catalog 注入主 system（懒加载：只 name+description，不暴露正文）。
+  //   无 .ecode/agents 或 .ecode/skills → 对应 catalog 空 → system 不变（零影响）。
+  //   主 LLM 据此派子代理 / 自动匹配 skill；手动 /skill 触发读正文（UI 命令层）。
   const agentsCatalog = buildAgentsCatalog(loadAgents());
-  const system = agentsCatalog ? `${baseSystem}\n\n---\n\n${agentsCatalog}` : baseSystem;
+  const skillsCatalog = buildSkillsCatalog(loadSkills());
+  const catalogs = [agentsCatalog, skillsCatalog].filter(Boolean).join('\n\n---\n\n');
+  const system = catalogs ? `${baseSystem}\n\n---\n\n${catalogs}` : baseSystem;
 
   let messages: ECodeMessage[] = opts.resumed
     ? [...opts.resumed.messages, { role: 'user', content: task }]

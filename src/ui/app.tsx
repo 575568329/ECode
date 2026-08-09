@@ -21,6 +21,8 @@ import { ModelPicker } from './model-picker.js';
 import type { PickerItem } from './picker-list.js';
 import { StatusBar, type StatusBarPhase } from './status-bar.js';
 import { parseUserInput, SLASH_COMMANDS, registerCommandHandler, findCommandHandler } from '../slash-commands.js';
+import { loadSkills } from '../skills/loader.js';
+import { getSkillBody } from '../skills/matcher.js';
 import { getContextWindow, getDefaultModel, getModelConfig, listAvailableModels } from '../providers/config.js';
 import { computeCost } from '../providers/cost.js';
 import type { ModelCost } from '../providers/types.js';
@@ -294,6 +296,27 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
       } else {
         api.addMessage({ kind: 'warning', id: `sys-compact-${Date.now()}`, text: `已压缩上下文：${result.before} → ${result.after} 条消息。` });
       }
+    });
+    registerCommandHandler('skill', (args) => {
+      const name = args[0];
+      const skills = loadSkills();
+      const id = () => `sys-skill-${Date.now()}`;
+      if (skills.length === 0) {
+        api.addMessage({ kind: 'warning', id: id(), text: '暂无可用技能（在 ~/.ecode/skills/ 或 .ecode/skills/ 放 *.md，frontmatter 含 name+description）。' });
+        return;
+      }
+      if (!name) {
+        const lines = skills.map((s) => `  /skill ${s.name.padEnd(12)} ${s.description}`);
+        api.addMessage({ kind: 'warning', id: id(), text: `可用技能:\n${lines.join('\n')}` });
+        return;
+      }
+      const body = getSkillBody(name, skills);
+      if (!body) {
+        api.addMessage({ kind: 'warning', id: id(), text: `未找到技能 "${name}"。可用：${skills.map((s) => s.name).join(', ')}` });
+        return;
+      }
+      // 命中：skill 正文作为用户消息送 LLM（主 LLM 据菜谱执行）。正文即用户可见输入（透明）。
+      api.submit(body);
     });
     registerCommandHandler('mcp', async (args) => {
       const sub = args[0];

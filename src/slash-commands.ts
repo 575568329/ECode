@@ -40,6 +40,7 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: 'resume', description: '显示会话恢复面板', source: 'builtin' },
   { name: 'sessions', description: '列出项目会话', source: 'builtin' },
   { name: 'mcp', description: '查看/管理 MCP servers', source: 'builtin' },
+  { name: 'skill', description: '使用技能（如 /skill deploy），无参列出可用技能', argNames: ['name'], source: 'builtin' },
 ];
 
 // ---- 动态命令注册表（MCP prompt 等运行时注册）----

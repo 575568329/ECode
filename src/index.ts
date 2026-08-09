@@ -38,6 +38,7 @@ import { buildSystemPrompt } from './system-prompt.js';
 import { selectEntryMode } from './repl-mode.js';
 import { loadPermissionSettings } from './permission/settings-loader.js';
 import type { PermissionMode, Rule } from './permission/types.js';
+import type { HookDef } from './hooks/types.js';
 
 const { values, positionals } = parseArgs({
   options: {
@@ -59,10 +60,10 @@ const { values, positionals } = parseArgs({
  * 优先级：--dangerously-skip-permissions（=bypass）> --permission-mode > settings.defaultMode > default。
  * fatal：非法 mode 值直接退出（早暴露，避免静默回退 default 误导）。
  */
-function resolvePermission(): { mode: PermissionMode; denyRules: Rule[] } {
+function resolvePermission(): { mode: PermissionMode; denyRules: Rule[]; hooks: HookDef[] } {
   const VALID: PermissionMode[] = ['default', 'acceptEdits', 'bypass'];
   if (values['dangerously-skip-permissions']) {
-    return { mode: 'bypass', denyRules: [] }; // bypass 免疫 deny，无需加载
+    return { mode: 'bypass', denyRules: [], hooks: [] }; // bypass 免疫 deny，无需加载
   }
   const cliMode = values['permission-mode'] as PermissionMode | undefined;
   if (cliMode !== undefined) {
@@ -71,7 +72,7 @@ function resolvePermission(): { mode: PermissionMode; denyRules: Rule[] } {
     }
   }
   const settings = loadPermissionSettings({ initialMode: cliMode });
-  return { mode: settings.mode, denyRules: settings.rules.filter((r) => r.action === 'deny') };
+  return { mode: settings.mode, denyRules: settings.rules.filter((r) => r.action === 'deny'), hooks: settings.hooks };
 }
 
 // ============================================================
@@ -147,12 +148,14 @@ function readAppVersion(): string {
  * @param system 预拼 system prompt（含 CLAUDE.md/ECODE.md 注入）
  * @param permissionMode 初始权限档（CLI flag / settings.defaultMode 推导）
  * @param denyRules settings.json 加载的 deny 规则
+ * @param hooks settings.json 加载的 hooks 配置
  */
 async function startRepl(
   model: string | undefined,
   system: string,
   permissionMode: PermissionMode,
   denyRules: Rule[],
+  hooks: HookDef[],
 ): Promise<void> {
   const projectRoot = process.cwd();
   const version = readAppVersion();
@@ -168,6 +171,7 @@ async function startRepl(
       version,
       permissionMode,
       denyRules,
+      hooks,
     }),
     {
       // exitOnCtrlC: false —— 关掉 ink 默认的「Ctrl+C 直接退出」（render.js 默认 true）。
@@ -315,7 +319,7 @@ if (wantContinue || wantResume) {
   if (mode === 'repl') {
     // REPL：渲染 <App>，进程常驻至用户退出。render() 内部接管 stdout，
     // 故这里用 .catch 兜底动态 import 失败（如 ink 缺包），不 silent hang。
-    startRepl(values.model, system, perm.mode, perm.denyRules).catch((err) => {
+    startRepl(values.model, system, perm.mode, perm.denyRules, perm.hooks).catch((err) => {
       console.error('\n💥 REPL 启动失败:', err instanceof Error ? err.message : String(err));
       process.exit(1);
     });

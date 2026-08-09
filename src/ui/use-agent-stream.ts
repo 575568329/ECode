@@ -18,6 +18,7 @@ import { runAgentStream, compactMessages } from '../agent.js';
 import type { ResumeContext } from '../agent.js';
 import { AllowList } from '../permission.js';
 import type { GateDecision, GateResult, PermissionMode, Rule } from '../permission/types.js';
+import type { HookDef } from '../hooks/types.js';
 import { reduceAgentEvent, initialStreamState } from './reduce-agent-event.js';
 import { AgentLoopController } from './agent-loop-controller.js';
 import type { StreamState, DisplayMessage, PendingPermission } from './types.js';
@@ -28,6 +29,8 @@ import { extractTodos, type TodoItem } from '../tools/todo.js';
 import type { ToolDefinition } from '../tools/types.js';
 import { loadMcpServers, unloadMcpServers } from '../mcp/loader.js';
 import type { McpConnection } from '../mcp/client.js';
+import { adaptMcpPrompt } from '../mcp/adapter.js';
+import { registerCommand, unregisterCommand } from '../slash-commands.js';
 
 export interface UseAgentStreamReturn {
   completedMessages: DisplayMessage[];
@@ -85,6 +88,8 @@ export interface UseAgentStreamOptions {
   permissionMode?: PermissionMode;
   /** settings.json 加载的 deny 规则（启动一次，整会话静态）。 */
   denyRules?: Rule[];
+  /** settings.json 加载的 hooks 配置（启动一次，整会话静态）。 */
+  hooks?: HookDef[];
 }
 
 export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStreamReturn {
@@ -106,24 +111,68 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   // denyRules 启动一次、整会话静态（来自 settings.json），用 ref 透传给 getRunOpts。
   const denyRulesRef = useRef<Rule[] | undefined>(opts.denyRules);
   denyRulesRef.current = opts.denyRules;
+  // hooks 启动一次、整会话静态（来自 settings.json），用 ref 透传给 getRunOpts。
+  const hooksRef = useRef<HookDef[] | undefined>(opts.hooks);
+  hooksRef.current = opts.hooks;
 
-  // MCP server 加载（阶段3：启动时连一次，tools 合并进 getRunOpts，退出时断开）。
+  // MCP server 加载（阶段3：启动时连一次，tools 合并进 getRunOpts，prompts 注册斜杠命令，退出时断开）。
   const mcpToolsRef = useRef<ToolDefinition[]>([]);
   const mcpConnectionsRef = useRef<McpConnection[]>([]);
+  const mcpCmdNamesRef = useRef<string[]>([]); // 已注册的 MCP 斜杠命令名（卸载时注销）
   useEffect(() => {
     let cancelled = false;
     loadMcpServers().then((result) => {
       if (cancelled) {
-        // 组件已卸载，直接断开
         void unloadMcpServers(result.connections);
         return;
       }
       mcpToolsRef.current = result.tools;
       mcpConnectionsRef.current = result.connections;
+
+      // 注册 MCP prompts 为动态斜杠命令
+      const cmdNames: string[] = [];
+      const connsByName = new Map(result.connections.map((c) => [c.serverName, c]));
+      for (const { serverName, prompt } of result.prompts) {
+        const conn = connsByName.get(serverName);
+        if (!conn) continue;
+        const cmd = adaptMcpPrompt(
+          serverName,
+          prompt,
+          (name, args) => conn.getPrompt(name, args),
+          // MCP prompt 返回的消息序列化为文本，作为用户消息注入 agent
+          (messages) => {
+            const text = (messages as Array<{ role?: string; content?: unknown }>)
+              .map((m) => {
+                const content = m.content;
+                if (typeof content === 'string') return content;
+                if (Array.isArray(content)) {
+                  return content
+                    .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
+                    .map((c) => c.text)
+                    .join('\n');
+                }
+                return String(content ?? '');
+              })
+              .join('\n');
+            if (text.trim()) controllerRef.current?.submit(text);
+          },
+        );
+        registerCommand(cmd);
+        cmdNames.push(cmd.name);
+      }
+      mcpCmdNamesRef.current = cmdNames;
+      if (cmdNames.length > 0) {
+        console.log(`[MCP] 已注册 ${cmdNames.length} 个 prompt 斜杠命令`);
+      }
     });
     return () => {
       cancelled = true;
-      // 组件卸载时断开所有 MCP 连接
+      // 注销 MCP 动态斜杠命令
+      for (const name of mcpCmdNamesRef.current) {
+        unregisterCommand(name);
+      }
+      mcpCmdNamesRef.current = [];
+      // 断开所有 MCP 连接
       const conns = mcpConnectionsRef.current;
       if (conns.length > 0) {
         void unloadMcpServers(conns);
@@ -155,6 +204,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
         allow: allowRef.current,
         permissionMode: permissionModeRef.current,
         denyRules: denyRulesRef.current,
+        hooks: hooksRef.current,
         // MCP 工具合并（阶段3：加载完成前 ref 为空，加载后追加到内置工具后面）
         tools: mcpToolsRef.current.length > 0
           ? [...mcpToolsRef.current]

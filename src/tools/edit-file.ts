@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import { structuredPatch, formatPatch } from 'diff';
 import { ToolResult } from './types.js';
 import { truncate } from './truncate.js';
@@ -21,10 +21,10 @@ export interface EditFileInput {
  *   - 唯一匹配：替换并写回
  * 匹配失败时回喂真实行，是 agent 编辑正确性的核心（把重构成功率从 20% 拉到 61%）。
  */
-export function executeEditFile(input: EditFileInput): ToolResult {
+export async function executeEditFile(input: EditFileInput): Promise<ToolResult> {
   let content: string;
   try {
-    content = readFileSync(input.path, 'utf-8');
+    content = await readFile(input.path, 'utf-8');
   } catch (err) {
     return {
       content: `读取文件失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -50,7 +50,7 @@ export function executeEditFile(input: EditFileInput): ToolResult {
 
   const newContent = content.replace(input.oldText, input.newText);
   try {
-    writeFileSync(input.path, newContent, 'utf-8');
+    await writeFile(input.path, newContent, 'utf-8');
   } catch (err) {
     return {
       content: `写入文件失败: ${err instanceof Error ? err.message : String(err)}`,

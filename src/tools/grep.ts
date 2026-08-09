@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import { join, relative } from 'node:path';
 import { ToolResult } from './types.js';
 import { truncate } from './truncate.js';
@@ -18,7 +19,7 @@ const MAX_MATCH_COUNT = 500;
  * 自实现：递归遍历 + 正则，零二进制依赖；后续可换 ripgrep 提升大库速度。
  * 结果格式：`相对路径:行号: 行内容`，截断到 3 万字符防撑爆上下文。
  */
-export function executeGrep(input: GrepInput): ToolResult {
+export async function executeGrep(input: GrepInput): Promise<ToolResult> {
   const root = input.path ?? process.cwd();
 
   let regex: RegExp;
@@ -33,11 +34,11 @@ export function executeGrep(input: GrepInput): ToolResult {
 
   const matches: string[] = [];
   try {
-    walk(root, root, (filePath) => {
+    await walk(root, root, async (filePath) => {
       if (input.include && !matchFileName(filePath, input.include)) return;
       let content: string;
       try {
-        content = readFileSync(filePath, 'utf-8');
+        content = await readFile(filePath, 'utf-8');
       } catch {
         return; // 二进制 / 无权限等，跳过
       }
@@ -66,19 +67,19 @@ export function executeGrep(input: GrepInput): ToolResult {
   return { content, isError: false };
 }
 
-function walk(root: string, dir: string, cb: (path: string) => void): void {
-  let entries;
+async function walk(root: string, dir: string, cb: (path: string) => Promise<void>): Promise<void> {
+  let entries: Dirent[];
   try {
-    entries = readdirSync(dir, { withFileTypes: true });
+    entries = await readdir(dir, { withFileTypes: true });
   } catch {
     return;
   }
   for (const e of entries) {
     if (e.isDirectory()) {
       if (IGNORE_DIRS.includes(e.name)) continue;
-      walk(root, join(dir, e.name), cb);
+      await walk(root, join(dir, e.name), cb);
     } else if (e.isFile()) {
-      cb(join(dir, e.name));
+      await cb(join(dir, e.name));
     }
   }
 }

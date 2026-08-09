@@ -1,10 +1,10 @@
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { ToolResult } from './types.js';
 import { truncateByLines } from './truncate.js';
 
-export function executeReadFile(input: { path: string }): ToolResult {
+export async function executeReadFile(input: { path: string }): Promise<ToolResult> {
   try {
-    const content = readFileSync(input.path, 'utf-8');
+    const content = await readFile(input.path, 'utf-8');
     return { content: truncateByLines(content), isError: false };
   } catch (err) {
     return {

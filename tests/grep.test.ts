@@ -20,26 +20,26 @@ describe('executeGrep', () => {
     if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
   });
 
-  it('正则匹配多文件多行（含子目录）', () => {
-    const r = executeGrep({ pattern: 'export const', path: dir });
+  it('正则匹配多文件多行（含子目录）', async () => {
+    const r = await executeGrep({ pattern: 'export const', path: dir });
     expect(r.isError).toBe(false);
     expect(r.content).toContain('a.ts:1:');
     expect(r.content).toContain('c.ts'); // 子目录文件，跨平台用文件名断言
   });
 
-  it('include 过滤文件类型', () => {
-    const r = executeGrep({ pattern: 'hello|X', path: dir, include: '*.md' });
+  it('include 过滤文件类型', async () => {
+    const r = await executeGrep({ pattern: 'hello|X', path: dir, include: '*.md' });
     expect(r.content).toContain('b.md');
     expect(r.content).not.toContain('a.ts');
   });
 
-  it('无匹配返回「未找到」', () => {
-    const r = executeGrep({ pattern: 'zzz_not_exist', path: dir });
+  it('无匹配返回「未找到」', async () => {
+    const r = await executeGrep({ pattern: 'zzz_not_exist', path: dir });
     expect(r.content).toContain('未找到');
   });
 
-  it('无效正则报错', () => {
-    const r = executeGrep({ pattern: '(', path: dir });
+  it('无效正则报错', async () => {
+    const r = await executeGrep({ pattern: '(', path: dir });
     expect(r.isError).toBe(true);
     expect(r.content).toContain('正则表达式无效');
   });

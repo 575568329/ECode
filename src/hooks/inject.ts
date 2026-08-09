@@ -1,14 +1,16 @@
-// Hooks（支点 12）gate 聚合层：把多个 HookDef 聚成 Pre/Post 两个 await 回调。
+// Hooks（支点 12）gate 聚合层：把多个 HookDef 聚成 Pre/Post/emit 三个回调。
 //
 // 职责（runner 只解析单 hook，本模块管「多 hook 怎么合」）：
 //   - PreToolUse：按声明顺序串行跑匹配 hook；deny 即终态短路返回；modifiedInput 整体替换。
 //   - PostToolUse：按声明顺序跑匹配 hook；deny 累积（reason 给 agent 回喂 LLM）。
+//   - emit（事件流 SessionStart/SessionEnd/UserPromptSubmit/Stop）：非工具事件无 matcher，
+//     按 event 过滤跑匹配 hook；deny>allow 聚合。Stop deny → agent push user 续跑。
 //   - matcher：'*' / 缺省 = 全工具；否则 CI 精确匹配，支持 'Bash|Edit' / 'Bash,Edit' 备选 + 'Bash*' 前缀。
 //
 // 红线（runner 已守）：单 hook 超时/失败 → allow 降级；本层 deny > allow 最严胜出。
 import { runHook } from './runner.js';
 import type { ShellExec } from './runner.js';
-import type { HookDef, HookResult, HookEvent } from './types.js';
+import type { HookDef, HookResult, HookEvent, HookPayload } from './types.js';
 
 export interface HookGate {
   /** PreToolUse：返回 deny → agent 跳过执行（同权限 deny）；modifiedInput → 替换工具输入。 */
@@ -22,6 +24,9 @@ export interface HookGate {
     input: Record<string, unknown>,
     output: string,
   ) => Promise<HookResult>;
+  /** 事件流钩子（SessionStart/SessionEnd/UserPromptSubmit/Stop）：非工具事件无 matcher，
+   *  聚合 deny>allow。Stop hook 返 deny → agent 打回续跑（push user reason 后 continue）。 */
+  emit: (event: HookEvent, payload: HookPayload) => Promise<HookResult>;
 }
 
 /**
@@ -37,7 +42,7 @@ function hookMatcher(pattern: string | undefined, toolName: string): boolean {
 }
 
 /**
- * 构造 hook gate。hooks 为空 → 仍返回 gate（pre/post 恒 allow），调用方据此可短路。
+ * 构造 hook gate。hooks 为空 → 仍返回 gate（pre/post/emit 恒 allow），调用方据此可短路。
  * exec 可注入（测试）；生产用 runner 默认 spawn。
  */
 export function createHookGate(
@@ -83,5 +88,19 @@ export function createHookGate(
     return { decision: 'allow' };
   };
 
-  return { preToolUse, postToolUse };
+  // 事件流钩子（SessionStart/SessionEnd/UserPromptSubmit/Stop）：非工具事件，无 matcher，
+  //   按 event 过滤；deny>allow 聚合。agent 在 start/submit/done/finally 各点 emit，
+  //   Stop deny → push user reason + continue（打回续跑）。
+  const emit: HookGate['emit'] = async (event, payload) => {
+    for (const def of hooks) {
+      if (def.event !== event) continue;
+      const r = await runHook(def, payload, deps);
+      if (r.decision === 'deny') {
+        return { decision: 'deny', reason: r.reason };
+      }
+    }
+    return { decision: 'allow' };
+  };
+
+  return { preToolUse, postToolUse, emit };
 }

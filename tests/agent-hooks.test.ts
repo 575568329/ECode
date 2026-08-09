@@ -170,4 +170,60 @@ describe('runAgentStream Hooks 接线（阶段 2）', () => {
     // 无 hook 注入痕迹
     expect(tr.content).not.toContain('hook');
   });
+
+  it('Stop hook 打回 → push user reason + 多跑一轮后 completed', async () => {
+    let stopCount = 0;
+    // mock stream：纯文本 stop（无 tool_call）→ 命中 done 分支 → 触发 Stop hook
+    const provider = mockProvider([
+      { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
+    ]);
+    const events = await collect(
+      runAgentStream('测', {
+        provider,
+        tools: [],
+        hooks: [{ event: 'Stop', command: 'mock', source: 'user' }],
+        hooksExec: async () => {
+          stopCount++;
+          // 第一次 deny（打回），第二次 allow（放行完成）
+          if (stopCount === 1) return { stdout: '', stderr: 'Stop 打回续跑', exitCode: 2 };
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+      }),
+    );
+    const done = events.find((e) => e.type === 'completed') as Extract<
+      AgentEvent,
+      { type: 'completed' }
+    >;
+    expect(done).toBeDefined();
+    expect(done.reason).toBe('done');
+    expect(done.rounds).toBe(2); // 打回后多跑一轮
+    expect(stopCount).toBe(2); // Stop hook 跑两次：deny + allow
+    // 打回 reason 作为 user 消息进了 messages（供 LLM 第二轮看到继续指令）
+    expect(JSON.stringify(done.messages)).toContain('Stop 打回续跑');
+  });
+
+  it('Stop hook allow → 正常 completed（rounds=1，无打回）', async () => {
+    let stopCount = 0;
+    const provider = mockProvider([
+      { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
+    ]);
+    const events = await collect(
+      runAgentStream('测', {
+        provider,
+        tools: [],
+        hooks: [{ event: 'Stop', command: 'mock', source: 'user' }],
+        hooksExec: async () => {
+          stopCount++;
+          return { stdout: '', stderr: '', exitCode: 0 }; // 恒 allow
+        },
+      }),
+    );
+    const done = events.find((e) => e.type === 'completed') as Extract<
+      AgentEvent,
+      { type: 'completed' }
+    >;
+    expect(done.reason).toBe('done');
+    expect(done.rounds).toBe(1);
+    expect(stopCount).toBe(1);
+  });
 });

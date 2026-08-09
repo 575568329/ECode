@@ -353,6 +353,13 @@ export async function* runAgentStream(
 
   yield { type: 'start', task, model: resolvedModel, provider: provider.name, logFile };
 
+  // 事件流钩子（支点 12 项15/16）：SessionStart / UserPromptSubmit 通知（不改变流程）。
+  //   无 hook 时 hookGate=undefined 零开销；hook 失败/超时 runner 默认 allow 降级。
+  if (hookGate) {
+    await hookGate.emit('SessionStart', { session_id: sessionId });
+    await hookGate.emit('UserPromptSubmit', { prompt: task });
+  }
+
   let lastSignature = '';
   let iteration: number;
 
@@ -461,6 +468,20 @@ export async function* runAgentStream(
 
       // ---- 没有工具调用 → LLM 给出最终回答，终止 ----
       if (toolCalls.length === 0) {
+        // Stop hook（支点 12 项15/16）：可打回续跑。仅 done 分支触发（repeated/max/aborted
+        //   不跑 Stop——异常终止不该被 hook 反复打回成死循环）。deny → push reason 作为
+        //   user 消息续跑（不 yield completed，进下一轮 iteration），LLM 看到续跑指令。
+        if (hookGate) {
+          const stop = await hookGate.emit('Stop', { session_id: sessionId });
+          if (stop.decision === 'deny') {
+            messages.push({
+              role: 'user',
+              content: stop.reason ?? 'Stop hook 要求继续',
+            });
+            persistSession(buildSession());
+            continue; // 打回：进下一轮，重新流式调用 LLM
+          }
+        }
         persistSession(buildSession()); // 最终落盘
         yield {
           type: 'completed',
@@ -732,6 +753,15 @@ export async function* runAgentStream(
     logError(`runAgentStream (round ${stats.rounds})`, err);
     yield { type: 'error', error: err instanceof Error ? err.message : String(err) };
   } finally {
+    // SessionEnd 事件流钩子：会话结束通知。finally 里不能 yield（async generator 语义），
+    //   且不阻塞结束（runner 超时/失败已默认 allow 降级；try/catch 双保险）。
+    if (hookGate) {
+      try {
+        await hookGate.emit('SessionEnd', { session_id: sessionId });
+      } catch {
+        // SessionEnd hook 失败不影响结束流程
+      }
+    }
     finalizeRuntimeLog(stats.rounds);
   }
 }

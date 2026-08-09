@@ -151,3 +151,73 @@ describe('createHookGate - postToolUse', () => {
     expect((await gate.postToolUse('bash', {}, 'out')).decision).toBe('allow');
   });
 });
+
+// 事件流钩子（SessionStart/SessionEnd/UserPromptSubmit/Stop）：非工具事件，无 matcher。
+// agent 在生命周期各点 emit；Stop hook 返 deny → 打回续跑。聚合规则同 Pre/Post（deny>allow）。
+describe('createHookGate - emit（事件流）', () => {
+  it('Stop hook deny → decision deny + reason（agent 据此 push user 续跑）', async () => {
+    const stopHook: HookDef = { event: 'Stop', command: 'c', source: 'user' };
+    const gate = createHookGate([stopHook], { exec: execReturning('', 'Stop 打回续跑', 2) });
+    const r = await gate.emit('Stop', { session_id: 's1' });
+    expect(r.decision).toBe('deny');
+    expect(r.reason).toBe('Stop 打回续跑');
+  });
+
+  it('SessionStart hook → allow（事件通知，不拦）', async () => {
+    let called = false;
+    const startHook: HookDef = { event: 'SessionStart', command: 'c', source: 'user' };
+    const gate = createHookGate([startHook], {
+      exec: async () => {
+        called = true;
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+    });
+    const r = await gate.emit('SessionStart', { session_id: 's1' });
+    expect(called).toBe(true);
+    expect(r.decision).toBe('allow');
+  });
+
+  it('事件隔离：PreToolUse hook 不被 emit("SessionEnd") 触发', async () => {
+    let called = false;
+    const preHook: HookDef = {
+      event: 'PreToolUse',
+      command: 'c',
+      source: 'user',
+      matcher: 'Bash',
+    };
+    const gate = createHookGate([preHook], {
+      exec: async () => {
+        called = true;
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+    });
+    await gate.emit('SessionEnd', { session_id: 's1' });
+    expect(called).toBe(false);
+  });
+
+  it('无匹配 hook → allow（事件流默认放行）', async () => {
+    const gate = createHookGate([]);
+    expect((await gate.emit('Stop', { session_id: 's1' })).decision).toBe('allow');
+  });
+
+  it('多 Stop hook：deny 最严格胜出（即便前面 allow）', async () => {
+    let i = 0;
+    const gate = createHookGate(
+      [
+        { event: 'Stop', command: 'c1', source: 'user' },
+        { event: 'Stop', command: 'c2', source: 'user' },
+      ],
+      {
+        exec: async () => {
+          i++;
+          return i === 1
+            ? { stdout: '{"decision":"approve"}', stderr: '', exitCode: 0 }
+            : { stdout: '', stderr: '第二个打回', exitCode: 2 };
+        },
+      },
+    );
+    const r = await gate.emit('Stop', { session_id: 's1' });
+    expect(r.decision).toBe('deny');
+    expect(r.reason).toBe('第二个打回');
+  });
+});

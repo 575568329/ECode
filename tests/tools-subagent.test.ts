@@ -23,6 +23,25 @@ function mockProvider(parts: ECodeStreamPart[]): ModelProvider {
   };
 }
 
+/** spy provider：捕获 stream 收到的 model（验证子代理路由派发的模型），其余同 mockProvider。 */
+function spyProvider(seen: { current?: string }): ModelProvider {
+  return {
+    name: 'mock',
+    protocol: 'openai',
+    baseURL: 'http://mock',
+    complete: vi.fn(async () => ({
+      content: [{ type: 'text', text: 'x' }],
+      stopReason: { unified: 'stop' },
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })),
+    stream: async function* (req: ChatRequest): AsyncIterable<ECodeStreamPart> {
+      seen.current = req.model;
+      yield { type: 'text_delta', text: '子代理的结论' };
+      yield { type: 'stop', reason: { unified: 'stop', raw: 'stop' } };
+    },
+  };
+}
+
 const textMsg = (text: string): ECodeMessage => ({
   role: 'assistant',
   content: [{ type: 'text', text }],
@@ -101,5 +120,47 @@ describe('createTaskTool', () => {
     const res = await tool.execute!({ description: 'd', prompt: 'p' });
     expect(res.isError).toBe(false);
     expect(res.content).toContain('未产出文本结论');
+  });
+
+  it('子代理 model 走 subagent 场景路由（routingConfig.rules.subagent 派 cheap alias）', async () => {
+    const seen: { current?: string } = {};
+    const subProvider = spyProvider(seen);
+    const tool = createTaskTool({
+      system: 's',
+      allow: new AllowList(),
+      getPermissionMode: () => 'default',
+      provider: subProvider,
+      model: 'main-model',
+      routingConfig: {
+        aliases: { cheap: { provider: 'mock', model: 'cheap-model' } },
+        rules: { subagent: 'cheap' },
+        defaultTarget: { provider: 'mock', model: 'main-model' },
+      },
+      depth: 0,
+    });
+    await tool.execute!({ description: 'd', prompt: 'p' });
+    // 子代理 stream 收到路由派发的 cheap-model（非主 main-model），证明 subagent 场景路由生效。
+    expect(seen.current).toBe('cheap-model');
+  });
+
+  it('routingConfig 传入时走路由分支（无规则→defaultTarget，不回退 ctx.model）', async () => {
+    const seen: { current?: string } = {};
+    const subProvider = spyProvider(seen);
+    const tool = createTaskTool({
+      system: 's',
+      allow: new AllowList(),
+      getPermissionMode: () => 'default',
+      provider: subProvider,
+      model: 'main-model',
+      routingConfig: {
+        aliases: {},
+        rules: {},
+        defaultTarget: { provider: 'mock', model: 'fallback-model' },
+      },
+      depth: 0,
+    });
+    await tool.execute!({ description: 'd', prompt: 'p' });
+    // 无规则无显式 → defaultTarget.model（路由分支）；若回退 ctx.model 会是 main-model。
+    expect(seen.current).toBe('fallback-model');
   });
 });

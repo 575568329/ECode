@@ -14,7 +14,10 @@ import type { ToolDefinition } from './tools/types.js';
 import { validateAfterEdit } from './tools/validation.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { createProvider } from './providers/factory.js';
-import { getDefaultModel, hasCapability } from './providers/config.js';
+import { hasCapability } from './providers/config.js';
+import { getRoutingConfig } from './router/config.js';
+import { resolveAlias } from './router/resolver.js';
+import { resolveModelForScenario } from './router/rules.js';
 import type {
   ECodeMessage,
   ECodeToolResultOutput,
@@ -287,7 +290,11 @@ export async function* runAgentStream(
   task: string,
   opts: RunAgentStreamOptions = {},
 ): AsyncGenerator<AgentEvent> {
-  const resolvedModel = opts.model ?? getDefaultModel();
+  // 模型路由（支点22）：opts.model（--model CLI / UI 显式）优先 > 路由规则（global 场景）> config default。
+  //   UI REPL 无 --model 时 modelRef.current=undefined → 走 global 路由（routing.rules.global 生效）。
+  //   无 routing 配置 → defaultTarget.model = getDefaultModel()，行为与改造前一致（向后兼容）。
+  const routingConfig = getRoutingConfig();
+  const resolvedModel = opts.model ?? resolveModelForScenario('global', undefined, routingConfig).model;
   const provider = opts.provider ?? createProvider(resolvedModel);
   const useTools = hasCapability(resolvedModel, 'tools');
   const allow = opts.allow ?? new AllowList();
@@ -326,6 +333,7 @@ export async function* runAgentStream(
           gate: opts.permissionGate,
           provider,
           model: resolvedModel,
+          routingConfig, // 子代理据此走 subagent 场景路由（支点22；跨 provider 限制见 subagent.ts 注释）
           depth: opts.subagentDepth ?? 0,
         }),
       ]
@@ -369,12 +377,21 @@ export async function* runAgentStream(
   let iteration: number;
 
   // 压缩选项（maybeCompress + forceCompact 共用，提取到循环外避免重复构造）
+  // 压缩走 compress 场景路由（支点22）：有规则派规则模型省钱；无规则跟随主模型（不突兀回退全局默认）。
+  //   阈值判断仍用主模型 contextWindow（超限的是主上下文，非压缩模型）；summarize 调用走 compress 模型 + provider。
+  //   同模型复用主 provider（避免重复创建 + 测试 mock 一致）；跨模型 createProvider(compressModel)。
+  //   不用 resolveModelForScenario：其无规则回退 defaultTarget（全局默认），而 compress 应跟随主模型（resolvedModel）。
+  const compressAlias = routingConfig.rules.compress;
+  const compressModel = compressAlias
+    ? resolveAlias(compressAlias, routingConfig.aliases, { provider: provider.name, model: resolvedModel }).model
+    : resolvedModel;
+  const compressProvider = compressModel === resolvedModel ? provider : createProvider(compressModel);
   const compressOpts: CompressOptions = {
     model: resolvedModel,
     system,
     summarize: async (prompt: string) => {
-      const resp = await provider.complete({
-        model: resolvedModel,
+      const resp = await compressProvider.complete({
+        model: compressModel,
         system: '你是对话历史压缩器。',
         messages: [{ role: 'user', content: prompt }],
         tools: [], // 压缩禁工具

@@ -23,6 +23,8 @@ export interface ECodeConfig {
   models: Record<string, ModelConfig>;
   /** P0-5 后置验证开关（edit/write 后跑 build/test，失败回喂）。默认 true；用户可设 false 关闭。 */
   validation?: { enabled?: boolean };
+  /** M6 模型路由块（router 层 buildRoutingConfig 解析为 RoutingConfig；此处宽松持有，避免 providers→router 分层耦合）。 */
+  routing?: Record<string, unknown>;
 }
 
 const CONFIG_PATH = join(resolveDataDir(), 'config.json');
@@ -56,7 +58,7 @@ const DEFAULT_CONFIG: ECodeConfig = {
 
 let cachedConfig: ECodeConfig | null = null;
 
-function loadConfig(): ECodeConfig {
+export function loadConfig(): ECodeConfig {
   if (cachedConfig) return cachedConfig;
   if (existsSync(CONFIG_PATH)) {
     try {

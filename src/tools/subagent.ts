@@ -16,6 +16,8 @@ import { AllowList } from '../permission.js';
 import type { PermissionGate } from '../permission.js';
 import type { ModelProvider, ECodeMessage } from '../providers/types.js';
 import type { PermissionMode, Rule } from '../permission/types.js';
+import { resolveModelForScenario } from '../router/rules.js';
+import type { RoutingConfig } from '../router/rules.js';
 
 /** 默认子代理嵌套深度上限：子代理默认不能再派子代理（防递归爆炸）。 */
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 1;
@@ -34,6 +36,8 @@ export interface TaskToolContext {
   gate?: PermissionGate;
   provider?: ModelProvider;
   model?: string;
+  /** 路由配置（runAgentStream 入口解析，子代理据此走 subagent 场景路由）。可选：测试不传则回退 ctx.model。 */
+  routingConfig?: RoutingConfig;
   /** 当前嵌套深度（主代理 = 0；子代理递归时 +1，由 runAgentStream opts.subagentDepth 传入）。 */
   depth: number;
   /** 深度上限（默认 DEFAULT_MAX_SUBAGENT_DEPTH）。 */
@@ -108,7 +112,13 @@ export function createTaskTool(ctx: TaskToolContext): ToolDefinition {
         denyRules: ctx.denyRules,
         permissionGate: ctx.gate, // ask 归主对话
         provider: ctx.provider,
-        model: ctx.model ?? persona?.model,
+        // 子代理 model 走 subagent 场景路由（支点22）：persona.model（人设 alias）优先 > rules.subagent > default。
+        // ⚠️ provider 继承主代理（ctx.provider）：仅同 provider 不同 model 生效（如 glm-5.2→glm-4.6）；
+        //   跨 provider（cheap=deepseek 而主=zhipuai）需 provider 也路由，触及继承设计，留后续。
+        //   测试不传 routingConfig → 回退 ctx.model ?? persona.model（行为不变）。
+        model: ctx.routingConfig
+          ? resolveModelForScenario('subagent', { agentModel: persona?.model }, ctx.routingConfig).model
+          : ctx.model ?? persona?.model,
         subagentDepth: ctx.depth + 1, // 子代理深度 +1，其 Task 闭包据此拦再递归
       })) {
         if (event.type === 'completed') conclusion = extractFinalText(event.messages);

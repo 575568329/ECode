@@ -8,16 +8,9 @@ import { MarkdownRenderer } from './markdown.js';
 import { ToolRunning, ToolDone, InlineTool, summarizeArg } from './tool-panel.js';
 import { summarizeGroup } from './read-search-group.js';
 import { leftBorder } from './borders.js';
-import { Spinner } from './spinner.js';
+import { ActivityIndicator, deriveActivity } from './activity-indicator.js';
 import type { UseAgentStreamReturn } from './use-agent-stream.js';
 import type { DisplayMessage } from './types.js';
-
-/** pendingReadSearch 收窄到 tool 取 name 供合并摘要（reducer 保证只挂 kind:tool）。 */
-function pendingToolNames(msgs: DisplayMessage[]): { name: string }[] {
-  return msgs
-    .filter((m): m is Extract<DisplayMessage, { kind: 'tool' }> => m.kind === 'tool')
-    .map((t) => ({ name: t.name }));
-}
 
 /** 单条已完成消息 → React 节点（供 <Static>）。 */
 function renderCompleted(msg: DisplayMessage): React.ReactNode {
@@ -95,17 +88,13 @@ export function ChatView({ state }: ChatViewProps): React.ReactElement {
         {(msg) => <Box key={msg.id}>{renderCompleted(msg)}</Box>}
       </Static>
 
-      {/* 动态区：流式文本 + 运行中工具 + 挂起的只读折叠组（延迟冻结） */}
+      {/* 动态区：统一活动指示器（loading 收口）+ 流式文本 + 运行中工具 */}
       {(state.isRunning || state.streamingText || state.activeTools.length > 0 || state.pendingReadSearch.length > 0) && (
         <Box flexDirection="column" paddingLeft={4}>
-          {/* thinking loader：streaming 前（agent 思考首 token），◆ + 星形 spinner + 思考中；首 token 到达切 streaming */}
-          {state.isRunning && !state.streamingText && state.activeTools.length === 0 && state.pendingReadSearch.length === 0 ? (
-            <Box>
-              <Text color={T.brand} bold>{SYMBOLS.brand} </Text>
-              <Spinner />
-              <Text color={T.muted}> 思考中</Text>
-            </Box>
-          ) : null}
+          {/* 统一活动指示器：isRunning 期间任意子阶段 ◆+Spinner+状态文案常驻
+              （思考中/回复中/运行 N 工具/· · · 摘要/压缩中）。各态只声明 phase（deriveActivity 派生），
+              渲染单一来源 → 结构上不会漏 spinner（根治散落实现"漏一态就消失"）。 */}
+          <ActivityIndicator phase={deriveActivity(state)} />
           {state.streamingText ? (
             <Box flexDirection="column">
               <Text color={T.brand} bold>{SYMBOLS.brand}</Text>
@@ -117,15 +106,6 @@ export function ChatView({ state }: ChatViewProps): React.ReactElement {
           {state.activeTools.map((t) => (
             <ToolRunning key={t.id} name={t.name} arg={summarizeArg(t.name, t.input)} />
           ))}
-          {/* 挂起的连续只读组：实时合并摘要（muted 灰 + spinner 进行中感），组破坏时 flush 进 Static。
-              🔴 spinner 不可省：连续只读工具执行期间 agent 仍在忙（isRunning=true），
-              静态 `· · ·` 会让人误以为 loading 没了（与 ToolRunning/thinking loader 同构，保持动画常驻）。 */}
-          {state.pendingReadSearch.length > 0 ? (
-            <Box>
-              <Spinner color={T.brand} />
-              <Text color={T.muted}> · · · {summarizeGroup(pendingToolNames(state.pendingReadSearch))} …</Text>
-            </Box>
-          ) : null}
         </Box>
       )}
     </Box>

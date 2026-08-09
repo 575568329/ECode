@@ -8,7 +8,6 @@
 import React from 'react';
 import { Text, Box } from 'ink';
 import { T, SYMBOLS } from './theme.js';
-import { Spinner } from './spinner.js';
 import { leftBorder } from './borders.js';
 
 /** 计时显示占位：实时秒数留给 M4（useEffect+setInterval），本任务非关键视觉糖。 */
@@ -23,11 +22,10 @@ interface ToolRunningProps {
 }
 
 export function ToolRunning({ name, arg }: ToolRunningProps): React.ReactElement {
+  // 转圈归统一 ActivityIndicator（消除双闪）；此处只留工具名+参数静态详情。
+  // 工具名+▸ 走 muted 灰，完成后(ToolDone)才亮起(✓ 绿/黄名)。
   return (
     <Box>
-      <Spinner color={T.brand} />
-      {/* 降存在感（对标 CC）：spinner 留 brand 作唯一动态亮点；工具名+▸ 走 muted 灰，
-          完成后(ToolDone)才亮起(✓ 绿/黄名)。ECode 青 spinner + 黄工具名双亮冲突 → 工具名降灰。 */}
       <Text color={T.muted}> {SYMBOLS.tool} {name}</Text>
       {arg ? <Text color={T.muted}>({arg})</Text> : null}
     </Box>

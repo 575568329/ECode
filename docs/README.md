@@ -59,7 +59,7 @@
 - [`M1~M3.5欠账补全统一实施方案`](详设/20260807235255_M1-M3.5欠账补全-统一实施方案-详设[进行中].md) — 工具集/P5/M3.5收尾/后置验证 四组欠账的统一蓝图（A→C→D→E）
 - [`多行输入`](详设/20260808150000_多行输入-详设[进行中].md) — Shift+Enter(Kitty)/Alt+Enter/`\`续行 三键全接 + cursorIndex 多行编辑（ink 7 原生 Kitty 协议）
 - [`M5 能力扩展使用指南`](详设/20260809093000_M5能力扩展使用指南-详设[进行中].md) — 子代理(agents/*.md)/MCP(registry.json+RCE白名单)/Hooks(settings.json) 三支点配置与操作链
-- [`M5-MCP 管理增强`](详设/20260809095317_M5-MCP管理增强-详设[已完成].md) — McpManager(连接池+互斥锁)+30s超时+lastError+/mcp子命令(info/tools/reconnect/add/remove)+Windows taskkill进程树清理/env脱敏（v2：基于角色 agent 审阅返工，6🔴+8🟡全修；✅ 已实施 93 mcp 单测绿）
+- [`M5-MCP 管理增强`](详设/20260809095317_M5-MCP管理增强-详设[已完成].md) — McpManager(连接池+互斥锁)+30s超时+lastError+/mcp子命令(info/tools/reconnect/add/remove)+Windows taskkill+POSIX pgrep树遍历进程树清理/env脱敏（v2：基于角色 agent 审阅返工，6🔴+8🟡全修；✅ 已实施 102 mcp 单测，T9 三方唯一全平台解决孙子残留）
 
 ### 调研（5）
 

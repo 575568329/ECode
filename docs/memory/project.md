@@ -22,7 +22,7 @@ src/index.ts          CLI 入口，解析 argv[2] 作为任务
          3. 无 tool_use → break（最终答案）
          4. assistant 回复原样 push 进 messages
          5. executeTool → push tool_result（id 必须配对）
-src/tools.ts          工具定义(Anthropic input_schema) + 执行器(switch 分发)
+src/tools/            工具系统目录（声明式：registry 注册 + executor 分发，无 switch/case）
 src/tools/bash.ts      bash 工具独立模块：异步 spawn + Git Bash 探测 + chcp 65001 兜底
                       getShellInfo() 供 system-prompt 注入（Platform/Shell/Cwd）
 src/system-prompt.ts  System prompt 拼装（IDENTITY + ENVIRONMENT + BEHAVIOR + TOOL_GUIDE）
@@ -46,8 +46,8 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 | M3 上下文压缩 + Session | token 计数、摘要压缩、结果截断、Session 持久化 | 🟡 P1-P4 完成，P5 待（✅ 超限响应式恢复 L3 已接线 2026-08-07）|
 | M3.5 交互式 CLI | 沉浸 REPL、slash 命令、流式渲染、中断、富文本/TUI | 🟡 进行中（REPL/斜杠/折叠组/pager/会话切换/**Esc-Ctrl+C 分工**已落地，Ctrl+O B+ 精简代码完成待真机）|
 | M4 权限系统 | 三档模式（砍 plan）+ 规则引擎（arity/last wins）+ 路径保护 + 修 🔴-2 + 命令分级 + UI 三态审批 + doom-loop | ✅ 完成 2026-08-08（5 阶段全提交：2e754f4 阶段4 + b60c36b 阶段5；683 单测全绿） |
-| M5+ 进阶扩展 | P2: 子代理(9)/MCP(10)/Hooks(12) ｜ P3: Skills(13)/模型路由(22)/多渠道(23) | 🚧 **M5 实施中**：阶段0 地基 + **阶段1 子代理**（76abd74）+ **阶段2 Hooks Pre/Post 引擎**（e7148a4：runner CC 三通道 + inject 多 hook 聚合 + system 强制叠加 + agent Pre/Post 注入零回归，749 测试）；⏸ Hooks settings.json 配置加载/SYSTEM_HOOKS 内容/4 事件流钩子；✅ **阶段3 MCP 全链路 + 管理增强(支点10)已完成 2026-08-09**：McpManager 连接池+互斥锁 / 30s 超时+lastError / /mcp info·tools·reconnect·add·remove / Windows taskkill + POSIX pgrep 树遍历进程树清理 / env 脱敏（删 loader 改线 manager，T9 消除 POSIX 孙子残留），102 mcp 单测 |
-| M6 远期能力 | Skills(13)+模型路由(22)+多渠道(23) | 📄 **M6 设计完成 2026-08-09**（三文档+审阅改定：6 致命+8 改进全修；D1-D7 待审阅），代码未开始 |
+| M5+ 进阶扩展 | P2: 子代理(9)/MCP(10)/Hooks(12) ｜ P3: Skills(13)/模型路由(22)/多渠道(23) | ✅ **M5 完成 2026-08-09**（核心三支点）：阶段0 地基 + **阶段1 子代理**（76abd74）+ **阶段2 Hooks Pre/Post 引擎**（e7148a4：runner CC 三通道 + inject 多 hook 聚合 + system 强制叠加 + agent Pre/Post 注入零回归，749 测试）；✅ Hooks settings.json 配置加载（settings-loader.ts:94）；⏸ SYSTEM_HOOKS 内容/4 事件流钩子/Stop 打回 → 推 M6 阶段 C；✅ **阶段3 MCP 全链路 + 管理增强(支点10)已完成 2026-08-09**：McpManager 连接池+互斥锁 / 30s 超时+lastError / /mcp info·tools·reconnect·add·remove / Windows taskkill + POSIX pgrep 树遍历进程树清理 / env 脱敏（删 loader 改线 manager，T9 消除 POSIX 孙子残留），102 mcp 单测 |
+| M6 收尾里程碑 | M1-M5 收尾 + npm 发布 + Skills(13)/路由(22)/多渠道(23) | 🚧 **M6 实施中 2026-08-09**（重组为收尾里程碑：吸收 M1-M5 收尾项 + npm 适配 + 原范围；Repo Map 拆出后续扩展功能；一口气全做→v0.2.0；D2=服务化+Web 前端），**阶段 A ✅ 完成 2026-08-09**（文档刷新纠偏 + homedir 收口实证：数据目录已收口 / index.ts 指令加载提取 buildSystemInstructions helper + 路由 alias 解析器纯函数 src/router/，6 单测，851 全绿） |
 
 ## 当前焦点
 
@@ -59,7 +59,7 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 - ✅ **P4 Session 持久化**：`src/session.ts`（纯数据层，原子写 tmp+rename，覆盖语义剔除 -2）+ agent loop 挂载（首轮/每轮末/压缩后/结束）+ CLI `--continue`/`-c`/`--resume`/`--sessions`（不带任务=纯恢复不调 LLM）。设计见 [M3-实施方案[已完成].md](../里程碑/M3-实施方案[已完成].md) §6，剔除 -2 决策见 [decisions.md #002](./decisions.md)
 - ✅ 151 单测（session 21 + context-resilience 20 + …）；tsc clean
 - 🟡 真实 LLM 端到端落盘：待配 `.env` key 实跑（单测 + tsc + CLI 免费分流已验证）
-- ⬜ P5 伴随特性（并行只读工具 / retry 读 Retry-After / usage 细化）
+- 🟡 P5 伴随特性:✅ retry 读 Retry-After（retry.ts:53-73）;⬜ 并行只读工具 / usage 细化 UI → 推 M6 阶段 F
 
 **M3.5 交互式 CLI 进行中**（2026-08 起，单测 531 绿）：
 - ✅ 沉浸 Ink REPL（app/chat-view/input-bar/status-bar/welcome）+ 斜杠命令（/help /cost /sessions /clear /resume /exit）+ 斜杠补全 picker（↑↓）
@@ -138,6 +138,6 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 ## 环境
 
 - 运行：`npm run dev -- "任务"`（自动加载 `.env`，via `tsx --env-file-if-exists`）
-- 默认走 DeepSeek 兼容端点：`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`，默认模型 `deepseek-v4-pro`
-- 切官方 Claude：改用 `ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL=claude-sonnet-4-20250514`，留空 BASE_URL
+- 默认模型 **glm-5.2**（GLM coding 端点 `https://open.bigmodel.cn/api/coding/paas/v4`，key 走 `ZHIPUAI_API_KEY` env；普通 paas/v4 会因套餐不匹配报 429）
+- config.json 驱动（`~/.ecode/config.json`，首次启动自动生成带注释模板）：内置 glm/deepseek/claude 三 provider，baseURL 三级可配（`GLM_BASE_URL` 等 env > config.json 显式 > 协议默认），换模型只改 config 不动代码
 - Node >= 18（实测 v22.22.2）

@@ -40,6 +40,23 @@ import { loadPermissionSettings } from './permission/settings-loader.js';
 import type { PermissionMode, Rule } from './permission/types.js';
 import type { HookDef } from './hooks/types.js';
 
+/**
+ * 组装 system prompt 的指令记忆（4 层回退）。
+ *
+ * 第 1 层 homedir() 是【用户级全局指令】（~/ECODE.md / ~/CLAUDE.md），非数据目录——
+ * 不收口到 resolveDataDir()（~/.ecode 是配置/会话数据目录，语义不同）。跨 Windows/WSL
+ * 混合环境的对端 home 自探测属 §9.3 增强，一期沿用 homedir()（与 resolveDataDir 一期
+ * 行为一致），将来增强只改本函数一处。loadInstructions 本身是纯 IO，home/cwd 解析归此。
+ */
+function buildSystemInstructions(projectRoot: string): string {
+  return loadInstructions([
+    homedir(), // 用户级全局指令（~/ECODE.md 等）
+    projectRoot, // 项目根指令
+    resolve(projectRoot, '.ecode'), // 项目 .ecode 指令
+    projectRoot, // cwd 与 root 同;保留以对齐 4 层模型
+  ]);
+}
+
 const { values, positionals } = parseArgs({
   options: {
     model: { type: 'string' },
@@ -272,12 +289,7 @@ if (wantContinue || wantResume) {
     if (!controller.signal.aborted) controller.abort();
   });
   const projectRoot = process.cwd();
-  const instructions = loadInstructions([
-    homedir(),
-    projectRoot,
-    resolve(projectRoot, '.ecode'),
-    projectRoot, // cwd 与 root 同;保留以对齐 4 层模型
-  ]);
+  const instructions = buildSystemInstructions(projectRoot);
   const system = buildSystemPrompt(instructions);
 
   runAgent(newTask, values.model, {
@@ -300,12 +312,7 @@ if (wantContinue || wantResume) {
   // 指令/CLAUDE.md 加载在两个分支都要用（REPL 同样把 system prompt 注入 agent），
   // 故在此处统一加载，再按模式分流。
   const projectRoot = process.cwd();
-  const instructions = loadInstructions([
-    homedir(),
-    projectRoot,
-    resolve(projectRoot, '.ecode'),
-    projectRoot, // cwd 与 root 同;保留以对齐 4 层模型
-  ]);
+  const instructions = buildSystemInstructions(projectRoot);
   const system = buildSystemPrompt(instructions);
 
   const mode = selectEntryMode({

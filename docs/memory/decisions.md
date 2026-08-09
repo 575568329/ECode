@@ -132,7 +132,7 @@ Anthropic 侧可选 `count_tokens` API 校准，但 OpenAI-compatible 侧无统�
 ## 决策 #004：M6 三支点（Skills/模型路由/多渠道）核心选型（2026-08-09，设计层，代码未开始）
 
 **日期**：2026-08-09
-**状态**：🟡 设计层锁定；D1-D7 待用户审阅（D6/D7 为审阅暴露的新点）
+**状态**：✅ 已决策（M6 重组 plan 2026-08-09 审阅敲定：D1 一口气全做→v0.2.0、D2 服务化+Web 前端、D3 规则映射、D4 复用 permission-dialog、D7 自动扫；D6 已死——支点14 M5 阶段3 已落地）
 **影响范围**：M6 = 支点13 Skills + 支点22 模型路由 + 支点23 多渠道。详尽选型见 [M6-技术选型](../里程碑/M6-技术选型与理由[待实现].md)。
 
 ### 锁定的核心决策
@@ -161,3 +161,44 @@ Anthropic 侧可选 `count_tokens` API 校准，但 OpenAI-compatible 侧无统�
 - 实施步骤：[M6-实施方案](../里程碑/M6-实施方案[待实现].md)
 - 原理：[M6-方案解析](../里程碑/M6-方案解析[待实现].md)
 - 审阅改定：[M6-文档审阅问题清单](../里程碑/M6-文档审阅问题清单[待审阅].md)
+
+---
+
+## 决策 #005：Repo Map 不进 M6，作为后续扩展功能（扩展化架构）
+
+**日期**：2026-08-09
+**状态**：✅ 已决策（用户拍板：不进本期，后续扩展功能做）
+**影响范围**：M6 范围界定（Repo Map 拆出）；后续 Repo Map 独立扩展包设计
+
+### 背景
+
+Repo Map 是 aider 标志性创新：tree-sitter 解析符号 → 符号引用图 → PageRank 排序 → 按上下文预算选子集 → 注入 LLM（零 embedding）。M6 重组审阅时用户连续深挖（作用→调研→源码→时效性→维护成本）后定：**不进 M6，后续按扩展功能做**。
+
+### 调研证据（aider 源码级，`D:/Study/aider/aider/repomap.py` 868 行）
+
+本地克隆 aider 源码精读（Explore agent 源码级核实）：
+- **机制**：tree-sitter 解析 Tag（def/ref）→ `networkx.pagerank`（personalization 从用户 mention 抽种子；chat 文件 ×50 / mention ×10 / 超常见名 ×0.1）→ 二分搜索 token 预算裁剪（默认 1024，15% 误差早停）→ TreeContext 折叠渲染。
+- **时效性（用户最关心）**：**纯 mtime 惰性失效**，无主动文件监听，无 content hash。两层缓存——底层 `TAGS_CACHE`（per-file 解析，磁盘 diskcache 持久，mtime 失效）+ 上层 `map_cache`（整图字符串，内存，cache_key = 文件集 + mention）。git pull 拉新代码 → `get_tracked_files()` 看到新文件 → cache_key 变 → 重算；旧文件 mtime 不变则命中缓存跳过。边角漏洞：同秒写入 / `cp --preserve` / 网络盘 mtime 精度低。
+- **map-refresh 四档**（只影响上层 map_cache 命中，底层永远 mtime）：auto（默认）/ always / files / manual。
+- **无 git 基本不可用**：文件清单完全依赖 git。
+- **依赖一堆原生库**：tree-sitter（Python 原生 binding）+ networkx + diskcache + grep_ast。
+
+### 决策：不进 M6 + 扩展化架构
+
+1. **不进 M6**：全新能力（非收尾）+ 独立里程碑量级重活（868 行 + WASM 化 + 持久化 + PageRank + 折叠渲染），塞进已满载 M6 会拖垮节奏。
+2. **扩展化架构**：ECode 核心预留「上下文增强」接入点，Repo Map 作**独立可选 npm 包**（自带 grammar + scm），用户按需安装。核心包不带 tree-sitter WASM（几十 MB 体积消失）、维护解耦、按需付费。
+3. **红线适配**（守 §9.3）：tree-sitter → **web-tree-sitter (WASM)**（非原生 binding）；持久化 → **纯 JS 文件存储**（非 better-sqlite3 原生）；PageRank → **graphology**（纯 JS）；scm → **复用 aider 40+ 份**（web-tree-sitter 通用语法）。
+4. **时效性比 aider 更稳**（ECode 长驻 agent 优势）：mtime + size + hash 三重失效 + chokidar watch 维护 dirtyFiles + git 信号（`.git/HEAD` 变化）清上层 map_cache。
+5. **体积处理**：40+ 语言 grammar（WASM 每个几百 KB~几 MB）不全量内置，起步高频 5-7 门（JS/TS/Python/Go/Rust/Java）+ 缺失优雅降级（该文件不进 map，agent 退回 grep/glob/read）。
+
+### 推翻「进 M6」的理由
+
+- **维护 TCO**：grammar + scm 40+ 语言是长期负担（虽复用上游 tree-sitter 官方 + aider 社区，仍是多一个要版本管理 / 升级 / 测试的子系统）。
+- **优先级**：现阶段 npm 发布 / Skills / 路由 / 多渠道更要紧；Repo Map 是锦上添花（aider 靠它吃饭，ECode 卖点是手写 loop + 纯 JS 跨平台）。
+- **数据驱动**：开源后用户量起来，有真实数据判断值不值得做。
+
+### 关联
+
+- 调研源码：`D:/Study/aider/aider/repomap.py`（本地参照库，与 CCode / claude-code-main / opencode / openclaw 同列）
+- M6 重组 plan：`enchanted-tinkering-coral.md`（范围界定 + 决策记录）
+- 红线：CLAUDE.md §9.3（禁原生二进制 → web-tree-sitter WASM）

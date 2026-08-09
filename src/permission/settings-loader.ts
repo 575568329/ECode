@@ -19,6 +19,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { resolveDataDir } from '../paths.js';
 import type { PermissionMode, Rule, RuleAction } from './types.js';
+import type { HookDef, HookEvent } from '../hooks/types.js';
 
 /** 公开（测试/复用）的 settings.json 形状。 */
 export interface PermissionSettingsFile {
@@ -26,6 +27,8 @@ export interface PermissionSettingsFile {
   allow?: string[];
   deny?: string[];
   ask?: string[];
+  /** hooks 配置（支点 12）：事件 + 命令 + 可选 matcher。source 由加载层自动标记。 */
+  hooks?: Array<{ event: string; command: string; matcher?: string }>;
 }
 
 /**
@@ -77,6 +80,36 @@ export function buildRulesFromSettings(
   return rules;
 }
 
+/** 合法的 HookEvent 名称集合（用于校验 settings.json hooks 字段）。
+ *  须与 hooks/types.ts HookEvent 联合类型保持同步（新增事件需同步更新此处）。
+ */
+const VALID_HOOK_EVENTS = new Set<string>([
+  'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop',
+]);
+
+/**
+ * settings.json hooks 数组 → HookDef[]（非法条目静默跳过）。
+ * source 由加载层标记（user/project），不依赖配置文件内容。
+ */
+function buildHooksFromSettings(
+  raw: PermissionSettingsFile['hooks'],
+  source: HookDef['source'],
+): HookDef[] {
+  if (!raw || !Array.isArray(raw)) return [];
+  const result: HookDef[] = [];
+  for (const item of raw) {
+    if (!item.event || !item.command) continue;
+    if (!VALID_HOOK_EVENTS.has(item.event)) continue;
+    result.push({
+      event: item.event as HookEvent,
+      command: item.command,
+      matcher: item.matcher ?? '*',
+      source,
+    });
+  }
+  return result;
+}
+
 /** 安全读 JSON 文件：缺失 / 解析失败 → undefined（绝不抛，避免一条坏配置砖住启动）。 */
 function readSettingsJson(path: string): PermissionSettingsFile | undefined {
   try {
@@ -106,6 +139,8 @@ export interface LoadedPermissionSettings {
   mode: PermissionMode;
   /** 两层扁平合并后的全部规则（user 在前、project 在后；优先级由 check() 决定）。 */
   rules: Rule[];
+  /** 两层扁平合并后的 hooks（user → project）。非法条目静默跳过。 */
+  hooks: HookDef[];
 }
 
 /**
@@ -176,12 +211,14 @@ export function loadPermissionSettings(
 
   let mode = initialMode;
   const rules: Rule[] = [];
+  const hooks: HookDef[] = [];
   for (const l of layers) {
     if (!existsSync(l.path)) writeSettingsTemplate(l.dir, l.layer);
     const file = readSettingsJson(l.path);
     if (!file) continue;
     if (file.defaultMode) mode = file.defaultMode;
     rules.push(...buildRulesFromSettings(file, l.layer));
+    hooks.push(...buildHooksFromSettings(file.hooks, l.layer));
   }
-  return { mode, rules };
+  return { mode, rules, hooks };
 }

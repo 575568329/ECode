@@ -47,7 +47,7 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 | M3.5 交互式 CLI | 沉浸 REPL、slash 命令、流式渲染、中断、富文本/TUI | 🟡 进行中（REPL/斜杠/折叠组/pager/会话切换/**Esc-Ctrl+C 分工**已落地，Ctrl+O B+ 精简代码完成待真机）|
 | M4 权限系统 | 三档模式（砍 plan）+ 规则引擎（arity/last wins）+ 路径保护 + 修 🔴-2 + 命令分级 + UI 三态审批 + doom-loop | ✅ 完成 2026-08-08（5 阶段全提交：2e754f4 阶段4 + b60c36b 阶段5；683 单测全绿） |
 | M5+ 进阶扩展 | P2: 子代理(9)/MCP(10)/Hooks(12) ｜ P3: Skills(13)/模型路由(22)/多渠道(23) | ✅ **M5 完成 2026-08-09**（核心三支点）：阶段0 地基 + **阶段1 子代理**（76abd74）+ **阶段2 Hooks Pre/Post 引擎**（e7148a4：runner CC 三通道 + inject 多 hook 聚合 + system 强制叠加 + agent Pre/Post 注入零回归，749 测试）；✅ Hooks settings.json 配置加载（settings-loader.ts:94）；⏸ SYSTEM_HOOKS 内容/4 事件流钩子/Stop 打回 → 推 M6 阶段 C；✅ **阶段3 MCP 全链路 + 管理增强(支点10)已完成 2026-08-09**：McpManager 连接池+互斥锁 / 30s 超时+lastError / /mcp info·tools·reconnect·add·remove / Windows taskkill + POSIX pgrep 树遍历进程树清理 / env 脱敏（删 loader 改线 manager，T9 消除 POSIX 孙子残留），102 mcp 单测 |
-| M6 收尾里程碑 | M1-M5 收尾 + npm 发布 + Skills(13)/路由(22)/多渠道(23) | 🚧 **M6 实施中 2026-08-09**（重组为收尾里程碑：吸收 M1-M5 收尾项 + npm 适配 + 原范围；Repo Map 拆出后续扩展功能；一口气全做→v0.2.0；D2=服务化+Web 前端），**阶段 A ✅ 完成 2026-08-09**（文档刷新纠偏 + homedir 收口实证：数据目录已收口 / index.ts 指令加载提取 buildSystemInstructions helper + 路由 alias 解析器纯函数 src/router/，6 单测，851 全绿） |
+| M6 收尾里程碑 | M1-M5 收尾 + npm 发布 + Skills(13)/路由(22)/多渠道(23) | 🚧 **M6 实施中 2026-08-09**（重组为收尾里程碑：吸收 M1-M5 收尾项 + npm 适配 + 原范围；Repo Map 拆出后续扩展功能；一口气全做→v0.2.0；D2=服务化+Web 前端），**阶段 A ✅ 完成 2026-08-09**（文档刷新纠偏 + homedir 收口实证：数据目录已收口 / index.ts 指令加载提取 buildSystemInstructions helper + 路由 alias 解析器纯函数 src/router/，6 单测，851 全绿）；**阶段 B ✅ 完成 2026-08-09**（npm 发布适配：files 白名单/prepublishOnly/repository/LICENSE/CHANGELOG/README 全补，npm pack 无敏感泄漏 253.6kB；真实 GLM 端到端连通验证 stopReason=stop） |
 
 ## 当前焦点
 

@@ -19,7 +19,7 @@ const REGISTRY_FILE = 'registry.json';
 export interface McpRegistryEntry {
   /** server 名（工具命名空间前缀：mcp__<name>__<tool>）。 */
   name: string;
-  /** 传输：阶段 1 只 stdio；http（Streamable HTTP）阶段 4 远期框架。 */
+  /** 传输：stdio（本地子进程）或 http（Streamable HTTP 远程 server）。 */
   transport: 'stdio' | 'http';
   /** stdio：启动命令（如 'npx'）。spawn 前须经 RCE allowlist 校验（client.ts，10-T7）。 */
   command?: string;
@@ -27,8 +27,11 @@ export interface McpRegistryEntry {
   args?: string[];
   /** 环境变量（凭证，不进 config.json，仅存 registry）。 */
   env?: Record<string, string>;
+  /** http：远程 server 的 MCP 端点 URL（如 'https://open.bigmodel.cn/api/mcp/web_search_prime/mcp'）。 */
+  url?: string;
+  /** http：自定义请求头（如 Authorization: Bearer <key>）。 */
+  headers?: Record<string, string>;
   enabled: boolean;
-  // 阶段 4 远期：url?: string; oauth?: {...}
 }
 
 /** registry.json 物理路径（<dataDir>/mcp/registry.json）。 */

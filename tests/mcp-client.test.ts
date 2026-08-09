@@ -1,6 +1,6 @@
 // 阶段3 MCP：client.ts RCE allowlist + 连接生命周期测试。
 // 重点测 validateMcpCommand 命令白名单纯函数 + connectMcpServer 生命周期。
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { validateMcpCommand, connectMcpServer, disconnectAll } from '../src/mcp/client.js';
 import type { McpConnection } from '../src/mcp/client.js';
 import type { McpRegistryEntry } from '../src/mcp/registry.js';
@@ -196,7 +196,7 @@ describe('connectMcpServer（连接生命周期）', () => {
     expect(mocks.createTransport).not.toHaveBeenCalled();
   });
 
-  it('非 stdio transport → status=failed（阶段 1 只支持 stdio）', async () => {
+  it('http transport 无 url → status=failed', async () => {
     const mocks = createMockFactories();
     const entry: McpRegistryEntry = {
       name: 'http-server', transport: 'http', enabled: true,
@@ -244,5 +244,133 @@ describe('disconnectAll', () => {
 
   it('空数组不报错', async () => {
     await expect(disconnectAll([])).resolves.toBeUndefined();
+  });
+});
+
+// ---- http transport 连接测试 ----
+
+/** 创建 HTTP mock 工厂（createHttpTransport + createClient） */
+function createHttpMockFactories(opts?: {
+  tools?: Array<{ name: string; description?: string; inputSchema: { type: 'object'; properties?: Record<string, unknown>; required?: string[] } }>;
+  connectError?: Error;
+}) {
+  const mockClose = vi.fn().mockResolvedValue(undefined);
+  const mockTransport = {
+    start: vi.fn().mockResolvedValue(undefined),
+    close: mockClose,
+    send: vi.fn().mockResolvedValue(undefined),
+  };
+  const mockClient = {
+    connect: vi.fn().mockImplementation(async () => {
+      if (opts?.connectError) throw opts.connectError;
+    }),
+    listTools: vi.fn().mockResolvedValue({
+      tools: opts?.tools ?? [{ name: 'web_search', inputSchema: { type: 'object', properties: {}, required: [] } }],
+    }),
+    callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'mock result' }] }),
+  };
+  return {
+    mockTransport,
+    mockClient,
+    createHttpTransport: vi.fn().mockReturnValue(mockTransport),
+    createClient: vi.fn().mockReturnValue(mockClient),
+  };
+}
+
+describe('connectMcpServer（http transport）', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('http 正常连接 → status=connected, tools 非空', async () => {
+    const mocks = createHttpMockFactories();
+    const entry: McpRegistryEntry = {
+      name: 'web-search',
+      transport: 'http',
+      url: 'https://open.bigmodel.cn/api/mcp/web_search_prime/mcp',
+      headers: { Authorization: 'Bearer test-key' },
+      enabled: true,
+    };
+    const conn = await connectMcpServer(entry, {
+      createHttpTransport: mocks.createHttpTransport,
+      createClient: mocks.createClient,
+    });
+    expect(conn.status).toBe('connected');
+    expect(conn.tools).toHaveLength(1);
+    expect(conn.tools[0].name).toBe('mcp__web-search__web_search');
+    expect(mocks.createHttpTransport).toHaveBeenCalledWith({
+      url: 'https://open.bigmodel.cn/api/mcp/web_search_prime/mcp',
+      headers: { Authorization: 'Bearer test-key' },
+    });
+  });
+
+  it('http transport 缺少 url → status=failed', async () => {
+    const mocks = createHttpMockFactories();
+    const entry: McpRegistryEntry = {
+      name: 'no-url', transport: 'http', enabled: true,
+    };
+    const conn = await connectMcpServer(entry, {
+      createHttpTransport: mocks.createHttpTransport,
+      createClient: mocks.createClient,
+    });
+    expect(conn.status).toBe('failed');
+    expect(mocks.createHttpTransport).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('http 无 headers → 正常连接（headers 可选）', async () => {
+    const mocks = createHttpMockFactories();
+    const entry: McpRegistryEntry = {
+      name: 'no-auth', transport: 'http',
+      url: 'https://example.com/mcp',
+      enabled: true,
+    };
+    const conn = await connectMcpServer(entry, {
+      createHttpTransport: mocks.createHttpTransport,
+      createClient: mocks.createClient,
+    });
+    expect(conn.status).toBe('connected');
+    expect(mocks.createHttpTransport).toHaveBeenCalledWith({
+      url: 'https://example.com/mcp',
+      headers: undefined,
+    });
+  });
+
+  it('http connect 抛错 → status=failed', async () => {
+    const mocks = createHttpMockFactories({ connectError: new Error('401 Unauthorized') });
+    const entry: McpRegistryEntry = {
+      name: 'auth-fail', transport: 'http',
+      url: 'https://example.com/mcp',
+      enabled: true,
+    };
+    const conn = await connectMcpServer(entry, {
+      createHttpTransport: mocks.createHttpTransport,
+      createClient: mocks.createClient,
+    });
+    expect(conn.status).toBe('failed');
+    expect(mocks.mockTransport.close).toHaveBeenCalled();
+  });
+
+  it('http disconnect → close 已调, status=disconnected', async () => {
+    const mocks = createHttpMockFactories();
+    const entry: McpRegistryEntry = {
+      name: 'http-disc', transport: 'http',
+      url: 'https://example.com/mcp',
+      enabled: true,
+    };
+    const conn = await connectMcpServer(entry, {
+      createHttpTransport: mocks.createHttpTransport,
+      createClient: mocks.createClient,
+    });
+    expect(conn.status).toBe('connected');
+    await conn.disconnect();
+    expect(conn.status).toBe('disconnected');
+    expect(mocks.mockTransport.close).toHaveBeenCalledTimes(1);
   });
 });

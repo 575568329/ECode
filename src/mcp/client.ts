@@ -1,11 +1,13 @@
-// MCP（支点 10）client —— stdio server 连接生命周期 + RCE 命令白名单。
+// MCP（支点 10）client —— server 连接生命周期 + stdio RCE 命令白名单。
 //
-// 安全红线（10-T7）：MCP server 通过 child_process.spawn 启动，
+// 支持 stdio（本地子进程）和 http（Streamable HTTP 远程 server）两种 transport。
+// 安全红线（10-T7）：stdio server 通过 child_process.spawn 启动，
 // registry.json 若被篡改可导致任意命令执行（RCE，OX Security CVE，150M+ 下载量）。
 // 本模块在 spawn 前校验命令头是否在安全白名单内。
+// http transport 无 spawn 风险（无 RCE 面），仅需 url 和 headers 校验。
 //
 // 设计（决策 #003 红线 10-T7）：
-//   - 命令头白名单（SAFE_COMMAND_HEADS）：只允许已知安全的可执行文件 basename。
+//   - 命令头白名单（SAFE_COMMAND_HEADS）：只允许已知安全的可执行文件 basename（仅 stdio）。
 //   - 只校验 command 不校验 args/env：
 //     SDK StdioClientTransport 内部用 spawn(command, args)（数组传参不经 shell 解释），
 //     args 无注入风险；shell 本身被白名单拦截。
@@ -13,8 +15,9 @@
 //   - 失败不 crash：校验/连接/listTools 失败 → warn + 返回 failed 状态。
 import { basename } from 'node:path';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { Tool as McpTool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool as McpTool, Prompt as McpPrompt, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolDefinition } from '../tools/types.js';
 import type { McpRegistryEntry } from './registry.js';
 import { adaptMcpTool } from './adapter.js';
@@ -73,6 +76,10 @@ export interface McpConnection {
   readonly serverName: string;
   status: McpConnectionStatus;
   readonly tools: ToolDefinition[];
+  /** server 暴露的 prompts（listPrompts 获取，用于注册斜杠命令）。 */
+  readonly prompts: McpPrompt[];
+  /** 获取指定 prompt 的消息（供斜杠命令 execute 回调调用）。 */
+  getPrompt(name: string, args?: Record<string, string>): Promise<{ messages: unknown[] }>;
   disconnect(): Promise<void>;
 }
 
@@ -85,11 +92,13 @@ interface TransportLike {
   send(message: unknown): Promise<void>;
 }
 
-/** SDK Client 接口（最小契约：connect/listTools/callTool） */
+/** SDK Client 接口（最小契约：connect/listTools/callTool/listPrompts/getPrompt） */
 interface ClientLike {
   connect(transport: TransportLike): Promise<void>;
   listTools(): Promise<{ tools: McpTool[] }>;
   callTool(params: { name: string; arguments: Record<string, unknown> }): Promise<CallToolResult>;
+  listPrompts(): Promise<{ prompts: McpPrompt[] }>;
+  getPrompt(params: { name: string; arguments?: Record<string, string> }): Promise<{ messages: unknown[] }>;
 }
 
 // ---- 连接生命周期 ----
@@ -98,35 +107,66 @@ interface ClientLike {
 export interface ConnectOptions {
   createTransport?: (params: { command: string; args?: string[]; env?: Record<string, string> }) => TransportLike;
   createClient?: () => ClientLike;
+  /** http transport 工厂（测试注入 mock）。生产缺省用 SDK StreamableHTTPClientTransport。 */
+  createHttpTransport?: (params: { url: string; headers?: Record<string, string> }) => TransportLike;
 }
 
 /**
- * 连接单个 MCP server（stdio）。
+ * 连接单个 MCP server（stdio 或 http）。
  *
- * 流程：RCE 校验 → 创建 transport → connect → listTools → adapt。
+ * 流程：前置校验 → 创建 transport（stdio: RCE 校验 / http: url 校验）→ connect → listTools → adapt。
  * 任何一步失败 → warn + 返回 failed 状态（不 crash agent）。
  */
 export async function connectMcpServer(
   entry: McpRegistryEntry,
   opts?: ConnectOptions,
 ): Promise<McpConnection> {
-  // 前置校验：只支持 stdio + enabled
-  if (entry.transport !== 'stdio' || !entry.enabled) {
-    return { serverName: entry.name, status: 'failed', tools: [], disconnect: async () => {} };
+  const failedConn = (): McpConnection => ({
+    serverName: entry.name,
+    status: 'failed',
+    tools: [],
+    prompts: [],
+    getPrompt: async () => ({ messages: [] }),
+    disconnect: async () => {},
+  });
+
+  // 前置校验：只支持 stdio / http + enabled
+  if (!entry.enabled) {
+    return failedConn();
+  }
+  if (entry.transport !== 'stdio' && entry.transport !== 'http') {
+    return failedConn();
   }
 
-  // RCE 命令白名单校验（安全红线）
-  const validation = validateMcpCommand(entry.command);
-  if (!validation.safe) {
-    console.warn(`[MCP] ${entry.name}: ${validation.reason}，跳过连接`);
-    return { serverName: entry.name, status: 'failed', tools: [], disconnect: async () => {} };
+  // ---- 创建 transport（stdio 和 http 分道扬镳，后续 connect→listTools→adapt 完全复用）----
+  let transport: TransportLike;
+  if (entry.transport === 'stdio') {
+    // stdio：RCE 命令白名单校验（安全红线）
+    const validation = validateMcpCommand(entry.command);
+    if (!validation.safe) {
+      console.warn(`[MCP] ${entry.name}: ${validation.reason}，跳过连接`);
+      return failedConn();
+    }
+    const createTransport = opts?.createTransport ?? ((params) => new StdioClientTransport(params));
+    transport = createTransport({ command: entry.command!, args: entry.args, env: entry.env });
+  } else {
+    // http（Streamable HTTP）：校验 url
+    if (!entry.url) {
+      console.warn(`[MCP] ${entry.name}: http transport 缺少 url，跳过连接`);
+      return failedConn();
+    }
+    const createHttpTransport = opts?.createHttpTransport ?? ((params) => {
+      const url = new URL(params.url);
+      const httpOpts: ConstructorParameters<typeof StreamableHTTPClientTransport>[1] = params.headers
+        ? { requestInit: { headers: params.headers } }
+        : {};
+      return new StreamableHTTPClientTransport(url, httpOpts);
+    });
+    transport = createHttpTransport({ url: entry.url, headers: entry.headers });
   }
 
   // SDK 工厂（生产默认用真实 SDK，测试注入 mock）
-  const createTransport = opts?.createTransport ?? ((params) => new StdioClientTransport(params));
   const createClient = opts?.createClient ?? (() => new Client({ name: 'ecode', version: '0.1.0' }));
-
-  const transport = createTransport({ command: entry.command!, args: entry.args, env: entry.env });
   const client = createClient();
 
   try {
@@ -134,7 +174,7 @@ export async function connectMcpServer(
   } catch (err) {
     console.warn(`[MCP] ${entry.name}: 连接失败 (${err instanceof Error ? err.message : String(err)})`);
     await transport.close().catch(() => {}); // 清理，忽略二次错误
-    return { serverName: entry.name, status: 'failed', tools: [], disconnect: async () => {} };
+    return failedConn();
   }
 
   let tools: ToolDefinition[];
@@ -149,7 +189,16 @@ export async function connectMcpServer(
   } catch (err) {
     console.warn(`[MCP] ${entry.name}: 获取工具列表失败 (${err instanceof Error ? err.message : String(err)})`);
     await transport.close().catch(() => {});
-    return { serverName: entry.name, status: 'failed', tools: [], disconnect: async () => {} };
+    return failedConn();
+  }
+
+  // 获取 server 暴露的 prompts（用于注册斜杠命令；失败不阻塞连接）
+  let prompts: McpPrompt[] = [];
+  try {
+    const promptResult = await client.listPrompts();
+    prompts = promptResult.prompts ?? [];
+  } catch {
+    // listPrompts 失败降级为空 prompts（不阻断已建立的连接）
   }
 
   // 构建可变连接对象
@@ -158,6 +207,15 @@ export async function connectMcpServer(
     serverName: entry.name,
     get status() { return status; },
     tools,
+    prompts,
+    getPrompt: async (name, args) => {
+      try {
+        return await client.getPrompt({ name, arguments: args });
+      } catch (err) {
+        console.warn(`[MCP] ${entry.name}: getPrompt("${name}") 失败 (${err instanceof Error ? err.message : String(err)})`);
+        return { messages: [] };
+      }
+    },
     disconnect: async () => {
       await transport.close().catch(() => {});
       status = 'disconnected';

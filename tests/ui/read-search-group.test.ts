@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isSearchBash, isReadSearchTool, summarizeGroup } from '../../src/ui/read-search-group.js';
+import { isSearchBash, isReadSearchTool, isMergeableTool, summarizeGroup } from '../../src/ui/read-search-group.js';
 
 // 背景：折叠组延迟冻结（reduce-agent-event 挂起连续只读工具）需要判定哪些工具
 // 属于「只读可合并」类。read_file/grep/glob 直接判定；bash 需识别搜索类命令
@@ -71,6 +71,37 @@ describe('isReadSearchTool（只读可合并工具判定）', () => {
   });
 });
 
+// C3：扩大合并范围到所有 bash（含 npm/git/test/复合命令），连续 bash 探索合并减少占位。
+// 区别于 isReadSearchTool（只读语义判定）：isMergeableTool 是「UI 合并显示」门控，与只读无关。
+describe('isMergeableTool（C3：同类工具合并门控，含所有 bash）', () => {
+  it('read_file / grep / glob → true（只读组原成员）', () => {
+    expect(isMergeableTool('read_file')).toBe(true);
+    expect(isMergeableTool('grep')).toBe(true);
+    expect(isMergeableTool('glob')).toBe(true);
+  });
+
+  it('所有 bash → true（含非搜索 / 复合命令，C3 核心扩大项）', () => {
+    // 搜索类（原 read-search 成员）
+    expect(isMergeableTool('bash', { command: 'grep foo' })).toBe(true);
+    expect(isMergeableTool('bash', { command: 'cat x' })).toBe(true);
+    // 非搜索类（C3 扩大：npm/git/test 也合并，用户痛点即此——连续 bash 各占一块）
+    expect(isMergeableTool('bash', { command: 'npm install' })).toBe(true);
+    expect(isMergeableTool('bash', { command: 'git status' })).toBe(true);
+    // 复合命令（isSearchBash 判否，但 isMergeableTool 仍合并：cd && cat 是只读探索）
+    expect(isMergeableTool('bash', { command: 'cd /tmp && cat pkg.json' })).toBe(true);
+    expect(isMergeableTool('bash', { command: 'npm test && npm run build' })).toBe(true);
+  });
+
+  it('写操作类工具 → false（edit_file/write_file 仍单独成块，diff/写入是精华）', () => {
+    expect(isMergeableTool('edit_file')).toBe(false);
+    expect(isMergeableTool('write_file')).toBe(false);
+  });
+
+  it('未知工具 → false', () => {
+    expect(isMergeableTool('mcp__foo')).toBe(false);
+  });
+});
+
 describe('summarizeGroup（合并摘要）', () => {
   it('单类型计数 + 复数', () => {
     const tools = [{ name: 'read_file' }, { name: 'read_file' }, { name: 'read_file' }];
@@ -81,7 +112,7 @@ describe('summarizeGroup（合并摘要）', () => {
     expect(summarizeGroup([{ name: 'read_file' }])).toBe('Read 1 file');
     expect(summarizeGroup([{ name: 'grep' }])).toBe('Searched 1 pattern');
     expect(summarizeGroup([{ name: 'glob' }])).toBe('1 glob');
-    expect(summarizeGroup([{ name: 'bash' }])).toBe('1 search');
+    expect(summarizeGroup([{ name: 'bash' }])).toBe('Ran 1 command');
   });
 
   it('混合多类型 → 用 · 分隔', () => {
@@ -93,8 +124,8 @@ describe('summarizeGroup（合并摘要）', () => {
     expect(summarizeGroup(tools)).toBe('Read 3 files · Searched 2 patterns · 1 glob');
   });
 
-  it('bash 复数 → searches（加 es）', () => {
-    expect(summarizeGroup([{ name: 'bash' }, { name: 'bash' }])).toBe('2 searches');
+  it('bash 复数 → Ran N commands（C3：通用命令计数，不再叫 search）', () => {
+    expect(summarizeGroup([{ name: 'bash' }, { name: 'bash' }])).toBe('Ran 2 commands');
   });
 
   it('空数组 → 空串', () => {

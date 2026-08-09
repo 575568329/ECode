@@ -33,6 +33,20 @@ export function isReadSearchTool(name: string, input?: Record<string, unknown>):
   return false;
 }
 
+/**
+ * 工具结果是否参与「同类合并」显示（C3：UI 合并门控，与只读语义无关）。
+ * 在只读组基础上扩大到所有 bash（含 npm/git/test/复合命令）——连续 bash 探索场景
+ * （npm install + cat + cat …）原本各自成块占位多，合并成单行摘要减少占位。
+ * 区别于 isReadSearchTool（只读语义判定）：此处只管「显示上要不要合并」，工具已执行完毕、
+ * 合并仅是渲染层关注点，不涉及权限/执行，故非只读 bash（npm/git）也安全合并。
+ */
+export function isMergeableTool(name: string, input?: Record<string, unknown>): boolean {
+  if (READ_SEARCH_TOOLS.has(name)) return true;
+  if (name === 'bash') return true; // C3：所有 bash 可合并（不再委托 isSearchBash 排除非搜索/复合命令）
+  void input;
+  return false;
+}
+
 /** 合并摘要：按工具类型分组计数 → "Read 3 files · Searched 2 patterns · 1 glob"。 */
 export function summarizeGroup(tools: { name: string }[]): string {
   const counts = new Map<string, number>();
@@ -41,6 +55,6 @@ export function summarizeGroup(tools: { name: string }[]): string {
   const r = counts.get('read_file'); if (r) parts.push(`Read ${r} file${r > 1 ? 's' : ''}`);
   const g = counts.get('grep');      if (g) parts.push(`Searched ${g} pattern${g > 1 ? 's' : ''}`);
   const gl = counts.get('glob');     if (gl) parts.push(`${gl} glob${gl > 1 ? 's' : ''}`);
-  const b = counts.get('bash');      if (b) parts.push(`${b} search${b > 1 ? 'es' : ''}`);
+  const b = counts.get('bash');      if (b) parts.push(`Ran ${b} command${b > 1 ? 's' : ''}`); // C3：通用命令计数（含 npm/git，不再叫 search）
   return parts.join(' · ');
 }

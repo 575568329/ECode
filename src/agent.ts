@@ -139,6 +139,10 @@ export interface RunAgentStreamOptions extends RunAgentOptions {
   allow?: AllowList; // 会话级允许列表（不传则内部 new）
   permissionGate?: PermissionGate; // 权限决策回调（不传 = 全部放行，兼容无 UI / 测试）
   permissionMode?: PermissionMode; // 权限档（default/acceptEdits/bypass，默认 default）
+  /** 权限档动态读取（支持 REPL Shift+Tab 运行中切换即时生效）。
+   *  优先于 permissionMode 值；agent 每次工具 check 时调用，而非 runAgentStream 启动时绑定一次。
+   *  不传 → 回退 permissionMode 值（向后兼容现有测试 / 非 UI 调用）。 */
+  getPermissionMode?: () => PermissionMode;
   /** settings.json 配置的 deny 规则（阶段 4：user+project 两层合并，启动时加载一次）。 */
   denyRules?: Rule[];
   provider?: ModelProvider; // 依赖注入（测试用 mock；生产用 createProvider）
@@ -287,7 +291,9 @@ export async function* runAgentStream(
   const allow = opts.allow ?? new AllowList();
   // doom_loop 检测器（阶段5d）：跨轮持久，连续同 (tool,input) ≥3 触发，强制询问打破死循环。
   const doom = new DoomLoopDetector();
-  const permissionMode: PermissionMode = opts.permissionMode ?? 'default';
+  // 权限档动态读取（支点：REPL Shift+Tab 运行中切换即时生效）：每次工具 check / Task 派发时调用，
+  // 而非 runAgentStream 启动时绑定一次。getPermissionMode 优先（UI 传 ref.current），回退 permissionMode 值。
+  const resolveMode = (): PermissionMode => opts.getPermissionMode?.() ?? opts.permissionMode ?? 'default';
   const baseSystem = opts.system ?? buildSystemPrompt();
   // 阶段 1：把可派遣子代理 catalog 注入主 system（懒加载：只 name+description，不暴露人设正文）。
   //   无 .ecode/agents → catalog 空 → system 不变（零影响）。主 LLM 据此决定派哪个具名人设。
@@ -310,7 +316,7 @@ export async function* runAgentStream(
           // 看到 catalog 反而诱导它白调 Task（被拒、浪费一轮）。
           system: baseSystem,
           allow,
-          permissionMode,
+          getPermissionMode: resolveMode,
           denyRules: opts.denyRules,
           gate: opts.permissionGate,
           provider,
@@ -509,7 +515,7 @@ export async function* runAgentStream(
           toolName: tc.name,
           input: effectiveInput,
           isDangerous,
-          mode: permissionMode,
+          mode: resolveMode(),
           allow,
           roots: [process.cwd()],
           denyRules: opts.denyRules,

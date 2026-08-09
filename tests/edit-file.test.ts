@@ -22,6 +22,15 @@ describe('executeEditFile', () => {
     expect(readFileSync(tmpFile, 'utf-8')).toBe('hello ECode');
   });
 
+  it('替换成功 → content 含 unified diff（- 旧行 / + 新行 / @@ hunk，供 UI 着色与 LLM 理解）', () => {
+    writeFileSync(tmpFile, 'line1\nline2\nline3', 'utf-8');
+    const result = executeEditFile({ path: tmpFile, oldText: 'line2', newText: 'changed' });
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain('-line2');
+    expect(result.content).toContain('+changed');
+    expect(result.content).toMatch(/@@.*@@/);
+  });
+
   it('未找到 oldText 时返回 isError 并回喂带行号的文件真实内容', () => {
     writeFileSync(tmpFile, 'line1\nline2', 'utf-8');
     const result = executeEditFile({ path: tmpFile, oldText: '不存在', newText: 'x' });

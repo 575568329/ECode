@@ -229,6 +229,37 @@ describe('权限系统集成（check + 三态 gate）', () => {
     expect(tr?.isError).toBe(false);
   });
 
+  it('getPermissionMode 优先于 permissionMode 值（运行时动态读 getter，支持 Shift+Tab 即时切换）', async () => {
+    const provider = twoRoundProvider(bashCall('t1', 'echo hi'));
+    const gate = gateReturning('allow_once');
+    // getPermissionMode 返回 default，即使 permissionMode 值是 bypass —— 证明 check 读 getter 而非启动时绑定的值。
+    const events = await collect(
+      runAgentStream('跑', {
+        provider,
+        permissionGate: gate,
+        permissionMode: 'bypass',
+        getPermissionMode: () => 'default',
+      }),
+    );
+    expect(gate.ask).toHaveBeenCalledTimes(1); // default → bash 弹审批（非 bypass 放行）
+    expect(events.some((e) => e.type === 'permission_request')).toBe(true);
+  });
+
+  it('getPermissionMode 返回 bypass → 免审批（getter 经 bypass 路径生效，值是 default 亦被覆盖）', async () => {
+    const provider = twoRoundProvider(bashCall('t1', 'echo hi'));
+    const gate = gateReturning('allow_once');
+    const events = await collect(
+      runAgentStream('跑', {
+        provider,
+        permissionGate: gate,
+        permissionMode: 'default',
+        getPermissionMode: () => 'bypass',
+      }),
+    );
+    expect(gate.ask).not.toHaveBeenCalled();
+    expect(events.some((e) => e.type === 'permission_request')).toBe(false);
+  });
+
   // ── 阶段 3：bash 命令分级（arity 归约 + 命令 pattern） ──
   // 注：allow_always 后命令会「真实执行」，故用只读 git 命令（git status/log/diff，瞬时无害、
   //   git 在本仓库必可用）演示 pattern 逻辑；刻意避开 npm install（分钟级）/ git push（卡网络）

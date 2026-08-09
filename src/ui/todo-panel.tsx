@@ -39,7 +39,9 @@ export function TodoPanel({ todos }: TodoPanelProps): React.ReactElement | null 
 
   return (
     <Box flexDirection="column">
-      <Text color={T.muted}>待办 ({done}/{todos.length})</Text>
+      {/* 标题缩进2格对齐子项内容列：子项「符号+空格」占首2列、正文落列2，
+          标题同样落列2，与任务正文、底部「… 条」「N 已完成」文字列共线（根治标题顶格与正文错位）。 */}
+      <Text color={T.muted}>  待办 ({done}/{todos.length})</Text>
       {/* key 用 index：todos 是整表替换的临时派生列表，无稳定 id；纯展示无内部状态，index 安全。 */}
       {shown.map((t, i) => (
         <Box key={i}>

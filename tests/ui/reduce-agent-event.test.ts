@@ -64,15 +64,16 @@ describe('reduceAgentEvent', () => {
   });
 
   it('tool_result → 移出 activeTools + 落地 completedMessages(kind:tool)', () => {
+    // C3 后 bash 挂起 pending（不直接落地），改用 edit_file（非 mergeable）测通用 tool_result 落地行为。
     let s = reduceAgentEvent(initialStreamState, {
       type: 'tool_call_start',
       id: 't1',
-      name: 'bash',
+      name: 'edit_file',
     });
     s = reduceAgentEvent(s, {
       type: 'tool_result',
       id: 't1',
-      name: 'bash',
+      name: 'edit_file',
       content: 'ok',
       isError: false,
     });
@@ -117,43 +118,44 @@ describe('reduceAgentEvent', () => {
   });
 
   it('tool_result → DisplayMessage 携带 input（历史区摘要 §9.5）', () => {
+    // C3 后 bash 挂起 pending，改用 edit_file 测 input 透传（直接落地 → completedMessages 可查）。
     let s = reduceAgentEvent(initialStreamState, {
       type: 'tool_call_start',
       id: 't1',
-      name: 'bash',
-      input: { command: 'npm test' },
+      name: 'edit_file',
+      input: { path: 'a.ts', oldText: 'x', newText: 'y' },
     });
     s = reduceAgentEvent(s, {
       type: 'tool_result',
       id: 't1',
-      name: 'bash',
+      name: 'edit_file',
       content: 'ok',
       isError: false,
-      input: { command: 'npm test' },
+      input: { path: 'a.ts', oldText: 'x', newText: 'y' },
     });
     const tool = s.completedMessages.find((m) => m.kind === 'tool');
-    expect(tool?.kind === 'tool' && tool.input).toEqual({ command: 'npm test' });
+    expect(tool?.kind === 'tool' && tool.input).toEqual({ path: 'a.ts', oldText: 'x', newText: 'y' });
   });
 
   it('tool_result 未带 input → 从 activeTool 补全（容错：事件缺字段时不丢摘要）', () => {
     let s = reduceAgentEvent(initialStreamState, {
       type: 'tool_call_start',
       id: 't1',
-      name: 'bash',
-      // 用非搜索类命令：折叠延迟冻结会把搜索类 bash(如 ls)挂起进 pending，
-      // 此处专测 input 补全，故避开挂起走 completedMessages 旧路径。
-      input: { command: 'npm run build' },
+      name: 'edit_file',
+      // C3 后所有 bash 都挂起 pending（不再进 completedMessages），故改用 edit_file
+      // （非 mergeable）直接进 completedMessages，专测 input 补全路径。
+      input: { path: 'a.ts', oldText: 'x', newText: 'y' },
     });
     s = reduceAgentEvent(s, {
       type: 'tool_result',
       id: 't1',
-      name: 'bash',
+      name: 'edit_file',
       content: 'ok',
       isError: false,
       // 故意不传 input：reducer 应从 activeTool 回填
     });
     const tool = s.completedMessages.find((m) => m.kind === 'tool');
-    expect(tool?.kind === 'tool' && tool.input).toEqual({ command: 'npm run build' });
+    expect(tool?.kind === 'tool' && tool.input).toEqual({ path: 'a.ts', oldText: 'x', newText: 'y' });
   });
 
   it('permission_request → pendingPermission 挂起', () => {
@@ -296,17 +298,35 @@ describe('延迟冻结：tool_result 挂起 + 破坏时机 flush', () => {
     expect(s.completedMessages.find((m) => m.kind === 'tool')).toBeUndefined();
   });
 
-  it('bash 搜索类(ls)→ 挂起；非搜索(npm test)→ 进 completedMessages', () => {
+  it('所有 bash → 挂起（C3：合并门控扩到全部 bash，不再区分搜索/非搜索）', () => {
     // 搜索类 ls → 挂起
     let s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't1', name: 'bash', input: { command: 'ls' } });
     s = reduceAgentEvent(s, { type: 'tool_result', id: 't1', name: 'bash', content: 'x', isError: false, input: { command: 'ls' } });
     expect(s.pendingReadSearch).toHaveLength(1);
     expect(s.completedMessages.find((m) => m.kind === 'tool')).toBeUndefined();
-    // 非搜索 npm test → 进 completedMessages
+    // 非搜索 npm test → C3 后也挂起（原设计单独成块，现合并减少占位）
     s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't2', name: 'bash', input: { command: 'npm test' } });
     s = reduceAgentEvent(s, { type: 'tool_result', id: 't2', name: 'bash', content: 'y', isError: false, input: { command: 'npm test' } });
+    expect(s.pendingReadSearch).toHaveLength(1);
+    expect(s.completedMessages.find((m) => m.kind === 'tool')).toBeUndefined();
+  });
+
+  it('连续非搜索 bash → 挂起累加 → text 破坏 → 合并 tool_group（C3 核心场景）', () => {
+    // 用户痛点场景：npm install + git status 连续 bash，原本各占一块占位多
+    let s = reduceAgentEvent(initialStreamState, { type: 'tool_call_start', id: 't1', name: 'bash', input: { command: 'npm install' } });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't1', name: 'bash', content: 'installed', isError: false, input: { command: 'npm install' } });
+    s = reduceAgentEvent(s, { type: 'tool_call_start', id: 't2', name: 'bash', input: { command: 'git status' } });
+    s = reduceAgentEvent(s, { type: 'tool_result', id: 't2', name: 'bash', content: 'clean', isError: false, input: { command: 'git status' } });
+    // 挂起累加 2 个（未破坏）
+    expect(s.pendingReadSearch).toHaveLength(2);
+    expect(s.completedMessages.find((m) => m.kind === 'tool_group')).toBeUndefined();
+    // text 破坏 → flush 合并成 tool_group
+    s = reduceAgentEvent(s, { type: 'text_delta', text: '完成' });
     expect(s.pendingReadSearch).toHaveLength(0);
-    expect(s.completedMessages.find((m) => m.kind === 'tool')).toBeDefined();
+    const group = s.completedMessages.find((m) => m.kind === 'tool_group');
+    expect(group).toBeDefined();
+    expect(group?.kind === 'tool_group' && group.tools).toHaveLength(2);
+    expect(group?.kind === 'tool_group' && group.tools.map((t) => t.name)).toEqual(['bash', 'bash']);
   });
 
   it('非只读 edit_file result → 先 flush 挂起组，edit 也进 completedMessages', () => {

@@ -26,7 +26,8 @@ export interface TaskToolContext {
   system: string;
   /** 共享主 AllowList 实例（A 方案：继承全部，子代理批准的回写主，不建独立实例）。 */
   allow: AllowList;
-  permissionMode: PermissionMode;
+  /** 权限档动态读取（主代理 Shift+Tab 切换即时传递给子代理）。子代理 runAgentStream 启动时读当前值。 */
+  getPermissionMode: () => PermissionMode;
   /** 主代理 denyRules（透传，子代理继承硬规则）。 */
   denyRules?: Rule[];
   /** 共享主 permissionGate（ask 弹窗归主对话，子代理不自己弹窗）。 */
@@ -103,7 +104,7 @@ export function createTaskTool(ctx: TaskToolContext): ToolDefinition {
         system: subSystem,
         tools: subTools,
         allow: ctx.allow, // 共享主 AllowList（A 方案权限⊆）
-        permissionMode: ctx.permissionMode,
+        permissionMode: ctx.getPermissionMode(),
         denyRules: ctx.denyRules,
         permissionGate: ctx.gate, // ask 归主对话
         provider: ctx.provider,

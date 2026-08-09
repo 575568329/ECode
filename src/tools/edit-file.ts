@@ -1,6 +1,10 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import { structuredPatch, formatPatch } from 'diff';
 import { ToolResult } from './types.js';
 import { truncate } from './truncate.js';
+
+/** diff 上下文行数（对标 CC StructuredDiff context=3：变更前后各显 3 行上下文）。 */
+const DIFF_CONTEXT_LINES = 3;
 
 export interface EditFileInput {
   path: string;
@@ -54,8 +58,13 @@ export function executeEditFile(input: EditFileInput): ToolResult {
     };
   }
 
+  // 生成 unified diff（供 UI +/- 着色 + LLM 理解具体变更，对标 CC FileEditToolUpdatedMessage）。
+  const patch = structuredPatch(input.path, input.path, content, newContent, '', '', {
+    context: DIFF_CONTEXT_LINES,
+  });
+  const diffText = formatPatch(patch);
   return {
-    content: `已替换。文件 ${input.path} 更新成功（原 ${content.length} 字符 → 新 ${newContent.length} 字符）。`,
+    content: `已替换。文件 ${input.path} 更新成功（原 ${content.length} 字符 → 新 ${newContent.length} 字符）。\n\n${diffText}`,
     isError: false,
   };
 }

@@ -51,4 +51,15 @@ describe('<TodoPanel />', () => {
     expect(f).toContain('待办5');
     expect(f).not.toContain('待办6'); // 第 7 条截断
   });
+
+  it('标题行缩进2格与子项内容列对齐（符号◾/◻占首2列，标题文字落到内容列共线）', () => {
+    const todos: TodoItem[] = [{ content: '任务A', status: 'pending' }];
+    const { lastFrame } = render(<TodoPanel todos={todos} />);
+    // strip ANSI 颜色码后断言前导空格（lastFrame 带 muted 色，须去色才能精确比前缀）。
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+    const firstLine = stripAnsi((lastFrame() ?? '').split('\n')[0] ?? '');
+    // 子项「符号+空格」占首2列、正文落在列2；标题同样落到列2，使「待办…」与任务正文、
+    // 底部「… 条」「✓ N 已完成」的文字列共线（根治标题顶格与正文错位的视觉问题）。
+    expect(firstLine).toBe('  待办 (0/1)');
+  });
 });

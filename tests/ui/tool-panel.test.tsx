@@ -61,6 +61,20 @@ describe('ToolDone', () => {
     expect(f).not.toContain('more lines');
   });
 
+  it('edit_file 成功 → 渲染 +/- 着色 diff + Added/Removed 摘要（对标 CC StructuredDiff）', () => {
+    const content = '已替换。文件 x.ts 更新成功。\n\n@@ -1,2 +1,2 @@\n-old\n+new';
+    const { lastFrame } = render(
+      <ToolDone name="edit_file" content={content} isError={false} input={{ path: 'x.ts' }} />,
+    );
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+    const f = stripAnsi(lastFrame() ?? '');
+    expect(f).toContain('edit_file');
+    expect(f).toContain('x.ts');
+    expect(f).toContain('+1 / -1'); // Added N / Removed M 摘要（精确格式，区别于 @@ 行的 +1,2）
+    expect(f).toContain('+new'); // 新增行（diffAdded 着色，strip 后子串仍在）
+    expect(f).toContain('-old'); // 删除行（diffRemoved 着色）
+  });
+
   it('write_file 超 10 行 → 前 10 行 + 折叠提示（对齐 CC write 阈值）', () => {
     const content = Array.from({ length: 13 }, (_, i) => `line${i}`).join('\n');
     const { lastFrame } = render(<ToolDone name="write_file" content={content} isError={false} />);
@@ -225,6 +239,16 @@ describe('foldContent 策略表', () => {
     const r = foldContent('edit_file', false, '- old\n+ new\n+ newer');
     expect(r.lines).toEqual(['- old', '+ new', '+ newer']);
     expect(r.folded).toBe(false);
+  });
+
+  it('full 模式 edit_file 失败(isError=true) → 降级 head(3) 折叠（失败回喂整文件带行号 ≤50K 会刷屏）', () => {
+    const lines = ['未找到指定文本。', '', '文件当前内容（带行号）：', ...Array.from({ length: 10 }, (_, i) => `${i + 1}: line`)];
+    const longErr = lines.join('\n'); // 13 行（错误提示 + 整文件带行号，模拟 edit-file.ts:35 失败回喂）
+    const r = foldContent('edit_file', true, longErr);
+    expect(r.folded).toBe(true);
+    expect(r.lines.length).toBe(3); // 前 3 行（错误提示），全文截断
+    expect(r.omitted).toBe(lines.length - 3); // 13-3=10
+    expect(r.label).toBe('more lines');
   });
 
   it('未知工具 → 默认 head(3) 兜底 + folded=true', () => {

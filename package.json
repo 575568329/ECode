@@ -25,6 +25,7 @@
     "@anthropic-ai/sdk": "^0.32.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "cli-highlight": "^2.1.11",
+    "diff": "^9.0.0",
     "fast-glob": "^3.3.3",
     "ink": "^7.1.1",
     "marked": "^12.0.2",
@@ -32,6 +33,7 @@
     "react": "^19.2.8"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
     "@types/marked": "^5.0.2",
     "@types/react": "^19.2.18",
     "ink-testing-library": "^4.0.0",

@@ -54,7 +54,7 @@ describe('extractFinalText', () => {
 
 describe('createTaskTool', () => {
   it('是名为 Task 的 dangerous 工具', () => {
-    const tool = createTaskTool({ system: 's', allow: new AllowList(), permissionMode: 'default', depth: 0 });
+    const tool = createTaskTool({ system: 's', allow: new AllowList(), getPermissionMode: () => 'default', depth: 0 });
     expect(tool.name).toBe('Task');
     expect(tool.dangerous).toBe(true);
     expect(tool.execute).toBeDefined();
@@ -62,7 +62,7 @@ describe('createTaskTool', () => {
 
   it('深度超限 → isError 拒绝派发，不递归（防递归爆炸）', async () => {
     const provider = mockProvider([{ type: 'text_delta', text: '不应被调用' }, { type: 'stop', reason: { unified: 'stop', raw: 'stop' } }]);
-    const tool = createTaskTool({ system: 's', allow: new AllowList(), permissionMode: 'default', provider, depth: 1, maxDepth: 1 });
+    const tool = createTaskTool({ system: 's', allow: new AllowList(), getPermissionMode: () => 'default', provider, depth: 1, maxDepth: 1 });
     const res = await tool.execute!({ description: 'd', prompt: 'p' });
     expect(res.isError).toBe(true);
     expect(res.content).toContain('嵌套深度超限');
@@ -78,7 +78,7 @@ describe('createTaskTool', () => {
     const tool = createTaskTool({
       system: 's',
       allow: new AllowList(),
-      permissionMode: 'default',
+      getPermissionMode: () => 'default',
       provider: subProvider,
       model: 'mock-model',
       depth: 0,
@@ -93,7 +93,7 @@ describe('createTaskTool', () => {
     const tool = createTaskTool({
       system: 's',
       allow: new AllowList(),
-      permissionMode: 'default',
+      getPermissionMode: () => 'default',
       provider: subProvider,
       model: 'mock-model',
       depth: 0,

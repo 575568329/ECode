@@ -236,6 +236,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
         system: systemRef.current,
         allow: allowRef.current,
         permissionMode: permissionModeRef.current,
+        getPermissionMode: () => permissionModeRef.current, // Shift+Tab 运行中切换即时生效（每工具 check 读最新）
         denyRules: denyRulesRef.current,
         hooks: hooksRef.current,
         // MCP 工具合并（阶段3：加载完成前 ref 为空，加载后追加到内置工具后面）

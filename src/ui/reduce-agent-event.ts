@@ -2,7 +2,7 @@
 // 无 React 依赖，核心状态转换全在此可测。useAgentStream hook 包它接 React。
 import type { AgentEvent } from '../agent-events.js';
 import { initialStreamState, type StreamState, type DisplayMessage } from './types.js';
-import { isReadSearchTool } from './read-search-group.js';
+import { isMergeableTool } from './read-search-group.js';
 
 /** 单调递增 id 生成（reducer 内部用，保证 DisplayMessage 稳定 key）。 */
 let msgSeq = 0;
@@ -106,9 +106,10 @@ export function reduceAgentEvent(state: StreamState, event: AgentEvent): StreamS
         isError: event.isError,
         input: event.input ?? fallbackInput,
       };
-      // 延迟冻结：只读工具 → 挂起 pendingReadSearch（不进 Static，动态区实时显示合并摘要）；
-      // 非只读 → 先 flush 挂起组（它破坏了连续只读），再把这个工具进 Static。
-      if (isReadSearchTool(event.name, msg.input)) {
+      // 延迟冻结：可合并工具 → 挂起 pendingReadSearch（不进 Static，动态区实时显示合并摘要）。
+      // C3：门控从「只读搜索类」扩到「所有 bash」（isMergeableTool），连续 bash 探索场景
+      //   （npm install + cat + cat …）合并成单行摘要减少占位；异类工具破坏连续 → 先 flush 再进 Static。
+      if (isMergeableTool(event.name, msg.input)) {
         return { ...state, activeTools, pendingReadSearch: [...state.pendingReadSearch, msg] };
       }
       const s = flushIfNeeded(state);

@@ -91,8 +91,6 @@ function getStrategy(name: string): FoldStrategy {
  *  label 中的 'N' 占位符在 head 模式下替换为实际总行数（如 grep 的 "of 5 matches"）。
  *  导出：format-transcript 复用 folded 判定是否进 less 展开（单一规则源）。 */
 export function foldContent(name: string, isError: boolean, content: string): Folded {
-  // isError 保留签名兼容（调用方均传），当前策略不区分错误行数（对标 CC/opencode 统一阈值）。
-  void isError;
   // 去尾部换行：输出常带尾 \n，split 会产出末尾空串 → 渲染空 ↳ 行（噪声）。
   const all = content.replace(/\n+$/, '').split('\n');
   const strategy = getStrategy(name);
@@ -114,8 +112,16 @@ export function foldContent(name: string, isError: boolean, content: string): Fo
       }
       return { lines: all, omitted: 0, label: '', folded: false };
     }
-    case 'full':
+    case 'full': {
+      // full 本意「成功内容是精华不截断」（edit_file diff 等）；但失败时 content 常是诊断长文
+      // （edit_file 失败回喂整文件带行号 ≤50K，edit-file.ts:33-45），仍 full 会刷屏 → 失败降级 head(3)。
+      if (!isError) return { lines: all, omitted: 0, label: '', folded: false };
+      const head = 3;
+      if (all.length > head) {
+        return { lines: all.slice(0, head), omitted: all.length - head, label: 'more lines', folded: true };
+      }
       return { lines: all, omitted: 0, label: '', folded: false };
+    }
   }
 }
 
@@ -194,6 +200,50 @@ function BlockTool({ name, isError, arg, lines, omitted, label }: BlockToolProps
   );
 }
 
+// ---- EditFileDiff：edit_file 成功的 +/- 着色 diff 渲染（对标 CC StructuredDiff） ----
+
+interface EditFileDiffProps {
+  path: string;
+  content: string;
+}
+
+/**
+ * edit_file 成功结果的 diff 着色渲染（对标 CC StructuredDiff + FileEditToolUpdatedMessage）。
+ * content = 「回执\n\nunified diff」：逐行按行首字符着色——
+ *   '+'（非 '+++' 文件头）→ diffAdded 绿；'-'（非 '---'）→ diffRemoved 红；
+ *   ' '（context）→ muted；其他（回执 / @@ / 文件头）默认色。
+ * 顶部摘要 Added N / Removed M（统计 + / - 行数，复用 theme 预留的 diffAdded/diffRemoved token）。
+ */
+function EditFileDiff({ path, content }: EditFileDiffProps): React.ReactElement {
+  const lines = content.replace(/\n+$/, '').split('\n');
+  let added = 0;
+  let removed = 0;
+  for (const line of lines) {
+    if (line.startsWith('+') && !line.startsWith('+++')) added++;
+    else if (line.startsWith('-') && !line.startsWith('---')) removed++;
+  }
+  return (
+    <Box {...leftBorder} borderColor={T.toolBorder} paddingLeft={1} flexDirection="column">
+      <Text>
+        <Text color={T.success}>{SYMBOLS.success} </Text>
+        <Text color={T.tool}>edit_file</Text>
+        <Text color={T.muted}> ({path}) · +</Text>
+        <Text color={T.diffAdded}>{added}</Text>
+        <Text color={T.muted}> / -</Text>
+        <Text color={T.diffRemoved}>{removed}</Text>
+      </Text>
+      {lines.map((line, i) => {
+        if (line.startsWith('+') && !line.startsWith('+++'))
+          return <Text key={i} color={T.diffAdded}>{line}</Text>;
+        if (line.startsWith('-') && !line.startsWith('---'))
+          return <Text key={i} color={T.diffRemoved}>{line}</Text>;
+        if (line.startsWith(' ')) return <Text key={i} color={T.muted}>{line}</Text>;
+        return <Text key={i}>{line}</Text>;
+      })}
+    </Box>
+  );
+}
+
 // ---- ToolDone：路由 Inline/Block ----
 
 interface ToolDoneProps {
@@ -204,8 +254,13 @@ interface ToolDoneProps {
 }
 
 export function ToolDone({ name, content, isError, input }: ToolDoneProps): React.ReactElement {
-  const folded = foldContent(name, isError, content);
   const arg = summarizeArg(name, input);
+  // edit_file 成功 → 渲染 +/- 着色 diff（成功 content 含 unified diff，对标 CC StructuredDiff）。
+  // 失败仍走下方 foldContent（A2：isError 降级 head 折叠，避免整文件带行号刷屏）。
+  if (name === 'edit_file' && !isError) {
+    return <EditFileDiff path={arg} content={content} />;
+  }
+  const folded = foldContent(name, isError, content);
   const mode = decideToolMode(name, isError, content);
 
   if (mode === 'inline') {

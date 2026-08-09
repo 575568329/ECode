@@ -5,7 +5,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadMcpRegistry, saveMcpRegistry } from '../src/mcp/registry.js';
+import { loadMcpRegistry, saveMcpRegistry, maskSecret } from '../src/mcp/registry.js';
 import type { McpRegistryEntry } from '../src/mcp/registry.js';
 
 const tmpDirs: string[] = [];
@@ -87,6 +87,13 @@ describe('saveMcpRegistry（写回 + enable/disable）', () => {
     saveMcpRegistry(entries, { dataDir: dir });
     expect(loadMcpRegistry({ dataDir: dir })[0].enabled).toBe(false);
   });
+
+  it('description 字段往返一致（/mcp list/info 显示用）', () => {
+    const dir = freshDataDir();
+    saveMcpRegistry([sampleEntry({ description: 'GitHub 仓库操作' })], { dataDir: dir });
+    const loaded = loadMcpRegistry({ dataDir: dir });
+    expect(loaded[0].description).toBe('GitHub 仓库操作');
+  });
 });
 
 describe('独立注册表（不进 config.json，VS Code 扩展模式）', () => {
@@ -109,5 +116,20 @@ describe('独立注册表（不进 config.json，VS Code 扩展模式）', () =>
     const loaded = loadMcpRegistry({ dataDir: dir });
     // registry 存全量（含 disabled），筛选职责在 loader（连哪些 server）
     expect(loaded).toHaveLength(2);
+  });
+});
+
+describe('maskSecret（env 脱敏，/mcp info 用）', () => {
+  it('短值（≤8）→ 全掩 ****', () => {
+    expect(maskSecret('abc')).toBe('****');
+    expect(maskSecret('12345678')).toBe('****'); // 恰好 8 位 → 全掩
+  });
+
+  it('长值（>8）→ 首尾各 4 位 + ...', () => {
+    expect(maskSecret('sk-abcdefghijklmnop')).toBe('sk-a...mnop');
+  });
+
+  it('空串 → ****（≤8 规则）', () => {
+    expect(maskSecret('')).toBe('****');
   });
 });

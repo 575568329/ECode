@@ -22,7 +22,8 @@ import type { PickerItem } from './picker-list.js';
 import { StatusBar, type StatusBarPhase } from './status-bar.js';
 import { parseUserInput, SLASH_COMMANDS, registerCommandHandler, findCommandHandler } from '../slash-commands.js';
 import { getContextWindow, getDefaultModel, listAvailableModels } from '../providers/config.js';
-import { loadMcpRegistry, saveMcpRegistry } from '../mcp/registry.js';
+import { maskSecret, type McpRegistryEntry } from '../mcp/registry.js';
+import type { McpServerState } from '../mcp/manager.js';
 import { listSessions, loadSession } from '../session.js';
 import type { ECodeSessionSummary } from '../session.js';
 import { messagesToDisplayMessages } from './messages-to-display.js';
@@ -271,37 +272,122 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
         api.addMessage({ kind: 'warning', id: `sys-compact-${Date.now()}`, text: `已压缩上下文：${result.before} → ${result.after} 条消息。` });
       }
     });
-    registerCommandHandler('mcp', (args) => {
-      const entries = loadMcpRegistry();
-      if (entries.length === 0) {
-        api.addMessage({ kind: 'warning', id: `sys-mcp-${Date.now()}`, text: '无 MCP server 配置。registry.json 为空或不存在。' });
+    registerCommandHandler('mcp', async (args) => {
+      const sub = args[0];
+      const id = () => `sys-mcp-${Date.now()}`;
+      const mcp = api.mcp;
+
+      // /mcp add <name> <command> [args...] —— stdio fast-path
+      if (sub === 'add') {
+        const name = args[1];
+        const command = args[2];
+        const cmdArgs = args.slice(3);
+        if (!name || !command) {
+          api.addMessage({ kind: 'warning', id: id(), text: '用法: /mcp add <name> <command> [args...]\n示例: /mcp add github npx -y @modelcontextprotocol/server-github' });
+          return;
+        }
+        const entry: McpRegistryEntry = {
+          name, transport: 'stdio', command,
+          args: cmdArgs.length > 0 ? cmdArgs : undefined,
+          enabled: true,
+        };
+        const st = await mcp.add(entry);
+        api.addMessage({
+          kind: 'warning', id: id(),
+          text: st.status === 'connected'
+            ? `已添加并连接 ${name}（${st.tools.length} 个工具）`
+            : `已添加 ${name}，连接失败：${st.lastError ?? '未知原因'}`,
+        });
         return;
       }
-      // 子命令：enable / disable
-      const sub = args[0];
+
+      // /mcp remove <name>
+      if (sub === 'remove') {
+        const name = args[1];
+        if (!name) { api.addMessage({ kind: 'warning', id: id(), text: '用法: /mcp remove <name>' }); return; }
+        await mcp.remove(name);
+        api.addMessage({ kind: 'warning', id: id(), text: `已移除 ${name}` });
+        return;
+      }
+
+      // /mcp reconnect <name>（断旧含进程清理 → 重建）
+      if (sub === 'reconnect') {
+        const name = args[1];
+        if (!name) { api.addMessage({ kind: 'warning', id: id(), text: '用法: /mcp reconnect <name>' }); return; }
+        const st = await mcp.reconnect(name);
+        api.addMessage({
+          kind: 'warning', id: id(),
+          text: st.status === 'connected'
+            ? `已重连 ${name}（${st.tools.length} 个工具）`
+            : `重连 ${name} 失败：${st.lastError ?? '未知原因'}`,
+        });
+        return;
+      }
+
+      // /mcp enable|disable <name>
       if (sub === 'enable' || sub === 'disable') {
         const name = args[1];
-        if (!name) {
-          api.addMessage({ kind: 'warning', id: `sys-mcp-${Date.now()}`, text: `用法: /mcp ${sub} <server-name>` });
-          return;
-        }
-        const entry = entries.find((e) => e.name === name);
-        if (!entry) {
-          api.addMessage({ kind: 'warning', id: `sys-mcp-${Date.now()}`, text: `未找到 server "${name}"` });
-          return;
-        }
-        entry.enabled = sub === 'enable';
-        saveMcpRegistry(entries);
-        api.addMessage({ kind: 'warning', id: `sys-mcp-${Date.now()}`, text: `已${sub === 'enable' ? '启用' : '禁用'} ${name}（重启生效）` });
+        if (!name) { api.addMessage({ kind: 'warning', id: id(), text: `用法: /mcp ${sub} <name>` }); return; }
+        await mcp.enable(name, sub === 'enable');
+        api.addMessage({ kind: 'warning', id: id(), text: `已${sub === 'enable' ? '启用' : '禁用'} ${name}` });
         return;
       }
-      // 默认：列出所有 server
-      const lines = entries.map((e) => {
-        const status = e.enabled ? '✓' : '✗';
-        const cmd = e.command ?? '(无)';
-        return `  ${status} ${e.name.padEnd(16)} ${e.transport.padEnd(6)} ${cmd}`;
+
+      // /mcp info <name> —— 详情（transport/command/url/lastError/工具数）
+      if (sub === 'info') {
+        const name = args[1];
+        if (!name) { api.addMessage({ kind: 'warning', id: id(), text: '用法: /mcp info <name>' }); return; }
+        const st = mcp.list().find((s) => s.name === name);
+        if (!st) { api.addMessage({ kind: 'warning', id: id(), text: `未找到 server "${name}"` }); return; }
+        const e = st.entry;
+        const lines = [
+          `${name}  [${st.status}]`,
+          `  传输: ${st.transport}`,
+          e.description ? `  描述: ${e.description}` : null,
+          e.command ? `  命令: ${e.command}${e.args && e.args.length ? ' ' + e.args.join(' ') : ''}` : null,
+          e.url ? `  URL: ${e.url}` : null,
+          e.env && Object.keys(e.env).length > 0
+            ? `  环境变量: ${Object.entries(e.env).map(([k, v]) => `${k}=${maskSecret(v)}`).join(', ')}`
+            : null,
+          st.lastError ? `  最近错误: ${st.lastError}` : null,
+          `  工具数: ${st.tools.length}`,
+        ].filter((l): l is string => l !== null);
+        api.addMessage({ kind: 'warning', id: id(), text: lines.join('\n') });
+        return;
+      }
+
+      // /mcp tools <name> —— 列出工具
+      if (sub === 'tools') {
+        const name = args[1];
+        if (!name) { api.addMessage({ kind: 'warning', id: id(), text: '用法: /mcp tools <name>' }); return; }
+        const st = mcp.list().find((s) => s.name === name);
+        if (!st) { api.addMessage({ kind: 'warning', id: id(), text: `未找到 server "${name}"` }); return; }
+        if (st.tools.length === 0) {
+          api.addMessage({ kind: 'warning', id: id(), text: `${name} 暂无工具（状态: ${st.status}）` });
+          return;
+        }
+        const lines = st.tools.map((t) => `  ${t.name}${t.description ? '  ' + t.description.slice(0, 60) : ''}`);
+        api.addMessage({ kind: 'warning', id: id(), text: `${name} 工具（${st.tools.length}）:\n${lines.join('\n')}` });
+        return;
+      }
+
+      // 默认 / /mcp list —— 列出所有 server（真实连接状态，非 enabled 开关）
+      const states = mcp.list();
+      if (states.length === 0) {
+        api.addMessage({ kind: 'warning', id: id(), text: '无 MCP server。添加: /mcp add <name> <command> [args...]' });
+        return;
+      }
+      const icon = (s: McpServerState['status']): string =>
+        s === 'connected' ? '✓' : s === 'failed' ? '✗' : s === 'disabled' ? '−' : '○';
+      const lines = states.map((s) => {
+        const target = s.entry.command ?? s.entry.url ?? '(无)';
+        const err = s.lastError ? `  ⚠ ${s.lastError}` : '';
+        return `  ${icon(s.status)} ${s.name.padEnd(16)} ${s.transport.padEnd(6)} ${target}${err}`;
       });
-      api.addMessage({ kind: 'warning', id: `sys-mcp-${Date.now()}`, text: `MCP servers:\n${lines.join('\n')}\n用法: /mcp enable|disable <name>` });
+      api.addMessage({
+        kind: 'warning', id: id(),
+        text: `MCP servers:\n${lines.join('\n')}\n子命令: /mcp info|tools|reconnect|enable|disable|add|remove <name>`,
+      });
     });
   }
 

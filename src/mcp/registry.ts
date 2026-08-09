@@ -3,7 +3,7 @@
 // 设计（决策 #003 / 技术选型 10-T）：
 //   - 独立注册表：替换/删除 config.json 不影响 MCP server 配置（防「config 连坐删」）。
 //   - 走 resolveDataDir()（§9.3 跨平台单一入口，不散用 homedir()/'~'）。
-//   - 显式登记才连（loader 遍历 enabled，不自动跑）—— /mcp enable|disable 写回本表。
+//   - 显式登记才连（manager 遍历 enabled，不自动跑）—— /mcp enable|disable 写回本表。
 //   - 加载失败（文件缺失/损坏/非数组）→ 空数组降级，不砖住 agent（对齐 config/settings-loader 风格）。
 //
 // 注：本模块只管「存/取配置」，不含 SDK 依赖、不 spawn server、不做 RCE 校验——
@@ -31,6 +31,8 @@ export interface McpRegistryEntry {
   url?: string;
   /** http：自定义请求头（如 Authorization: Bearer <key>）。 */
   headers?: Record<string, string>;
+  /** server 描述（/mcp list/info 显示，区分同名/记忆用途）。 */
+  description?: string;
   enabled: boolean;
 }
 
@@ -67,4 +69,10 @@ export function saveMcpRegistry(
   const file = registryPath(opts?.dataDir ?? resolveDataDir());
   mkdirSync(join(opts?.dataDir ?? resolveDataDir(), MCP_SUBDIR), { recursive: true });
   writeFileSync(file, JSON.stringify(entries, null, 2), 'utf-8');
+}
+
+/** 脱敏密钥值（/mcp info 显示 env 用，§9.2 红线：密钥不明文进 UI）：≤8 位全掩，否则首尾各 4 位。 */
+export function maskSecret(value: string): string {
+  if (value.length <= 8) return '****';
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }

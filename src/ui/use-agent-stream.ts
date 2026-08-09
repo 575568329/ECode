@@ -27,10 +27,24 @@ import { getDefaultModel } from '../providers/config.js';
 import { messagesToDisplayMessages } from './messages-to-display.js';
 import { extractTodos, type TodoItem } from '../tools/todo.js';
 import type { ToolDefinition } from '../tools/types.js';
-import { loadMcpServers, unloadMcpServers } from '../mcp/loader.js';
-import type { McpConnection } from '../mcp/client.js';
+import { McpManager, type McpServerState } from '../mcp/manager.js';
+import { loadMcpRegistry, saveMcpRegistry, type McpRegistryEntry } from '../mcp/registry.js';
 import { adaptMcpPrompt } from '../mcp/adapter.js';
 import { registerCommand, unregisterCommand } from '../slash-commands.js';
+
+/** MCP 管理 API（/mcp 子命令用；封装 registry 读写 + manager 操作，app.tsx 只 dispatch）。 */
+export interface McpApi {
+  /** 列出所有 server 运行时状态（含 tools/lastError/entry；/mcp list/info/tools 显示源）。 */
+  list: () => McpServerState[];
+  /** 重连（断旧含进程清理 → 重建；/mcp reconnect）。 */
+  reconnect: (name: string) => Promise<McpServerState>;
+  /** 新增/覆盖 server（写 registry append/replace + connect；/mcp add fast-path）。 */
+  add: (entry: McpRegistryEntry) => Promise<McpServerState>;
+  /** 移除 server（disconnect + 写 registry 删 + forget；/mcp remove）。 */
+  remove: (name: string) => Promise<void>;
+  /** 启用/禁用（写 registry toggle + connect 按 enabled 走 connected/disabled；/mcp enable|disable）。 */
+  enable: (name: string, on: boolean) => Promise<void>;
+}
 
 export interface UseAgentStreamReturn {
   completedMessages: DisplayMessage[];
@@ -78,6 +92,8 @@ export interface UseAgentStreamReturn {
   compact: () => Promise<{ before: number; after: number } | null>;
   /** 当前会话 id（controller.sessionRef）；null = 新会话未建立。/resume 过滤当前会话用。 */
   currentSessionId: () => string | null;
+  /** MCP 管理 API（/mcp list/info/tools/reconnect/enable/disable/add/remove 用）。 */
+  mcp: McpApi;
 }
 
 export interface UseAgentStreamOptions {
@@ -115,45 +131,47 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   const hooksRef = useRef<HookDef[] | undefined>(opts.hooks);
   hooksRef.current = opts.hooks;
 
-  // MCP server 加载（阶段3：启动时连一次，tools 合并进 getRunOpts，prompts 注册斜杠命令，退出时断开）。
+  // MCP server（改线 McpManager：连接池 + 互斥锁 + onChange 重注册）。
+  // manager 用 ref 持守（整会话一次）；tools 经 ref 喂 getRunOpts，prompts 注册斜杠命令。
+  const mcpManagerRef = useRef<McpManager | null>(null);
+  if (mcpManagerRef.current === null) {
+    mcpManagerRef.current = new McpManager();
+  }
   const mcpToolsRef = useRef<ToolDefinition[]>([]);
-  const mcpConnectionsRef = useRef<McpConnection[]>([]);
-  const mcpCmdNamesRef = useRef<string[]>([]); // 已注册的 MCP 斜杠命令名（卸载时注销）
+  const mcpCmdNamesRef = useRef<string[]>([]); // 已注册 MCP 斜杠命令名（重注册前先注销旧的）
   useEffect(() => {
+    const manager = mcpManagerRef.current!;
     let cancelled = false;
-    loadMcpServers().then((result) => {
-      if (cancelled) {
-        void unloadMcpServers(result.connections);
-        return;
-      }
-      mcpToolsRef.current = result.tools;
-      mcpConnectionsRef.current = result.connections;
 
-      // 注册 MCP prompts 为动态斜杠命令
+    // MCP prompt 消息 → 文本（作为 user 消息注入 agent）
+    const messagesToText = (messages: unknown): string =>
+      (messages as Array<{ role?: string; content?: unknown }>)
+        .map((m) => {
+          const content = m.content;
+          if (typeof content === 'string') return content;
+          if (Array.isArray(content)) {
+            return content
+              .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
+              .map((c) => c.text)
+              .join('\n');
+          }
+          return String(content ?? '');
+        })
+        .join('\n');
+
+    // 同步 prompts 为斜杠命令（先注销旧的，再按当前 pool 注册）
+    const syncPrompts = () => {
+      for (const name of mcpCmdNamesRef.current) {
+        unregisterCommand(name);
+      }
       const cmdNames: string[] = [];
-      const connsByName = new Map(result.connections.map((c) => [c.serverName, c]));
-      for (const { serverName, prompt } of result.prompts) {
-        const conn = connsByName.get(serverName);
-        if (!conn) continue;
+      for (const { serverName, prompt } of manager.getAllPrompts()) {
         const cmd = adaptMcpPrompt(
           serverName,
           prompt,
-          (name, args) => conn.getPrompt(name, args),
-          // MCP prompt 返回的消息序列化为文本，作为用户消息注入 agent
+          (name, args) => manager.callPrompt(serverName, name, args),
           (messages) => {
-            const text = (messages as Array<{ role?: string; content?: unknown }>)
-              .map((m) => {
-                const content = m.content;
-                if (typeof content === 'string') return content;
-                if (Array.isArray(content)) {
-                  return content
-                    .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-                    .map((c) => c.text)
-                    .join('\n');
-                }
-                return String(content ?? '');
-              })
-              .join('\n');
+            const text = messagesToText(messages);
             if (text.trim()) controllerRef.current?.submit(text);
           },
         );
@@ -164,19 +182,34 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
       if (cmdNames.length > 0) {
         console.log(`[MCP] 已注册 ${cmdNames.length} 个 prompt 斜杠命令`);
       }
+    };
+
+    // tools 同步（getRunOpts 闭包读 ref）
+    const syncTools = () => {
+      mcpToolsRef.current = manager.getAllTools();
+    };
+
+    // 终态变更 → 重同步（manager 仅终态 emit，防 prompts 抖动）
+    const off = manager.onChange(() => {
+      syncTools();
+      syncPrompts();
     });
+
+    // 启动连接（connectAll 内每个 server 连上即 emit → onChange 同步；完成后再同步一次兜底）
+    void manager.connectAll().then(() => {
+      if (cancelled) return;
+      syncTools();
+      syncPrompts();
+    });
+
     return () => {
       cancelled = true;
-      // 注销 MCP 动态斜杠命令
+      off();
       for (const name of mcpCmdNamesRef.current) {
         unregisterCommand(name);
       }
       mcpCmdNamesRef.current = [];
-      // 断开所有 MCP 连接
-      const conns = mcpConnectionsRef.current;
-      if (conns.length > 0) {
-        void unloadMcpServers(conns);
-      }
+      void manager.disconnectAll();
     };
   }, []);
 
@@ -336,6 +369,28 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
 
   const currentSessionId = useCallback(() => controller.currentSessionId(), [controller]);
 
+  // MCP 管理 API（/mcp 子命令用；registry 读写 + manager 操作封装于此，app.tsx 不直接碰 registry）。
+  const mcp: McpApi = {
+    list: () => mcpManagerRef.current!.getStatus() as McpServerState[],
+    reconnect: (name) => mcpManagerRef.current!.reconnect(name),
+    add: async (entry) => {
+      const entries = loadMcpRegistry();
+      const exists = entries.some((e) => e.name === entry.name);
+      saveMcpRegistry(exists ? entries.map((e) => (e.name === entry.name ? entry : e)) : [...entries, entry]);
+      return mcpManagerRef.current!.connect(entry.name, entry);
+    },
+    remove: async (name) => {
+      await mcpManagerRef.current!.disconnect(name);
+      saveMcpRegistry(loadMcpRegistry().filter((e) => e.name !== name));
+      mcpManagerRef.current!.forget(name);
+    },
+    enable: async (name, on) => {
+      saveMcpRegistry(loadMcpRegistry().map((e) => (e.name === name ? { ...e, enabled: on } : e)));
+      // connect 重读 registry，connectOne 按新 enabled 走 connected / disabled
+      await mcpManagerRef.current!.connect(name);
+    },
+  };
+
   return {
     completedMessages: state.completedMessages,
     staticKey: state.staticKey,
@@ -362,5 +417,6 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
     switchSession,
     compact,
     currentSessionId,
+    mcp,
   };
 }

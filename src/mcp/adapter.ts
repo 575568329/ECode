@@ -20,7 +20,7 @@ import type {
  * 关键设计：
  *   - 命名空间：`mcp__<serverName>__<toolName>`（仿 CC，避免不同 server 同名工具冲突）。
  *   - dangerous: true（MCP = 不可信代码，统一走 check/审批）。
- *   - execute: 闭包调用 connection.callTool（由 loader 在连接后注入）。
+ *   - execute: 闭包调用 connection.callTool（由 manager 在连接后注入）。
  *   - inputSchema 直接透传（JSON Schema → ECode parameters 形状一致）。
  */
 export function adaptMcpTool(

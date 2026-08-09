@@ -1,7 +1,7 @@
 // 阶段3 MCP：client.ts RCE allowlist + 连接生命周期测试。
 // 重点测 validateMcpCommand 命令白名单纯函数 + connectMcpServer 生命周期。
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { validateMcpCommand, connectMcpServer, disconnectAll } from '../src/mcp/client.js';
+import { validateMcpCommand, connectMcpServer, disconnectAll, raceWithTimeout, MCP_CONNECT_TIMEOUT_MS } from '../src/mcp/client.js';
 import type { McpConnection } from '../src/mcp/client.js';
 import type { McpRegistryEntry } from '../src/mcp/registry.js';
 
@@ -115,6 +115,7 @@ function createMockFactories(opts?: {
     start: vi.fn().mockResolvedValue(undefined),
     close: mockClose,
     send: vi.fn().mockResolvedValue(undefined),
+    pid: 12345, // 模拟 SDK StdioClientTransport.pid getter（stdio child pid）
   };
   const mockClient = {
     connect: vi.fn().mockImplementation(async () => {
@@ -372,5 +373,118 @@ describe('connectMcpServer（http transport）', () => {
     await conn.disconnect();
     expect(conn.status).toBe('disconnected');
     expect(mocks.mockTransport.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---- T1：raceWithTimeout + 连接超时 + lastError + pid ----
+
+describe('raceWithTimeout', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('MCP_CONNECT_TIMEOUT_MS 为 30000（对齐 claude/opencode）', () => {
+    expect(MCP_CONNECT_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it('正常完成（< ms）返回值正确，onTimeout 不触发', async () => {
+    const onTimeout = vi.fn().mockResolvedValue(undefined);
+    await expect(raceWithTimeout(Promise.resolve('ok'), 1000, onTimeout)).resolves.toBe('ok');
+    expect(onTimeout).not.toHaveBeenCalled();
+  });
+
+  it('超时（> ms）抛 MCP_TIMEOUT + onTimeout 被调', async () => {
+    const onTimeout = vi.fn().mockResolvedValue(undefined);
+    const p = raceWithTimeout(new Promise(() => { /* 永不 resolve */ }), 100, onTimeout);
+    // 同步挂 handler：advance 前挂 expectation，避免 race reject 后到 handler 前的短暂 unhandled 窗口
+    const expectation = expect(p).rejects.toThrow('MCP_TIMEOUT');
+    await vi.advanceTimersByTimeAsync(100);
+    await expectation;
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it('超时后主 promise 后台 reject 不触发 unhandledRejection（静默 catch 兜底）', async () => {
+    const unhandled: unknown[] = [];
+    const handler = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', handler);
+    try {
+      // 主 promise 50ms 超时，但其 reject 在 200ms 才发生 → 超时后后台 reject
+      const slow = new Promise((_, reject) => { setTimeout(() => reject(new Error('bg')), 200); });
+      const p = raceWithTimeout(slow, 50, () => Promise.resolve());
+      const expectation = expect(p).rejects.toThrow('MCP_TIMEOUT'); // 同步挂，避免短暂 unhandled 窗口
+      await vi.advanceTimersByTimeAsync(50);
+      await expectation;
+      await vi.advanceTimersByTimeAsync(200); // 触发后台 reject
+      await Promise.resolve();
+      expect(unhandled).toHaveLength(0); // 有静默 catch → 不崩进程
+    } finally {
+      process.off('unhandledRejection', handler);
+    }
+  });
+});
+
+describe('connectMcpServer（超时 + lastError + pid）', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    warnSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('连接超时 → status=failed, lastError 含超时', async () => {
+    const mocks = createMockFactories();
+    mocks.mockClient.connect.mockImplementation(() => new Promise(() => { /* 永不 resolve */ }));
+    const entry: McpRegistryEntry = { name: 'slow', transport: 'stdio', command: 'node', enabled: true };
+    const p = connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient, timeoutMs: 50 });
+    await vi.advanceTimersByTimeAsync(50);
+    const conn = await p;
+    expect(conn.status).toBe('failed');
+    expect(conn.lastError).toContain('超时');
+  });
+
+  it('RCE 失败 → lastError 含"不在白名单"', async () => {
+    const mocks = createMockFactories();
+    const entry: McpRegistryEntry = { name: 'evil', transport: 'stdio', command: 'rm', enabled: true };
+    const conn = await connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient });
+    expect(conn.lastError).toContain('不在白名单');
+  });
+
+  it('connect 抛错 → lastError 含"连接失败"', async () => {
+    const mocks = createMockFactories({ connectError: new Error('spawn ENOENT') });
+    const entry: McpRegistryEntry = { name: 'bad', transport: 'stdio', command: 'node', enabled: true };
+    const conn = await connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient });
+    expect(conn.lastError).toContain('连接失败');
+  });
+
+  it('listTools 抛错 → lastError 含"获取工具失败"', async () => {
+    const mocks = createMockFactories({ listToolsError: new Error('crashed') });
+    const entry: McpRegistryEntry = { name: 'u', transport: 'stdio', command: 'python', enabled: true };
+    const conn = await connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient });
+    expect(conn.lastError).toContain('获取工具失败');
+  });
+
+  it('http 缺 url → lastError 含"url"', async () => {
+    const mocks = createHttpMockFactories();
+    const entry: McpRegistryEntry = { name: 'h', transport: 'http', enabled: true };
+    const conn = await connectMcpServer(entry, { createHttpTransport: mocks.createHttpTransport, createClient: mocks.createClient });
+    expect(conn.lastError).toContain('url');
+  });
+
+  it('stdio 连接成功 → pid 非空（SDK transport.pid）', async () => {
+    const mocks = createMockFactories();
+    const entry: McpRegistryEntry = { name: 's', transport: 'stdio', command: 'node', enabled: true };
+    const conn = await connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient });
+    expect(conn.status).toBe('connected');
+    expect(conn.pid).toBe(12345);
+  });
+
+  it('http 连接成功 → pid=null（http transport 无子进程）', async () => {
+    const mocks = createHttpMockFactories();
+    const entry: McpRegistryEntry = { name: 'h', transport: 'http', url: 'https://x.com/mcp', enabled: true };
+    const conn = await connectMcpServer(entry, { createHttpTransport: mocks.createHttpTransport, createClient: mocks.createClient });
+    expect(conn.status).toBe('connected');
+    expect(conn.pid).toBeNull();
   });
 });

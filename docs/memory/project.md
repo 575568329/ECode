@@ -75,12 +75,12 @@ src/session.ts        Session 持久化（P4）：save/load/list/latestSessionId
 **M4 权限系统完成 + M5 设计完成**（2026-08-08，用户休息，自主推进，待审核）：
 - ✅ **M4 全 5 阶段提交**（b60c36b）：①path-guard 硬安全网 + check() 三档判定 + 修 🔴-2 ②edit_file dangerous 缺口 ③bash 命令分级（arity 字典归约 + compound 逐段审批，**禁 tree-sitter 用字符串拆分**，§9.3 红线）④settings-loader + CLI flag + Shift+Tab 模式切换 + deny 接线 ⑤体验增强（二次确认 + reject 反馈 + doom-loop 检测 + 危险命令高亮 + UI 三态审批弹窗）。**683 单测全绿**
 - ✅ **M4 配置 UX 补全**（2026-08-09）：settings.json 两层首启自动生成带注释模板（user + project，不存在才生成；readSettingsJson 加 `//` strip 复用 config.ts 方式；**模板刻意不含 defaultMode——避免 last wins 下「project 自动生成」覆盖 user 显式选档**）+ 用户指南新增「权限系统」章节（三档/CLI/Shift+Tab/settings.json/规则语法/硬安全网/审批交互）+ 修工具表/里程碑/项目结构过时处。**688 单测全绿**，tsc clean
-- 📄 **M5 三文档写完**（设计层，代码未开始）：[技术选型](../里程碑/M5-技术选型与理由[待实现].md) + [实施方案](../里程碑/M5-实施方案[待实现].md) + [方案解析](../里程碑/M5-方案解析[待实现].md)
+- 📄 **M5 三文档写完**（设计层，代码未开始）：[技术选型](../里程碑/M5-技术选型与理由[已完成].md) + [实施方案](../里程碑/M5-实施方案[已完成].md) + [方案解析](../里程碑/M5-方案解析[已完成].md)
   - 范围 = 支点9 子代理 + 支点10 MCP + 支点12 Hooks（三 L4 扩展挂载点，复用 runAgentStream 不动核心 loop）
   - **三源联网核实**（2026-08-08）：MCP 规范 `2026-07-28` / SDK v1.30.0 / HTTP+SSE 废弃自 `2025-03-26`（非 2025-11-25）/ DCR 废弃 / CC hooks 30+ 事件 + 5 handler + hookSpecificOutput 嵌套红线 + 权限求值 6 步 / 子代理 frontmatter 17 字段（无 glob）/ 嵌套默认深度 3 / 并发 20 / stdio RCE CVE（OX Security 2026-04-15）
   - 核心设计：子代理=递归 runAgentStream（侦察兵模式只回结论，权限⊆，防递归双保险）；MCP=官方 SDK + 独立注册表 + 只做 Tools + stdio→Streamable HTTP + stdio RCE 命令 allowlist；Hooks=CC settings.json 式（非 opencode TS 插件）+ 6 核心事件 + Pre/Post Promise-await + 系统hooks强制叠加 + hook 只能收紧不能放宽
   - **✅ 两处已确认（2026-08-09 用户）**：①子代理权限继承 = **A（继承全部）**——夜间自动化子代理须带权限跑 ②MCP 配置 = **A（独立注册表）**——防 config 连坐删
-  - 角色 agent 审阅**完成**（结果见 [M5-文档审阅问题清单](../里程碑/M5-文档审阅问题清单[待审阅].md)）：3 致命（F1 resolveDataDir 待新建/F2 mcp_tool 凭空捏造已删/F3 权限继承悄悄改了已锁定决策）/ 15 改进（多数源码行号精度）。**本轮已修**：F1（阶段0加前置）/F2/I1（deny>ask>allow 无 defer）/I3（**复核 683 正确**，审阅者误数为 542，实测 `vitest run`=683/61 文件全绿）/I4/I6/I7。**已确认（2026-08-09 用户）**：F3=权限继承 **A**（继承全部）/I13=MCP **独立注册**（已去待审阅标）。MCP 规范/SDK/挂点/安全核心经核查**全部成立**。
+  - 角色 agent 审阅**完成**（结果见 [M5-文档审阅问题清单](../里程碑/M5-文档审阅问题清单[已完成].md)）：3 致命（F1 resolveDataDir 待新建/F2 mcp_tool 凭空捏造已删/F3 权限继承悄悄改了已锁定决策）/ 15 改进（多数源码行号精度）。**本轮已修**：F1（阶段0加前置）/F2/I1（deny>ask>allow 无 defer）/I3（**复核 683 正确**，审阅者误数为 542，实测 `vitest run`=683/61 文件全绿）/I4/I6/I7。**已确认（2026-08-09 用户）**：F3=权限继承 **A**（继承全部）/I13=MCP **独立注册**（已去待审阅标）。MCP 规范/SDK/挂点/安全核心经核查**全部成立**。
   - ✅ **测试实测全绿**：`npx vitest run` = **683 passed / 61 文件**（M4 完成态，tsc clean）
 - 🐛 踩坑：见 [debugging.md #015](./debugging.md)（M5 三源联网研究推翻 7 处早先假设——HTTP+SSE 废弃日期/DCR 废弃/hook 事件数+handler 种类/hookSpecificOutput 嵌套/子代理 frontmatter 字段/嵌套深度，"不要瞎想"的实证教训）
 

@@ -12,7 +12,7 @@
 
 import type { ECodeContentBlock, ECodeMessage, ECodeToolResultOutput } from './providers/types.js';
 import { countTokens } from './token-counter.js';
-import { getContextWindow } from './providers/config.js';
+import { getContextWindow, getCompressThresholdRatio, getCompressKeepRounds, getTrimKeepRecent } from './providers/config.js';
 import { ContextWindowError, looksLikeContextWindowError } from './errors.js';
 
 // ---------------- 类型定义 ----------------
@@ -154,7 +154,7 @@ export function splitForCompression(
   messages: ECodeMessage[],
   opts: SplitOptions = {},
 ): { early: ECodeMessage[]; recent: ECodeMessage[] } {
-  const keepRounds = opts.keepRounds ?? 6;
+  const keepRounds = opts.keepRounds ?? getCompressKeepRounds();
   const rounds = groupToolRounds(messages);
 
   // 往返组数 ≤ keepRounds → 全部保留，无待压缩
@@ -195,7 +195,7 @@ export const TRIMMED_TOOL_RESULT_PLACEHOLDER =
  */
 export function trimToolResultContents(
   messages: ECodeMessage[],
-  keepRecent = 3,
+  keepRecent = getTrimKeepRecent(),
 ): ECodeMessage[] {
   // 1. 收集所有 tool_result 的 tool_use_id(按出现顺序)
   const toolUseIds: string[] = [];
@@ -236,9 +236,6 @@ export function trimToolResultContents(
 
 // ---------------- 压缩阈值 ----------------
 
-/** 默认压缩阈值比例（contextWindow × 0.8，留 20% 给本轮回复 + 工具结果） */
-const COMPRESS_THRESHOLD_RATIO = 0.8;
-
 /** 估算当前 messages 的 token 数是否超过压缩阈值 */
 export function isOverThreshold(model: string, system: string, messages: ECodeMessage[]): {
   over: boolean;
@@ -246,7 +243,7 @@ export function isOverThreshold(model: string, system: string, messages: ECodeMe
   threshold: number;
 } {
   const contextWindow = getContextWindow(model);
-  const threshold = Math.floor(contextWindow * COMPRESS_THRESHOLD_RATIO);
+  const threshold = Math.floor(contextWindow * getCompressThresholdRatio());
   const tokens = countTokens(model, system, messages);
   return { over: tokens > threshold, tokens, threshold };
 }

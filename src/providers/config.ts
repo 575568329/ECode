@@ -32,6 +32,15 @@ export interface ECodeConfig {
   routing?: Record<string, unknown>;
   /** M6 技能捕获块（skill-capture 层 buildSkillCaptureConfig 解析；宽松持有，避免 providers→skill-capture 反向耦合）。 */
   skillCapture?: Record<string, unknown>;
+  /** 上下文压缩配置（context-manager 消费）。不配则走内置默认值。 */
+  compression?: {
+    /** 压缩阈值比例（contextWindow × 此值，默认 0.8，留 20% 给本轮回复 + 工具结果） */
+    thresholdRatio?: number;
+    /** 压缩时保留最近 N 个往返组（默认 6） */
+    keepRounds?: number;
+    /** trim 时保留最近 N 个 tool_result 原文（默认 3，其余清空为占位符） */
+    trimKeepRecent?: number;
+  };
 }
 
 const CONFIG_PATH = join(resolveDataDir(), 'config.json');
@@ -64,6 +73,10 @@ const DEFAULT_CONFIG: ECodeConfig = {
   // M6 技能捕获（skill-capture §3）：UserPromptSubmit 时机记录用户修正/偏好到 .ecode/observations.jsonl，
   // /skill-gen 归纳生成提案 → /skill 审批。默认关闭（隐私 + 噪声）；开启后 patterns 与内置 correction/preference 合并命中即记。
   skillCapture: { enabled: false, patterns: [], maxBytes: 1_048_576, maxObservations: 1000 },
+  // M6 模型路由（router 层 buildRoutingConfig 解析；不配 = 不路由，所有场景走主模型）。
+  routing: { enabled: false },
+  // 上下文压缩：控制 context window 快满时的自动压缩行为（context-manager 消费）。
+  compression: { thresholdRatio: 0.8, keepRounds: 6, trimKeepRecent: 3 },
 };
 
 let cachedConfig: ECodeConfig | null = null;
@@ -160,6 +173,11 @@ function writeConfigTemplate(): void {
     '// 模型路由（routing，M6，可选块）：按场景/复杂度把子任务路由到不同模型。',
     '//   不配 = 主模型一刀切（compress/skill/subagent 都走当前模型）。',
     '//   示例：{"rules":{"subagent":"deepseek-chat"},"complexityRouting":true,"complexity":{"low":"deepseek-chat","high":"glm-5.2"}}',
+    '//',
+    '// 上下文压缩（compression）：对话快满 context window 时自动压缩旧消息。',
+    '//   thresholdRatio: 触发压缩的阈值比例（默认 0.8，即占用 80% 时触发）',
+    '//   keepRounds: 压缩时保留最近 N 轮对话（默认 6）',
+    '//   trimKeepRecent: 清理旧工具输出时保留最近 N 个（默认 3）',
     '',
   ].join('\n');
   const json = JSON.stringify(DEFAULT_CONFIG, null, 2);
@@ -245,6 +263,23 @@ export function getContextWindow(model: string): number {
   } catch {
     return 128_000;
   }
+}
+
+// ----------- 上下文压缩配置（context-manager 消费）-----------
+
+/** 压缩阈值比例（contextWindow × 此值，默认 0.8） */
+export function getCompressThresholdRatio(): number {
+  return loadConfig().compression?.thresholdRatio ?? 0.8;
+}
+
+/** 压缩时保留最近 N 个往返组（默认 6） */
+export function getCompressKeepRounds(): number {
+  return loadConfig().compression?.keepRounds ?? 6;
+}
+
+/** trim 时保留最近 N 个 tool_result 原文（默认 3） */
+export function getTrimKeepRecent(): number {
+  return loadConfig().compression?.trimKeepRecent ?? 3;
 }
 
 /** 测试用：重置缓存（验证默认 vs 文件加载） */

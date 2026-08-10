@@ -60,6 +60,19 @@ function resolveBaseDir(baseDir?: string): string {
   return baseDir ?? defaultBaseDir();
 }
 
+/** 子代理 session 隔离子目录名。listSessions/loadSession 用 readdirSync 非递归,落在其下的 session 不进用户历史。 */
+const SUBAGENT_SUBDIR = '_subagents';
+
+/**
+ * 子代理 session 落盘目录 = <baseDir>/_subagents。
+ * 子代理是黑盒侦察兵(只回喂结论文本),其内部上下文不该作为用户历史暴露在 /resume 列表里。
+ * listSessions/loadSession/findFileById 均用 readdirSync 非递归 → 子目录天然不被扫描,
+ * 子代理 session 既不进主列表、也不可被 --continue 误加载(契合黑盒语义)。
+ */
+export function subagentBaseDir(baseDir?: string): string {
+  return resolve(resolveBaseDir(baseDir), SUBAGENT_SUBDIR);
+}
+
 /**
  * task → 文件名友好的 slug(决策④):
  * ① 中文保留(三平台文件系统均支持 Unicode);

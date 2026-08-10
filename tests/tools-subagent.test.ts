@@ -1,7 +1,8 @@
 // 阶段1 子代理：Task 工具（createTaskTool）测试。
 // 覆盖：extractFinalText 取末尾 assistant 文本；深度超限拒绝派发；递归回收结论（黑盒）。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { rmSync } from 'node:fs';
+import { rmSync, existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { createTaskTool, extractFinalText } from '../src/tools/subagent.js';
 import { AllowList } from '../src/permission.js';
 import { makeIsolatedRoot } from './helpers/isolated-dirs.js';
@@ -286,5 +287,38 @@ describe('createTaskTool · 跨 provider 降级（§9.3）', () => {
     expect(res.isError).toBe(false);
     // routingSource 清空 → 不填 metadata（避免 UI 气泡标注误导：实际走了主 provider）。
     expect(res.metadata).toBeUndefined();
+  });
+});
+
+describe('createTaskTool · session 隔离落盘', () => {
+  it('子代理 session + runtime-log 均落到 <root>/_subagents,主 root 顶层无散落', async () => {
+    const subProvider = mockProvider([
+      { type: 'text_delta', text: '结论' },
+      { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
+    ]);
+    const tool = createTaskTool({
+      system: 's',
+      allow: new AllowList(),
+      getPermissionMode: () => 'default',
+      provider: subProvider,
+      model: 'mock-model',
+      depth: 0,
+      sessionBaseDir: root,
+      runtimeLogBaseDir: root,
+    });
+    await tool.execute!({ description: 'd', prompt: '分析这些文件' });
+
+    // 子代理 session 落到 _subagents 子目录(subagentBaseDir 隔离)
+    const subDir = join(root, '_subagents');
+    expect(existsSync(subDir)).toBe(true);
+    expect(readdirSync(subDir).some((f) => f.endsWith('.json'))).toBe(true);
+
+    // 主 root 顶层无散落 .json → listSessions(root) 看不到子代理碎片
+    const topLevelJson = readdirSync(root).filter((f) => f.endsWith('.json'));
+    expect(topLevelJson).toHaveLength(0);
+
+    // runtime-log 同样隔离:_subagents 下有日期目录(子代理 .md 落其内,不淹主日志目录)
+    const subEntries = readdirSync(subDir);
+    expect(subEntries.some((f) => /^\d{4}-\d{2}-\d{2}$/.test(f))).toBe(true);
   });
 });

@@ -20,6 +20,15 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOG_ROOT = resolve(__dirname, '..', 'docs', 'logs', 'runtime');
 
+/**
+ * 子代理 runtime-log 隔离根目录 = <baseDir>/_subagents。
+ * 子代理是黑盒侦察兵,其 log 不该淹没主会话的 docs/logs/runtime/<date>/。
+ * 与 session.ts subagentBaseDir 对称:子代理 session 与 runtime-log 都隔离到 _subagents 子目录。
+ */
+export function subagentLogRoot(baseDir?: string): string {
+  return resolve(baseDir ?? LOG_ROOT, '_subagents');
+}
+
 let logPath = '';
 let dateDir = ''; // 主日志所在日期目录（<baseDir>/<date>，主 .md 平铺于此）
 // 本 session 独立子目录（<dateDir>/<sessionId>，raw 挂其下）。

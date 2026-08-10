@@ -4,7 +4,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initRuntimeLog, logWarning } from '../src/runtime-logger.js';
+import { initRuntimeLog, logWarning, subagentLogRoot } from '../src/runtime-logger.js';
 
 describe('logWarning', () => {
   let root = '';
@@ -24,5 +24,17 @@ describe('logWarning', () => {
     expect(content).toContain('⚠️');
     expect(content).toContain('[subagent-route]');
     expect(content).toContain('跨 provider 降级');
+  });
+});
+
+describe('subagentLogRoot', () => {
+  it('传 baseDir → <baseDir>/_subagents', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ecode-rtlog-sub-'));
+    expect(subagentLogRoot(root)).toBe(join(root, '_subagents'));
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('不传 baseDir → 默认 LOG_ROOT/_subagents(以 _subagents 结尾)', () => {
+    expect(subagentLogRoot()).toMatch(/[\\/]_subagents$/);
   });
 });

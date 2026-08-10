@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   saveSession,
   loadSession,
   listSessions,
   latestSessionId,
   taskToSlug,
+  subagentBaseDir,
   SessionNotFoundError,
 } from '../src/session.js';
 import type { ECodeSession } from '../src/session.js';
@@ -201,6 +202,17 @@ describe('listSessions', () => {
   it('空目录 → 返回 []', () => {
     expect(listSessions(dir)).toEqual([]);
   });
+
+  it('不扫描子目录:_subagents 下的子代理 session 不进主列表', () => {
+    // 主会话落在根目录
+    saveSession(makeSession({ id: 'main1', task: '主会话' }), dir);
+    // 子代理 session 落到 _subagents 子目录(subagent.ts 实际行为)
+    saveSession(makeSession({ id: 'sub1', task: '子代理碎片' }), join(dir, '_subagents'));
+    saveSession(makeSession({ id: 'sub2', task: '子代理碎片2' }), join(dir, '_subagents'));
+    const list = listSessions(dir);
+    expect(list).toHaveLength(1);
+    expect(list[0]!.id).toBe('main1');
+  });
 });
 
 // ============================================================
@@ -251,5 +263,18 @@ describe('续接(复用原 id)', () => {
     expect(reloaded.task).toBe('改登录bug'); // 首句任务保持不变
     expect(reloaded.messages).toHaveLength(2);
     expect((reloaded.messages[1] as { content: string }).content).toBe('再改一下样式');
+  });
+});
+
+// ============================================================
+// subagentBaseDir(子代理 session 隔离:_subagents 子目录)
+// ============================================================
+describe('subagentBaseDir', () => {
+  it('传 baseDir → <baseDir>/_subagents', () => {
+    expect(subagentBaseDir(dir)).toBe(join(dir, '_subagents'));
+  });
+
+  it('不传 baseDir → 默认 cwd/.ecode/sessions/_subagents', () => {
+    expect(subagentBaseDir()).toBe(resolve(process.cwd(), '.ecode', 'sessions', '_subagents'));
   });
 });

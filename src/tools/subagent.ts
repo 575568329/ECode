@@ -16,10 +16,11 @@ import { AllowList } from '../permission.js';
 import type { PermissionGate } from '../permission.js';
 import type { ModelProvider, ECodeMessage } from '../providers/types.js';
 import type { PermissionMode, Rule } from '../permission/types.js';
+import { subagentBaseDir } from '../session.js';
 import { resolveModelForSubagent } from '../router/rules.js';
 import type { RoutingConfig, RoutingSource } from '../router/rules.js';
 import { createProvider } from '../providers/factory.js';
-import { logWarning } from '../runtime-logger.js';
+import { logWarning, subagentLogRoot } from '../runtime-logger.js';
 
 /** 默认子代理嵌套深度上限：子代理默认不能再派子代理（防递归爆炸）。 */
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 1;
@@ -44,7 +45,8 @@ export interface TaskToolContext {
   depth: number;
   /** 深度上限（默认 DEFAULT_MAX_SUBAGENT_DEPTH）。 */
   maxDepth?: number;
-  /** Session 落盘根目录透传（测试隔离用 tmpdir；不传 → 子代理走默认 cwd/.ecode/sessions）。 */
+  /** Session 落盘根目录透传（测试隔离用 tmpdir；不传 → 默认 cwd/.ecode/sessions）。
+   *  实际落盘到 <baseDir>/_subagents（见 subagentBaseDir），与主会话隔离，不进 /resume 列表。 */
   sessionBaseDir?: string;
   /** Runtime log 根目录透传（测试隔离用 tmpdir；不传 → 子代理走默认 docs/logs/runtime）。 */
   runtimeLogBaseDir?: string;
@@ -158,9 +160,10 @@ export function createTaskTool(ctx: TaskToolContext): ToolDefinition {
         provider: subProvider,
         model: subModel,
         subagentDepth: ctx.depth + 1, // 子代理深度 +1，其 Task 闭包据此拦再递归
-        // 透传测试隔离根目录：子代理 session/runtime-log 同写主代理的 tmpdir，不污染真实数据目录
-        sessionBaseDir: ctx.sessionBaseDir,
-        runtimeLogBaseDir: ctx.runtimeLogBaseDir,
+        // 隔离到 <baseDir>/_subagents：子代理是黑盒，其 session 上下文不该进用户历史列表
+        // （listSessions 非递归，子目录不显示），runtime-log 同理隔离避免淹没主日志目录。
+        sessionBaseDir: subagentBaseDir(ctx.sessionBaseDir),
+        runtimeLogBaseDir: subagentLogRoot(ctx.runtimeLogBaseDir),
       })) {
         if (event.type === 'completed') conclusion = extractFinalText(event.messages);
         if (event.type === 'error') return { content: `子代理执行失败: ${event.error}`, isError: true };

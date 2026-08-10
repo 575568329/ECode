@@ -14,7 +14,7 @@
 // agent.ts 契约兼容：每轮 runAgent(text, { resumed:{ messages: messagesRef } })，agent 一行不改。
 
 import type { AgentEvent } from '../agent-events.js';
-import type { ECodeMessage } from '../providers/types.js';
+import type { ECodeMessage, ImageSource } from '../providers/types.js';
 import type { ResumeContext, RunAgentStreamOptions } from '../agent.js';
 
 /** 调度状态机：idle（空闲）/ running（runLoop 处理队列）/ compacting（压缩中）。三者互斥。 */
@@ -28,15 +28,16 @@ export interface ControllerCallbacks {
   onEvent: (event: AgentEvent) => void;
   /** 待处理队列变化 → hook 同步 queuedMessages + pendingCount（排队灰显预览 + StatusBar 计数）。 */
   onQueueChange: (queue: readonly string[]) => void;
-  /** 出队一条 user → hook 落正式 user 气泡（避免与 queuedMessages 双显，§4.2）。 */
-  onUserTurn: (text: string) => void;
+  // 注：onQueueChange 仍传 string[]（排队预览只显示文本，不显示图片缩略图）
+  /** 出队一条 user → hook 落正式 user 气泡（避免与 queuedMessages 双显，§4.2）。images 可选（多模态）。 */
+  onUserTurn: (text: string, images?: ImageSource[]) => void;
   /** busy 状态变化 → hook 设 isRunning/isCompacting（整体忙碌，不随单轮 start/completed 抖动）。 */
   onBusyChange: (busy: BusyState) => void;
   /** messages 真相源被替换（compact 后）→ hook 用新 messages 重灌 completedMessages + staticKey++。 */
   onMessagesReset: (messages: ECodeMessage[]) => void;
   /** 中断且本轮 LLM 未回应（情况 A，turnResponded=false）：撤回——不回填 messagesRef 的孤立 user，
    *  hook 据此移除刚落的 user 气泡 + 回填输入框（onTurnReverted prop 透传 App）。不显示中断标记。 */
-  onTurnReverted?: (text: string) => void;
+  onTurnReverted?: (text: string, images?: ImageSource[]) => void;
   /** 中断但本轮 LLM 已回应（情况 B，turnResponded=true）：messagesRef 正常回填（含 user+partial），
    *  hook 据此显示「— 已中断 —」（替代旧 app.tsx 同步 addMessage——同步瞬间无法区分 A/B）。 */
   onTurnAborted?: () => void;
@@ -63,7 +64,7 @@ export interface ControllerDeps {
  * 生命周期：hook 创建一次（useRef 持守），整个会话复用；clear/resetSession 只重置内部 refs 不重建实例。
  */
 export class AgentLoopController {
-  private pendingQueue: string[] = [];
+  private pendingQueue: { text: string; images?: ImageSource[] }[] = [];
   private messagesRef: ECodeMessage[] = [];
   private sessionRef: { id: string; task: string; createdAt: string } | null = null;
   private busyRef: BusyState = 'idle';
@@ -81,10 +82,10 @@ export class AgentLoopController {
     return this.busyRef;
   }
 
-  /** 入队一条 user 文本；若空闲则启动 runLoop，忙时只入队（runLoop 自行 drain）。 */
-  submit(text: string): void {
-    this.pendingQueue.push(text);
-    this.deps.callbacks.onQueueChange([...this.pendingQueue]);
+  /** 入队一条 user 文本（可选附带图片）；若空闲则启动 runLoop，忙时只入队（runLoop 自行 drain）。 */
+  submit(text: string, images?: ImageSource[]): void {
+    this.pendingQueue.push({ text, images });
+    this.deps.callbacks.onQueueChange([...this.pendingQueue.map((item) => item.text)]);
     this.ensureRunLoop();
   }
 
@@ -148,11 +149,11 @@ export class AgentLoopController {
     try {
       while (this.pendingQueue.length > 0) {
         const turnEpoch = this.epoch;
-        const text = this.pendingQueue.shift()!;
+        const item = this.pendingQueue.shift()!;
         this.turnResponded = false; // 本轮 LLM 回应标志重置（中断分情况依据）
         // 该 user 从"排队"转"正式"：队列变短 + 落正式气泡（不与 queuedMessages 双显）
-        this.deps.callbacks.onQueueChange([...this.pendingQueue]);
-        this.deps.callbacks.onUserTurn(text);
+        this.deps.callbacks.onQueueChange([...this.pendingQueue.map((i) => i.text)]);
+        this.deps.callbacks.onUserTurn(item.text, item.images);
 
         const controller = new AbortController();
         this.abortRef = controller;
@@ -162,10 +163,11 @@ export class AgentLoopController {
           const resumed: ResumeContext | undefined = this.sessionRef
             ? { ...this.sessionRef, messages: this.messagesRef }
             : undefined;
-          for await (const event of this.deps.runAgent(text, {
+          for await (const event of this.deps.runAgent(item.text, {
             ...base,
             signal: controller.signal,
             resumed,
+            images: item.images,
           })) {
             // 跟踪本轮 LLM 是否回应（text_delta=输出文本 / tool_call_start=开始用工具）→ 中断分情况依据
             if (event.type === 'text_delta' || event.type === 'tool_call_start') this.turnResponded = true;
@@ -199,7 +201,7 @@ export class AgentLoopController {
             createdAt: completedEvent.createdAt,
           };
           if (completedEvent.reason === 'aborted' && !this.turnResponded) {
-            this.deps.callbacks.onTurnReverted?.(text);
+            this.deps.callbacks.onTurnReverted?.(item.text, item.images);
           } else {
             this.messagesRef = completedEvent.messages;
             if (completedEvent.reason === 'aborted') this.deps.callbacks.onTurnAborted?.();

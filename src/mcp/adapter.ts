@@ -15,6 +15,43 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js';
 
 /**
+ * 扁平化 MCP 错误文本：MCP 错误常是多层嵌套 JSON 字符串
+ * （`MCP error -400: {"error":{"message":"{\"msg\":\"...\"}"}}`），LLM 难解析、
+ * 看不懂"该换工具"。本函数反复剥嵌套，取出最内层的人类可读 message/msg。
+ */
+function flattenMcpError(raw: string): string {
+  let text = raw;
+  for (let depth = 0; depth < 4; depth++) {
+    const trimmed = text.trim();
+    const braceIdx = trimmed.indexOf('{');
+    const jsonPart = braceIdx >= 0 ? trimmed.slice(braceIdx) : trimmed;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(jsonPart);
+    } catch {
+      break; // 已非 JSON，到最内层文本
+    }
+    if (!parsed || typeof parsed !== 'object') break;
+    const obj = parsed as Record<string, unknown>;
+    const inner = obj.message ?? obj.msg ?? obj.error;
+    if (typeof inner === 'string') {
+      text = inner;
+      continue;
+    }
+    if (inner && typeof inner === 'object') {
+      const deep = (inner as Record<string, unknown>).msg
+        ?? (inner as Record<string, unknown>).message;
+      if (typeof deep === 'string') {
+        text = deep;
+        continue;
+      }
+    }
+    break;
+  }
+  return text;
+}
+
+/**
  * 将 MCP tool 描述符适配为 ECode ToolDefinition。
  *
  * 关键设计：
@@ -34,15 +71,34 @@ export function adaptMcpTool(
     parameters: mcpTool.inputSchema as ToolDefinition['parameters'],
     dangerous: true,
     execute: async (input) => {
-      const result = await callTool(mcpTool.name, (input ?? {}) as Record<string, unknown>);
+      // B：MCP 调用失败（抛异常或返回 isError）一律扁平化错误 + 引导换内置工具。
+      //   MCP 自带描述清楚（zread read_file 明说 GitHub 仓库），但 GLM 仍会无视描述选错工具；
+      //   且 MCP 错误是多层嵌套 JSON，LLM 解析不出会反复重试同一失败工具。
+      //   扁平化解套娃 + "改用内置"提示，让 LLM 失败时能自救换工具。
+      let result: CallToolResult;
+      try {
+        result = await callTool(mcpTool.name, (input ?? {}) as Record<string, unknown>);
+      } catch (err) {
+        const flat = flattenMcpError(err instanceof Error ? err.message : String(err));
+        return {
+          content: `MCP 工具 ${mcpTool.name} 调用失败：${flat}\n提示：若你要操作的是本地文件/代码，请改用内置工具（read_file/grep/glob/edit_file/bash），不要重试本工具。`,
+          isError: true,
+        };
+      }
       // MCP content 数组 → ECode 纯文本（取 text 类型的 text 字段拼接）
       const textParts = result.content
         ?.filter((c): c is { type: 'text'; text: string } => c.type === 'text')
         .map((c) => c.text) ?? [];
-      return {
-        content: textParts.join('\n'),
-        isError: result.isError ?? false,
-      };
+      const rawText = textParts.join('\n');
+      const isError = result.isError ?? false;
+      if (isError && rawText) {
+        const flat = flattenMcpError(rawText);
+        return {
+          content: `MCP 工具 ${mcpTool.name} 失败：${flat}\n提示：若你要操作的是本地文件/代码，请改用内置工具（read_file/grep/glob/edit_file/bash），不要重试本工具。`,
+          isError: true,
+        };
+      }
+      return { content: rawText, isError };
     },
   };
 }

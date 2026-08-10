@@ -40,10 +40,21 @@ export function messagesToDisplayMessages(messages: ECodeMessage[], model?: stri
         out.push({ kind: 'user', id: nextHistId(), text: msg.content });
         continue;
       }
-      // blocks：text → user 文本；tool_result → 配对产 tool 消息
+      // blocks：text → user 文本（附带同消息的 image blocks）；tool_result → 配对产 tool 消息
+      const userImages: import('../providers/types.js').ImageSource[] = [];
+      for (const block of msg.content) {
+        if (block.type === 'image') {
+          userImages.push(block.source);
+        }
+      }
       for (const block of msg.content) {
         if (block.type === 'text') {
-          out.push({ kind: 'user', id: nextHistId(), text: block.text });
+          out.push({
+            kind: 'user',
+            id: nextHistId(),
+            text: block.text,
+            ...(userImages.length > 0 ? { images: userImages } : {}),
+          });
         } else if (block.type === 'tool_result') {
           const call = toolCallMap.get(block.tool_use_id);
           out.push({

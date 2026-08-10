@@ -19,7 +19,7 @@ export interface ActiveTool {
 
 /** 已冻结进 <Static> 的消息（用户输入 / 助手文本 / 工具结果 / 系统警告）。 */
 export type DisplayMessage =
-  | { kind: 'user'; id: string; text: string }
+  | { kind: 'user'; id: string; text: string; images?: import('../providers/types.js').ImageSource[] }
   | {
       kind: 'assistant';
       id: string;

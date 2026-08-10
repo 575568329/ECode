@@ -39,6 +39,11 @@ const TOOL_GUIDE = `## 工具使用
 - **glob**：按文件名模式找文件（如 \`**/*.ts\`）。
 - **bash**：执行命令（跑测试、装依赖、git 等）。输出超过 3 万字符会被截断。`;
 
+// 工具使用规则收敛进各工具自身 description（自解释），不在 system 层重复。
+// 根因修复（工具合并 bug：MCP 启用时内置工具被喂丢 → LLM 只剩 MCP 工具，被迫误用）后，
+// LLM 看到正确工具集 + 清晰描述，自然做对。Task/MCP 滥用曾是该 bug 的症状，非 LLM 认知问题。
+// 原则（CLAUDE.md §1.1 极简）：代码层能修的绝不放到 prompt 层让 LLM"知道"。
+
 /**
  * 拼装完整 system prompt。分层组合，便于后续按里程碑扩展。
  * @param instructions 项目记忆（CLAUDE.md/ECODE.md 内容，Task 2 产出）；空则不拼该段。

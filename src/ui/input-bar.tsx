@@ -15,9 +15,11 @@ import { Text, Box, useInput } from 'ink';
 import { T, SYMBOLS } from './theme.js';
 import { PickerList, type PickerItem } from './picker-list.js';
 import { SLASH_COMMANDS } from '../slash-commands.js';
+import { extractImagePaths, readImageFromFile } from '../image.js';
+import type { ImageSource } from '../providers/types.js';
 
 interface InputBarProps {
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, images?: ImageSource[]) => void;
   /** 回填文本（中断撤回用）：draftVersion 递增时填入输入框（草稿态，cursor 落末尾）。
    *  用 controlled prop + 版本信号替代 ref 命令式回填——React 19 + ink 7 下 forwardRef 破坏 useInput。 */
   draftText?: string;
@@ -248,7 +250,19 @@ export function InputBar({ onSubmit, draftText, draftVersion }: InputBarProps): 
         }
         const trimmed = edit.text.trim();
         if (!trimmed) return;
-        onSubmit(trimmed);
+        // 多模态：检测文本中的图片路径 → 读文件 → base64
+        const imagePaths = extractImagePaths(trimmed);
+        const images: ImageSource[] = [];
+        for (const p of imagePaths) {
+          const img = readImageFromFile(p);
+          if (img) images.push(img);
+        }
+        // 无图片时不传第二个参数（保持 onSubmit(text) 签名兼容，避免测试断言精确匹配失败）
+        if (images.length > 0) {
+          onSubmit(trimmed, images);
+        } else {
+          onSubmit(trimmed);
+        }
         dispatch({ type: 'push', text: trimmed });
         setEdit({ text: '', cursor: 0 });
         return;

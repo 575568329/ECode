@@ -16,12 +16,13 @@ import type { DisplayMessage } from './types.js';
 function renderCompleted(msg: DisplayMessage): React.ReactNode {
   switch (msg.kind) {
     case 'user':
-      // 角色区分：› 前缀 + 浅背景气泡（userBg），去"你"字（对齐 CC 气泡风格）。
-      // 背景在多数终端整行渲染；长文本不稳时可降级首行背景（ui-preview 验证）。
       return (
         <Box marginTop={1} paddingLeft={1} backgroundColor={T.userBg}>
           <Text color={T.user} bold>{SYMBOLS.pointer} </Text>
           <Text>{msg.text}</Text>
+          {msg.images && msg.images.length > 0 && (
+            <Text color={T.muted}> {msg.images.length}张图片</Text>
+          )}
         </Box>
       );
     case 'assistant':

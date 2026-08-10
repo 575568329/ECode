@@ -22,11 +22,13 @@ import type { HookDef } from '../hooks/types.js';
 import { reduceAgentEvent, initialStreamState } from './reduce-agent-event.js';
 import { AgentLoopController } from './agent-loop-controller.js';
 import type { StreamState, DisplayMessage, PendingPermission } from './types.js';
+import type { ImageSource } from '../providers/types.js';
 import type { AgentEvent } from '../agent-events.js';
 import { getDefaultModel } from '../providers/config.js';
 import { messagesToDisplayMessages } from './messages-to-display.js';
 import { extractTodos, type TodoItem } from '../tools/todo.js';
 import type { ToolDefinition } from '../tools/types.js';
+import { toolDefinitions } from '../tools/registry.js';
 import { McpManager, type McpServerState } from '../mcp/manager.js';
 import { loadMcpRegistry, saveMcpRegistry, type McpRegistryEntry } from '../mcp/registry.js';
 import { adaptMcpPrompt } from '../mcp/adapter.js';
@@ -73,8 +75,8 @@ export interface UseAgentStreamReturn {
   draftText: string;
   /** 中断撤回回填信号（递增触发 InputBar useEffect 回填）。 */
   draftVersion: number;
-  /** submit 用户输入（命令在 App 层拦截，这里只处理纯消息 → 入 controller 队列）。 */
-  submit: (text: string) => void;
+  /** submit 用户输入（命令在 App 层拦截，这里只处理纯消息 → 入 controller 队列）。images 可选（多模态）。 */
+  submit: (text: string, images?: ImageSource[]) => void;
   /** 用户在 PermissionDialog 选了决策。allow_always → allow.add(toolName) 后 resolve allow。
    *  feedback（可选，仅 deny）：作为 user 反馈回喂 LLM（阶段5b reject 反馈框）。 */
   resolvePermission: (decision: 'allow' | 'deny' | 'allow_always', feedback?: string) => void;
@@ -255,9 +257,13 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
         getPermissionMode: () => permissionModeRef.current, // Shift+Tab 运行中切换即时生效（每工具 check 读最新）
         denyRules: denyRulesRef.current,
         hooks: hooksRef.current,
-        // MCP 工具合并（阶段3：加载完成前 ref 为空，加载后追加到内置工具后面）
+        // MCP 工具合并：内置工具恒在前 + MCP 追加在后。
+        //   ⚠️ getAllTools() 只返回 MCP 工具，必须显式拼上 toolDefinitions；否则 agent.ts 的
+        //   `opts.tools ?? toolDefinitions` 会因 opts.tools 非 undefined 而丢弃内置工具 →
+        //   LLM 看不到 read_file/bash 等基本工具，被迫用 MCP 工具做本地任务 → 瞎编参数死循环
+        //   （实测 zread 连失败 5+ 次，全因内置 read_file 根本不在工具列表）。
         tools: mcpToolsRef.current.length > 0
-          ? [...mcpToolsRef.current]
+          ? [...toolDefinitions, ...mcpToolsRef.current]
           : undefined,
         permissionGate: {
           ask: () =>
@@ -275,12 +281,12 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
         onQueueChange: (q) =>
           setState((prev) => ({ ...prev, queuedMessages: [...q], pendingCount: q.length })),
         // 出队的 user 落正式气泡（与 queuedMessages 不双显：submit 入 queued，出队移出 + 进 completed）
-        onUserTurn: (text) =>
+        onUserTurn: (text, images) =>
           setState((prev) => ({
             ...prev,
             completedMessages: [
               ...prev.completedMessages,
-              { kind: 'user', id: `u${Date.now()}`, text },
+              { kind: 'user', id: `u${Date.now()}`, text, images },
             ],
           })),
         // busy 驱动 isRunning/isCompacting（整体，不随单轮 start/completed 抖动）
@@ -296,7 +302,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
             staticKey: prev.staticKey + 1,
           })),
         // 中断分情况 A（未回应）→ 移最后 user 气泡 + 递增 draftVersion 回填输入框（不显示中断标记）
-        onTurnReverted: (text) => {
+        onTurnReverted: (text, images) => {
           setState((prev) => {
             // 从末尾移除最后一条 user 气泡（本轮 onUserTurn 落的），让界面像「没发过」
             const msgs = [...prev.completedMessages];
@@ -308,7 +314,8 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
             }
             return { ...prev, completedMessages: msgs };
           });
-          setDraft((prev) => ({ text, version: prev.version + 1 }));
+          // images 已读为 base64，无法还原为文件路径，只回填文本。
+          setDraft((prev) => ({ text: images && images.length > 0 ? text : text, version: prev.version + 1 }));
         },
         // 中断分情况 B（已回应）→ 显示「— 已中断 —」（替代旧 app.tsx 同步 addMessage：同步瞬间无法区分 A/B）
         onTurnAborted: () =>
@@ -325,8 +332,8 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   const controller = controllerRef.current;
 
   const submit = useCallback(
-    (text: string) => {
-      controller.submit(text);
+    (text: string, images?: ImageSource[]) => {
+      controller.submit(text, images);
     },
     [controller],
   );

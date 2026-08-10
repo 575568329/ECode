@@ -457,6 +457,8 @@ function blockToText(block: ECodeContentBlock): string {
   switch (block.type) {
     case 'text':
       return block.text;
+    case 'image':
+      return `[图片: ${block.source.mediaType}]`;
     case 'tool_call':
       return `调用工具 ${block.name}（参数: ${JSON.stringify(block.input)}）`;
     case 'tool_result':

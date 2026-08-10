@@ -25,7 +25,7 @@ import { loadSkills } from '../skills/loader.js';
 import { getSkillBody } from '../skills/matcher.js';
 import { getContextWindow, getDefaultModel, getModelConfig, listAvailableModels } from '../providers/config.js';
 import { computeCost } from '../providers/cost.js';
-import type { ModelCost } from '../providers/types.js';
+import type { ModelCost, ImageSource } from '../providers/types.js';
 import { maskSecret, type McpRegistryEntry } from '../mcp/registry.js';
 import type { McpServerState } from '../mcp/manager.js';
 import { listSessions, loadSession } from '../session.js';
@@ -212,7 +212,7 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
     }
   });
 
-  const handleSubmit = (text: string) => {
+  const handleSubmit = (text: string, images?: ImageSource[]) => {
     const parsed = parseUserInput(text);
     if (parsed.type === 'unknown_command') {
       // 未知斜杠命令：静默忽略（不送 LLM，不落地）
@@ -228,7 +228,7 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
       void handleCommand(parsed.name, parsed.args);
       return;
     }
-    api.submit(parsed.text);
+    api.submit(parsed.text, images);
   };
 
   // ---- skill 审批操作（命令式 /skill accept/reject/promote 与 SkillDialog 共用）----

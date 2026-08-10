@@ -27,6 +27,7 @@ import type {
   ECodeStreamPart,
   ECodeContentBlock,
   ECodeUsage,
+  ImageSource,
 } from './providers/types.js';
 import { maybeCompress, forceCompact, isContextWindowError } from './context-manager.js';
 import type { CompressOptions } from './context-manager.js';
@@ -69,6 +70,15 @@ import type { PermissionMode, Rule, GateDecision } from './permission/types.js';
 // ============================================================
 
 const MAX_ITERATIONS = 25;
+
+/**
+ * MCP 工具连续失败熔断阈值（Plan C）。
+ * GLM 等模型会无视清晰错误+引导，对同一 MCP 工具瞎编参数（如 zread 传 dummy/repo）反复重试，
+ * 且 doom-loop 按 exact input 计数会被参数变化（dummy/repo→test/repo）绕过。
+ * 此处按「工具名 + 连续 isError」计数，达阈值后会话内禁用该 MCP 工具。
+ * 仅针对 mcp__ 前缀工具——内置工具失败是业务常态（build/test 失败），LLM 会自适应，误杀代价大。
+ */
+const MCP_TOOL_ERROR_DISABLE_THRESHOLD = 3;
 
 /**
  * 生成 session id：使用 crypto.randomUUID()（UUID v4）。
@@ -179,6 +189,11 @@ export interface RunAgentStreamOptions extends RunAgentOptions {
    * 不传 → 默认 docs/logs/runtime，生产路径不变。
    */
   runtimeLogBaseDir?: string;
+  /**
+   * 附带图片（多模态输入）。图片以 base64 ImageSource 形式传入，
+   * 拼在 user message 中 text block 后面。参考详设 docs/详设/20260610120000_多模态图片输入-详设。
+   */
+  images?: ImageSource[];
 }
 
 /** consumeStream 的累积结果：逐 chunk yield 完 text_delta 后 return，供本轮 push messages / 日志用。 */
@@ -324,9 +339,16 @@ export async function* runAgentStream(
   const catalogs = [agentsCatalog, skillsCatalog].filter(Boolean).join('\n\n---\n\n');
   const system = catalogs ? `${baseSystem}\n\n---\n\n${catalogs}` : baseSystem;
 
+  // 多模态：images 存在时，user message content 为 block 数组（text + image blocks）。
+  const userContent: ECodeContentBlock[] = [{ type: 'text', text: task }];
+  if (opts.images && opts.images.length > 0) {
+    for (const img of opts.images) {
+      userContent.push({ type: 'image', source: img });
+    }
+  }
   let messages: ECodeMessage[] = opts.resumed
-    ? [...opts.resumed.messages, { role: 'user', content: task }]
-    : [{ role: 'user', content: task }];
+    ? [...opts.resumed.messages, { role: 'user', content: userContent }]
+    : [{ role: 'user', content: userContent }];
 
   // 阶段 1：动态注入 Task 工具（闭包捕获本 runAgentStream 的权限上下文 + 深度）。
   //   Task 不静态注册——静态 import 拿不到运行时 opts（allow/mode/gate/provider）。
@@ -352,6 +374,13 @@ export async function* runAgentStream(
         }),
       ]
     : [];
+
+  // Plan C 熔断状态：MCP 工具连续报错跟踪（按工具名，不看 input——GLM 会变参数绕过 exact-match doom）。
+  //   errorStreak: MCP 工具连续 isError 次数；成功一次即归零。内置工具不进此 map（失败是业务常态）。
+  //   disabledTools: 连续失败达阈值的 MCP 工具，会话内禁用——下一轮从 tools 移除 + 执行循环拦截兜底。
+  //   Why：opencode/CC 跑 Claude 不需要这层（Claude 出错自救）；ECode 用 GLM 必需（日志实测 zread 连失败 5+ 次）。
+  const errorStreak = new Map<string, number>();
+  const disabledTools = new Set<string>();
 
   // 阶段 2：构建 hook gate（Pre/Post 决策聚合）。系统 hook 恒前置叠加不可移除。
   //   有效集为空 → hookGate=undefined，循环内各注入点用 `if (hookGate)` 守卫，字节级零回归。
@@ -439,9 +468,12 @@ export async function* runAgentStream(
       // ---- 流式调用 LLM ----
       let consumed!: ConsumedStream;
       try {
-        logApiRequest(iteration, messages, tools);
+        // Plan C：从发给 LLM 的工具集移除已被熔断的 MCP 工具——LLM 看不到就不会调用，强制换路。
+        //   每轮动态过滤（disabledTools 在循环中累积）；空时恒等返回原数组，零开销。
+        const visibleTools = disabledTools.size > 0 ? tools.filter((t) => !disabledTools.has(t.name)) : tools;
+        logApiRequest(iteration, messages, visibleTools);
         const streamGen = provider.stream(
-          { model: resolvedModel, system, messages, tools },
+          { model: resolvedModel, system, messages, tools: visibleTools },
           { signal: opts.signal },
         );
         // 流式消费（M3.5 R4）：逐 chunk yield text_delta——UI 动态区真正流式，
@@ -555,6 +587,18 @@ export async function* runAgentStream(
 
       // ---- 执行每个工具（含权限拦截）----
       for (const tc of toolCalls) {
+        // Plan C 兜底：已被熔断禁用的 MCP 工具，直接拒绝不执行。
+        //   正常情况 visibleTools 已移除该工具、LLM 不会调；但 LLM 可能凭历史记忆仍输出该 tool_call
+        //   ——拦截兜底，且明确告知"已禁用，改用内置工具"，强制换路（不走 hook/check/doom/execute）。
+        if (disabledTools.has(tc.name)) {
+          const disabledMsg = `工具 ${tc.name} 在本会话已被禁用（连续失败 ${MCP_TOOL_ERROR_DISABLE_THRESHOLD} 次）。请改用内置工具（read_file/grep/glob/edit_file/bash）完成本地任务，不要再调用本工具。`;
+          yield { type: 'tool_result', id: tc.id, name: tc.name, content: disabledMsg, isError: true };
+          messages.push({
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: tc.id, output: { type: 'error', value: disabledMsg } }],
+          });
+          continue;
+        }
         const def = tools.find((t) => t.name === tc.name);
         const isDangerous = def?.dangerous ?? false;
 
@@ -734,6 +778,23 @@ export async function* runAgentStream(
           role: 'user',
           content: [{ type: 'tool_result', tool_use_id: tc.id, output }],
         });
+
+        // Plan C：MCP 工具连续报错熔断。只跟踪 mcp__ 前缀工具——内置工具失败是业务常态
+        //   （build/test 失败、grep 无匹配），LLM 会自适应换参数/策略，误杀代价大；MCP 工具 GLM
+        //   不理解语义、瞎编参数且不自救（zread 传 dummy/repo），才需要硬熔断强制换路。
+        if (result.isError && tc.name.startsWith('mcp__')) {
+          const streak = (errorStreak.get(tc.name) ?? 0) + 1;
+          errorStreak.set(tc.name, streak);
+          if (streak >= MCP_TOOL_ERROR_DISABLE_THRESHOLD && !disabledTools.has(tc.name)) {
+            disabledTools.add(tc.name);
+            yield {
+              type: 'warning',
+              message: `工具 ${tc.name} 连续失败 ${streak} 次，本会话已禁用（后续轮次不再提供该工具）。请改用内置工具完成本地任务。`,
+            };
+          }
+        } else if (!result.isError) {
+          errorStreak.delete(tc.name); // 成功即归零（偶发失败恢复不累积）
+        }
       }
 
       // ---- 重复动作检测（防死循环）：连续两轮工具签名相同 → 终止 ----

@@ -71,6 +71,48 @@ describe('toAnthropicRequest', () => {
     const block = (r.messages[0] as { content: Array<{ type: string; is_error?: boolean }> }).content[0];
     expect(block.is_error).toBeUndefined();
   });
+
+  it('image block → Anthropic image source.base64（snake_case media_type）', () => {
+    const req: ChatRequest = {
+      ...baseRequest,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'iVBORw0KG' } },
+          ],
+        },
+      ],
+    };
+    const r = toAnthropicRequest(req);
+    const block = (r.messages[0] as { content: Array<{ type: string; source?: unknown }> }).content[0];
+    expect(block.type).toBe('image');
+    expect(block.source).toEqual({
+      type: 'base64',
+      media_type: 'image/png', // snake_case
+      data: 'iVBORw0KG',
+    });
+  });
+
+  it('text + image 混合 block → Anthropic content 数组保持顺序', () => {
+    const req: ChatRequest = {
+      ...baseRequest,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '看这张图' },
+            { type: 'image', source: { type: 'base64', mediaType: 'image/jpeg', data: 'abc123' } },
+          ],
+        },
+      ],
+    };
+    const r = toAnthropicRequest(req);
+    const blocks = (r.messages[0] as { content: Array<{ type: string }> }).content;
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].type).toBe('text');
+    expect(blocks[1].type).toBe('image');
+  });
 });
 
 describe('fromAnthropicResponse', () => {
@@ -188,6 +230,63 @@ describe('toOpenAIMessages', () => {
       id: 'c1',
       function: { name: 'read', arguments: '{"path":"x"}' },
     });
+  });
+
+  it('image block → OpenAI image_url（data URL 拼接）', () => {
+    const req: ChatRequest = {
+      ...baseRequest,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', mediaType: 'image/png', data: 'iVBORw0KG' } },
+          ],
+        },
+      ],
+    };
+    const msgs = toOpenAIMessages(req);
+    const userMsg = msgs[1] as { role: string; content: Array<{ type: string; image_url?: { url: string } }> };
+    expect(userMsg.role).toBe('user');
+    expect(userMsg.content[0].type).toBe('image_url');
+    expect(userMsg.content[0].image_url!.url).toBe('data:image/png;base64,iVBORw0KG');
+  });
+
+  it('text + image 混合 → OpenAI 合并为一条 user 消息（content 数组含 text + image_url）', () => {
+    const req: ChatRequest = {
+      ...baseRequest,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '看这张图' },
+            { type: 'image', source: { type: 'base64', mediaType: 'image/jpeg', data: 'abc123' } },
+          ],
+        },
+      ],
+    };
+    const msgs = toOpenAIMessages(req);
+    // system + user = 2 条消息（不是拆成 3 条）
+    expect(msgs).toHaveLength(2);
+    const userMsg = msgs[1] as {
+      role: string;
+      content: Array<{ type: string; text?: string; image_url?: { url: string } }>;
+    };
+    expect(userMsg.role).toBe('user');
+    expect(userMsg.content).toHaveLength(2);
+    expect(userMsg.content[0]).toEqual({ type: 'text', text: '看这张图' });
+    expect(userMsg.content[1].type).toBe('image_url');
+    expect(userMsg.content[1].image_url!.url).toBe('data:image/jpeg;base64,abc123');
+  });
+
+  it('纯文本 user 消息 → OpenAI string content（不变为数组，兼容性更好）', () => {
+    const req: ChatRequest = {
+      ...baseRequest,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+    };
+    const msgs = toOpenAIMessages(req);
+    const userMsg = msgs[1] as { role: string; content: unknown };
+    expect(typeof userMsg.content).toBe('string');
+    expect(userMsg.content).toBe('hello');
   });
 });
 

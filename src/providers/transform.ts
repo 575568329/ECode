@@ -41,10 +41,19 @@ function toAnthropicMessage(msg: ECodeMessage): Anthropic.MessageParam {
 
 function toAnthropicBlock(
   block: ECodeContentBlock,
-): Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam | Anthropic.ToolResultBlockParam {
+): Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.ToolUseBlockParam | Anthropic.ToolResultBlockParam {
   switch (block.type) {
     case 'text':
       return { type: 'text', text: block.text };
+    case 'image':
+      return {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: block.source.mediaType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+          data: block.source.data,
+        },
+      };
     case 'tool_call':
       return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
     case 'tool_result':
@@ -173,14 +182,26 @@ export function toOpenAIMessages(req: ChatRequest): OpenAI.Chat.ChatCompletionMe
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       });
     } else {
-      // user：tool_result → role:'tool'，text → role:'user'
+      // user：tool_result → role:'tool'，text+image → 合并为一条 role:'user'（content 数组）
+      const userContentParts: OpenAI.Chat.ChatCompletionContentPart[] = [];
       for (const b of msg.content) {
         if (b.type === 'tool_result') {
           // v2: output 判别联合 → OpenAI role:tool content
           result.push({ role: 'tool', tool_call_id: b.tool_use_id, content: outputToOpenAIContent(b.output) });
         } else if (b.type === 'text') {
-          result.push({ role: 'user', content: b.text });
+          userContentParts.push({ type: 'text', text: b.text });
+        } else if (b.type === 'image') {
+          // ECode image block → OpenAI image_url（data URL 拼接）
+          const dataUrl = `data:${b.source.mediaType};base64,${b.source.data}`;
+          userContentParts.push({ type: 'image_url', image_url: { url: dataUrl } });
         }
+      }
+      // 有 text/image part 时合并为一条 user 消息（OpenAI 多模态格式：content 为数组）
+      if (userContentParts.length === 1 && userContentParts[0].type === 'text') {
+        // 纯文本：用 string content（兼容性更好，部分端点不支持单元素数组）
+        result.push({ role: 'user', content: (userContentParts[0] as { text: string }).text });
+      } else if (userContentParts.length > 0) {
+        result.push({ role: 'user', content: userContentParts });
       }
     }
   }

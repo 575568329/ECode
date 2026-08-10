@@ -20,9 +20,17 @@ export type ECodeToolResultOutput =
   | { type: 'error'; value: string }
   | { type: 'json'; value: unknown };
 
+/** 图片来源 —— base64 编码（参考 Anthropic Base64ImageSource 结构，ECode 内部统一表示） */
+export interface ImageSource {
+  type: 'base64';
+  mediaType: string; // 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+  data: string; // base64 编码字符串
+}
+
 /** 内部统一内容块 —— 判别联合，靠 type 字段收窄 */
 export type ECodeContentBlock =
   | { type: 'text'; text: string; providerOptions?: Record<string, unknown> }
+  | { type: 'image'; source: ImageSource; providerOptions?: Record<string, unknown> }
   | { type: 'tool_call'; id: string; name: string; input: Record<string, unknown>; providerOptions?: Record<string, unknown> }
   | { type: 'tool_result'; tool_use_id: string; output: ECodeToolResultOutput; providerOptions?: Record<string, unknown> };
 

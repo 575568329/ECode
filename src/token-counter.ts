@@ -58,6 +58,11 @@ function estimateBlockTokens(block: ECodeContentBlock): number {
           return estimateTextTokens(JSON.stringify(output.value), true);
       }
     }
+
+    case 'image': {
+      // 图片 base64 数据估算：粗略按 base64 长度 / 3 得原始字节数，再 / 1000 token
+      return Math.max(1, Math.round((block.source.data.length * 3) / 4 / 1000));
+    }
   }
 }
 

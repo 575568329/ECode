@@ -2,7 +2,7 @@
 // 重点测 validateMcpCommand 命令白名单纯函数 + connectMcpServer 生命周期。
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { PassThrough } from 'node:stream';
-import { validateMcpCommand, connectMcpServer, disconnectAll, raceWithTimeout, MCP_CONNECT_TIMEOUT_MS } from '../src/mcp/client.js';
+import { validateMcpCommand, connectMcpServer, disconnectAll, raceWithTimeout, MCP_CONNECT_TIMEOUT_MS, MCP_CALL_TIMEOUT_MS } from '../src/mcp/client.js';
 import type { McpConnection } from '../src/mcp/client.js';
 import type { McpRegistryEntry } from '../src/mcp/registry.js';
 
@@ -537,5 +537,81 @@ describe('connectMcpServer（stderr 缓冲回灌诊断）', () => {
     expect(conn.lastError).toContain('LAST-CRASH-LINE');
     expect(conn.lastError).not.toContain('line-0');
     expect(conn.lastError).not.toContain('line-100');
+  });
+});
+
+// ---- callTool 超时保护 ----
+// 修「callTool 裸调无超时 → 慢 server 让 agent 永久挂起」：
+//   callTool 闭包经 raceWithTimeout 套 callTimeoutMs（默认 60s），超时抛 MCP_TIMEOUT →
+//   adapter execute catch → 返回 isError + 引导换内置工具（跟现有错误处理风格一致，不中断 agent loop）。
+describe('connectMcpServer（callTool 超时）', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('MCP_CALL_TIMEOUT_MS 为 60000（比连接的 30s 宽，工具执行更耗时）', () => {
+    expect(MCP_CALL_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it('callTool 正常完成（< callTimeoutMs）→ 返回结果', async () => {
+    const mocks = createMockFactories();
+    const entry: McpRegistryEntry = { name: 'ok', transport: 'stdio', command: 'node', enabled: true };
+    const conn = await connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient });
+    const result = conn.tools[0].execute({});
+    await expect(result).resolves.toEqual({ content: 'mock result', isError: false });
+  });
+
+  it('callTool 超时 → execute 返回 isError + 超时提示 + 引导换内置工具', async () => {
+    const mocks = createMockFactories();
+    // callTool 永不 resolve → 触发超时
+    mocks.mockClient.callTool.mockImplementation(() => new Promise(() => { /* 永不 resolve */ }));
+    const entry: McpRegistryEntry = { name: 'slow-tool', transport: 'stdio', command: 'node', enabled: true };
+    const conn = await connectMcpServer(entry, {
+      createTransport: mocks.createTransport, createClient: mocks.createClient, callTimeoutMs: 50,
+    });
+    const resultPromise = conn.tools[0].execute({});
+    await vi.advanceTimersByTimeAsync(50);
+    const result = await resultPromise;
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('超时');
+    expect(result.content).toContain('内置工具');
+  });
+
+  it('callTool 超时后后台 reject 不触发 unhandledRejection', async () => {
+    const unhandled: unknown[] = [];
+    const handler = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', handler);
+    try {
+      const mocks = createMockFactories();
+      // callTool 200ms 后才 reject（超时 50ms 先到）
+      mocks.mockClient.callTool.mockImplementation(
+        () => new Promise((_, reject) => { setTimeout(() => reject(new Error('bg-reject')), 200); }),
+      );
+      const entry: McpRegistryEntry = { name: 'slow-bg', transport: 'stdio', command: 'node', enabled: true };
+      const conn = await connectMcpServer(entry, {
+        createTransport: mocks.createTransport, createClient: mocks.createClient, callTimeoutMs: 50,
+      });
+      const resultPromise = conn.tools[0].execute({});
+      await vi.advanceTimersByTimeAsync(50);
+      await resultPromise; // adapter catch → isError
+      await vi.advanceTimersByTimeAsync(200); // 触发后台 reject
+      await Promise.resolve();
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off('unhandledRejection', handler);
+    }
+  });
+
+  it('callTimeoutMs 默认 60s（不传时用 MCP_CALL_TIMEOUT_MS）', async () => {
+    const mocks = createMockFactories();
+    mocks.mockClient.callTool.mockImplementation(() => new Promise(() => { /* 永不 resolve */ }));
+    const entry: McpRegistryEntry = { name: 'def', transport: 'stdio', command: 'node', enabled: true };
+    const conn = await connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient });
+    const resultPromise = conn.tools[0].execute({});
+    // 59s 不超时
+    await vi.advanceTimersByTimeAsync(59_000);
+    // 到 60s 才超时
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await resultPromise;
+    expect(result.isError).toBe(true);
   });
 });

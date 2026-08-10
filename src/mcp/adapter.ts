@@ -79,7 +79,9 @@ export function adaptMcpTool(
       try {
         result = await callTool(mcpTool.name, (input ?? {}) as Record<string, unknown>);
       } catch (err) {
-        const flat = flattenMcpError(err instanceof Error ? err.message : String(err));
+        const raw = err instanceof Error ? err.message : String(err);
+        // MCP_TIMEOUT 是 client.ts raceWithTimeout 的哨兵串，翻译为中文让 LLM/用户能理解。
+        const flat = raw === 'MCP_TIMEOUT' ? '工具调用超时' : flattenMcpError(raw);
         return {
           content: `MCP 工具 ${mcpTool.name} 调用失败：${flat}\n提示：若你要操作的是本地文件/代码，请改用内置工具（read_file/grep/glob/edit_file/bash），不要重试本工具。`,
           isError: true,

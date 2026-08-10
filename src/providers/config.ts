@@ -48,6 +48,13 @@ export interface ECodeConfig {
     /** trim 时保留最近 N 个 tool_result 原文（默认 3，其余清空为占位符） */
     trimKeepRecent?: number;
   };
+  /** agent loop 行为配置（迭代上限等）。不配则走内置默认值。 */
+  agent?: {
+    /** agent loop 最大迭代次数（默认 25）。达上限后 agent 自动终止。
+     * 调大场景：长任务（大量文件编辑 + 多轮 build/test 循环）；
+     * 调小场景：控制 token 消耗 / CI 环境。 */
+    maxIterations?: number;
+  };
 }
 
 const CONFIG_PATH = join(resolveDataDir(), 'config.json');
@@ -101,6 +108,9 @@ const DEFAULT_CONFIG: ECodeConfig = {
   routing: { enabled: false },
   // 上下文压缩：控制 context window 快满时的自动压缩行为（context-manager 消费）。
   compression: { thresholdRatio: 0.8, keepRounds: 6, trimKeepRecent: 3 },
+  // agent loop 行为配置：迭代上限等（对齐 Claude Code 的 agent.maxIterations）。
+  //   调大：长任务（大量编辑 + 多轮 build/test）；调小：控 token / CI。
+  agent: { maxIterations: 25 },
 };
 
 /** 首启生成的 config.json 注释头（writeConfigTemplate 与 migrateConfig 共用，保持一致）。 */
@@ -133,6 +143,12 @@ const CONFIG_HEADER_LINES = [
   '//   thresholdRatio: 触发压缩的阈值比例（默认 0.8，即占用 80% 时触发）',
   '//   keepRounds: 压缩时保留最近 N 轮对话（默认 6）',
   '//   trimKeepRecent: 清理旧工具输出时保留最近 N 个（默认 3）',
+  '//',
+  '// agent loop 行为配置（agent）：',
+  '//   maxIterations: agent loop 最大迭代次数（默认 25）。每轮 = 一次 LLM 调用 + 工具执行。',
+  '//     达上限后 agent 自动终止（不报错，但未完成的任务会中断）。',
+  '//     调大（30-40）：长任务（大量文件编辑 + 多轮 build/test 循环）；',
+  '//     调小（15-20）：控制 token 消耗 / CI 环境。续接会话历史重时建议适当调大。',
   '//',
   '// 模型名必须全局唯一（不允许在多个 provider 中定义同名模型）。',
   '',
@@ -444,6 +460,13 @@ export function getCompressKeepRounds(): number {
 /** trim 时保留最近 N 个 tool_result 原文（默认 3） */
 export function getTrimKeepRecent(): number {
   return loadConfig().compression?.trimKeepRecent ?? 3;
+}
+
+// ----------- agent loop 配置（agent.ts 消费）-----------
+
+/** agent loop 最大迭代次数（默认 25）。 */
+export function getMaxIterations(): number {
+  return loadConfig().agent?.maxIterations ?? 25;
 }
 
 /** 测试用：重置缓存（验证默认 vs 文件加载） */

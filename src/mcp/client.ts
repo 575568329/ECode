@@ -1,4 +1,4 @@
-// MCP（支点 10）client —— server 连接生命周期 + stdio RCE 命令白名单 + 30s 连接超时。
+// MCP（支点 10）client —— server 连接生命周期 + stdio RCE 命令白名单 + 30s 连接超时 + 60s 工具调用超时。
 //
 // 支持 stdio（本地子进程）和 http（Streamable HTTP 远程 server）两种 transport。
 // 安全红线（10-T7）：stdio server 通过 child_process.spawn 启动，
@@ -78,6 +78,9 @@ export function validateMcpCommand(command: string | undefined): { safe: boolean
 /** MCP 单 server 连接超时（对齐 claude/opencode 30s）。测试可经 opts.timeoutMs 注入小值。 */
 export const MCP_CONNECT_TIMEOUT_MS = 30_000;
 
+/** MCP 单次工具调用超时（工具执行比连接建立更耗时，给 60s）。测试可经 opts.callTimeoutMs 注入小值。 */
+export const MCP_CALL_TIMEOUT_MS = 60_000;
+
 /**
  * 给 Promise 套超时；超时调 onTimeout 清理资源。
  *
@@ -151,6 +154,9 @@ export interface ConnectOptions {
   createHttpTransport?: (params: { url: string; headers?: Record<string, string> }) => TransportLike;
   /** 连接超时（ms），测试注入小值；默认 MCP_CONNECT_TIMEOUT_MS（30s）。 */
   timeoutMs?: number;
+  /** 单次工具调用超时（ms），测试注入小值；默认 MCP_CALL_TIMEOUT_MS（60s）。
+   *  无此保护时，慢 MCP server 会让 agent 永久挂起（adapter 的 execute 是裸调 SDK callTool）。 */
+  callTimeoutMs?: number;
 }
 
 /**
@@ -241,6 +247,8 @@ export async function connectMcpServer(
   // SDK 工厂（生产默认用真实 SDK，测试注入 mock）
   const createClient = opts?.createClient ?? (() => new Client({ name: 'ecode', version: '0.1.0' }));
   const client = createClient();
+  // 工具调用超时（默认 60s；比 connect 的 30s 宽，工具执行比建连更耗时）
+  const callTimeoutMs = opts?.callTimeoutMs ?? MCP_CALL_TIMEOUT_MS;
 
   // connect 套 30s 超时（超时→清理 transport）
   try {
@@ -259,7 +267,11 @@ export async function connectMcpServer(
     const result = await raceWithTimeout(client.listTools(), timeoutMs, async () => {});
     tools = result.tools.map((t) =>
       adaptMcpTool(entry.name, t, (name, args) =>
-        client.callTool({ name, arguments: args }) as Promise<CallToolResult>),
+        raceWithTimeout(
+          client.callTool({ name, arguments: args }) as Promise<CallToolResult>,
+          callTimeoutMs,
+          async () => {},
+        )),
     );
   } catch (err) {
     const reason = isTimeout(err) ? '获取工具超时' : `获取工具失败: ${errMessage(err)}`;

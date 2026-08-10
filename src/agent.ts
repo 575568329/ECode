@@ -11,10 +11,11 @@ import type { HookDef } from './hooks/types.js';
 import type { HookGate } from './hooks/inject.js';
 import type { ShellExec } from './hooks/runner.js';
 import type { ToolDefinition, ToolResult } from './tools/types.js';
+import { ToolFailureTracker } from './tools/failure-tracker.js';
 import { validateAfterEdit } from './tools/validation.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { createProvider } from './providers/factory.js';
-import { hasCapability } from './providers/config.js';
+import { hasCapability, getMaxIterations } from './providers/config.js';
 import { getRoutingConfig } from './router/config.js';
 import { resolveAlias } from './router/resolver.js';
 import { resolveModelForScenario } from './router/rules.js';
@@ -68,8 +69,6 @@ import type { PermissionMode, Rule, GateDecision } from './permission/types.js';
 //
 // M2 改造：agent 不再 import 任何 SDK，只依赖 ModelProvider 接口 + ECode 内部格式。
 // ============================================================
-
-const MAX_ITERATIONS = 25;
 
 /**
  * MCP 工具连续失败熔断阈值（Plan C）。
@@ -327,6 +326,13 @@ export async function* runAgentStream(
   const allow = opts.allow ?? new AllowList();
   // doom_loop 检测器（阶段5d）：跨轮持久，连续同 (tool,input) ≥3 触发，强制询问打破死循环。
   const doom = new DoomLoopDetector();
+  // 工具连续失败追踪器（公共组件）：任意工具连续 isError → 提醒 LLM 换策略。
+  // 与 MCP errorStreak 互补：errorStreak 熔断禁用 MCP 工具；failureTracker 只提醒不禁用内置工具。
+  const failureTracker = new ToolFailureTracker(3);
+  // agent loop 迭代上限（config.json agent.maxIterations 驱动，默认 25）。
+  const maxIterations = getMaxIterations();
+  // 预算感知提醒已注入标记：只在首次达阈值时注入一次，不重复打扰。
+  let budgetWarningInjected = false;
   // 权限档动态读取（支点：REPL Shift+Tab 运行中切换即时生效）：每次工具 check / Task 派发时调用，
   // 而非 runAgentStream 启动时绑定一次。getPermissionMode 优先（UI 传 ref.current），回退 permissionMode 值。
   const resolveMode = (): PermissionMode => opts.getPermissionMode?.() ?? opts.permissionMode ?? 'default';
@@ -425,6 +431,8 @@ export async function* runAgentStream(
   recordObservation(task, { session: sessionId }, getSkillCaptureConfig());
 
   let lastSignature = '';
+  // 本轮各工具执行结果（供循环末尾 failureTracker 统一检测用）。每轮开头重置。
+  let lastResults = new Map<string, { isError: boolean; content: string }>();
   let iteration: number;
 
   // 压缩选项（maybeCompress + forceCompact 共用，提取到循环外避免重复构造）
@@ -455,7 +463,10 @@ export async function* runAgentStream(
   const MAX_CONTEXT_RETRIES = 3;
 
   try {
-    for (iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    for (iteration = 0; iteration < maxIterations; iteration++) {
+      // 重置本轮工具结果收集（failureTracker 在循环末尾统一检测）
+      lastResults = new Map();
+
       // ---- 上下文压缩（proactive maybeCompress；降级提示走事件）----
       const compressResult = await maybeCompress(messages, compressOpts);
       if (compressResult.compressed) {
@@ -548,7 +559,7 @@ export async function* runAgentStream(
         //   直接终止会导致用户看到"说到一半就停了"的残缺回复。
         //   处理：追加一条 assistant 占位（承载已输出的截断文本）+ 一条 user "continue" 续跑下一轮，
         //   LLM 看到自己被截断的历史后会自然续写。设续写次数上限防无限循环。
-        if (consumed.stopUnified === 'length' && iteration < MAX_ITERATIONS - 1) {
+        if (consumed.stopUnified === 'length' && iteration < maxIterations - 1) {
           yield { type: 'warning', message: '回复较长，自动续写…' };
           messages.push({
             role: 'user',
@@ -779,6 +790,9 @@ export async function* runAgentStream(
           content: [{ type: 'tool_result', tool_use_id: tc.id, output }],
         });
 
+        // 记录本轮工具结果（循环末尾 failureTracker 统一检测用）
+        lastResults.set(tc.id, { isError: result.isError, content: result.content });
+
         // Plan C：MCP 工具连续报错熔断。只跟踪 mcp__ 前缀工具——内置工具失败是业务常态
         //   （build/test 失败、grep 无匹配），LLM 会自适应换参数/策略，误杀代价大；MCP 工具 GLM
         //   不理解语义、瞎编参数且不自救（zread 传 dummy/repo），才需要硬熔断强制换路。
@@ -823,6 +837,33 @@ export async function* runAgentStream(
         return;
       }
       lastSignature = signature;
+
+      // ---- 工具连续失败检测（公共组件 ToolFailureTracker）----
+      // 与 MCP errorStreak 互补：errorStreak 熔断禁用 MCP 工具（不可信代码）；
+      // failureTracker 追踪所有工具（含内置），只提醒 LLM 换策略，不禁用工具。
+      // 在本轮所有工具执行完后统一检测（一个工具一轮可能被调多次，取最终 streak）。
+      for (const tc of toolCalls) {
+        const result = lastResults.get(tc.id);
+        if (result) {
+          const check = failureTracker.observe(tc.name, result.isError, result.isError ? result.content : undefined);
+          if (check.triggered) {
+            yield { type: 'warning', message: check.message };
+            // 注入 user 消息让 LLM 看到失败提醒（下一轮 LLM 调用时纳入考量）
+            messages.push({ role: 'user', content: check.message });
+          }
+        }
+      }
+
+      // ---- 预算感知提醒（迭代 80% 时注入一次，催 LLM 收尾）----
+      // 放在循环末尾（本轮工具已执行完、messages 交替完整），注入的 user 消息不破坏交替规则。
+      // LLM 下一轮看到提醒后会转为总结/收尾，而非继续试错浪费剩余轮数。
+      if (!budgetWarningInjected && iteration >= Math.floor(maxIterations * 0.8) && iteration < maxIterations - 1) {
+        budgetWarningInjected = true;
+        const remaining = maxIterations - iteration - 1;
+        const budgetMsg = `[系统提醒] 你已使用 ${iteration + 1}/${maxIterations} 轮迭代预算，剩余 ${remaining} 轮。请优先总结已完成的成果，停止继续试错。如果任务尚未完成，请说明当前进度和遗留问题。`;
+        yield { type: 'warning', message: `⚠️ 迭代预算告警：已用 ${iteration + 1}/${maxIterations} 轮，剩余 ${remaining} 轮。请尽快收尾。` };
+        messages.push({ role: 'user', content: budgetMsg });
+      }
 
       // 每轮末落盘（与原 runAgent 一致）：跑到第 N 轮崩了，--continue 从第 N 轮续上
       stats.toolCalls += toolCalls.length;
@@ -916,7 +957,7 @@ export async function runAgent(
         break;
       case 'completed':
         if (event.reason === 'max-iterations') {
-          console.log(`\n⚠️  达到最大迭代次数 (${MAX_ITERATIONS})，自动终止`);
+          console.log(`\n⚠️  达到最大迭代次数，自动终止`);
         }
         break;
       case 'usage':

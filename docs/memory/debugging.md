@@ -840,3 +840,112 @@ for (const [k, v] of Object.entries(pc.models)) {
 
 - 实现：`src/mcp/manager.ts`（单例 + hasActiveConnections）、`src/lifecycle.ts`（新）、`src/ui/app.tsx`（两处退出）、`src/ui/use-agent-stream.ts`（getMcpManager）
 - 测试：`tests/lifecycle.test.ts`（4 用例含 fast-path）、`tests/mcp-manager.test.ts`（单例 3 用例）、`tests/ui/repl-human.test.tsx`（mock registry + 双击改 spy）
+
+## #020 MCP 工具结果单行 JSON 转义串刷屏（foldContent 对「单行超长」内容截断失效）
+
+**日期**：2026-08-10
+**性质**：UI 渲染 / 工具结果展示（MCP content × foldContent 折叠策略）
+**影响**：MCP server（web-search-prime / web-reader 等）把 `JSON.stringify(result)` 当单个 text 返回时，ECode 主界面把整行转义 JSON 串当 1 行刷出 = 用户看到的「乱码」。
+
+### 现象与根因
+
+MCP 工具结果经 `adapter.ts`（content 数组 text 拼接）→ `ToolResult.content` = 单行紧凑 JSON 字符串（无缩进、无换行）→ `tool-panel.tsx foldContent`：
+
+- `split('\n')` 只得 **1 行**（整串无换行）；
+- 所有 `mcp__*` 工具走 `DEFAULT_STRATEGY = head(3)`，但 head 截断前提是「行数 > 3」，1 行不触发；
+- BlockTool 把整行超长转义串当 1 行渲染 → 刷屏乱码。
+
+**关键洞察**：截断逻辑按「行数」计数，而紧凑 JSON 是「单行超长」——行数维度抓不到它。
+
+### 解决（foldContent head/full 分支加 prettifyCompactJson）
+
+`foldContent`（tool-panel.tsx）在 split 前对 head/full 分支做 `prettifyCompactJson(content)`：
+
+- trim 后以 `{`/`[` 开头 + **不含换行**（单行紧凑）+ `JSON.parse` 成对象/数组 → `JSON.stringify(parsed, null, 2)` 缩进美化；
+- 否则原样（纯文本 / 已多行 JSON / 以 `{` 开头的非合法 JSON / number/string）。
+
+美化后变多行 → head(3) 截断 + "more lines" + Ctrl+O 展开重新生效。
+
+### 为什么一处覆盖所有 MCP（统一性）
+
+所有 `mcp__*` 工具走同一渲染链（chat-view → ToolDone → foldContent → DEFAULT head(3)），且都不进 `isMergeableTool` 合并组（只 read_file/grep/glob/bash 进）。故一个 `prettifyCompactJson` 统一覆盖：
+
+- 返回 JSON 字符串的中招者（web-search / web-reader）→ 修好；
+- 返回纯文本者（zread read_file 返回文件内容）→ detect 跳过，零影响。
+
+### 边界（保守不误伤）
+
+- **summary 模式（read_file/glob/ls）跳过美化**：只按原始行数计数，美化会让 "Read N lines" 的 N 失真；
+- 已多行 JSON / 纯文本 / 非合法 JSON → parse 失败或含换行 → 原样返回；
+- **LLM 侧零影响**：只改展示层 foldContent，不动 adapter 的 `ToolResult.content`，模型仍看原样 JSON 字符串能正常 parse。
+
+### 关联
+
+- 实现：`src/ui/tool-panel.tsx`（prettifyCompactJson + foldContent head/full 分支接入）
+- 测试：`tests/ui/tool-panel.test.tsx`（7 新用例：单行 JSON 美化 / 数组 / 纯文本不变 / 已多行不重复 / summary 不美化 / 非合法 JSON 原样 / ToolDone 端到端）
+- 提交：`040155f`
+
+---
+
+## #020 GLM-5.2 不支持 image_url content type → 400（多模态图片输入降级）
+
+**日期**：2026-08-10
+**性质**：API 兼容 / 模型能力差异
+**影响**：用户附带图片输入时，GLM-5.2（纯文本模型）报 `400 messages.content.type 参数非法，取值范围 ['text']`，agent loop 第一轮即崩。
+
+### 现象
+
+用户在 REPL 输入图片路径（如 `解析 C:\...\xxx.png`），InputBar 正确提取路径、readImageFromFile 正确 base64 编码、transform.ts 正确转为 OpenAI 多模态格式 `{type:'image_url', image_url:{url:'data:image/png;base64,...'}}`——但 GLM coding plan 端点只接受 `type:'text'`，直接 400。
+
+### 根因
+
+**GLM-5.2 是纯文本模型，不支持 vision**。智谱的视觉能力在独立模型线上（GLM-4V-Plus / GLM-4.5V），用不同端点和模型名。ECode 没有检测模型能力就发了 image blocks。
+
+### 解决（vision-fallback.ts 一次性降级）
+
+不自动切模型（用户选的模型有意图），不帮 LLM 做代理决策（不检测 MCP）。只做：
+1. `resolveImageStrategy(model, images)` 纯函数检测模型是否支持 vision
+2. 支持 → inline（发 image blocks）
+3. 不支持 → strip（移除图片数据，保留文本路径）+ 注入 llmHint 告知 LLM 完整情况
+4. LLM 自己看工具列表决定怎么办（调 MCP 图片工具 / 告诉用户没办法）
+
+**防无限调用**：决策是纯函数，一次性执行，不进 agent loop 迭代循环。
+
+### 教训
+
+> **模型能力差异是真实约束，不是所有 OpenAI 兼容端点都支持多模态。** coding plan 端点专为代码优化，不含 vision。config 里模型的 `capabilities` 字段必须如实声明，不能假设所有模型支持所有能力。
+
+### 关联
+
+- 实现：`src/vision-fallback.ts`、`src/agent.ts`（resolveImageStrategy 接入 + llmHint 注入 user message）
+- 测试：`tests/vision-fallback.test.ts`（7 单测）
+- 决策：不切模型理由见 [decisions.md #007](./decisions.md)
+
+---
+
+## #021 MAX_ITERATIONS=25 打满 → 任务被静默截断（agent loop 增强三件套）
+
+**日期**：2026-08-10
+**性质**：agent loop 健壮性（迭代预算管理）
+**影响**：续接会话历史重（45+ messages）+ Windows 下全量测试命令反复失败（timeout/dev/stdin 不兼容），LLM 连续 5 轮白烧迭代，25 轮打满被强制终止。
+
+### 根因（三层叠加）
+
+1. **LLM 不知道自己快没轮数了**：agent loop 没有告知迭代预算，LLM 以为可以无限试错
+2. **bash 连续失败不触发 doom-loop**：doom-loop 只检测完全相同的 (tool,input)，LLM 每次换命令变体（timeout→--reporter→/dev/stdin），绕过了检测
+3. **MAX_ITERATIONS 硬编码不可配**：续接重会话时 25 轮不够用
+
+### 解决（三件套）
+
+1. **ToolFailureTracker 公共组件**（`src/tools/failure-tracker.ts`）：任意工具连续失败 N 次（参数可不同）→ 提醒 LLM 换策略。与 DoomLoopDetector（防死循环）、errorStreak（MCP 熔断）三者各司其职。
+2. **MAX_ITERATIONS 可配置**：`config.json` 的 `agent.maxIterations` 驱动，默认 25。达上限后不静默截断，而是注入总结指令强制 LLM 诚实产出"已完成/未完成/后续建议"。
+3. **callTool 超时保护**（`src/mcp/client.ts`）：MCP 工具调用经 raceWithTimeout 套 60s 超时（之前裸调无超时，慢 server 会让 agent 永久挂起）。
+
+### 教训
+
+> **agent loop 必须有迭代预算管理——不只是上限，还要让 LLM 感知到约束。** LLM 不知道自己在烧轮数就会盲目试错。三个检测器各司其职：DoomLoop 防精确重复、FailureTracker 防变参数连续失败、errorStreak 熔断 MCP 不可信代码。
+
+### 关联
+
+- 实现：`src/tools/failure-tracker.ts`、`src/agent.ts`（接入 + 达上限诚实总结）、`src/providers/config.ts`（agent.maxIterations）、`src/mcp/client.ts`（callTool 60s 超时）
+- 测试：`tests/failure-tracker.test.ts`（13 单测）、`tests/mcp-client.test.ts`（+4 callTool 超时）

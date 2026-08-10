@@ -105,9 +105,9 @@ let sessionSaveFailed = false;
  * 首次失败 console.warn 一次提示用户"本次不可 --continue";之后每轮失败静默,只写 runtime-log。
  * saveSession 内部已做原子写(tmp+rename)+ 写盘重试一次。
  */
-function persistSession(session: ECodeSession): void {
+function persistSession(session: ECodeSession, baseDir?: string): void {
   try {
-    const path = saveSession(session);
+    const path = saveSession(session, baseDir);
     logSessionSave(path, session.id, session.task, session.messages.length, session.stats.rounds);
   } catch (err) {
     if (!sessionSaveFailed) {
@@ -169,6 +169,16 @@ export interface RunAgentStreamOptions extends RunAgentOptions {
    * 生产留作自定义执行器（沙箱 / dry-run）的接入口。不传 → runner 默认 spawn。
    */
   hooksExec?: ShellExec;
+  /**
+   * Session 落盘根目录（依赖注入：测试传 tmpdir 隔离，避免污染真实 .ecode/sessions/）。
+   * 不传 → saveSession 默认行为（cwd/.ecode/sessions），生产路径不变。
+   */
+  sessionBaseDir?: string;
+  /**
+   * Runtime log 根目录（依赖注入：测试传 tmpdir 隔离，避免污染真实 docs/logs/runtime/）。
+   * 不传 → 默认 docs/logs/runtime，生产路径不变。
+   */
+  runtimeLogBaseDir?: string;
 }
 
 /** consumeStream 的累积结果：逐 chunk yield 完 text_delta 后 return，供本轮 push messages / 日志用。 */
@@ -337,6 +347,8 @@ export async function* runAgentStream(
           model: resolvedModel,
           routingConfig, // 子代理据此走 subagent 场景路由（支点22；跨 provider 限制见 subagent.ts 注释）
           depth: opts.subagentDepth ?? 0,
+          sessionBaseDir: opts.sessionBaseDir, // 透传测试隔离根目录给子代理（不污染真实数据目录）
+          runtimeLogBaseDir: opts.runtimeLogBaseDir,
         }),
       ]
     : [];
@@ -348,7 +360,10 @@ export async function* runAgentStream(
     effectiveHooks.length > 0 ? createHookGate(effectiveHooks, { exec: opts.hooksExec }) : undefined;
 
   // runtime-log（CLAUDE.md §1.6：日志保存到文件供排查）—— 与原 runAgent 一致
-  const logFile = initRuntimeLog(task, resolvedModel, provider.baseURL);
+  // baseDir 注入：测试隔离用 tmpdir，避免污染真实 docs/logs/runtime（生产不传 → 默认路径）
+  const logFile = initRuntimeLog(task, resolvedModel, provider.baseURL, opts.runtimeLogBaseDir);
+  // session 落盘根目录同上：测试传 tmpdir 隔离，避免污染真实 .ecode/sessions
+  const sessionBaseDir = opts.sessionBaseDir;
   // session 落盘上下文（与原 runAgent 一致：首轮/每轮末/压缩后/结束落盘）
   const sessionId = opts.resumed?.id ?? generateSessionId();
   const sessionTask = opts.resumed?.task ?? task;
@@ -364,7 +379,7 @@ export async function* runAgentStream(
     stats: { ...stats },
   });
 
-  persistSession(buildSession()); // 首次落盘（loop 前，与原 runAgent 一致）
+  persistSession(buildSession(), sessionBaseDir); // 首次落盘（loop 前，与原 runAgent 一致）
 
   yield { type: 'start', task, model: resolvedModel, provider: provider.name, logFile };
 
@@ -417,7 +432,7 @@ export async function* runAgentStream(
       if (compressResult.compressed) {
         messages = compressResult.messages;
         stats.compressed = true;
-        persistSession(buildSession()); // 压缩后立即落盘
+        persistSession(buildSession(), sessionBaseDir); // 压缩后立即落盘
         yield { type: 'warning', message: '上下文已压缩' };
       }
 
@@ -448,19 +463,19 @@ export async function* runAgentStream(
           if (consecutiveContextErrors > MAX_CONTEXT_RETRIES) {
             // L4 熔断：连续超限次数过多，放弃恢复
             yield { type: 'error', error: `上下文超限，连续 ${MAX_CONTEXT_RETRIES} 次压缩后仍超限，终止` };
-            persistSession(buildSession());
+            persistSession(buildSession(), sessionBaseDir);
             return;
           }
           const compressed = await forceCompact(messages, compressOpts);
           if (compressed) {
             messages = compressed;
-            persistSession(buildSession());
+            persistSession(buildSession(), sessionBaseDir);
             yield { type: 'warning', message: `上下文超限，已强制压缩并重试（第 ${consecutiveContextErrors} 次）` };
             continue; // 用压缩后的 messages 重试本轮
           }
           // L4 熔断：forceCompact 返回 null（压到极限仍超限）
           yield { type: 'error', error: '上下文超限且压缩到极限仍超限，终止' };
-          persistSession(buildSession());
+          persistSession(buildSession(), sessionBaseDir);
           return;
         }
         throw apiErr; // 非 context window 错误 → 传播到外层 catch
@@ -497,6 +512,19 @@ export async function* runAgentStream(
 
       // ---- 没有工具调用 → LLM 给出最终回答，终止 ----
       if (toolCalls.length === 0) {
+        // 🔴 截断自动续写：stopReason='length' 表示回复被 max_tokens 截断（尚未自然结束）。
+        //   直接终止会导致用户看到"说到一半就停了"的残缺回复。
+        //   处理：追加一条 assistant 占位（承载已输出的截断文本）+ 一条 user "continue" 续跑下一轮，
+        //   LLM 看到自己被截断的历史后会自然续写。设续写次数上限防无限循环。
+        if (consumed.stopUnified === 'length' && iteration < MAX_ITERATIONS - 1) {
+          yield { type: 'warning', message: '回复较长，自动续写…' };
+          messages.push({
+            role: 'user',
+            content: '请继续，从你刚才中断的地方接着写。',
+          });
+          continue; // 进下一轮，LLM 续写
+        }
+
         // Stop hook（支点 12 项15/16）：可打回续跑。仅 done 分支触发（repeated/max/aborted
         //   不跑 Stop——异常终止不该被 hook 反复打回成死循环）。deny → push reason 作为
         //   user 消息续跑（不 yield completed，进下一轮 iteration），LLM 看到续跑指令。
@@ -507,11 +535,11 @@ export async function* runAgentStream(
               role: 'user',
               content: stop.reason ?? 'Stop hook 要求继续',
             });
-            persistSession(buildSession());
+            persistSession(buildSession(), sessionBaseDir);
             continue; // 打回：进下一轮，重新流式调用 LLM
           }
         }
-        persistSession(buildSession()); // 最终落盘
+        persistSession(buildSession(), sessionBaseDir); // 最终落盘
         yield {
           type: 'completed',
           rounds: iteration + 1,
@@ -720,7 +748,7 @@ export async function* runAgentStream(
           type: 'warning',
           message: '检测到连续重复的工具调用，终止以防死循环',
         };
-        persistSession(buildSession());
+        persistSession(buildSession(), sessionBaseDir);
         yield {
           type: 'completed',
           rounds: iteration + 1,
@@ -737,11 +765,11 @@ export async function* runAgentStream(
 
       // 每轮末落盘（与原 runAgent 一致）：跑到第 N 轮崩了，--continue 从第 N 轮续上
       stats.toolCalls += toolCalls.length;
-      persistSession(buildSession());
+      persistSession(buildSession(), sessionBaseDir);
     }
 
     // ---- 达 MAX_ITERATIONS → 终止 ----
-    persistSession(buildSession());
+    persistSession(buildSession(), sessionBaseDir);
     yield {
       type: 'completed',
       rounds: iteration,
@@ -757,7 +785,7 @@ export async function* runAgentStream(
     // 中断多发生在 stream 迭代中（tool_use 尚未确认），故此处主要兜底：
     // 记录错误事件 + 落盘，不破坏既有配对历史。
     // （真正需要补配对的场景——工具执行中途被中断——留 M4 配合更完整的 abort 语义细化。）
-    persistSession(buildSession());
+    persistSession(buildSession(), sessionBaseDir);
     // 中断识别（放宽，修「中断后显示 ✗ Request was aborted」）：
     // openai SDK 在 fetch 被 abort 时抛的错误【不是】DOMException（message 形如
     // "Request was aborted" / "The user aborted a request"），旧的 instanceof DOMException

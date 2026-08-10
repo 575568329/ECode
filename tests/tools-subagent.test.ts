@@ -1,8 +1,10 @@
 // 阶段1 子代理：Task 工具（createTaskTool）测试。
 // 覆盖：extractFinalText 取末尾 assistant 文本；深度超限拒绝派发；递归回收结论（黑盒）。
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { rmSync } from 'node:fs';
 import { createTaskTool, extractFinalText } from '../src/tools/subagent.js';
 import { AllowList } from '../src/permission.js';
+import { makeIsolatedRoot } from './helpers/isolated-dirs.js';
 import type { AgentEvent } from '../src/agent-events.js';
 import type { ECodeMessage, ECodeStreamPart, ModelProvider, ChatRequest } from '../src/providers/types.js';
 
@@ -45,6 +47,16 @@ function spyProvider(seen: { current?: string }): ModelProvider {
 const textMsg = (text: string): ECodeMessage => ({
   role: 'assistant',
   content: [{ type: 'text', text }],
+});
+
+// 隔离根目录：createTaskTool 的 execute 会真实跑子代理 runAgentStream（落盘 session + runtime-log），
+// 全部重定向到 tmpdir，不污染真实 .ecode/sessions/ 和 docs/logs/runtime/。
+let root: string;
+beforeEach(() => {
+  root = makeIsolatedRoot();
+});
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
 });
 
 describe('extractFinalText', () => {
@@ -101,6 +113,8 @@ describe('createTaskTool', () => {
       provider: subProvider,
       model: 'mock-model',
       depth: 0,
+      sessionBaseDir: root,
+      runtimeLogBaseDir: root,
     });
     const res = await tool.execute!({ description: 'd', prompt: '分析这些文件' });
     expect(res.isError).toBe(false);
@@ -116,6 +130,8 @@ describe('createTaskTool', () => {
       provider: subProvider,
       model: 'mock-model',
       depth: 0,
+      sessionBaseDir: root,
+      runtimeLogBaseDir: root,
     });
     const res = await tool.execute!({ description: 'd', prompt: 'p' });
     expect(res.isError).toBe(false);
@@ -138,6 +154,8 @@ describe('createTaskTool', () => {
         complexityRouting: false,
       },
       depth: 0,
+      sessionBaseDir: root,
+      runtimeLogBaseDir: root,
     });
     await tool.execute!({ description: 'd', prompt: 'p' });
     // 子代理 stream 收到路由派发的 cheap-model（非主 main-model），证明 subagent 场景路由生效。
@@ -160,6 +178,8 @@ describe('createTaskTool', () => {
         complexityRouting: false,
       },
       depth: 0,
+      sessionBaseDir: root,
+      runtimeLogBaseDir: root,
     });
     await tool.execute!({ description: 'd', prompt: 'p' });
     // 无规则无显式 → defaultTarget.model（路由分支）；若回退 ctx.model 会是 main-model。
@@ -184,6 +204,8 @@ describe('createTaskTool · 路由元数据 metadata（R3）', () => {
         complexityRouting: false,
       },
       depth: 0,
+      sessionBaseDir: root,
+      runtimeLogBaseDir: root,
     });
     const res = await tool.execute!({ description: 'd', prompt: 'p' });
     expect(res.metadata).toEqual({ model: 'cheap-model', provider: 'mock', routingSource: 'rule' });
@@ -209,6 +231,8 @@ describe('createTaskTool · 路由元数据 metadata（R3）', () => {
         complexity: { complex: 'reasoning', medium: 'strong' },
       },
       depth: 0,
+      sessionBaseDir: root,
+      runtimeLogBaseDir: root,
     });
     const res = await tool.execute!({ description: 'd', prompt: '重构整个模块' });
     expect(res.metadata?.routingSource).toBe('complexity');
@@ -227,6 +251,8 @@ describe('createTaskTool · 路由元数据 metadata（R3）', () => {
       provider: subProvider,
       model: 'mock-model',
       depth: 0,
+      sessionBaseDir: root,
+      runtimeLogBaseDir: root,
     });
     const res = await tool.execute!({ description: 'd', prompt: 'p' });
     expect(res.metadata).toBeUndefined();
@@ -252,6 +278,8 @@ describe('createTaskTool · 跨 provider 降级（§9.3）', () => {
         complexityRouting: false,
       },
       depth: 0,
+      sessionBaseDir: root,
+      runtimeLogBaseDir: root,
     });
     const res = await tool.execute!({ description: 'd', prompt: 'p' });
     // 非 isError：降级后子代理仍跑（回退主 provider），只是没按落点执行。

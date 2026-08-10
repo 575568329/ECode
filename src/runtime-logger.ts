@@ -21,7 +21,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOG_ROOT = resolve(__dirname, '..', 'docs', 'logs', 'runtime');
 
 let logPath = '';
-let sessionDir = ''; // 本次会话目录（主日志所在目录，raw/ 挂在它下面）
+let dateDir = ''; // 主日志所在日期目录（<baseDir>/<date>，主 .md 平铺于此）
+// 本 session 独立子目录（<dateDir>/<sessionId>，raw 挂其下）。
+// 历史教训：raw 曾挂在 <date>/raw/ 下与同日其它 session 共享，后启动的 session 会覆盖前者的
+// round-N.json，导致主日志「完整报文见 raw/round-N.json」指向错误文件。故 raw 按 session 隔离。
+let sessionRawDir = '';
+let rawRelPrefix = ''; // 主日志引用 raw 用的相对前缀（= sessionId）
 let startTime = 0;
 let roundStartTime = 0;
 
@@ -34,23 +39,28 @@ function ts(): string {
  * 返回相对会话目录的路径，供主日志引用（让读者知道「还有更多，去这看」）
  */
 function saveRaw(round: number, kind: string, payload: unknown): string {
-  const rawDir = resolve(sessionDir, 'raw');
+  const rawDir = resolve(sessionRawDir, 'raw');
   if (!existsSync(rawDir)) mkdirSync(rawDir, { recursive: true });
-  const rel = `raw/round-${round}.${kind}.json`;
-  writeFileSync(resolve(sessionDir, rel), JSON.stringify(payload, null, 2), 'utf-8');
-  return rel;
+  const fileName = `round-${round}.${kind}.json`;
+  writeFileSync(resolve(rawDir, fileName), JSON.stringify(payload, null, 2), 'utf-8');
+  // 相对 dateDir 的路径，供主日志引用（指向本 session 独立 raw）
+  return `${rawRelPrefix}/raw/${fileName}`;
 }
 
-export function initRuntimeLog(task: string, model: string, endpoint?: string): string {
+export function initRuntimeLog(task: string, model: string, endpoint?: string, baseDir?: string): string {
   const now = new Date();
   const date = now.toISOString().slice(0, 10); // YYYY-MM-DD
   const time = now.toISOString().slice(11, 19).replace(/:/g, ''); // HHmmss
   const sessionId = `${date}_${time}`;
 
-  sessionDir = resolve(LOG_ROOT, date);
-  if (!existsSync(sessionDir)) mkdirSync(sessionDir, { recursive: true });
+  // baseDir 注入（测试隔离用 tmpdir）；默认写项目 docs/logs/runtime（生产路径）
+  const root = baseDir ?? LOG_ROOT;
+  dateDir = resolve(root, date);
+  if (!existsSync(dateDir)) mkdirSync(dateDir, { recursive: true });
 
-  logPath = resolve(sessionDir, `${sessionId}.md`);
+  logPath = resolve(dateDir, `${sessionId}.md`);
+  sessionRawDir = resolve(dateDir, sessionId);
+  rawRelPrefix = sessionId;
   startTime = Date.now();
   roundStartTime = startTime;
 
@@ -63,7 +73,7 @@ export function initRuntimeLog(task: string, model: string, endpoint?: string): 
     `- **Endpoint**: ${endpoint ?? '(未提供)'}`,
     `- **Time**: ${now.toISOString()}`,
     ``,
-    `> 主日志为摘要，完整 API 报文见同目录 \`raw/round-N.req.json\` / \`round-N.resp.json\``,
+    `> 主日志为摘要，完整 API 报文见同目录 \`<sessionId>/raw/round-N.req.json\` / \`round-N.resp.json\``,
     ``,
     '─'.repeat(60),
     ``,
@@ -167,6 +177,9 @@ export function logToolExecution(
 }
 
 export function logError(source: string, err: unknown): void {
+  // 守卫：logPath 模块级单例，测试间可能残留指向已清理的 tmpdir（或文件被外部删除）。
+  // 此时跳过写入，避免 ENOENT 二次崩溃——log 本就是最佳努力，不该拖垮调用方。
+  if (!logPath || !existsSync(logPath)) return;
   appendFileSync(logPath, [
     `### [${ts()}] ❌ ERROR [${source}]`,
     ``,
@@ -183,7 +196,7 @@ export function logError(source: string, err: unknown): void {
  * runtime-log 未初始化时静默（对齐 logSessionSave 兜底，避免降级路径上无谓抛错）。
  */
 export function logWarning(source: string, message: string): void {
-  if (!logPath) return;
+  if (!logPath || !existsSync(logPath)) return;
   appendFileSync(logPath, [
     `### [${ts()}] ⚠️ WARNING [${source}]`,
     ``,

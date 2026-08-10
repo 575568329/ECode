@@ -2,8 +2,10 @@
 // 证明：① PreToolUse deny → 工具不执行 + deny 原因回喂 ② PostToolUse deny → 工具已执行 + 反馈追加
 //      ③ 无 hooks → 字节级零回归（spy 正常执行、无 hook 文本）
 // 关键：用 opts.hooksExec 注入 mock exec，免真 spawn（跨平台引号脆弱），与现有 mockProvider 模式一致。
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { rmSync } from 'node:fs';
 import { runAgentStream } from '../src/agent.js';
+import { makeIsolatedRoot, isolatedOpts } from './helpers/isolated-dirs.js';
 import type { AgentEvent } from '../src/agent-events.js';
 import type { ECodeStreamPart, ModelProvider, ChatRequest } from '../src/providers/types.js';
 import type { ToolDefinition } from '../src/tools/types.js';
@@ -45,6 +47,14 @@ const spyTool = (spy: ReturnType<typeof vi.fn>): ToolDefinition => ({
 });
 
 describe('runAgentStream Hooks 接线（阶段 2）', () => {
+  let root: string;
+  beforeEach(() => {
+    root = makeIsolatedRoot();
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it('PreToolUse deny → 工具不执行 + deny 原因回喂 LLM', async () => {
     const spy = vi.fn(async () => ({ content: '不该执行到这', isError: false }));
     const provider = mockProvider([
@@ -54,6 +64,7 @@ describe('runAgentStream Hooks 接线（阶段 2）', () => {
     ]);
     const events = await collect(
       runAgentStream('测', {
+        ...isolatedOpts(root),
         provider,
         tools: [spyTool(spy)],
         hooks: [
@@ -83,6 +94,7 @@ describe('runAgentStream Hooks 接线（阶段 2）', () => {
     ]);
     const events = await collect(
       runAgentStream('测', {
+        ...isolatedOpts(root),
         provider,
         tools: [spyTool(spy)],
         hooks: [
@@ -116,6 +128,7 @@ describe('runAgentStream Hooks 接线（阶段 2）', () => {
     ]);
     const events = await collect(
       runAgentStream('测', {
+        ...isolatedOpts(root),
         provider,
         tools: [
           {
@@ -158,7 +171,7 @@ describe('runAgentStream Hooks 接线（阶段 2）', () => {
       { type: 'stop', reason: { unified: 'tool-use', raw: 'tool_calls' } },
     ]);
     const events = await collect(
-      runAgentStream('测', { provider, tools: [spyTool(spy)] }),
+      runAgentStream('测', { provider, ...isolatedOpts(root), tools: [spyTool(spy)] }),
     );
     const tr = events.find((e) => e.type === 'tool_result') as Extract<
       AgentEvent,
@@ -179,6 +192,7 @@ describe('runAgentStream Hooks 接线（阶段 2）', () => {
     ]);
     const events = await collect(
       runAgentStream('测', {
+        ...isolatedOpts(root),
         provider,
         tools: [],
         hooks: [{ event: 'Stop', command: 'mock', source: 'user' }],
@@ -209,6 +223,7 @@ describe('runAgentStream Hooks 接线（阶段 2）', () => {
     ]);
     const events = await collect(
       runAgentStream('测', {
+        ...isolatedOpts(root),
         provider,
         tools: [],
         hooks: [{ event: 'Stop', command: 'mock', source: 'user' }],

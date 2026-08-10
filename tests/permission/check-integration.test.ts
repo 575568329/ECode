@@ -1,5 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { rmSync } from 'node:fs';
 import { runAgentStream } from '../../src/agent.js';
+import { makeIsolatedRoot, isolatedOpts } from '../helpers/isolated-dirs.js';
 import type { AgentEvent } from '../../src/agent-events.js';
 import type { ECodeStreamPart, ModelProvider } from '../../src/providers/types.js';
 import type { GateDecision } from '../../src/permission/types.js';
@@ -131,10 +133,18 @@ const collect = async (gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> =
 };
 
 describe('权限系统集成（check + 三态 gate）', () => {
+  let root: string;
+  beforeEach(() => {
+    root = makeIsolatedRoot();
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it('危险工具（bash）default 模式 → yield permission_request 事件', async () => {
     const provider = twoRoundProvider(bashCall('t1', 'echo hi'));
     const gate = gateReturning('allow_once');
-    const events = await collect(runAgentStream('跑', { provider, permissionGate: gate }));
+    const events = await collect(runAgentStream('跑', { provider, ...isolatedOpts(root), permissionGate: gate }));
     expect(events.some((e) => e.type === 'permission_request')).toBe(true);
     const req = events.find((e) => e.type === 'permission_request') as Extract<
       AgentEvent,
@@ -149,14 +159,14 @@ describe('权限系统集成（check + 三态 gate）', () => {
     // 加 dangerous:true 后，default 模式 check() 应返回 ask → 调 gate。
     const provider = twoRoundProvider(editCall('t1'));
     const gate = gateReturning('allow_once');
-    await collect(runAgentStream('编辑', { provider, permissionGate: gate }));
+    await collect(runAgentStream('编辑', { provider, ...isolatedOpts(root), permissionGate: gate }));
     expect(gate.ask).toHaveBeenCalledTimes(1);
   });
 
   it('gate 返回 deny → tool_result isError + "用户拒绝"，且不执行该工具', async () => {
     const provider = twoRoundProvider(bashCall('t1', 'echo hi'));
     const gate = gateReturning('deny');
-    const events = await collect(runAgentStream('跑', { provider, permissionGate: gate }));
+    const events = await collect(runAgentStream('跑', { provider, ...isolatedOpts(root), permissionGate: gate }));
     const tr = events.find((e) => e.type === 'tool_result') as Extract<
       AgentEvent,
       { type: 'tool_result' }
@@ -176,7 +186,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
       { type: 'stop', reason: { unified: 'tool-use', raw: 'tc' } },
     ]);
     const gate = gateReturning('allow_once');
-    await collect(runAgentStream('跑两次', { provider, permissionGate: gate }));
+    await collect(runAgentStream('跑两次', { provider, ...isolatedOpts(root), permissionGate: gate }));
     expect(gate.ask).toHaveBeenCalledTimes(2);
   });
 
@@ -188,14 +198,14 @@ describe('权限系统集成（check + 三态 gate）', () => {
       { type: 'stop', reason: { unified: 'tool-use', raw: 'tc' } },
     ]);
     const gate = gateReturning('allow_always');
-    await collect(runAgentStream('跑两次', { provider, permissionGate: gate }));
+    await collect(runAgentStream('跑两次', { provider, ...isolatedOpts(root), permissionGate: gate }));
     expect(gate.ask).toHaveBeenCalledTimes(1);
   });
 
   it('无 gate → 危险工具默认放行执行（兼容无 UI / 测试）', async () => {
     const provider = twoRoundProvider(bashCall('t1', 'echo hi'));
     // 不传 permissionGate
-    const events = await collect(runAgentStream('跑', { provider }));
+    const events = await collect(runAgentStream('跑', { provider, ...isolatedOpts(root) }));
     const tr = events.find((e) => e.type === 'tool_result') as Extract<
       AgentEvent,
       { type: 'tool_result' }
@@ -208,7 +218,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
     const provider = twoRoundProvider(editCall('t1'));
     const gate = gateReturning('allow_always');
     const events = await collect(
-      runAgentStream('编辑', { provider, permissionGate: gate, permissionMode: 'acceptEdits' }),
+      runAgentStream('编辑', { provider, ...isolatedOpts(root), permissionGate: gate, permissionMode: 'acceptEdits' }),
     );
     expect(gate.ask).not.toHaveBeenCalled(); // acceptEdits 放行编辑工具，不经 gate
     expect(events.some((e) => e.type === 'permission_request')).toBe(false);
@@ -218,7 +228,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
     const provider = twoRoundProvider(bashCall('t1', 'echo hi'));
     const gate = gateReturning('allow_always');
     const events = await collect(
-      runAgentStream('跑', { provider, permissionGate: gate, permissionMode: 'bypass' }),
+      runAgentStream('跑', { provider, ...isolatedOpts(root), permissionGate: gate, permissionMode: 'bypass' }),
     );
     expect(gate.ask).not.toHaveBeenCalled();
     expect(events.some((e) => e.type === 'permission_request')).toBe(false);
@@ -235,6 +245,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
     // getPermissionMode 返回 default，即使 permissionMode 值是 bypass —— 证明 check 读 getter 而非启动时绑定的值。
     const events = await collect(
       runAgentStream('跑', {
+        ...isolatedOpts(root),
         provider,
         permissionGate: gate,
         permissionMode: 'bypass',
@@ -250,6 +261,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
     const gate = gateReturning('allow_once');
     const events = await collect(
       runAgentStream('跑', {
+        ...isolatedOpts(root),
         provider,
         permissionGate: gate,
         permissionMode: 'default',
@@ -270,7 +282,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
     // 同会话再跑 'git status -s' 命中 pattern → 免询问（gate 仅调 1 次）。
     const provider = twoRoundProvider(twoBash('t1', 'git status', 't2', 'git status -s'));
     const gate = gateReturning('allow_always');
-    await collect(runAgentStream('跑两次', { provider, permissionGate: gate }));
+    await collect(runAgentStream('跑两次', { provider, ...isolatedOpts(root), permissionGate: gate }));
     expect(gate.ask).toHaveBeenCalledTimes(1);
   });
 
@@ -279,7 +291,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
     // 证明 bash 不再「整工具放行」，而是按命令前缀分级。
     const provider = twoRoundProvider(twoBash('t1', 'git status', 't2', 'git log'));
     const gate = gateReturning('allow_always');
-    await collect(runAgentStream('跑两次', { provider, permissionGate: gate }));
+    await collect(runAgentStream('跑两次', { provider, ...isolatedOpts(root), permissionGate: gate }));
     expect(gate.ask).toHaveBeenCalledTimes(2);
   });
 
@@ -287,7 +299,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
     // git log 段未批准 → 整条 ask。证明复合命令逐段审批，不被 'git status *' 贪婪放行（compound bypass 防护）。
     const provider = twoRoundProvider(twoBash('t1', 'git status', 't2', 'git status && git log'));
     const gate = gateReturning('allow_always');
-    await collect(runAgentStream('跑复合', { provider, permissionGate: gate }));
+    await collect(runAgentStream('跑复合', { provider, ...isolatedOpts(root), permissionGate: gate }));
     expect(gate.ask).toHaveBeenCalledTimes(2);
   });
 
@@ -295,7 +307,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
     // 两段都命中 'git status *' → 整条 allow（gate 仅调 1 次）。对照上一条，证明全段命中才放行。
     const provider = twoRoundProvider(twoBash('t1', 'git status', 't2', 'git status -s && git status -b'));
     const gate = gateReturning('allow_always');
-    await collect(runAgentStream('跑复合', { provider, permissionGate: gate }));
+    await collect(runAgentStream('跑复合', { provider, ...isolatedOpts(root), permissionGate: gate }));
     expect(gate.ask).toHaveBeenCalledTimes(1);
   });
 
@@ -305,7 +317,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
     const gate: PermissionGate = {
       ask: vi.fn(async () => ({ decision: 'deny' as const, feedback: '别用 rm' })),
     };
-    const events = await collect(runAgentStream('跑', { provider, permissionGate: gate }));
+    const events = await collect(runAgentStream('跑', { provider, ...isolatedOpts(root), permissionGate: gate }));
     const tr = events.find((e) => e.type === 'tool_result') as Extract<
       AgentEvent,
       { type: 'tool_result' }
@@ -321,7 +333,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
   it('5d：连续 3 次相同 bash 调用 → 第 3 次触发 warning + permission_request 带 reason', async () => {
     const provider = repeatBashProvider(3, 'echo hi');
     const gate = gateReturning('allow_once');
-    const events = await collect(runAgentStream('死循环', { provider, permissionGate: gate }));
+    const events = await collect(runAgentStream('死循环', { provider, ...isolatedOpts(root), permissionGate: gate }));
     // 第 3 次（count=3）触发 doom：发 warning 事件
     const warnings = events.filter((e) => e.type === 'warning') as Extract<
       AgentEvent,
@@ -341,7 +353,7 @@ describe('权限系统集成（check + 三态 gate）', () => {
     // 命令逐轮变化 → doom 计数每轮重置，第 3 轮 count=1，不触发。
     const provider = varyingBashProvider(['echo a', 'echo b', 'echo c']);
     const gate = gateReturning('allow_once');
-    const events = await collect(runAgentStream('不重复', { provider, permissionGate: gate }));
+    const events = await collect(runAgentStream('不重复', { provider, ...isolatedOpts(root), permissionGate: gate }));
     const warnings = events.filter((e) => e.type === 'warning') as Extract<
       AgentEvent,
       { type: 'warning' }

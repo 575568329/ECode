@@ -1,7 +1,9 @@
 // 阶段1 子代理：端到端集成（主代理 → Task → 子代理递归 → 主代理综合）。
 // 验证黑盒：子代理内部 tool 调用（read_file）不泄漏到主上下文；主只回收到 Task 的结论文本。
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { rmSync } from 'node:fs';
 import { runAgentStream } from '../src/agent.js';
+import { makeIsolatedRoot, isolatedOpts } from './helpers/isolated-dirs.js';
 import type { AgentEvent } from '../src/agent-events.js';
 import type { ECodeStreamPart, ModelProvider, ChatRequest } from '../src/providers/types.js';
 
@@ -34,6 +36,14 @@ const collect = async (gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> =
 };
 
 describe('子代理端到端（主 → Task → 子递归 → 主综合）', () => {
+  let root: string;
+  beforeEach(() => {
+    root = makeIsolatedRoot();
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it('主代理调 Task → 子代理递归回收结论 → 主综合（黑盒：子内部 tool 不泄漏）', async () => {
     const provider = sequentialProvider([
       // ① 主 round1：派 Task
@@ -63,7 +73,7 @@ describe('子代理端到端（主 → Task → 子递归 → 主综合）', () 
     ]);
 
     const events = await collect(
-      runAgentStream('用子代理分析', { provider, model: 'glm-5.2' }),
+      runAgentStream('用子代理分析', { provider, ...isolatedOpts(root), model: 'glm-5.2' }),
     );
 
     // 主上下文：Task tool_result = 子代理结论（黑盒回收）
@@ -99,7 +109,7 @@ describe('子代理端到端（主 → Task → 子递归 → 主综合）', () 
       [{ type: 'text_delta', text: '默认结论' }, { type: 'stop', reason: { unified: 'stop', raw: 'stop' } }],
       [{ type: 'text_delta', text: 'done' }, { type: 'stop', reason: { unified: 'stop', raw: 'stop' } }],
     ]);
-    const events = await collect(runAgentStream('派子代理', { provider, model: 'glm-5.2' }));
+    const events = await collect(runAgentStream('派子代理', { provider, ...isolatedOpts(root), model: 'glm-5.2' }));
     const taskResult = events.find((e) => e.type === 'tool_result' && e.name === 'Task') as Extract<
       AgentEvent,
       { type: 'tool_result' }

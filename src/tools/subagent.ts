@@ -44,6 +44,10 @@ export interface TaskToolContext {
   depth: number;
   /** 深度上限（默认 DEFAULT_MAX_SUBAGENT_DEPTH）。 */
   maxDepth?: number;
+  /** Session 落盘根目录透传（测试隔离用 tmpdir；不传 → 子代理走默认 cwd/.ecode/sessions）。 */
+  sessionBaseDir?: string;
+  /** Runtime log 根目录透传（测试隔离用 tmpdir；不传 → 子代理走默认 docs/logs/runtime）。 */
+  runtimeLogBaseDir?: string;
 }
 
 /**
@@ -154,6 +158,9 @@ export function createTaskTool(ctx: TaskToolContext): ToolDefinition {
         provider: subProvider,
         model: subModel,
         subagentDepth: ctx.depth + 1, // 子代理深度 +1，其 Task 闭包据此拦再递归
+        // 透传测试隔离根目录：子代理 session/runtime-log 同写主代理的 tmpdir，不污染真实数据目录
+        sessionBaseDir: ctx.sessionBaseDir,
+        runtimeLogBaseDir: ctx.runtimeLogBaseDir,
       })) {
         if (event.type === 'completed') conclusion = extractFinalText(event.messages);
         if (event.type === 'error') return { content: `子代理执行失败: ${event.error}`, isError: true };

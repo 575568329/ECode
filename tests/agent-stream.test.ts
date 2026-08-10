@@ -1,5 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { rmSync } from 'node:fs';
 import { runAgentStream } from '../src/agent.js';
+import { makeIsolatedRoot, isolatedOpts } from './helpers/isolated-dirs.js';
 import type { AgentEvent } from '../src/agent-events.js';
 import type { ResumeContext } from '../src/agent.js';
 import type { ECodeMessage, ECodeStreamPart, ModelProvider, ChatRequest } from '../src/providers/types.js';
@@ -30,12 +32,21 @@ const collect = async (gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> =
 };
 
 describe('runAgentStream', () => {
+  // 隔离根目录：runAgentStream 落盘的 session + runtime-log 都写这里，不污染真实数据目录
+  let root: string;
+  beforeEach(() => {
+    root = makeIsolatedRoot();
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it('纯文本回复 → start / text_delta / completed(done)', async () => {
     const provider = mockProvider([
       { type: 'text_delta', text: '你好' },
       { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
     ]);
-    const events = await collect(runAgentStream('打招呼', { provider }));
+    const events = await collect(runAgentStream('打招呼', { provider, ...isolatedOpts(root) }));
     expect(events[0].type).toBe('start');
     expect(events.some((e) => e.type === 'text_delta' && e.text === '你好')).toBe(true);
     const done = events.find((e) => e.type === 'completed');
@@ -50,7 +61,7 @@ describe('runAgentStream', () => {
       { type: 'stop', reason: { unified: 'tool-use', raw: 'tool_calls' } },
     ]);
     // 简化：只测第一轮事件，不构造完整多轮（多轮需 provider 按 messages 返回不同流）
-    const events = await collect(runAgentStream('读 package.json', { provider }));
+    const events = await collect(runAgentStream('读 package.json', { provider, ...isolatedOpts(root) }));
     const types = events.map((e) => e.type);
     expect(types).toContain('tool_call_start');
     expect(types).toContain('tool_result');
@@ -72,7 +83,7 @@ describe('runAgentStream', () => {
       { type: 'tool_call_end', id: 't1' },
       { type: 'stop', reason: { unified: 'tool-use', raw: 'tool_calls' } },
     ]);
-    const events = await collect(runAgentStream('跑测试', { provider }));
+    const events = await collect(runAgentStream('跑测试', { provider, ...isolatedOpts(root) }));
     const start = events.find((e) => e.type === 'tool_call_start') as Extract<
       AgentEvent,
       { type: 'tool_call_start' }
@@ -94,7 +105,7 @@ describe('runAgentStream', () => {
       { type: 'tool_call_end', id: 't1' },
       { type: 'stop', reason: { unified: 'tool-use', raw: 'tool_calls' } },
     ]);
-    const events = await collect(runAgentStream('读 package.json', { provider }));
+    const events = await collect(runAgentStream('读 package.json', { provider, ...isolatedOpts(root) }));
     const textIdx = events.findIndex((e) => e.type === 'text_delta');
     const toolStartIdx = events.findIndex((e) => e.type === 'tool_call_start');
     expect(textIdx).toBeGreaterThanOrEqual(0);
@@ -109,7 +120,7 @@ describe('runAgentStream', () => {
       { type: 'usage', inputTokens: 120, outputTokens: 30 },
       { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
     ]);
-    const events = await collect(runAgentStream('打招呼', { provider }));
+    const events = await collect(runAgentStream('打招呼', { provider, ...isolatedOpts(root) }));
     const usage = events.find((e) => e.type === 'usage');
     expect(usage).toBeDefined();
     expect(usage?.type === 'usage' && usage.inputTokens).toBe(120);
@@ -144,7 +155,7 @@ describe('runAgentStream', () => {
         }
       },
     };
-    const events = await collect(runAgentStream('读 a', { provider }));
+    const events = await collect(runAgentStream('读 a', { provider, ...isolatedOpts(root) }));
     const usages = events.filter((e) => e.type === 'usage');
     expect(usages).toHaveLength(2);
   });
@@ -159,7 +170,7 @@ describe('runAgentStream', () => {
       { type: 'text_delta', text: '！' },
       { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
     ]);
-    const events = await collect(runAgentStream('打招呼', { provider }));
+    const events = await collect(runAgentStream('打招呼', { provider, ...isolatedOpts(root) }));
     const textDeltas = events.filter(
       (e): e is Extract<AgentEvent, { type: 'text_delta' }> => e.type === 'text_delta',
     );
@@ -200,7 +211,7 @@ describe('runAgentStream', () => {
         }
       },
     };
-    const events = await collect(runAgentStream('读 a', { provider }));
+    const events = await collect(runAgentStream('读 a', { provider, ...isolatedOpts(root) }));
     expect(events.some((e) => e.type === 'completed')).toBe(true);
     // 第二轮收到的 messages 里，上轮 assistant 文本块应为完整 '你好！'
     const round2 = seenMessages[1] as Array<{ role: string; content: unknown }>;
@@ -219,7 +230,7 @@ describe('runAgentStream', () => {
       { type: 'text_delta', text: '你好啊' },
       { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
     ]);
-    const events = await collect(runAgentStream('打招呼', { provider }));
+    const events = await collect(runAgentStream('打招呼', { provider, ...isolatedOpts(root) }));
     const done = events.find(
       (e): e is Extract<AgentEvent, { type: 'completed' }> => e.type === 'completed',
     );
@@ -255,7 +266,7 @@ describe('runAgentStream', () => {
       { type: 'text_delta', text: '新回答' },
       { type: 'stop', reason: { unified: 'stop', raw: 'stop' } },
     ]);
-    const events = await collect(runAgentStream('追问', { provider, resumed }));
+    const events = await collect(runAgentStream('追问', { provider, ...isolatedOpts(root), resumed }));
     const done = events.find(
       (e): e is Extract<AgentEvent, { type: 'completed' }> => e.type === 'completed',
     );
@@ -289,6 +300,7 @@ describe('runAgentStream', () => {
     ]);
     const events = await collect(
       runAgentStream('短任务', {
+        ...isolatedOpts(root),
         provider,
         model: 'test-model', // contextWindow 兜底 128K → 阈值 102K token
         system: '', // 空 system，不贡献 token
@@ -349,7 +361,7 @@ describe('runAgentStream', () => {
         yield { type: 'stop', reason: { unified: 'stop', raw: 'stop' } };
       },
     };
-    const events = await collect(runAgentStream('超限重试测试', { provider }));
+    const events = await collect(runAgentStream('超限重试测试', { provider, ...isolatedOpts(root) }));
     // 应有 warning 事件（上下文超限压缩重试）
     const warnings = events.filter((e) => e.type === 'warning');
     expect(warnings.length).toBeGreaterThanOrEqual(1);
@@ -384,7 +396,7 @@ describe('runAgentStream', () => {
         throw new Error('Request was aborted'); // SDK 包装的 abort 错误（非 DOMException）
       },
     };
-    const events = await collect(runAgentStream('跑', { provider, signal: controller.signal }));
+    const events = await collect(runAgentStream('跑', { provider, ...isolatedOpts(root), signal: controller.signal }));
     expect(events.some((e) => e.type === 'error')).toBe(false); // 不再显示 ✗ Request was aborted
     const done = events.find((e) => e.type === 'completed');
     expect(done?.type === 'completed' && done.reason).toBe('aborted');

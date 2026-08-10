@@ -1,8 +1,10 @@
 // 阶段 0 地基测试：runAgentStream 的 opts.tools 注入（子代理工具子集 / MCP 工具的地基）。
 // 验证：① 传入 tools 生效（自定义工具被执行）② 子集外工具被拒（未知工具 isError）
 //      ③ 不传 tools 默认内置（现有行为不变，零回归）
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { rmSync } from 'node:fs';
 import { runAgentStream } from '../src/agent.js';
+import { makeIsolatedRoot, isolatedOpts } from './helpers/isolated-dirs.js';
 import type { AgentEvent } from '../src/agent-events.js';
 import type { ECodeStreamPart, ModelProvider, ChatRequest } from '../src/providers/types.js';
 import type { ToolDefinition } from '../src/tools/types.js';
@@ -31,6 +33,14 @@ const collect = async (gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> =
 };
 
 describe('runAgentStream opts.tools 注入（阶段 0 地基）', () => {
+  let root: string;
+  beforeEach(() => {
+    root = makeIsolatedRoot();
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it('传入 tools → agent 使用注入的工具集（自定义工具被执行）', async () => {
     const customTool: ToolDefinition = {
       name: 'custom_greet',
@@ -43,7 +53,7 @@ describe('runAgentStream opts.tools 注入（阶段 0 地基）', () => {
       { type: 'tool_call_end', id: 't1' },
       { type: 'stop', reason: { unified: 'tool-use', raw: 'tool_calls' } },
     ]);
-    const events = await collect(runAgentStream('测试', { provider, tools: [customTool] }));
+    const events = await collect(runAgentStream('测试', { provider, ...isolatedOpts(root), tools: [customTool] }));
     const tr = events.find((e) => e.type === 'tool_result') as Extract<
       AgentEvent,
       { type: 'tool_result' }
@@ -61,7 +71,7 @@ describe('runAgentStream opts.tools 注入（阶段 0 地基）', () => {
       { type: 'tool_call_end', id: 't1' },
       { type: 'stop', reason: { unified: 'tool-use', raw: 'tool_calls' } },
     ]);
-    const events = await collect(runAgentStream('测试', { provider, tools: [] }));
+    const events = await collect(runAgentStream('测试', { provider, ...isolatedOpts(root), tools: [] }));
     const tr = events.find((e) => e.type === 'tool_result') as Extract<
       AgentEvent,
       { type: 'tool_result' }
@@ -79,7 +89,7 @@ describe('runAgentStream opts.tools 注入（阶段 0 地基）', () => {
       { type: 'tool_call_end', id: 't1' },
       { type: 'stop', reason: { unified: 'tool-use', raw: 'tool_calls' } },
     ]);
-    const events = await collect(runAgentStream('读', { provider }));
+    const events = await collect(runAgentStream('读', { provider, ...isolatedOpts(root) }));
     const tr = events.find((e) => e.type === 'tool_result') as Extract<
       AgentEvent,
       { type: 'tool_result' }

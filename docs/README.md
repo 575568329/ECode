@@ -62,6 +62,7 @@
 - [`M5-MCP 管理增强`](详设/20260809095317_M5-MCP管理增强-详设[已完成].md) — McpManager(连接池+互斥锁)+30s超时+lastError+/mcp子命令(info/tools/reconnect/add/remove)+Windows taskkill+POSIX pgrep树遍历进程树清理/env脱敏（v2：基于角色 agent 审阅返工，6🔴+8🟡全修；✅ 已实施 102 mcp 单测，T9 三方唯一全平台解决孙子残留）
 - [`技能生成与模型路由`](详设/20260809213507_技能生成与模型路由-详设[待审阅].md) — M6阶段D：hook记录→`/skill-gen`归纳(Ratchet引用证据+分批)→`/skill`审批(accept/reject/promote+安全扫描三段式)；启发式复杂度路由(`assessComplexity`)+跨provider subagent。借鉴openclaw Skill Workshop + AddyOsmani Ratchet
 - [`config-models合并入providers`](详设/20260810173829_config-models-合并入providers-详设.md) — 重构 config.json 结构：顶层 models 合入 providers 内部，对齐 CCode/opencode 设计；含旧格式自动迁移策略
+- [`多模态图片输入`](详设/20260610120000_多模态图片输入-详设[待实现].md) — 文件路径引用→magic bytes检测→base64 随消息发送；ECodeContentBlock 增 image 变体 + transform 双向转换（Anthropic base64 / OpenAI data URL）；跨 UI/Agent/Provider 全链路 11 文件改动
 
 ### 调研（5）
 

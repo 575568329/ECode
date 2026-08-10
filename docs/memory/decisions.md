@@ -237,3 +237,80 @@ Repo Map 是 aider 标志性创新：tree-sitter 解析符号 → 符号引用�
 - 实证方法：runtime-log 的 `logSessionSave` 落盘记录（同主会话时间窗内出现多个不同 id = 子代理碎片）。
 - 代码：[src/session.ts](../../src/session.ts) subagentBaseDir / [src/runtime-logger.ts](../../src/runtime-logger.ts) subagentLogRoot / [src/tools/subagent.ts](../../src/tools/subagent.ts)
 - 决策 #003（子代理设计：黑盒侦察兵，只回喂结论）
+
+---
+
+## 决策 #007：图片降级不自动切模型——告知 LLM 实际情况让它自己决定
+
+**日期**：2026-08-10
+**状态**：✅ 已决策（用户拍板）
+**影响范围**：多模态图片输入降级（`src/vision-fallback.ts` + `src/agent.ts`）
+
+### 背景
+
+GLM-5.2 不支持 vision（报 400 `content.type 参数非法`），用户附带图片输入会崩。最初设计了三级降级（inline → switch 自动切模型 → strip），其中 switch 会自动在 config 中查找支持 vision 的模型并切换 model+provider。
+
+### 被推翻的方案：自动切模型（switch 策略）
+
+原 switch 策略：模型不支持 vision → 在 config 中找 vision 模型 → 自动 createProvider + 覆盖 resolvedModel → 后续 agent loop 全程用新模型。
+
+### 推翻理由（用户拍板）
+
+1. **用户选的模型是有意图的**——自动切走会丢上下文/工具能力/费用预期。
+2. **不同模型的 system prompt / tools 能力不同**——切换后行为不可控（如 vision 模型可能不支持 tools）。
+3. **用户需要时可以自己 `/model` 切换**——不需要 agent 越俎代庖。
+
+### 最终方案：只 strip + 告知 LLM
+
+- 模型支持 vision → inline（直接发 image blocks）
+- 模型不支持 → strip（移除图片数据，保留文本路径）+ 注入 `llmHint` 告知 LLM 完整情况
+- **LLM 自己看工具列表决定**：调 MCP 图片工具 / 用 bash 处理 / 告诉用户当前环境无法分析
+
+核心原则：**不做代理决策**（不检测 MCP、不自动切模型），只告知 LLM "用户上传了图片但你的模型不支持，路径在文本里"，它自己会找路。
+
+### 关联
+
+- 实现：`src/vision-fallback.ts`、`src/agent.ts`（llmHint 拼入 user message）
+- 测试：`tests/vision-fallback.test.ts`（7 单测）
+- 踩坑：[debugging.md #020](./debugging.md)（GLM-5.2 不支持 image_url 的 400 错误）
+
+---
+
+## 决策 #008：三个工具失败检测器各司其职（DoomLoop / FailureTracker / errorStreak）
+
+**日期**：2026-08-10
+**状态**：✅ 已决策（设计推导，非用户显式拍板但逻辑自洽）
+**影响范围**：`src/permission/doom-loop.ts` / `src/tools/failure-tracker.ts`（新）/ `src/agent.ts`（errorStreak 内联）
+
+### 背景
+
+agent loop 中存在三种"工具反复失败"场景，语义不同但容易混淆：
+
+| 场景 | 典型表现 | 正确处理 |
+|------|----------|----------|
+| LLM 卡在精确重复（同 tool 同 input） | 反复 read 同一文件、反复跑同一命令 | 弹窗询问用户（交还决策权） |
+| LLM 变参数连续失败（同 tool 不同 input） | bash 每次换命令变体都报错 | 提醒 LLM 换策略（不禁用工具） |
+| MCP 工具连续失败（不可信代码） | zread 瞎编参数反复失败 | 会话内禁用该工具（硬熔断） |
+
+### 决策：三个独立组件，不合并
+
+| 组件 | 检测什么 | 到阈值后 | 适用范围 |
+|------|----------|----------|----------|
+| `DoomLoopDetector` | 完全相同的 (tool,input) 重复 | 弹窗询问用户 | 防死循环 |
+| `ToolFailureTracker` | 任意工具连续 isError（参数可不同） | 提醒 LLM 换策略 | 内置工具试错检测（公共组件） |
+| `errorStreak`（agent.ts 内联） | MCP 工具连续 isError | 禁用工具（熔断） | MCP 不可信代码 |
+
+为什么不合并：**语义不同**——DoomLoop 是用户可决策的（弹窗）、FailureTracker 是提醒性的（不禁用）、errorStreak 是硬熔断（禁用）。强行合并会增加条件分支。
+
+### ToolFailureTracker 触发策略
+
+- streak **= 阈值**（3）→ 首次触发
+- streak 4~5 → 不重复触发（避免每轮打扰）
+- streak **翻倍**（6）→ 再触发一次（第二次提醒）
+- 成功一次 → **归零**（偶发失败不累积）
+
+### 关联
+
+- 实现：`src/tools/failure-tracker.ts`（新公共组件）、`src/agent.ts`（接入）
+- 测试：`tests/failure-tracker.test.ts`（13 单测）
+- 踩坑：[debugging.md #021](./debugging.md)（MAX_ITERATIONS 打满根因之一）

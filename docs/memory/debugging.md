@@ -887,7 +887,7 @@ MCP 工具结果经 `adapter.ts`（content 数组 text 拼接）→ `ToolResult.
 
 ---
 
-## #020 GLM-5.2 不支持 image_url content type → 400（多模态图片输入降级）
+## #021 GLM-5.2 不支持 image_url content type → 400（多模态图片输入降级）
 
 **日期**：2026-08-10
 **性质**：API 兼容 / 模型能力差异
@@ -923,7 +923,7 @@ MCP 工具结果经 `adapter.ts`（content 数组 text 拼接）→ `ToolResult.
 
 ---
 
-## #021 MAX_ITERATIONS=25 打满 → 任务被静默截断（agent loop 增强三件套）
+## #022 MAX_ITERATIONS=25 打满 → 任务被静默截断（agent loop 增强三件套）
 
 **日期**：2026-08-10
 **性质**：agent loop 健壮性（迭代预算管理）

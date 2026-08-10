@@ -77,8 +77,8 @@ export function adaptMcpPrompt(
       try {
         const result = await getPrompt(mcpPrompt.name, argMap);
         injectAsUserMessage(result.messages);
-      } catch (err) {
-        console.warn(`[MCP] 获取 prompt "${mcpPrompt.name}" 失败: ${err instanceof Error ? err.message : String(err)}`);
+      } catch {
+        // prompt 获取失败静默降级（不污染终端）
       }
     },
   };

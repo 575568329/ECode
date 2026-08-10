@@ -14,8 +14,12 @@
 //   - 超时兜底：raceWithTimeout 内对主 promise 挂静默 catch，防超时后后台 reject → unhandledRejection 崩进程。
 //   - lastError：failedConn(reason) 携带失败原因，供 /mcp 回显（超越 claude）。
 //   - pid：McpConnection.pid 暴露 stdio child pid（SDK transport.pid），供 manager 进程树清理用。
-//   - 失败不 crash：校验/连接/listTools 失败 → warn + 返回 failed 状态（带 lastError）。
+//   - 失败不 crash：校验/连接/listTools 失败 → 返回带 lastError 的 failed 状态（不 crash agent）。
+//     🔴 不用 console.warn：ink 接管 stdout/stderr 后，console 输出会污染渲染画面（双欢迎屏问题）。
+//     失败信息经 lastError → manager → useAgentStream → ink 消息气泡正常展示。
 import { basename } from 'node:path';
+import type { IOType } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -141,7 +145,7 @@ interface ClientLike {
 
 /** connectMcpServer 可选依赖注入（测试时传 mock，生产缺省用真实 SDK） */
 export interface ConnectOptions {
-  createTransport?: (params: { command: string; args?: string[]; env?: Record<string, string> }) => TransportLike;
+  createTransport?: (params: { command: string; args?: string[]; env?: Record<string, string>; stderr?: IOType }) => TransportLike;
   createClient?: () => ClientLike;
   /** http transport 工厂（测试注入 mock）。生产缺省用 SDK StreamableHTTPClientTransport。 */
   createHttpTransport?: (params: { url: string; headers?: Record<string, string> }) => TransportLike;
@@ -153,13 +157,27 @@ export interface ConnectOptions {
  * 连接单个 MCP server（stdio 或 http）。
  *
  * 流程：前置校验 → 创建 transport（stdio: RCE 校验 / http: url 校验）→ connect（30s 超时）→ listTools（30s 超时）→ adapt。
- * 任何一步失败 → warn + 返回带 lastError 的 failed 状态（不 crash agent）。
+ * 任何一步失败 → 返回带 lastError 的 failed 状态（不 crash agent，不 console.warn 污染画面）。
  */
 export async function connectMcpServer(
   entry: McpRegistryEntry,
   opts?: ConnectOptions,
 ): Promise<McpConnection> {
   const timeoutMs = opts?.timeoutMs ?? MCP_CONNECT_TIMEOUT_MS;
+
+  // stderr 环形缓冲（仅 stdio + stderr='pipe' 时填充;connect/listTools 失败时 withStderrTail 回灌尾部诊断）。
+  // 修「SDK 默认 stderr='inherit' → server INFO 日志 + 崩溃堆栈泄到终端污染 ink 画面」：
+  //   stderr='pipe' 捕获 server stderr → 缓冲最近 STDERR_TAIL_MAX 行 → 失败时尾部 STDERR_SHOW_LINES 行拼进 lastError
+  //   （用户看到 server 真实崩溃原因,如缺模块/key 无效,而非 SDK 抽象错误）。成功时只缓冲不展示。
+  const stderrLines: string[] = [];
+  const STDERR_TAIL_MAX = 200; // 环形缓冲容量（防 server 狂刷 stderr 涨内存）
+  const STDERR_SHOW_LINES = 8; // 失败时展示尾部行数（够看崩溃原因又不刷屏）
+  /** 把 stderr 尾部拼进 reason（stderrLines 为空则降级裸 reason,兼容 http / 无 stderr 属性的 transport）。 */
+  const withStderrTail = (reason: string): string => {
+    if (stderrLines.length === 0) return reason;
+    const tail = stderrLines.slice(-STDERR_SHOW_LINES).map((l) => `    > ${l}`).join('\n');
+    return `${reason}\n服务端最近输出:\n${tail}`;
+  };
 
   /** 构造 failed 连接（带原因，供 /mcp 回显）。 */
   const failedConn = (reason: string): McpConnection => ({
@@ -187,15 +205,27 @@ export async function connectMcpServer(
     // stdio：RCE 命令白名单校验（安全红线）
     const validation = validateMcpCommand(entry.command);
     if (!validation.safe) {
-      console.warn(`[MCP] ${entry.name}: ${validation.reason}，跳过连接`);
       return failedConn(validation.reason!);
     }
     const createTransport = opts?.createTransport ?? ((params) => new StdioClientTransport(params));
-    transport = createTransport({ command: entry.command!, args: entry.args, env: entry.env });
+    // stderr='pipe'：捕获 server stderr 进 PassThrough stream（默认 'inherit' 会把 INFO 日志/崩溃堆栈泄到终端污染 ink 画面）。
+    transport = createTransport({ command: entry.command!, args: entry.args, env: entry.env, stderr: 'pipe' });
+    // 挂 listener 缓冲 server stderr → 失败时 withStderrTail 回灌诊断（SDK 设 pipe 后 transport.stderr 返回 PassThrough stream）。
+    const stderrStream = (transport as { stderr?: Readable | null }).stderr;
+    if (stderrStream) {
+      stderrStream.on('data', (chunk: Buffer) => {
+        for (const raw of chunk.toString('utf-8').split('\n')) {
+          const line = raw.trimEnd();
+          if (line) {
+            stderrLines.push(line);
+            if (stderrLines.length > STDERR_TAIL_MAX) stderrLines.shift();
+          }
+        }
+      });
+    }
   } else {
     // http（Streamable HTTP）：校验 url
     if (!entry.url) {
-      console.warn(`[MCP] ${entry.name}: http transport 缺少 url，跳过连接`);
       return failedConn('http transport 缺少 url');
     }
     const createHttpTransport = opts?.createHttpTransport ?? ((params) => {
@@ -219,9 +249,8 @@ export async function connectMcpServer(
     });
   } catch (err) {
     const reason = isTimeout(err) ? '连接超时' : `连接失败: ${errMessage(err)}`;
-    console.warn(`[MCP] ${entry.name}: ${reason}`);
     await transport.close().catch(() => {}); // 清理，忽略二次错误
-    return failedConn(reason);
+    return failedConn(withStderrTail(reason)); // 回灌 server stderr 尾部诊断（空则降级裸 reason）
   }
 
   // listTools 套 30s 超时
@@ -234,9 +263,8 @@ export async function connectMcpServer(
     );
   } catch (err) {
     const reason = isTimeout(err) ? '获取工具超时' : `获取工具失败: ${errMessage(err)}`;
-    console.warn(`[MCP] ${entry.name}: ${reason}`);
     await transport.close().catch(() => {});
-    return failedConn(reason);
+    return failedConn(withStderrTail(reason)); // 回灌 server stderr 尾部诊断（空则降级裸 reason）
   }
 
   // 获取 server 暴露的 prompts（套超时；失败降级空 prompts，不阻断已建立的连接）
@@ -262,8 +290,7 @@ export async function connectMcpServer(
     getPrompt: async (name, args) => {
       try {
         return await client.getPrompt({ name, arguments: args });
-      } catch (err) {
-        console.warn(`[MCP] ${entry.name}: getPrompt("${name}") 失败 (${errMessage(err)})`);
+      } catch {
         return { messages: [] };
       }
     },

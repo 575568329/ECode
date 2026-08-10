@@ -186,9 +186,6 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
         cmdNames.push(cmd.name);
       }
       mcpCmdNamesRef.current = cmdNames;
-      if (cmdNames.length > 0) {
-        console.log(`[MCP] 已注册 ${cmdNames.length} 个 prompt 斜杠命令`);
-      }
     };
 
     // tools 同步（getRunOpts 闭包读 ref）
@@ -207,6 +204,18 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
       if (cancelled) return;
       syncTools();
       syncPrompts();
+      // 失败的 server 通过 ink 正常渲染渠道展示（不 console.warn 污染 stderr 画面）
+      const failed = (manager.getStatus() as McpServerState[]).filter((s) => s.status === 'failed');
+      if (failed.length > 0) {
+        const lines = failed.map((s) => `[MCP] ${s.name}: ${s.lastError ?? '未知原因'}`);
+        setState((prev) => ({
+          ...prev,
+          completedMessages: [
+            ...prev.completedMessages,
+            { kind: 'warning', id: `sys-mcp-fail-${Date.now()}`, text: lines.join('\n') },
+          ],
+        }));
+      }
     });
 
     return () => {

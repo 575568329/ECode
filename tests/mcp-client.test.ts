@@ -1,6 +1,7 @@
 // 阶段3 MCP：client.ts RCE allowlist + 连接生命周期测试。
 // 重点测 validateMcpCommand 命令白名单纯函数 + connectMcpServer 生命周期。
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { PassThrough } from 'node:stream';
 import { validateMcpCommand, connectMcpServer, disconnectAll, raceWithTimeout, MCP_CONNECT_TIMEOUT_MS } from '../src/mcp/client.js';
 import type { McpConnection } from '../src/mcp/client.js';
 import type { McpRegistryEntry } from '../src/mcp/registry.js';
@@ -109,6 +110,10 @@ function createMockFactories(opts?: {
   tools?: Array<{ name: string; description?: string; inputSchema: { type: 'object'; properties?: Record<string, unknown>; required?: string[] } }>;
   connectError?: Error;
   listToolsError?: Error;
+  /** 注入 stderr stream,模拟 SDK StdioClientTransport.stderr getter(stderr='pipe' 后返回 PassThrough)。不传 → null(模拟无 stderr 属性的 transport,向后兼容)。 */
+  stderrStream?: PassThrough;
+  /** 模拟 server 在 connect 过程中往 stderr 写的行(connect mock 写入;挂 listener 已在 connectMcpServer 同步部分完成)。 */
+  stderrLines?: string[];
 }) {
   const mockClose = vi.fn().mockResolvedValue(undefined);
   const mockTransport = {
@@ -116,9 +121,17 @@ function createMockFactories(opts?: {
     close: mockClose,
     send: vi.fn().mockResolvedValue(undefined),
     pid: 12345, // 模拟 SDK StdioClientTransport.pid getter（stdio child pid）
+    stderr: opts?.stderrStream ?? null, // 模拟 SDK StdioClientTransport.stderr getter(stderr='pipe' 时返回 stream)
   };
   const mockClient = {
     connect: vi.fn().mockImplementation(async () => {
+      // 模拟真实 server 启动往 stderr 写日志(listener 已挂,flowing);写完 await 一次让 nextTick emit flush,再抛错,
+      // 否则 connect reject 的 microtask 会抢先于 data emit → stderrLines 还空就被 withStderrTail 读走。
+      if (opts?.stderrStream && opts?.stderrLines) {
+        for (const line of opts.stderrLines) opts.stderrStream.write(`${line}\n`);
+        opts.stderrStream.end();
+        await new Promise<void>((r) => process.nextTick(r));
+      }
       if (opts?.connectError) throw opts.connectError;
     }),
     listTools: vi.fn().mockImplementation(async () => {
@@ -136,11 +149,6 @@ function createMockFactories(opts?: {
 }
 
 describe('connectMcpServer（连接生命周期）', () => {
-  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-  afterEach(() => {
-    warnSpy.mockClear();
-  });
 
   it('正常连接 → status=connected, tools 非空', async () => {
     const mocks = createMockFactories();
@@ -151,7 +159,7 @@ describe('connectMcpServer（连接生命周期）', () => {
     expect(conn.status).toBe('connected');
     expect(conn.tools).toHaveLength(1);
     expect(conn.tools[0].name).toBe('mcp__test-server__search');
-    expect(mocks.createTransport).toHaveBeenCalledWith({ command: 'npx', args: ['-y', 'test-mcp'] });
+    expect(mocks.createTransport).toHaveBeenCalledWith({ command: 'npx', args: ['-y', 'test-mcp'], stderr: 'pipe' });
   });
 
   it('RCE 校验失败 → status=failed, transport 未创建', async () => {
@@ -163,7 +171,7 @@ describe('connectMcpServer（连接生命周期）', () => {
     expect(conn.status).toBe('failed');
     expect(conn.tools).toHaveLength(0);
     expect(mocks.createTransport).not.toHaveBeenCalled();
-    expect(warnSpy).toHaveBeenCalled();
+    expect(conn.lastError).toContain('不在白名单');
   });
 
   it('transport start（connect）抛错 → status=failed, close 已调', async () => {
@@ -174,7 +182,7 @@ describe('connectMcpServer（连接生命周期）', () => {
     const conn = await connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient });
     expect(conn.status).toBe('failed');
     expect(mocks.mockTransport.close).toHaveBeenCalled();
-    expect(warnSpy).toHaveBeenCalled();
+    expect(conn.lastError).toContain('连接失败');
   });
 
   it('listTools 抛错 → status=failed, close 已调', async () => {
@@ -279,15 +287,6 @@ function createHttpMockFactories(opts?: {
 }
 
 describe('connectMcpServer（http transport）', () => {
-  let warnSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    warnSpy.mockRestore();
-  });
 
   it('http 正常连接 → status=connected, tools 非空', async () => {
     const mocks = createHttpMockFactories();
@@ -322,7 +321,7 @@ describe('connectMcpServer（http transport）', () => {
     });
     expect(conn.status).toBe('failed');
     expect(mocks.createHttpTransport).not.toHaveBeenCalled();
-    expect(warnSpy).toHaveBeenCalled();
+    expect(conn.lastError).toContain('url');
   });
 
   it('http 无 headers → 正常连接（headers 可选）', async () => {
@@ -423,13 +422,10 @@ describe('raceWithTimeout', () => {
 });
 
 describe('connectMcpServer（超时 + lastError + pid）', () => {
-  let warnSpy: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
   });
   afterEach(() => {
-    warnSpy.mockRestore();
     vi.useRealTimers();
   });
 
@@ -486,5 +482,60 @@ describe('connectMcpServer（超时 + lastError + pid）', () => {
     const conn = await connectMcpServer(entry, { createHttpTransport: mocks.createHttpTransport, createClient: mocks.createClient });
     expect(conn.status).toBe('connected');
     expect(conn.pid).toBeNull();
+  });
+});
+
+// ---- 方案 B：stdio stderr 缓冲回灌诊断 ----
+// 修「stderr 默认 inherit → server INFO 日志 + 崩溃堆栈泄到终端污染 ink 画面」：
+//   stderr='pipe' 捕获 server stderr → 环形缓冲最近 200 行 → 失败时尾部 8 行拼进 lastError（用户看到 server 真实崩溃原因）。
+//   成功时只缓冲不展示（画面干净）。无 stderr 属性的 transport 优雅降级为裸 reason（向后兼容 http / 旧 mock）。
+describe('connectMcpServer（stderr 缓冲回灌诊断）', () => {
+  it('connect 失败 + stderr 有崩溃输出 → lastError 含「服务端最近输出」+ 崩溃行', async () => {
+    const mocks = createMockFactories({
+      connectError: new Error('spawn ENOENT'),
+      stderrStream: new PassThrough(),
+      stderrLines: ['INFO starting', 'Error: Cannot find module ajv', '    at server.js:1'],
+    });
+    const entry: McpRegistryEntry = { name: 'crash', transport: 'stdio', command: 'node', args: ['s.js'], enabled: true };
+    const conn = await connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient });
+    expect(conn.status).toBe('failed');
+    expect(conn.lastError).toContain('连接失败');
+    expect(conn.lastError).toContain('服务端最近输出');
+    expect(conn.lastError).toContain('Cannot find module ajv');
+  });
+
+  it('connect 成功 + stderr 有 INFO → 不展示（成功无 lastError,stderr 静默缓冲）', async () => {
+    const mocks = createMockFactories({
+      stderrStream: new PassThrough(),
+      stderrLines: ['INFO zai-mcp-server started'],
+    });
+    const entry: McpRegistryEntry = { name: 'ok', transport: 'stdio', command: 'node', args: ['s.js'], enabled: true };
+    const conn = await connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient });
+    expect(conn.status).toBe('connected');
+    expect(conn.lastError).toBeUndefined();
+  });
+
+  it('transport 无 stderr 属性（向后兼容/http）→ connect 失败 lastError 仅裸 reason（不拼「服务端最近输出」）', async () => {
+    // 不传 stderrStream → mockTransport.stderr=null → 无缓冲,降级裸 reason
+    const mocks = createMockFactories({ connectError: new Error('spawn ENOENT') });
+    const entry: McpRegistryEntry = { name: 'no-stderr', transport: 'stdio', command: 'node', enabled: true };
+    const conn = await connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient });
+    expect(conn.status).toBe('failed');
+    expect(conn.lastError).toContain('连接失败');
+    expect(conn.lastError).not.toContain('服务端最近输出');
+  });
+
+  it('环形缓冲：stderr 超 200 行 → lastError 只含尾部（早期行被丢弃）', async () => {
+    const mocks = createMockFactories({
+      connectError: new Error('spawn ENOENT'),
+      stderrStream: new PassThrough(),
+      stderrLines: [...Array.from({ length: 250 }, (_, i) => `line-${i}`), 'LAST-CRASH-LINE'],
+    });
+    const entry: McpRegistryEntry = { name: 'noisy', transport: 'stdio', command: 'node', enabled: true };
+    const conn = await connectMcpServer(entry, { createTransport: mocks.createTransport, createClient: mocks.createClient });
+    expect(conn.status).toBe('failed');
+    expect(conn.lastError).toContain('LAST-CRASH-LINE');
+    expect(conn.lastError).not.toContain('line-0');
+    expect(conn.lastError).not.toContain('line-100');
   });
 });

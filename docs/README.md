@@ -48,7 +48,7 @@
 - [`消息区分设计方案`](功能方案/消息区分设计方案-光标loading对话标识[已完成].md) — 早期单点设计（已被上方方案整合，待归并）
 - [`用户插话机制方案`](功能方案/用户插话机制方案[已完成].md) — 早期单点设计（已被上方方案整合，待归并）
 
-### 详设（11）
+### 详设（12）
 
 - [`斜杠命令补全`](详设/20260806180000_斜杠命令补全-详设[已完成].md)
 - [`历史会话切换`](详设/20260806210000_历史会话切换-详设[已完成].md)
@@ -61,6 +61,7 @@
 - [`M5 能力扩展使用指南`](详设/20260809093000_M5能力扩展使用指南-详设[进行中].md) — 子代理(agents/*.md)/MCP(registry.json+RCE白名单)/Hooks(settings.json) 三支点配置与操作链
 - [`M5-MCP 管理增强`](详设/20260809095317_M5-MCP管理增强-详设[已完成].md) — McpManager(连接池+互斥锁)+30s超时+lastError+/mcp子命令(info/tools/reconnect/add/remove)+Windows taskkill+POSIX pgrep树遍历进程树清理/env脱敏（v2：基于角色 agent 审阅返工，6🔴+8🟡全修；✅ 已实施 102 mcp 单测，T9 三方唯一全平台解决孙子残留）
 - [`技能生成与模型路由`](详设/20260809213507_技能生成与模型路由-详设[待审阅].md) — M6阶段D：hook记录→`/skill-gen`归纳(Ratchet引用证据+分批)→`/skill`审批(accept/reject/promote+安全扫描三段式)；启发式复杂度路由(`assessComplexity`)+跨provider subagent。借鉴openclaw Skill Workshop + AddyOsmani Ratchet
+- [`config-models合并入providers`](详设/20260810173829_config-models-合并入providers-详设.md) — 重构 config.json 结构：顶层 models 合入 providers 内部，对齐 CCode/opencode 设计；含旧格式自动迁移策略
 
 ### 调研（5）
 

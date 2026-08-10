@@ -321,8 +321,8 @@ export async function* runAgentStream(
   //   UI REPL 无 --model 时 modelRef.current=undefined → 走 global 路由（routing.rules.global 生效）。
   //   无 routing 配置 → defaultTarget.model = getDefaultModel()，行为与改造前一致（向后兼容）。
   const routingConfig = getRoutingConfig();
-  let resolvedModel = opts.model ?? resolveModelForScenario('global', undefined, routingConfig).model;
-  let provider = opts.provider ?? createProvider(resolvedModel);
+  const resolvedModel = opts.model ?? resolveModelForScenario('global', undefined, routingConfig).model;
+  const provider = opts.provider ?? createProvider(resolvedModel);
   const allow = opts.allow ?? new AllowList();
   // doom_loop 检测器（阶段5d）：跨轮持久，连续同 (tool,input) ≥3 触发，强制询问打破死循环。
   const doom = new DoomLoopDetector();
@@ -345,19 +345,11 @@ export async function* runAgentStream(
 
   // 多模态图片降级（一次性预处理，不进迭代循环——天然防无限调用）：
   //   ① 模型支持 vision → inline（直接发 image blocks）
-  //   ② 模型不支持，config 有 vision 模型 → switch（自动切换模型+provider）
-  //   ③ 模型不支持，无 vision 模型 → strip（移除图片，保留文本路径，LLM 走 MCP 工具分析）
+  //   ② 模型不支持 → strip（移除图片数据，保留文本路径，LLM 走 MCP 工具分析）
   const imageStrategy = resolveImageStrategy(resolvedModel, opts.images);
-  // switch 策略：覆盖 model + provider（后续整个 agent loop 全程用新 model/provider，不回退）
-  //   防无限调用：switch 是一次性决策，不进迭代循环；vision 模型失败则错误正常传播（不重试回退）。
-  //   仅在未注入 provider 时切换（opts.provider 存在 = 测试场景，用 mock provider 不应覆盖）。
-  if (imageStrategy.strategy === 'switch' && imageStrategy.switchToModel && !opts.provider) {
-    resolvedModel = imageStrategy.switchToModel;
-    provider = createProvider(resolvedModel);
-  }
   // strip 策略：不带 image blocks（纯文本，LLM 靠 MCP 工具 / 文件路径分析图片）
   const effectiveImages = imageStrategy.strategy === 'inline' ? opts.images : undefined;
-  // useTools 在 vision 降级后重新检测（switch 可能切到不支持 tools 的 vision 模型）
+  // useTools 在 vision 降级后检测（保持顺序一致，虽然 strip 不改模型）
   const useTools = hasCapability(resolvedModel, 'tools');
 
   // 多模态：images 存在时，user message content 为 block 数组（text + image blocks）。

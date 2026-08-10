@@ -34,6 +34,6 @@
 ## 索引（每条记忆一行，新建后追加）
 
 - [project.md](./project.md) — 项目性质 / 架构骨架 / 里程碑进度 / 当前焦点
-- [decisions.md](./decisions.md) — 决策：#001 token 计数 ai-tokenizer→length/4 / #002 Session 同 id 覆盖（剔除 -2）/ **#003 M5 三支点核心选型（子代理递归/MCP 官方SDK只做Tools/Hooks CC式6事件，2 处待拍板）** / **#004 M6 三支点选型（D1-D7 已敲定：一口气全做/服务化+Web/规则映射/复用dialog/自动扫；D6 死）** / **#005 Repo Map 不进 M6→扩展化（核心留接口+独立可选包+web-tree-sitter WASM）**
+- [decisions.md](./decisions.md) — 决策：#001 token 计数 ai-tokenizer→length/4 / #002 Session 同 id 覆盖（剔除 -2）/ **#003 M5 三支点核心选型（子代理递归/MCP 官方SDK只做Tools/Hooks CC式6事件，2 处待拍板）** / **#004 M6 三支点选型（D1-D7 已敲定：一口气全做/服务化+Web/规则映射/复用dialog/自动扫；D6 死）** / **#005 Repo Map 不进 M6→扩展化（核心留接口+独立可选包+web-tree-sitter WASM）** / **#006 子代理 session+runtime-log 隔离 _subagents（防污染主历史）**
 - [debugging.md](./debugging.md) — 踩坑：#001 env 不覆盖 / #002 env -i 丢 TMPDIR / #003 fast-glob ESM / #004 LLM 知识失真 / #005 上下文超限恢复 / #006 GLM 端点 / #007 Session ID 碰撞→UUID / #008 全功能日志覆盖 / #009 `<Static>` append-only→换 key 重 mount / #010 文档 file:line 漂移 / **#011 Windows CRLF 陷阱** / **#012 Windows bash 三连坑（阻塞+find.exe+GBK）** / **#013 ink `exitOnCtrlC` 默认 true → Ctrl+C 逻辑成死代码 + testing 盲区** / **#014 中断识别用 signal.aborted 不用 instanceof（SDK 包装的 abort 错误漏判→显示 ✗ Request was aborted）** / **#015 M5 三源联网研究推翻 7 处早先假设（不瞎想实证）** / **#016 `npm test` 是 watch 模式（全量一次性用 `npx vitest run`）**
 - [preferences.md](./preferences.md) — 偏好：防假绿 5 条 testing 约定（L2 ink 测试必守）

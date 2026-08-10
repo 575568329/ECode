@@ -202,3 +202,38 @@ Repo Map 是 aider 标志性创新：tree-sitter 解析符号 → 符号引用�
 - 调研源码：`D:/Study/aider/aider/repomap.py`（本地参照库，与 CCode / claude-code-main / opencode / openclaw 同列）
 - M6 重组 plan：`enchanted-tinkering-coral.md`（范围界定 + 决策记录）
 - 红线：CLAUDE.md §9.3（禁原生二进制 → web-tree-sitter WASM）
+
+---
+
+## 决策 #006：子代理 session + runtime-log 隔离到 `_subagents` 子目录
+
+**日期**：2026-08-10
+**状态**：✅ 已决策（bug 修复；用户选方案 A 子目录隔离，非"不落盘"）
+**影响范围**：M5 子代理（Task 工具）落盘——`src/session.ts` subagentBaseDir + `src/runtime-logger.ts` subagentLogRoot + `src/tools/subagent.ts` 透传
+
+### 背景（bug）
+
+子代理递归 `runAgentStream` 时**没传 `resumed`**（→ 生成新 sessionId）**却透传了主代理的 `sessionBaseDir`/`runtimeLogBaseDir`**（→ 同目录），导致：
+- 每派一个子代理，`.ecode/sessions/` 多一个 session 文件，污染 `/resume` 历史列表——违背子代理"黑盒侦察兵"设计（`subagent.ts:7-8` 注释明写只回喂结论文本）。
+- 同理 `docs/logs/runtime/` 被子代理 log 淹没。
+- 同主会话派多个相似 prompt 子代理 → 一堆 task 相同的"重复"历史对话（用户实锤：一小时多模态调研期间产生 13 个碎片，均嵌在主会话时间窗内）。
+
+### 决策：子目录隔离（方案 A）
+
+子代理落盘到 `<baseDir>/_subagents/`。`listSessions`/`loadSession`/`findFileById` 用 `readdirSync` 非递归 → 子目录天然不扫 → 子代理 session 不进 `/resume` 列表、不可 `--continue` 误加载。runtime-log 同理隔离避免淹没主日志目录。`saveSession` 的 `mkdirSync({recursive})` 自动建子目录。
+
+### 为什么不"彻底不落盘"（方案 B）
+
+1. **保留调试快照**：子代理出问题能查它当时干了啥。
+2. **改动最小**：只动透传值，不侵入 `runAgentStream` 核心循环的 11 处 `persistSession`。
+3. **与 session 落盘语义一致**：不引入"有时落盘有时不落盘"的条件分支。
+
+### 怎么应用（防再踩）
+
+子代理 / 任何递归 `runAgentStream` 的调用点，`sessionBaseDir` 必须走 `subagentBaseDir()`、`runtimeLogBaseDir` 必须走 `subagentLogRoot()`。新增此类调用点时检查这两行——漏传任一会再次把子代理上下文写进主目录。
+
+### 关联
+
+- 实证方法：runtime-log 的 `logSessionSave` 落盘记录（同主会话时间窗内出现多个不同 id = 子代理碎片）。
+- 代码：[src/session.ts](../../src/session.ts) subagentBaseDir / [src/runtime-logger.ts](../../src/runtime-logger.ts) subagentLogRoot / [src/tools/subagent.ts](../../src/tools/subagent.ts)
+- 决策 #003（子代理设计：黑盒侦察兵，只回喂结论）

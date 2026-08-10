@@ -353,7 +353,9 @@ export async function* runAgentStream(
   const useTools = hasCapability(resolvedModel, 'tools');
 
   // 多模态：images 存在时，user message content 为 block 数组（text + image blocks）。
-  const userContent: ECodeContentBlock[] = [{ type: 'text', text: task }];
+  // strip 策略时把 llmHint 拼在 task 文本里，让 LLM 知道图片被移除了、路径在文本中。
+  const userText = imageStrategy.llmHint ? `${task}\n\n${imageStrategy.llmHint}` : task;
+  const userContent: ECodeContentBlock[] = [{ type: 'text', text: userText }];
   if (effectiveImages && effectiveImages.length > 0) {
     for (const img of effectiveImages) {
       userContent.push({ type: 'image', source: img });

@@ -24,10 +24,11 @@ describe('resolveImageStrategy', () => {
 
   // ---- 策略 ① inline：模型支持 vision ----
 
-  it('模型支持 vision + 有图片 → inline', () => {
+  it('模型支持 vision + 有图片 → inline，无 llmHint', () => {
     const result = resolveImageStrategy('glm-4v-plus', [MOCK_IMAGE]);
     expect(result.strategy).toBe('inline');
     expect(result.warning).toBeUndefined();
+    expect(result.llmHint).toBeUndefined();
   });
 
   it('模型支持 vision + 无图片 → inline（no-op）', () => {
@@ -35,43 +36,43 @@ describe('resolveImageStrategy', () => {
     expect(result.strategy).toBe('inline');
   });
 
-  it('模型支持 vision + 图片数组为空 → inline（no-op）', () => {
+  it('模型支持 vision + 图片数组为空 → inline', () => {
     const result = resolveImageStrategy('glm-4v-plus', []);
     expect(result.strategy).toBe('inline');
   });
 
   // ---- 策略 ② strip：模型不支持 vision ----
 
-  it('模型不支持 vision + 有图片 → strip + 友好提示', () => {
+  it('模型不支持 vision + 有图片 → strip + warning + llmHint', () => {
     const result = resolveImageStrategy('glm-5.2', [MOCK_IMAGE]);
     expect(result.strategy).toBe('strip');
+    // warning 给用户看
     expect(result.warning).toContain('不支持图片输入');
     expect(result.warning).toContain('glm-5.2');
+    // llmHint 给 LLM 看，包含图片数量和引导
+    expect(result.llmHint).toContain('1 张图片');
+    expect(result.llmHint).toContain('glm-5.2');
+    expect(result.llmHint).toContain('工具列表');
+    expect(result.llmHint).toContain('analyze_image');
   });
 
-  it('strip 提示引导用户用 MCP 工具或配置 vision 模型', () => {
-    const result = resolveImageStrategy('glm-5.2', [MOCK_IMAGE]);
-    expect(result.warning).toContain('MCP');
-    expect(result.warning).toContain('config.json');
-    expect(result.warning).toContain('vision');
+  it('多张图片 → llmHint 包含正确数量', () => {
+    const result = resolveImageStrategy('glm-5.2', [MOCK_IMAGE, MOCK_IMAGE]);
+    expect(result.llmHint).toContain('2 张图片');
   });
 
-  // ---- 无图片场景：任何模型都走 inline ----
+  // ---- 无图片场景 ----
 
   it('无图片 + 模型不支持 vision → inline（无降级）', () => {
     const result = resolveImageStrategy('glm-5.2', undefined);
     expect(result.strategy).toBe('inline');
     expect(result.warning).toBeUndefined();
+    expect(result.llmHint).toBeUndefined();
   });
 
-  it('无图片 + 空图片数组 → inline', () => {
-    const result = resolveImageStrategy('glm-5.2', []);
-    expect(result.strategy).toBe('inline');
-  });
+  // ---- 纯函数 ----
 
-  // ---- 防无限调用 ----
-
-  it('决策是纯函数：相同输入产生相同输出', () => {
+  it('相同输入产生相同输出', () => {
     const r1 = resolveImageStrategy('glm-5.2', [MOCK_IMAGE]);
     const r2 = resolveImageStrategy('glm-5.2', [MOCK_IMAGE]);
     expect(r1).toEqual(r2);

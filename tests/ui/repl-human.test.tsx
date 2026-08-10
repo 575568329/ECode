@@ -37,6 +37,14 @@ vi.mock('../../src/session.js', () => ({
 vi.mock('../../src/ui/pager.js', () => ({
   runLess: vi.fn(),
 }));
+// MCP 连接隔离：repl-human 测斜杠命令/快捷键，不依赖真 MCP server（避免连 ~/.ecode 全局 registry 拖慢/不稳）。
+// loadMcpRegistry 返回空 → connectAll no-op → pool 空 → shutdown fast-path 同步 exit
+//（双击 Ctrl+C / /exit 的 process.exit 同步断言不破坏，debugging #019）。
+// importOriginal 保留 maskSecret 等（App 渲染依赖），只覆盖 loadMcpRegistry。
+vi.mock('../../src/mcp/registry.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, loadMcpRegistry: () => [] };
+});
 
 const mockedRun = runAgentStream as unknown as ReturnType<typeof vi.fn>;
 const mockedList = listSessions as unknown as ReturnType<typeof vi.fn>;
@@ -290,12 +298,15 @@ describe('REPL 人肉驱动 —— 快捷键（按实际反馈）', () => {
   });
 
   it('Ctrl+C 双击 → process.exit（关闭对话）', async () => {
-    vi.spyOn(process, 'exit').mockImplementation((() => {
-      throw new Error('EXIT');
+    // shutdown 是 async（清理 MCP），process.exit 在其体内执行；用空实现 spy + 断言被调，
+    // 避免 throw mock 在 async 函数成 unhandled rejection（rejects.toThrow 抓不到 fire-and-forget）。
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      /* 空实现：阻止真退出，仅观测被调 */
     }) as never);
     const sim = simulate(<App cwd={CWD} />);
     await sim.ctrlC(); // 单击：进退出窗口
-    await expect(sim.ctrlC()).rejects.toThrow('EXIT'); // 双击：关闭对话
+    await sim.ctrlC(); // 双击 → void shutdown(0) → process.exit(0)
+    expect(exitSpy).toHaveBeenCalledWith(0);
   });
 
   it('双击 Esc 清空输入框（idle，有内容→清空）', async () => {

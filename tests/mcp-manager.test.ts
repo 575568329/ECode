@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { saveMcpRegistry, type McpRegistryEntry } from '../src/mcp/registry.js';
 import type { McpConnection } from '../src/mcp/client.js';
 import type { ToolDefinition } from '../src/tools/types.js';
-import { McpManager, type McpServerState } from '../src/mcp/manager.js';
+import { McpManager, getMcpManager, getMcpManagerOrNull, _resetMcpManagerSingletonForTest, type McpServerState } from '../src/mcp/manager.js';
 
 // mock 进程清理（测试不真杀进程；detectPlatform 强制 posix 走 no-op）
 vi.mock('../src/mcp/process-cleanup.js', () => ({
@@ -209,5 +209,34 @@ describe('McpManager reload（只新增，不重连已存在）', () => {
     await m.reload();
     expect(connectFn).toHaveBeenCalledTimes(2); // 只 b 新增连一次，a 不重连
     expect((m.getStatus() as McpServerState[]).map((s) => s.name).sort()).toEqual(['a', 'b']);
+  });
+});
+
+describe('模块级单例（退出清理用，debugging #019）', () => {
+  beforeEach(() => {
+    _resetMcpManagerSingletonForTest();
+  });
+
+  afterEach(() => {
+    _resetMcpManagerSingletonForTest();
+  });
+
+  it('getMcpManager 幂等（REPL ref 与 app.tsx 退出回调共享同一实例）', () => {
+    const a = getMcpManager();
+    const b = getMcpManager();
+    expect(a).toBe(b);
+  });
+
+  it('getMcpManagerOrNull：未初始化返回 null（CLI 模式 shutdown no-op），初始化后非空', () => {
+    expect(getMcpManagerOrNull()).toBeNull();
+    getMcpManager();
+    expect(getMcpManagerOrNull()).not.toBeNull();
+  });
+
+  it('_resetMcpManagerSingletonForTest 重置后取新实例（测试隔离）', () => {
+    const a = getMcpManager();
+    _resetMcpManagerSingletonForTest();
+    const b = getMcpManager();
+    expect(a).not.toBe(b);
   });
 });

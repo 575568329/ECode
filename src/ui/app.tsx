@@ -28,6 +28,7 @@ import { computeCost } from '../providers/cost.js';
 import type { ModelCost, ImageSource } from '../providers/types.js';
 import { maskSecret, type McpRegistryEntry } from '../mcp/registry.js';
 import type { McpServerState } from '../mcp/manager.js';
+import { shutdown } from '../lifecycle.js';
 import { listSessions, loadSession } from '../session.js';
 import type { ECodeSessionSummary } from '../session.js';
 import { messagesToDisplayMessages } from './messages-to-display.js';
@@ -191,7 +192,7 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
     if (key.ctrl && input === 'c') {
       const now = Date.now();
       if (now - lastCtrlCRef.current < DOUBLE_CTRL_C_MS) {
-        process.exit(0); // 双击 → 关闭对话
+        void shutdown(0); // 双击 → 清理 MCP 子进程 + 退出（debugging #019）
       }
       lastCtrlCRef.current = now;
       setLastCtrlC(now); // 单击进退出窗口（StatusBar 提示「再按 ctrl+c 退出」）
@@ -264,7 +265,7 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
   if (!handlersRegistered.current) {
     handlersRegistered.current = true;
     registerCommandHandler('clear', () => api.clear());
-    registerCommandHandler('exit', () => process.exit(0));
+    registerCommandHandler('exit', () => void shutdown(0));
     registerCommandHandler('help', () => {
       const lines = SLASH_COMMANDS.map((c) => `  /${c.name.padEnd(10)} ${c.description}`);
       api.addMessage({ kind: 'warning', id: `sys-help-${Date.now()}`, text: `可用命令:\n${lines.join('\n')}` });

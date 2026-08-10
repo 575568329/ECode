@@ -29,7 +29,7 @@ import { messagesToDisplayMessages } from './messages-to-display.js';
 import { extractTodos, type TodoItem } from '../tools/todo.js';
 import type { ToolDefinition } from '../tools/types.js';
 import { toolDefinitions } from '../tools/registry.js';
-import { McpManager, type McpServerState } from '../mcp/manager.js';
+import { McpManager, getMcpManager, type McpServerState } from '../mcp/manager.js';
 import { loadMcpRegistry, saveMcpRegistry, type McpRegistryEntry } from '../mcp/registry.js';
 import { adaptMcpPrompt } from '../mcp/adapter.js';
 import { registerCommand, unregisterCommand } from '../slash-commands.js';
@@ -144,7 +144,7 @@ export function useAgentStream(opts: UseAgentStreamOptions = {}): UseAgentStream
   // manager 用 ref 持守（整会话一次）；tools 经 ref 喂 getRunOpts，prompts 注册斜杠命令。
   const mcpManagerRef = useRef<McpManager | null>(null);
   if (mcpManagerRef.current === null) {
-    mcpManagerRef.current = new McpManager();
+    mcpManagerRef.current = getMcpManager();
   }
   const mcpToolsRef = useRef<ToolDefinition[]>([]);
   const mcpCmdNamesRef = useRef<string[]>([]); // 已注册 MCP 斜杠命令名（重注册前先注销旧的）

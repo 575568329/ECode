@@ -162,6 +162,18 @@ export class McpManager {
     await Promise.all([...this.pool.keys()].map((name) => this.disconnect(name)));
   }
 
+  /**
+   * 是否有活跃连接（shutdown fast-path 用）。
+   * 无连接（CLI 模式 / REPL 未连 MCP / 测试环境）→ shutdown 跳过 async 清理，process.exit 同步触发，
+   * 保持退出回调的同步语义；仅有连接时才 await 清理防子进程泄漏（debugging #019）。
+   */
+  hasActiveConnections(): boolean {
+    for (const item of this.pool.values()) {
+      if (item.connection !== null) return true;
+    }
+    return false;
+  }
+
   /** registry 变化后同步：新增 connect / 删除 disconnect+forget；已存在不动（改配置用 reconnect）。 */
   async reload(): Promise<void> {
     const entries = loadMcpRegistry({ dataDir: this.dataDir });
@@ -227,4 +239,32 @@ export class McpManager {
       this.listeners.delete(listener);
     };
   }
+}
+
+// ---- 模块级单例（退出清理用）----
+// 根因（debugging #019）：disconnectAll 原只挂 React useEffect cleanup，而 REPL 退出
+// （双击 Ctrl+C / /exit）走 process.exit 直接终止 Node → 跳过异步 cleanup → MCP server
+// （npx→node 两层）子进程残留累积。单例让 app.tsx 退出回调能跨组件树拿到同一 manager。
+// use-agent-stream.ts 组件 ref 持有的就是此单例。保留 `new McpManager(opts)` 供测试注入。
+let mcpManagerSingleton: McpManager | null = null;
+
+/** 取单例（首次调用懒初始化，默认 opts）。REPL use-agent-stream 用此实例。 */
+export function getMcpManager(): McpManager {
+  if (mcpManagerSingleton === null) {
+    mcpManagerSingleton = new McpManager();
+  }
+  return mcpManagerSingleton;
+}
+
+/**
+ * 取单例或 null（未初始化返回 null）。
+ * 退出清理用：CLI 模式不加载 MCP（单例从未初始化）→ 返回 null → shutdown no-op，避免 new 空 manager。
+ */
+export function getMcpManagerOrNull(): McpManager | null {
+  return mcpManagerSingleton;
+}
+
+/** 测试用：重置单例（隔离用例）。 */
+export function _resetMcpManagerSingletonForTest(): void {
+  mcpManagerSingleton = null;
 }

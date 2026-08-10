@@ -799,3 +799,44 @@ for (const [k, v] of Object.entries(pc.models)) {
 ### 关联
 
 - 实现：`providers/config.ts` findModel、`tests/providers/config.test.ts`（大小写不敏感回归测试 4 断言）
+
+## #019 ECode REPL 退出后 MCP server 子进程残留累积（process.exit 跳过 React 异步 cleanup）
+
+**日期**：2026-08-10
+**性质**：资源泄漏 / 进程生命周期（MCP 连接池 × 退出路径）
+**影响**：每开一次 ECode REPL，MCP server 子进程（npx→node 两层）退出后残留，后台 node 进程越堆越多（用户实测几十个）。
+
+### 现象与根因
+
+`McpManager.disconnectAll()`（杀子进程树：SDK close + win32 taskkill / POSIX pgrep BFS）只挂在 React `useEffect` cleanup（`use-agent-stream.ts:230`）。而 REPL 所有退出入口都走 `process.exit(0)`：
+- `app.tsx` 双击 Ctrl+C
+- `app.tsx` `/exit` 斜杠命令
+
+`process.exit` 直接终止 Node，**跳过 React 异步 cleanup** → MCP 子进程无人杀 → 残留累积。CLI 模式（--list-models/--sessions/one-shot/--continue/usage）不加载 MCP，无此问题。
+
+### 解决（统一退出 shutdown + 单例可达 + fast-path）
+
+1. **McpManager 模块级单例**：`getMcpManager()` / `getMcpManagerOrNull()`（manager.ts）。原组件 ref（use-agent-stream）退出回调拿不到；单例让 app.tsx 跨组件树可达 `disconnectAll`。保留 `new McpManager(opts)` 供测试注入。
+2. **`lifecycle.ts` shutdown(code)**：有活跃连接才 `await disconnectAll()`（race 3s 超时兜底，防 SDK close 卡死）→ `process.exit`；无连接（CLI / REPL 未连 MCP / 测试）走 **fast-path** 跳过 await，`process.exit` 同步触发。
+3. **接线两处 REPL 退出**：`void shutdown(0)` 替代 `process.exit(0)`。
+4. **use-agent-stream** 改用 `getMcpManager()`（指向单例）。
+
+### 测试教训（async shutdown × 同步退出语义）
+
+- **async 函数 fire-and-forget 把 process.exit 推到微任务**：`void shutdown(0)` 不 await；唯有 fast-path（无连接、无 await）才让 `process.exit` 同步触发。→ 加 `hasActiveConnections()` fast-path：无连接跳过 await 恢复同步语义。
+- **async 函数 throw 不传播到 fire-and-forget 调用者**：双击 Ctrl+C 测试原用 `rejects.toThrow('EXIT')`（mock process.exit 抛错），但 async shutdown 抛错只让自身 promise reject，`void` 丢弃 → ctrlC() resolve 而非 reject。→ 改空实现 spy + 断言被调（语义等价：验证退出触发）。
+- **repl-human 连真 MCP**：`simulate(<App>)` → connectAll 读**全局** `~/.ecode/mcp/registry.json`（resolveDataDir 默认 ~/.ecode，非 CWD），连真 server → pool 非空 → fast-path 不触发。之前被同步 process.exit 掩盖。→ mock `loadMcpRegistry` 返回 [] 隔离（测斜杠/快捷键本就不该依赖 MCP）。
+
+### 多端覆盖
+
+| 入口 | 处理 |
+|------|------|
+| REPL 双击 Ctrl+C / `/exit` | `shutdown(0)` → 有连接清理 → exit ✅ |
+| CLI（--list-models/--sessions/one-shot/...） | 不加载 MCP，单例 null → no-op ✅ |
+| 崩溃 / uncaughtException | 边缘未接（改崩溃行为有风险），后续按需 |
+| Windows / POSIX | killProcessTree 已覆盖（taskkill /T /F + pgrep BFS）✅ |
+
+### 关联
+
+- 实现：`src/mcp/manager.ts`（单例 + hasActiveConnections）、`src/lifecycle.ts`（新）、`src/ui/app.tsx`（两处退出）、`src/ui/use-agent-stream.ts`（getMcpManager）
+- 测试：`tests/lifecycle.test.ts`（4 用例含 fast-path）、`tests/mcp-manager.test.ts`（单例 3 用例）、`tests/ui/repl-human.test.tsx`（mock registry + 双击改 spy）

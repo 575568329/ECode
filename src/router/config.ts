@@ -40,11 +40,19 @@ export function buildRoutingConfig(cfg: ECodeConfig): RoutingConfig {
   const routing = (cfg.routing as RoutingRaw | undefined) ?? {};
   const aliases = routing.aliases ?? {};
   const rules = routing.rules ?? {};
-  // defaultTarget：顶层 defaultModel 解析出 { provider, model }；缺失则取首个 model 兜底。
-  const defaultModel = cfg.defaultModel ?? Object.keys(cfg.models)[0] ?? '';
-  const mc = cfg.models[defaultModel];
-  const defaultTarget: AliasTarget = mc
-    ? { provider: mc.provider, model: defaultModel }
+  // defaultTarget：defaultModel 解析出 { provider, model }；缺失则取首个 provider.models 模型兜底。
+  const defaultModel =
+    cfg.defaultModel ??
+    ((): string => {
+      for (const pc of Object.values(cfg.providers)) {
+        if (pc.models && Object.keys(pc.models).length > 0) return Object.keys(pc.models)[0] ?? '';
+      }
+      return '';
+    })();
+  // 从嵌套结构找 defaultModel 所属 provider（找不到则 provider 空串降级，不崩）
+  const providerEntry = Object.entries(cfg.providers).find(([, pc]) => Boolean(pc.models?.[defaultModel]));
+  const defaultTarget: AliasTarget = providerEntry
+    ? { provider: providerEntry[0], model: defaultModel }
     : { provider: '', model: defaultModel };
   return {
     aliases,

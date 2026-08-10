@@ -5,12 +5,11 @@ import { buildRoutingConfig } from '../src/router/config.js';
 import type { ECodeConfig } from '../src/providers/config.js';
 import type { ModelConfig } from '../src/providers/types.js';
 
-const glmModel: ModelConfig = { provider: 'zhipuai', capabilities: ['tools'], contextWindow: 128_000 };
+const glmModel: ModelConfig = { capabilities: ['tools'], contextWindow: 128_000 };
 
 const cfg = (over: Partial<ECodeConfig> = {}): ECodeConfig => ({
   defaultModel: 'glm-5.2',
-  providers: { zhipuai: { protocol: 'openai', apiKeyEnv: 'ZHIPUAI_API_KEY' } },
-  models: { 'glm-5.2': glmModel },
+  providers: { zhipuai: { protocol: 'openai', apiKeyEnv: 'ZHIPUAI_API_KEY', models: { 'glm-5.2': glmModel } } },
   ...over,
 });
 
@@ -65,7 +64,7 @@ describe('buildRoutingConfig', () => {
   });
 
   it('models 空 → defaultTarget { provider: "", model: "" }（极端兜底）', () => {
-    const r = buildRoutingConfig(cfg({ models: {}, defaultModel: undefined }));
+    const r = buildRoutingConfig(cfg({ providers: {}, defaultModel: undefined }));
     expect(r.defaultTarget).toEqual({ provider: '', model: '' });
   });
 });

@@ -53,8 +53,7 @@ describe('createProvider', () => {
     vi.mocked(readFileSync).mockReturnValue(
       JSON.stringify({
         defaultModel: 'glm-5.2',
-        providers: { glm: { protocol: 'openai', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZHIPUAI_API_KEY', apiKey: 'cfg-glm-key' } },
-        models: { 'glm-5.2': { provider: 'glm', capabilities: ['tools'] } },
+        providers: { glm: { protocol: 'openai', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZHIPUAI_API_KEY', apiKey: 'cfg-glm-key', models: { 'glm-5.2': { capabilities: ['tools'] } } } },
       }),
     );
     _resetConfigCacheForTest();

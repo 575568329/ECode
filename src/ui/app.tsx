@@ -91,11 +91,16 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
   // 当前模型单价（$/M token）；订阅制/未配 cost → undefined（StatusBar 显示 $--）。
   // 命令 handler 只注册一次（ref-guard），闭包会 stale，故额外用 ref 让 /cost 读到最新单价。
   let modelCost: ModelCost | undefined;
+  // currentProvider：StatusBar 显示真实 provider 名（旧代码误传 model 名）。与 modelCost 同源 getModelConfig 一次取。
+  let currentProvider = 'default';
   if (currentModel) {
     try {
-      modelCost = getModelConfig(currentModel).cost;
+      const resolution = getModelConfig(currentModel);
+      modelCost = resolution.config.cost;
+      currentProvider = resolution.providerKey;
     } catch {
       modelCost = undefined; // 未知模型不计费（防御，正常 currentModel 来自 listAvailableModels）
+      // currentProvider 保持 'default'
     }
   }
   const modelCostRef = useRef(modelCost);
@@ -610,7 +615,7 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
       <StatusBar
         usage={api.usage}
         model={currentModel ?? 'default'}
-        provider={currentModel ?? 'default'}
+        provider={currentProvider}
         ctxPercent={Math.min(99, Math.round((api.latestInputTokens / contextWindow) * 100))}
         phase={phase}
         startedAt={startedAt}

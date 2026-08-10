@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { resolveDataDir } from '../paths.js';
 import type { ModelCapability, ModelConfig } from './types.js';
@@ -19,13 +19,20 @@ export interface ProviderConfig {
   /** baseURL 的环境变量名（厂商专属，与 apiKeyEnv 对称）：GLM_BASE_URL / DEEPSEEK_BASE_URL / ANTHROPIC_BASE_URL。
    *  优先级高于 baseURL：env 有值则覆盖 config.json 里的 baseURL（.env 灵活切换代理/端点）。 */
   baseURLEnv?: string;
-  models?: string[];
+  /** 该 provider 下可用模型（key=模型名，value=capabilities/contextWindow/cost）。模型挂 provider 下（对齐 CCode/opencode），用户一目了然。 */
+  models?: Record<string, ModelConfig>;
+}
+
+/** getModelConfig 的返回：模型配置 + 所属 provider key（由嵌套位置隐含，替代旧 ModelConfig.provider 字段）。 */
+export interface ModelResolution {
+  config: ModelConfig;
+  providerKey: string;
 }
 
 export interface ECodeConfig {
   defaultModel?: string;
   providers: Record<string, ProviderConfig>;
-  models: Record<string, ModelConfig>;
+  // 顶层 models 已移除（2026-08-10 重构）：模型统一挂在 providers.<id>.models 下。旧格式由 migrateConfig 自动迁移。
   /** P0-5 后置验证开关（edit/write 后跑 build/test，失败回喂）。默认 true；用户可设 false 关闭。 */
   validation?: { enabled?: boolean };
   /** M6 模型路由块（router 层 buildRoutingConfig 解析为 RoutingConfig；此处宽松持有，避免 providers→router 分层耦合）。 */
@@ -50,20 +57,37 @@ const DEFAULT_CONFIG: ECodeConfig = {
   defaultModel: 'glm-5.2',
   providers: {
     // GLM 走 coding plan 专用端点（含 /coding/）；普通 paas/v4 会因套餐不匹配报 429（对齐 CCode 源码 config-manager.ts:53）
-    glm: { protocol: 'openai', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZHIPUAI_API_KEY', baseURLEnv: 'GLM_BASE_URL' },
-    deepseek: { protocol: 'openai', baseURL: 'https://api.deepseek.com', apiKeyEnv: 'DEEPSEEK_API_KEY', baseURLEnv: 'DEEPSEEK_BASE_URL' },
-    claude: { protocol: 'anthropic', baseURL: 'https://api.anthropic.com', apiKeyEnv: 'ANTHROPIC_API_KEY', baseURLEnv: 'ANTHROPIC_BASE_URL' },
-  },
-  models: {
-    // GLM coding plan 为订阅制（bigmodel coding 套餐），不按 token 量计费；如需显示估算费用，
-    // 用户可在 ~/.ecode/config.json 给 glm-5.2 补 cost 字段（$/M token）。
-    'glm-5.2': { provider: 'glm', capabilities: ['tools'], contextWindow: 1_000_000 },
-    'deepseek-chat': {
-      provider: 'deepseek',
-      capabilities: ['tools'],
-      contextWindow: 128_000,
-      // deepseek 公开价（$/M token，2024-2025 档）：cacheRead 为命中缓存折扣价
-      cost: { input: 0.27, output: 1.1, cacheRead: 0.07 },
+    glm: {
+      protocol: 'openai',
+      baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      apiKeyEnv: 'ZHIPUAI_API_KEY',
+      baseURLEnv: 'GLM_BASE_URL',
+      models: {
+        // GLM coding plan 为订阅制（bigmodel coding 套餐），不按 token 量计费；如需显示估算费用，
+        // 用户可在 ~/.ecode/config.json 给 glm-5.2 补 cost 字段（$/M token）。
+        'glm-5.2': { capabilities: ['tools'], contextWindow: 1_000_000 },
+      },
+    },
+    deepseek: {
+      protocol: 'openai',
+      baseURL: 'https://api.deepseek.com',
+      apiKeyEnv: 'DEEPSEEK_API_KEY',
+      baseURLEnv: 'DEEPSEEK_BASE_URL',
+      models: {
+        'deepseek-chat': {
+          capabilities: ['tools'],
+          contextWindow: 128_000,
+          // deepseek 公开价（$/M token，2024-2025 档）：cacheRead 为命中缓存折扣价
+          cost: { input: 0.27, output: 1.1, cacheRead: 0.07 },
+        },
+      },
+    },
+    claude: {
+      protocol: 'anthropic',
+      baseURL: 'https://api.anthropic.com',
+      apiKeyEnv: 'ANTHROPIC_API_KEY',
+      baseURLEnv: 'ANTHROPIC_BASE_URL',
+      // 无 models：该 provider 仅凭证配置（用户可在 models 下自行声明可用模型）
     },
   },
   // P0-5 后置验证：edit/write 成功后自动跑 build/test，失败回喂 LLM。
@@ -78,6 +102,36 @@ const DEFAULT_CONFIG: ECodeConfig = {
   // 上下文压缩：控制 context window 快满时的自动压缩行为（context-manager 消费）。
   compression: { thresholdRatio: 0.8, keepRounds: 6, trimKeepRecent: 3 },
 };
+
+/** 首启生成的 config.json 注释头（writeConfigTemplate 与 migrateConfig 共用，保持一致）。 */
+const CONFIG_HEADER_LINES = [
+  '// ECode 用户配置（首次启动自动生成）',
+  '// 修改后重启 ECode 生效；也可通过 .env 环境变量覆盖（见 .env.example）。',
+  '// API Key：直接填 providers.<x>.apiKey（推荐，全局安装开箱可用）；或设 apiKeyEnv 对应的环境变量。',
+  '//',
+  '// 添加自定义 Provider：',
+  '//   1. 在 providers 中添加一个条目（protocol 选 "openai" 或 "anthropic"）',
+  '//   2. 在该 provider 的 models 中添加可用模型（key 为模型名，value 为 capabilities/contextWindow/cost）',
+  '//   3. 在对应 provider 的 apiKey 字段填入密钥（或设 apiKeyEnv 对应的环境变量）',
+  '//',
+  '// 后置验证（validation.enabled）：edit/write 后自动跑 build/test，失败回喂 LLM。',
+  '//   默认 false（对齐 Aider，避免每次写文件阻塞验证）。想开启：改成 true。',
+  '//',
+  '// 技能捕获（skillCapture，M6）：enabled=true 后自动记录用户修正/偏好，',
+  '//   /skill-gen 归纳成提案、/skill 审批落盘。默认 false。详见 docs/详设 技能生成与模型路由。',
+  '//',
+  '// 模型路由（routing，M6，可选块）：按场景/复杂度把子任务路由到不同模型。',
+  '//   不配 = 主模型一刀切（compress/skill/subagent 都走当前模型）。',
+  '//   示例：{"rules":{"subagent":"deepseek-chat"},"complexityRouting":true,"complexity":{"low":"deepseek-chat","high":"glm-5.2"}}',
+  '//',
+  '// 上下文压缩（compression）：对话快满 context window 时自动压缩旧消息。',
+  '//   thresholdRatio: 触发压缩的阈值比例（默认 0.8，即占用 80% 时触发）',
+  '//   keepRounds: 压缩时保留最近 N 轮对话（默认 6）',
+  '//   trimKeepRecent: 清理旧工具输出时保留最近 N 个（默认 3）',
+  '//',
+  '// 模型名必须全局唯一（不允许在多个 provider 中定义同名模型）。',
+  '',
+];
 
 let cachedConfig: ECodeConfig | null = null;
 
@@ -130,19 +184,132 @@ export function stripJsonComments(raw: string): string {
   return out;
 }
 
+// ---------------- 旧格式迁移（顶层 models → providers.*.models）----------------
+
+/**
+ * 检测并迁移旧版 config.json：顶层 models 搬入 providers.<provider>.models。
+ * 触发条件：顶层 models 非空 且 所有 provider 下无嵌套 models（幂等：已迁移则跳过）。
+ * 原子写回（tmp + rename，同文件系统），失败不阻塞启动（内存中新格式照常用）。
+ */
+function migrateConfig(raw: Record<string, unknown>): void {
+  const oldModels = raw['models'] as Record<string, { provider?: string; [k: string]: unknown }> | undefined;
+  if (!oldModels || typeof oldModels !== 'object') return;
+
+  const providers = raw['providers'] as Record<string, Record<string, unknown>> | undefined;
+  if (!providers) return;
+
+  // 幂等：已有 provider 嵌套非空 models 则视为已迁移，跳过
+  const alreadyMigrated = Object.values(providers).some((p) => {
+    const m = p['models'] as Record<string, unknown> | undefined;
+    return m && Object.keys(m).length > 0;
+  });
+  if (alreadyMigrated) return;
+
+  console.error('🔄 检测到旧版 config.json 格式，正在自动迁移（models → providers.*.models）...');
+
+  // 初始化每个 provider 的 models 容器
+  for (const pc of Object.values(providers)) {
+    if (!pc['models']) pc['models'] = {};
+  }
+
+  // 搬运模型：按旧 .provider 字段落到对应 provider（剔除该字段——provider 由嵌套位置隐含）
+  for (const [modelId, mc] of Object.entries(oldModels)) {
+    const { provider: providerKey, ...rest } = mc;
+    if (!providerKey || typeof providerKey !== 'string') {
+      console.error(`  ⚠ 跳过模型 "${modelId}"：缺少 provider 字段`);
+      continue;
+    }
+    const targetProvider = providers[providerKey];
+    if (!targetProvider) {
+      console.error(`  ⚠ 跳过模型 "${modelId}"：provider "${providerKey}" 不存在`);
+      continue;
+    }
+    (targetProvider['models'] as Record<string, unknown>)[modelId] = rest;
+  }
+
+  delete raw['models'];
+
+  // 原子写回：先写临时文件，再 rename（同文件系统原子操作，避免中途崩溃损坏用户 config）
+  const tmpPath = CONFIG_PATH + '.tmp';
+  try {
+    const header = CONFIG_HEADER_LINES.join('\n') + '\n';
+    writeFileSync(tmpPath, header + JSON.stringify(raw, null, 2) + '\n', 'utf-8');
+    renameSync(tmpPath, CONFIG_PATH);
+    console.error('  ✅ 迁移完成，config.json 已更新。');
+  } catch {
+    try { unlinkSync(tmpPath); } catch { /* 临时文件清理失败忽略 */ }
+    console.error('  ⚠ 迁移完成但写回文件失败，将使用内存中的新格式。');
+  }
+}
+
+/**
+ * 加载时校验：模型 ID 在所有 provider 中必须全局唯一。
+ * 重复定义（多 provider 同名）抛错并拒绝启动——避免 getModelConfig 取到歧义模型。
+ */
+function validateModelUniqueness(cfg: ECodeConfig): void {
+  const seen = new Map<string, string>(); // modelId → providerKey
+  for (const [pk, pc] of Object.entries(cfg.providers)) {
+    if (!pc.models) continue;
+    for (const modelId of Object.keys(pc.models)) {
+      const prev = seen.get(modelId);
+      if (prev) {
+        throw new Error(
+          `模型 "${modelId}" 在 provider "${prev}" 和 "${pk}" 中重复定义。模型 ID 必须全局唯一。`,
+        );
+      }
+      seen.set(modelId, pk);
+    }
+  }
+}
+
+/**
+ * 在已加载的 cfg 中查找模型（纯查找，**不触发 loadConfig**）。
+ * 规避 loadConfig 内 defaultModel 校验的递归：校验需查模型，若调 getModelConfig 会再入 loadConfig。
+ * 遍历 providers，返回首个命中模型的 {config, providerKey}。
+ */
+function findModel(cfg: ECodeConfig, modelId: string): ModelResolution | undefined {
+  for (const [pk, pc] of Object.entries(cfg.providers)) {
+    const mc = pc.models?.[modelId];
+    if (mc) return { config: mc, providerKey: pk };
+  }
+  return undefined;
+}
+
+/** 取首个非空 provider.models 的模型 key（defaultModel 缺失时兜底）。 */
+function firstModelKey(cfg: ECodeConfig): string {
+  for (const pc of Object.values(cfg.providers)) {
+    if (pc.models && Object.keys(pc.models).length > 0) return Object.keys(pc.models)[0]!;
+  }
+  return '';
+}
+
 export function loadConfig(): ECodeConfig {
   if (cachedConfig) return cachedConfig;
   if (existsSync(CONFIG_PATH)) {
+    let parsed: Record<string, unknown>;
     try {
       const raw = readFileSync(CONFIG_PATH, 'utf-8');
       // JSONC：剥离行注释与块注释（字符串内不误剥），支持用户在 config.json 写注释（§7）。
-      cachedConfig = JSON.parse(stripJsonComments(raw)) as ECodeConfig;
-      return cachedConfig;
+      parsed = JSON.parse(stripJsonComments(raw)) as Record<string, unknown>;
+      migrateConfig(parsed);
     } catch (err) {
+      // 解析/迁移失败：软降级到默认配置（文件损坏不应砖住启动）
       console.error(
         `⚠️  解析 ${CONFIG_PATH} 失败，降级用默认配置: ${err instanceof Error ? err.message : err}`,
       );
+      writeConfigTemplate();
+      cachedConfig = DEFAULT_CONFIG;
+      return cachedConfig;
     }
+    cachedConfig = parsed as unknown as ECodeConfig;
+    // 模型全局唯一校验：重复定义属严重配置错误，上抛拒绝启动（不降级——降级会掩盖问题）。
+    validateModelUniqueness(cachedConfig);
+    // defaultModel 校验：指向不存在的模型时软降级（stderr 警告 + 置空，getDefaultModel 兜底首个可用）。
+    if (cachedConfig.defaultModel && !findModel(cachedConfig, cachedConfig.defaultModel)) {
+      console.error(`⚠️  defaultModel "${cachedConfig.defaultModel}" 未在任何 provider 中找到，将回退首个可用模型`);
+      cachedConfig.defaultModel = undefined;
+    }
+    return cachedConfig;
   }
   // 首次启动：自动生成带注释的配置模板（生产级 UX：用户可见可改）
   writeConfigTemplate();
@@ -154,32 +321,7 @@ export function loadConfig(): ECodeConfig {
 function writeConfigTemplate(): void {
   const dir = dirname(CONFIG_PATH);
   mkdirSync(dir, { recursive: true });
-  const header = [
-    '// ECode 用户配置（首次启动自动生成）',
-    '// 修改后重启 ECode 生效；也可通过 .env 环境变量覆盖（见 .env.example）。',
-    '// API Key：直接填 providers.<x>.apiKey（推荐，全局安装开箱可用）；或设 apiKeyEnv 对应的环境变量。',
-    '//',
-    '// 添加自定义模型：',
-    '//   1. 在 providers 中添加一个条目（protocol 选 "openai" 或 "anthropic"）',
-    '//   2. 在 models 中添加一个条目（provider 指向上面的 key）',
-    '//   3. 在对应 provider 的 apiKey 字段填入密钥（或设 apiKeyEnv 对应的环境变量）',
-    '//',
-    '// 后置验证（validation.enabled）：edit/write 后自动跑 build/test，失败回喂 LLM。',
-    '//   默认 false（对齐 Aider，避免每次写文件阻塞验证）。想开启：改成 true。',
-    '//',
-    '// 技能捕获（skillCapture，M6）：enabled=true 后自动记录用户修正/偏好，',
-    '//   /skill-gen 归纳成提案、/skill 审批落盘。默认 false。详见 docs/详设 技能生成与模型路由。',
-    '//',
-    '// 模型路由（routing，M6，可选块）：按场景/复杂度把子任务路由到不同模型。',
-    '//   不配 = 主模型一刀切（compress/skill/subagent 都走当前模型）。',
-    '//   示例：{"rules":{"subagent":"deepseek-chat"},"complexityRouting":true,"complexity":{"low":"deepseek-chat","high":"glm-5.2"}}',
-    '//',
-    '// 上下文压缩（compression）：对话快满 context window 时自动压缩旧消息。',
-    '//   thresholdRatio: 触发压缩的阈值比例（默认 0.8，即占用 80% 时触发）',
-    '//   keepRounds: 压缩时保留最近 N 轮对话（默认 6）',
-    '//   trimKeepRecent: 清理旧工具输出时保留最近 N 个（默认 3）',
-    '',
-  ].join('\n');
+  const header = CONFIG_HEADER_LINES.join('\n') + '\n';
   const json = JSON.stringify(DEFAULT_CONFIG, null, 2);
   try {
     writeFileSync(CONFIG_PATH, header + json + '\n', 'utf-8');
@@ -190,16 +332,16 @@ function writeConfigTemplate(): void {
 
 export function getDefaultModel(): string {
   const cfg = loadConfig();
-  return cfg.defaultModel ?? Object.keys(cfg.models)[0] ?? '';
+  return cfg.defaultModel ?? firstModelKey(cfg);
 }
 
-export function getModelConfig(model: string): ModelConfig {
+export function getModelConfig(model: string): ModelResolution {
   const cfg = loadConfig();
-  const mc = cfg.models[model];
-  if (!mc) {
-    throw new Error(`未知模型: ${model}（可用: ${Object.keys(cfg.models).join(', ')}）`);
+  const found = findModel(cfg, model);
+  if (!found) {
+    throw new Error(`未知模型: ${model}（可用: ${listAvailableModels().map((m) => m.model).join(', ')}）`);
   }
-  return mc;
+  return found;
 }
 
 export function getProviderConfig(providerKey: string): ProviderConfig {
@@ -241,14 +383,22 @@ export function resolveApiKey(pc: ProviderConfig): string | undefined {
 
 export function hasCapability(model: string, cap: ModelCapability): boolean {
   try {
-    return getModelConfig(model).capabilities.includes(cap);
+    return getModelConfig(model).config.capabilities.includes(cap);
   } catch {
     return false;
   }
 }
 
 export function listAvailableModels(): Array<{ model: string; provider: string }> {
-  return Object.entries(loadConfig().models).map(([model, mc]) => ({ model, provider: mc.provider }));
+  const result: Array<{ model: string; provider: string }> = [];
+  for (const [pk, pc] of Object.entries(loadConfig().providers)) {
+    if (pc.models) {
+      for (const model of Object.keys(pc.models)) {
+        result.push({ model, provider: pk });
+      }
+    }
+  }
+  return result;
 }
 
 /** P0-5 后置验证是否启用（config.validation.enabled，默认 false，对齐 Aider）。validation.ts 集成层调用。 */
@@ -259,7 +409,7 @@ export function isValidationEnabled(): boolean {
 /** 获取模型上下文窗口大小（token），未配置时默认 128K */
 export function getContextWindow(model: string): number {
   try {
-    return getModelConfig(model).contextWindow ?? 128_000;
+    return getModelConfig(model).config.contextWindow ?? 128_000;
   } catch {
     return 128_000;
   }

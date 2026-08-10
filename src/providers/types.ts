@@ -133,9 +133,8 @@ export interface ModelCost {
   cacheWrite?: number;
 }
 
-/** 单个模型的配置（config.json 的 models[modelName]） */
+/** 单个模型的配置（config.json 的 providers.<id>.models[modelName]，provider 由父级 key 隐含） */
 export interface ModelConfig {
-  provider: string; // 指向 config.providers 的 key
   capabilities: ModelCapability[];
   /** 模型上下文窗口大小（token），供 ContextManager 算压缩阈值 */
   contextWindow?: number;

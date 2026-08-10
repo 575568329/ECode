@@ -85,8 +85,7 @@ describe('config（读取文件）', () => {
     vi.mocked(readFileSync).mockReturnValue(
       JSON.stringify({
         defaultModel: 'custom-model',
-        providers: { x: { protocol: 'openai', apiKeyEnv: 'X_KEY' } },
-        models: { 'custom-model': { provider: 'x', capabilities: [] } },
+        providers: { x: { protocol: 'openai', apiKeyEnv: 'X_KEY', models: { 'custom-model': { capabilities: [] } } } },
       }),
     );
     expect(getDefaultModel()).toBe('custom-model');
@@ -106,7 +105,6 @@ describe('config（读取文件）', () => {
       JSON.stringify({
         defaultModel: 'glm-5.2',
         providers: {},
-        models: {},
         validation: { enabled: false },
       }),
     );
@@ -120,7 +118,6 @@ describe('config（读取文件）', () => {
       JSON.stringify({
         defaultModel: 'glm-5.2',
         providers: {},
-        models: {},
         validation: { enabled: true },
       }),
     );
@@ -145,8 +142,7 @@ describe('config（读取文件）', () => {
         '// 添加自定义模型：见文档',
         JSON.stringify({
           defaultModel: 'glm-5.2',
-          providers: { glm: { protocol: 'openai', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZHIPUAI_API_KEY' } },
-          models: { 'glm-5.2': { provider: 'glm', capabilities: ['tools'], contextWindow: 500_000 } },
+          providers: { glm: { protocol: 'openai', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'ZHIPUAI_API_KEY', models: { 'glm-5.2': { capabilities: ['tools'], contextWindow: 500_000 } } } },
         }),
       ].join('\n'),
     );

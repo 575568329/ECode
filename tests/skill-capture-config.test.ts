@@ -5,7 +5,7 @@ import { buildSkillCaptureConfig, DEFAULT_SKILL_CAPTURE_CONFIG } from '../src/sk
 import type { ECodeConfig } from '../src/providers/config.js';
 
 function baseConfig(overrides: Record<string, unknown> = {}): ECodeConfig {
-  return { providers: {}, models: {}, ...overrides } as ECodeConfig;
+  return { providers: {}, ...overrides } as ECodeConfig;
 }
 
 describe('buildSkillCaptureConfig', () => {

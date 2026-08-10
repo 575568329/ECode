@@ -12,6 +12,7 @@ import type { HookGate } from './hooks/inject.js';
 import type { ShellExec } from './hooks/runner.js';
 import type { ToolDefinition, ToolResult } from './tools/types.js';
 import { ToolFailureTracker } from './tools/failure-tracker.js';
+import { resolveImageStrategy } from './vision-fallback.js';
 import { validateAfterEdit } from './tools/validation.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { createProvider } from './providers/factory.js';
@@ -320,8 +321,8 @@ export async function* runAgentStream(
   //   UI REPL 无 --model 时 modelRef.current=undefined → 走 global 路由（routing.rules.global 生效）。
   //   无 routing 配置 → defaultTarget.model = getDefaultModel()，行为与改造前一致（向后兼容）。
   const routingConfig = getRoutingConfig();
-  const resolvedModel = opts.model ?? resolveModelForScenario('global', undefined, routingConfig).model;
-  const provider = opts.provider ?? createProvider(resolvedModel);
+  let resolvedModel = opts.model ?? resolveModelForScenario('global', undefined, routingConfig).model;
+  let provider = opts.provider ?? createProvider(resolvedModel);
   const useTools = hasCapability(resolvedModel, 'tools');
   const allow = opts.allow ?? new AllowList();
   // doom_loop 检测器（阶段5d）：跨轮持久，连续同 (tool,input) ≥3 触发，强制询问打破死循环。
@@ -345,10 +346,25 @@ export async function* runAgentStream(
   const catalogs = [agentsCatalog, skillsCatalog].filter(Boolean).join('\n\n---\n\n');
   const system = catalogs ? `${baseSystem}\n\n---\n\n${catalogs}` : baseSystem;
 
+  // 多模态图片降级（一次性预处理，不进迭代循环——天然防无限调用）：
+  //   ① 模型支持 vision → inline（直接发 image blocks）
+  //   ② 模型不支持，config 有 vision 模型 → switch（自动切换模型+provider）
+  //   ③ 模型不支持，无 vision 模型 → strip（移除图片，保留文本路径，LLM 走 MCP 工具分析）
+  const imageStrategy = resolveImageStrategy(resolvedModel, opts.images);
+  // switch 策略：覆盖 model + provider（后续整个 agent loop 全程用新 model/provider，不回退）
+  //   防无限调用：switch 是一次性决策，不进迭代循环；vision 模型失败则错误正常传播（不重试回退）。
+  //   仅在未注入 provider 时切换（opts.provider 存在 = 测试场景，用 mock provider 不应覆盖）。
+  if (imageStrategy.strategy === 'switch' && imageStrategy.switchToModel && !opts.provider) {
+    resolvedModel = imageStrategy.switchToModel;
+    provider = createProvider(resolvedModel);
+  }
+  // strip 策略：不带 image blocks（纯文本，LLM 靠 MCP 工具 / 文件路径分析图片）
+  const effectiveImages = imageStrategy.strategy === 'inline' ? opts.images : undefined;
+
   // 多模态：images 存在时，user message content 为 block 数组（text + image blocks）。
   const userContent: ECodeContentBlock[] = [{ type: 'text', text: task }];
-  if (opts.images && opts.images.length > 0) {
-    for (const img of opts.images) {
+  if (effectiveImages && effectiveImages.length > 0) {
+    for (const img of effectiveImages) {
       userContent.push({ type: 'image', source: img });
     }
   }
@@ -417,6 +433,11 @@ export async function* runAgentStream(
   persistSession(buildSession(), sessionBaseDir); // 首次落盘（loop 前，与原 runAgent 一致）
 
   yield { type: 'start', task, model: resolvedModel, provider: provider.name, logFile };
+
+  // 多模态降级提示（start 后告知用户发生了降级，UI 正常渲染 warning 气泡）
+  if (imageStrategy.warning) {
+    yield { type: 'warning', message: imageStrategy.warning };
+  }
 
   // 事件流钩子（支点 12 项15/16）：SessionStart / UserPromptSubmit 通知（不改变流程）。
   //   无 hook 时 hookGate=undefined 零开销；hook 失败/超时 runner 默认 allow 降级。

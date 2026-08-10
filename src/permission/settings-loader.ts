@@ -172,6 +172,23 @@ const SETTINGS_HEADER_LINES = [
   '//   工具名：Bash / Edit / Write / Read / Glob / Grep（首字母大写）',
   '//   pattern：精确 "npm run test"，或通配 "npm run *"（* 匹配任意）',
   '//   allow 放行 / deny 拒绝 / ask 强制询问；bash 复合命令（&&/|/;）逐段校验。',
+  '//',
+  '// 事件钩子（hooks）：在 agent 生命周期关键事件上挂自定义脚本。',
+  '//   event：事件名（见下方列表）',
+  '//   command：要执行的 shell 命令',
+  '//   matcher：工具名匹配（仅 PreToolUse/PostToolUse 有效，默认 "*" 匹配全部工具）',
+  '//',
+  '//   支持的事件：',
+  '//     SessionStart      会话启动时触发',
+  '//     SessionEnd        会话结束时触发',
+  '//     UserPromptSubmit  用户提交输入时触发',
+  '//     PreToolUse        工具执行前（可 deny 阻止执行 / modifiedInput 替换输入）',
+  '//     PostToolUse       工具执行后（可 modifiedOutput 替换输出）',
+  '//     Stop              agent 停止时触发',
+  '//',
+  '//   hooks 示例：',
+  '//     { "event": "PreToolUse", "command": "my-linter check", "matcher": "Edit" }',
+  '//     { "event": "PostToolUse", "command": "my-formatter fix", "matcher": "Write" }',
 ];
 
 /** 首次启动生成带注释模板（user/project 两层各自「不存在才生成」；已存在不覆盖）。失败静默降级。 */

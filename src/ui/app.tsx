@@ -109,9 +109,6 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
   // （ref 变化不触发重绘，旧代码靠 abort 的 setState 顺带重绘，删 abort 后须显式驱动）。
   // ref 保留做双击即时判断（state 异步，双击两次事件间未必 commit，双击须即时）。
   const [lastCtrlC, setLastCtrlC] = useState(0);
-  // 首次 submit 同步清屏（§5.2）：ref 控幂等，必须在 submit 函数体内同步执行，
-  // 清掉 WelcomeScreen 残留行，让 ChatView 顶到首行。
-  const hasClearedRef = useRef(false);
   // /resume 会话选择器（方向 C，详设 docs/详设/20260806210000_历史会话切换-详设.md）：
   // resumeOpen 时 SessionPicker 替换 InputBar（Modal 三元前置）。sessions 已过滤当前会话。
   const [resumeOpen, setResumeOpen] = useState(false);
@@ -216,17 +213,9 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
       // 未知斜杠命令：静默忽略（不送 LLM，不落地）
       return;
     }
-    // 首次 submit 同步清屏（清掉 WelcomeScreen 残留，§5.2）+ 推进到 ChatView。
-    // 斜杠命令（除 /exit 立即退出）同样需要：否则欢迎屏期间 ChatView 未挂载，
-    // /help /cost /sessions 等 addMessage 输出无处渲染 → 用户看到「命令没效果」。
-    // 仅在真实 TTY 清屏，避免污染测试/非交互 stdout。
+    // 推进到 ChatView（started=true）。不再清屏——\x1b[2J\x1b[H 会清空终端 scrollback buffer，
+    // 导致右侧滚动条消失、无法向上翻看历史。WelcomeScreen 的残留会留在 scrollback 顶部（无害）。
     const isExit = parsed.type === 'command' && parsed.name === 'exit';
-    if (!isExit && !hasClearedRef.current) {
-      if (process.stdout.isTTY) {
-        process.stdout.write('\x1b[2J\x1b[H');
-      }
-      hasClearedRef.current = true;
-    }
     if (!isExit) setStarted(true);
 
     if (parsed.type === 'command') {
@@ -550,10 +539,8 @@ export function App({ model, cwd, loadStatus, system, version, permissionMode, d
 
   // /resume 选中会话 → 载入历史 + 软重置续接上下文（详设 §3.4：switchSession + 过滤当前会话不丢失）。
   const handleResumeConfirm = (id: string) => {
-    // 真实终端清屏重画（<Static> append-only：切换会话须清掉旧消息；测试 !isTTY 不执行，不影响断言）。
-    if (process.stdout.isTTY) {
-      process.stdout.write('\x1b[2J\x1b[H');
-    }
+    // 不清屏——\x1b[2J\x1b[H 会清空 scrollback buffer 导致滚动条消失。
+    // staticKey++ 驱动 <Static> 重 mount（在 use-agent-stream switchSession 内处理）。
     const session = loadSession(id);
     const history = messagesToDisplayMessages(session.messages, session.model);
     const resume: ResumeContext = {

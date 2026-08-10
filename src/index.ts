@@ -179,6 +179,15 @@ async function startRepl(
   const { render } = await import('ink');
   const React = (await import('react')).default;
   const { App } = await import('./ui/app.js');
+  // 清屏一次：消除 ink 启动期的「重复叠加渲染」。
+  // 根因：ink 首次 onRender 输出首帧后，终端宽度探测/resize/Kitty 键盘 auto 探测会触发二次
+  //   onRender；二次渲染靠 eraseLines(首帧行数) 擦首帧，但 Windows 经典 conhost（PowerShell 窗口）
+  //   对多行 VT erase 序列支持不全，首帧擦不干净 → 首帧残留 + 次帧 = 两份欢迎界面叠加。
+  //   （ink 源码 ink.js:282 作者自注「prevent duplicate overlapping re-renders」即此问题；
+  //    他仅在终端宽度「减小」时 log.clear() 兜底，未覆盖首次/增大场景。）
+  // 启动时清一次屏绕过 erase 依赖；不影响运行时 scrollback（submit 后 app.tsx 不再清屏，
+  //   对话历史正常积累向上翻看）。Windows Terminal 等 VT 完整终端本就不叠加，清屏对它们也无害。
+  process.stdout.write('\x1b[2J\x1b[H');
   // index.ts 为 .ts（非 .tsx），不能写 JSX；用 createElement 等价表达 <App .../>。
   render(
     React.createElement(App, {

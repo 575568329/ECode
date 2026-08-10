@@ -2,9 +2,10 @@
 // （spec §5.3 / §8.4 / 多行输入详设 docs/详设/20260808150000）。
 //
 // 多行模型：text + cursor（线性 codepoint offset），所有编辑以 cursor 为锚点。
-// 换行三键全接（详设 §3.3）：
+// 换行键全接（详设 §3.3）：
+//   - Ctrl+Enter ：非 Kitty 终端发 \n(LF) → ink 解析为 {name:'enter'}，拦 input==='\n' 插换行
+//                  Kitty 终端发 \x1b[13;5u → {return, ctrl:true}（全平台通用，Windows 首选）
 //   - Shift+Enter：Kitty 协议 \x1b[13;2u → ink 7 原生解析为 {return, shift:true}（详设 §2）
-//   - Alt+Enter ：\x1b\r（ESC+CR）→ 非 Kitty 路径原生解析为 {return, meta:true}
 //   - 反斜杠续行：行尾 \ + 裸 Enter → 删 \ 插 \n（全平台兜底，不依赖终端协议）
 //
 // picker（方向 A 详设 docs/20260806180000）：/ 开头 + 无空格 + 无换行 → 前缀匹配候选；
@@ -181,7 +182,7 @@ export function InputBar({ onSubmit, draftText, draftVersion }: InputBarProps): 
 
   useInput((input, key) => {
     if (pickerVisible) {
-      // picker 活跃：↑↓ 导航、Enter（含 Shift/Alt——picker 单行语义，换行无意义）执行、Esc 关闭。
+      // picker 活跃：↑↓ 导航、Enter（含 Shift/Ctrl——picker 单行语义，换行无意义）执行、Esc 关闭。
       if (key.upArrow) {
         setPickerIndex((i) => (i - 1 + candidates.length) % candidates.length);
         return;
@@ -231,8 +232,9 @@ export function InputBar({ onSubmit, draftText, draftVersion }: InputBarProps): 
         return;
       }
       if (key.return) {
-        // 换行三键（详设 §3.3）：Shift / Alt → 插 \n；行尾 \ + 裸 Enter → 续行；否则提交。
-        if (key.shift || key.meta) {
+        // 换行键（详设 §3.3）：Shift / Ctrl → 插 \n；行尾 \ + 裸 Enter → 续行；否则提交。
+        // Ctrl+Enter（Kitty 路径）：支持 Kitty 的终端发 \x1b[13;5u → {return, ctrl:true}
+        if (key.shift || key.ctrl) {
           insert('\n');
           return;
         }
@@ -270,6 +272,14 @@ export function InputBar({ onSubmit, draftText, draftVersion }: InputBarProps): 
     }
 
     // 共用：backspace（跨行合并）/ delete / 字符插入（picker 与非 picker 都编辑；编辑即复位 picker）。
+    // Ctrl+Enter（非 Kitty 路径）：终端发 \n(LF)，ink 解析为 {name:'enter'}（非 return，无 ctrl 标记）。
+    // 在此拦住 \n → 插换行（全平台通用，不依赖终端协议）。仅拦单字符 \n：粘贴多行文本时 input
+    // 长度 >1 不进此分支，按原逻辑被 \x20 门控过滤（粘贴兜底不受影响）。
+    if (input === '\n') {
+      insert('\n');
+      setPickerDismissed(false);
+      return;
+    }
     if (key.backspace) {
       backspace();
       setPickerDismissed(false);

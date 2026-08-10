@@ -84,18 +84,32 @@ describe('<InputBar />', () => {
     expect(onSubmit).toHaveBeenCalledWith('line1\nline2');
   });
 
-  it('Alt+Enter(\\x1b\\r) 插换行', async () => {
+  it('Ctrl+Enter(Kitty \\x1b[13;5u) 插换行', async () => {
     const onSubmit = vi.fn();
     const { stdin } = render(<InputBar onSubmit={onSubmit} />);
-    stdin.write('foo');
+    stdin.write('lineA');
     await vi.advanceTimersByTimeAsync(0);
-    stdin.write('\x1b\r'); // Alt+Enter（ESC+CR）
+    stdin.write('\x1b[13;5u'); // Ctrl+Enter（Kitty CSI u，codepoint 13 + ctrl 修饰位 5）
     await vi.advanceTimersByTimeAsync(0);
-    stdin.write('bar');
+    stdin.write('lineB');
     await vi.advanceTimersByTimeAsync(0);
-    stdin.write('\r');
+    stdin.write('\r'); // 裸 Enter 提交
     await vi.advanceTimersByTimeAsync(0);
-    expect(onSubmit).toHaveBeenCalledWith('foo\nbar');
+    expect(onSubmit).toHaveBeenCalledWith('lineA\nlineB');
+  });
+
+  it('Ctrl+Enter(非 Kitty \\n) 插换行', async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(<InputBar onSubmit={onSubmit} />);
+    stdin.write('hello');
+    await vi.advanceTimersByTimeAsync(0);
+    stdin.write('\n'); // Ctrl+Enter（非 Kitty 终端发 LF）
+    await vi.advanceTimersByTimeAsync(0);
+    stdin.write('world');
+    await vi.advanceTimersByTimeAsync(0);
+    stdin.write('\r'); // 裸 Enter 提交
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onSubmit).toHaveBeenCalledWith('hello\nworld');
   });
 
   it('反斜杠续行：行尾 \\ + Enter 删 \\ 插换行（全平台兜底）', async () => {

@@ -25,7 +25,7 @@ export type AnthropicCacheUsage = {
 export function toAnthropicRequest(req: ChatRequest): Anthropic.MessageCreateParams {
   return {
     model: req.model,
-    max_tokens: req.maxTokens ?? 4096,
+    max_tokens: req.maxTokens ?? 16384,
     system: req.system,
     messages: req.messages.map(toAnthropicMessage),
     tools: req.tools.length > 0 ? req.tools.map(toAnthropicTool) : undefined,
@@ -133,7 +133,7 @@ function mapAnthropicStopReason(reason: Anthropic.Message['stop_reason']): ECode
 export function toOpenAIRequest(req: ChatRequest): OpenAI.Chat.ChatCompletionCreateParamsNonStreaming {
   return {
     model: req.model,
-    max_tokens: req.maxTokens ?? 4096,
+    max_tokens: req.maxTokens ?? 16384,
     messages: toOpenAIMessages(req),
     tools: req.tools.length > 0 ? req.tools.map(toOpenAITool) : undefined,
   };

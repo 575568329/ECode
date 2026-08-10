@@ -708,3 +708,94 @@ const aborted = opts.signal?.aborted || isAbortError(err);
 - **watch**（开发时随改随跑）：`npm test`（或 `npx vitest`）
 
 > 提示：`CLAUDE.md`「常用命令」表的 `npm test` 宜标注 watch，全量验证统一用 `npx vitest run`。
+
+---
+
+## #017 MCP 启用时内置工具被喂丢 → LLM 被迫用 MCP 工具做本地任务 → 瞎编参数死循环
+
+**日期**：2026-08-10
+**性质**：根因 bug（agent 工具注入层）+ 误判教训（先怪模型后查自己代码）
+**影响**：多模态任务里 GLM-5.2 反复调 `mcp__zread__read_file`（瞎编 `dummy/repo`、`test/repo`），死循环出不来；最初误判为「GLM 工具选择固着 / 认知问题」。
+
+### 现象（runtime-log 实证）
+
+跑多模态详设任务，LLM 反复调用失败的 `mcp__zread__read_file`，参数是编造的 `dummy/repo`、`test/repo`。doom-loop 没拦住（LLM 每次变参数，规避了精确签名匹配）。`logApiRequest` 显示 `toolCount: 6`，但 `registry.ts` 有 11 个内置工具。
+
+### 初始误判（走弯路）
+
+最先归因为「GLM 工具选择固着 / 说了不用还用」，并往 system prompt 堆 POLICY（Task/MCP 使用规则）试图教 LLM 别滥用。**这是症状层补丁，没修根因。**
+
+用户质疑「是不是我们的代码有问题 / 怎么让 GLM 返回正确参数别瞎编」，逼着深挖，才在 `use-agent-stream.ts` 找到真凶。
+
+### 根因（三层）
+
+1. **工具合并 bug**（`use-agent-stream.ts`）：MCP 启用时只传 MCP 工具——
+   ```ts
+   tools: mcpToolsRef.current.length > 0 ? [...mcpToolsRef.current] : undefined
+   ```
+   `agent.ts` 的 `baseTools = opts.tools ?? toolDefinitions` 因 `opts.tools` 非 undefined（MCP 数组非空）→ **丢弃内置 `toolDefinitions`**。LLM 根本看不到 `read_file`/`grep`/`glob`/`bash`。
+   - smoking gun：`mcp/manager.ts:197 getAllTools()` 只返回 `[...pool.values()].flatMap(i => i.state.tools)` = **仅 MCP 工具，不含内置**。
+
+2. **为什么 GLM 瞎编参数**：它没有本地 `read_file`，被逼用唯一的 MCP 工具（zread，设计用于读远程 GitHub repo）做本地任务 → zread 要远程 repo URL → 它编造 `dummy/repo`。**这不是 GLM 认知问题，是工具集喂错了**——换成 Claude 在同样错工具集下也会挣扎。
+
+3. **doom-loop 为何没拦住**：doom-loop（`doom-loop.ts`，忠实移植自 opencode `processor.ts:356-380`）按精确 `(toolName, input)` 签名匹配计数。GLM 每次变垃圾参数（`dummy/repo`→`test/repo`）→ 签名不同 → 计数归零，永远到不了阈值 3。
+
+### 解决（治本 + 兜底 + 精简，三层）
+
+1. **治本**（`use-agent-stream.ts`）：合并内置 + MCP——
+   ```ts
+   tools: mcpToolsRef.current.length > 0 ? [...toolDefinitions, ...mcpToolsRef.current] : undefined
+   ```
+   LLM 看到正确工具集，自然用 `read_file` 做本地任务。**REPL 实测验证通过**（用户确认）。
+
+2. **兜底**（`agent.ts`，Plan C 断路器）：MCP 工具连续失败 3 次会话内禁用。键用 `(toolName, isError)` 而非 `(toolName, input)`——防「变参数」规避。只对 `mcp__` 前缀生效（内置 bash/edit 失败是业务常态，禁了危险）。
+
+3. **精简**（`system-prompt.ts`）：删 `SUBAGENT_POLICY` / `MCP_POLICY` 两条 prompt 规则。工具集喂对 + 各工具 description 自解释，LLM 自然做对；原 POLICY 是 bug 的症状层补丁。**代码层能修的绝不放到 prompt 层让 LLM「知道」**（CLAUDE.md §1.1 极简）。
+
+### 教训
+
+> **「模型行为异常」先查喂给它的工具集，别先怪模型。** `toolCount` 日志（实际 vs 内置数）是最快证据。CC/opencode 跑在 Claude 上没事，不是它们代码更好，是 Claude 在错工具集下也挣扎得更「优雅」——换成等价 bug 它们也会坏。本次若不是用户坚持「是不是我们代码的问题」，差点一直在 prompt 层打补丁。
+>
+> **兜底机制的键要考虑规避手段。** 精确 input 匹配（doom-loop）会被「变参数」绕过；按 `(toolName, isError)` 键（Plan C）对参数变化免疫。设计防滥用计数时，想清楚「被计数对象能不能改签名规避」。
+>
+> **治本 > prompt 补丁。** 看到 LLM 滥用某工具，第一反应不该是「在 system prompt 加规则教它别用」，而是「它为什么非用这个不可」——九成是它没别的可选（工具集/权限喂错）。代码层修根因，prompt 层只兜代码管不了的认知偏差。
+
+### 关联
+
+- 同类「先怪模型/环境后查自己」：[[#004]]（LLM 知识失真，那是真失真；本次是代码 bug 被误判成模型问题）
+- 实现：`use-agent-stream.ts`（工具合并）、`agent.ts`（Plan C 断路器）、`system-prompt.ts`（删 POLICY）、`tools/subagent.ts`（Task description 补「别甩理解」）
+- 参考：opencode `processor.ts:356-380`（doom-loop 移植源）、`mcp/manager.ts:197` getAllTools()（smoking gun）
+
+---
+
+## #018 模型名查询大小写敏感 → 用户 config 大写 key 被小写查询静默查不到
+
+**日期**：2026-08-10
+**性质**：配置健壮性（config 查询层）
+**影响**：`agent-stream.test.ts:328 getContextWindow('glm-5.2')` 返回 128000（期望 1M）；真机隐患——上下文压缩阈值 = `contextWindow × 0.8`，查不到兜底 128K → 阈值算错（本该 800K 变成 102K），压缩时机错乱。
+
+### 现象与根因
+
+用户 `~/.ecode/config.json` 按厂商惯例写**大写** `GLM-5.2`（`defaultModel: GLM-5.2`），代码/测试各处查询用**小写** `glm-5.2`。`findModel`（config.ts:275）只做精确 key 匹配，大小写敏感 → 小写查询查不到大写 key → `getModelConfig` 抛「未知模型」→ `getContextWindow` catch 兜底 128000。
+
+探测实证：`getContextWindow('glm-5.2')` = 128000，`getContextWindow('GLM-5.2')` = 1000000。
+
+### 解决
+
+`findModel` 改大小写不敏感（精确优先，降级 `toLowerCase`）：精确匹配先命中（避免大小写近似 key 歧义），没命中再遍历找 `toLowerCase` 相等的。模型名作标识符，大小写差异不应致查不到。
+
+```ts
+const exact = pc.models[modelId];        // 精确优先
+if (exact) return { config: exact, providerKey: pk };
+for (const [k, v] of Object.entries(pc.models)) {
+  if (k.toLowerCase() === lower) return { config: v, providerKey: pk };  // 降级
+}
+```
+
+### 教训
+
+> **配置查询的标识符匹配要大小写容错。** 用户按厂商惯例写模型名（GLM/GPT 大写、deepseek 小写），代码里写小写，必然对不上——要么存储时归一化（全 lowercase），要么查询时容错。本次选查询容错（不改用户 config 写法，对厂商惯例友好）。判断：凡「用户手填 + 代码查询」的标识符（模型名 / provider 名 / 别名），都该大小写不敏感。
+
+### 关联
+
+- 实现：`providers/config.ts` findModel、`tests/providers/config.test.ts`（大小写不敏感回归测试 4 断言）

@@ -88,13 +88,9 @@ export function ChatView({ state }: ChatViewProps): React.ReactElement {
         {(msg) => <Box key={msg.id}>{renderCompleted(msg)}</Box>}
       </Static>
 
-      {/* 动态区：统一活动指示器（loading 收口）+ 流式文本 + 运行中工具 */}
+      {/* 动态区：流式文本 + 运行中工具 + 活动指示器（loading 常驻输入框正上方） */}
       {(state.isRunning || state.streamingText || state.activeTools.length > 0 || state.pendingReadSearch.length > 0) && (
         <Box flexDirection="column" paddingLeft={4}>
-          {/* 统一活动指示器：isRunning 期间任意子阶段 ◆+Spinner+状态文案常驻
-              （思考中/回复中/运行 N 工具/· · · 摘要/压缩中）。各态只声明 phase（deriveActivity 派生），
-              渲染单一来源 → 结构上不会漏 spinner（根治散落实现"漏一态就消失"）。 */}
-          <ActivityIndicator phase={deriveActivity(state)} />
           {state.streamingText ? (
             <Box flexDirection="column">
               <Text color={T.brand} bold>{SYMBOLS.brand}</Text>
@@ -106,6 +102,9 @@ export function ChatView({ state }: ChatViewProps): React.ReactElement {
           {state.activeTools.map((t) => (
             <ToolRunning key={t.id} name={t.name} arg={summarizeArg(t.name, t.input)} />
           ))}
+          {/* 统一活动指示器：放在动态区最后，紧贴 InputBar 上方（用户期望 loading 常驻输入框正上方）。
+              各态只声明 phase（deriveActivity 派生），渲染单一来源 → 结构上不会漏 spinner。 */}
+          <ActivityIndicator phase={deriveActivity(state)} />
         </Box>
       )}
     </Box>

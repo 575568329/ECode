@@ -32,6 +32,9 @@ export function TodoPanel({ todos }: TodoPanelProps): React.ReactElement | null 
   const active = todos
     .filter((t) => t.status !== 'completed')
     .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]);
+
+  // 全部完成 → 不渲染（清除「N/N ✓ N 已完成」占位，保持界面干净）。
+  if (active.length === 0) return null;
   // 面板高度上限（§7.4 防顶屏）：active 超 MAX_ACTIVE 只显前 N 条（排序后 in_progress 靠前优先保留），
   // 余下折叠为「… +M 条待办」。completed 已单行折叠，active 是唯一可能膨胀的部分。
   const shown = active.slice(0, MAX_ACTIVE);

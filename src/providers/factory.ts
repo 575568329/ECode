@@ -1,6 +1,6 @@
 import { ClaudeProvider } from './claude.js';
 import { OpenAIProvider } from './openai.js';
-import { getModelConfig, getProviderConfig, resolveBaseURL } from './config.js';
+import { getModelConfig, getProviderConfig, resolveApiKey, resolveBaseURL } from './config.js';
 import type { ModelProvider } from './types.js';
 
 /**
@@ -13,10 +13,11 @@ export function createProvider(model: string): ModelProvider {
   const modelConfig = getModelConfig(model);
   const providerConfig = getProviderConfig(modelConfig.provider);
 
-  const apiKey = process.env[providerConfig.apiKeyEnv];
+  // key 经两级解析（env > config.json.apiKey，见 resolveApiKey），与 baseURL 对称自给。
+  const apiKey = resolveApiKey(providerConfig);
   if (!apiKey) {
     throw new Error(
-      `模型 ${model} 需要环境变量 ${providerConfig.apiKeyEnv}，但未设置（请在 .env 里配置）`,
+      `模型 ${model} 缺少 API Key。请在 ~/.ecode/config.json 的 providers.${modelConfig.provider}.apiKey 填入（推荐，全局可用），或设置环境变量 ${providerConfig.apiKeyEnv}。`,
     );
   }
 

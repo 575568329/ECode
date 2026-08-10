@@ -10,7 +10,12 @@ import type { ModelCapability, ModelConfig } from './types.js';
 export interface ProviderConfig {
   protocol: 'anthropic' | 'openai';
   baseURL?: string;
-  apiKeyEnv: string; // 指向环境变量名，不在 config 里明文存 key（安全）
+  /** API Key 明文值（推荐：全局安装开箱可用，与 baseURL 对称自给）。
+   *  resolveApiKey 两级解析：env（apiKeyEnv）> 此字段。两者皆空 → factory 抛错。
+   *  安全级别与 baseURL 相同（本地 ~/.ecode/ 已 gitignore，不进 git/日志/前端）。 */
+  apiKey?: string;
+  /** API Key 的环境变量名（开发 .env / CI 临时覆盖用）。env 有值则覆盖 apiKey 字段。 */
+  apiKeyEnv: string;
   /** baseURL 的环境变量名（厂商专属，与 apiKeyEnv 对称）：GLM_BASE_URL / DEEPSEEK_BASE_URL / ANTHROPIC_BASE_URL。
    *  优先级高于 baseURL：env 有值则覆盖 config.json 里的 baseURL（.env 灵活切换代理/端点）。 */
   baseURLEnv?: string;
@@ -139,12 +144,12 @@ function writeConfigTemplate(): void {
   const header = [
     '// ECode 用户配置（首次启动自动生成）',
     '// 修改后重启 ECode 生效；也可通过 .env 环境变量覆盖（见 .env.example）。',
-    '// API Key 通过环境变量注入（apiKeyEnv 字段），不要在此文件明文填写密钥。',
+    '// API Key：直接填 providers.<x>.apiKey（推荐，全局安装开箱可用）；或设 apiKeyEnv 对应的环境变量。',
     '//',
     '// 添加自定义模型：',
     '//   1. 在 providers 中添加一个条目（protocol 选 "openai" 或 "anthropic"）',
     '//   2. 在 models 中添加一个条目（provider 指向上面的 key）',
-    '//   3. 在 .env 中设置对应的 API Key 环境变量',
+    '//   3. 在对应 provider 的 apiKey 字段填入密钥（或设 apiKeyEnv 对应的环境变量）',
     '//',
     '// 后置验证（validation.enabled）：edit/write 后自动跑 build/test，失败回喂 LLM。',
     '//   默认 false（对齐 Aider，避免每次写文件阻塞验证）。想开启：改成 true。',
@@ -196,6 +201,24 @@ export function getProviderConfig(providerKey: string): ProviderConfig {
 export function resolveBaseURL(pc: ProviderConfig): string | undefined {
   const fromEnv = pc.baseURLEnv ? process.env[pc.baseURLEnv] : undefined;
   return fromEnv || pc.baseURL;
+}
+
+/**
+ * 解析 provider 最终生效的 apiKey（两级优先级，对称 resolveBaseURL）：
+ *   ① process.env[apiKeyEnv]  ← .env / CI 临时覆盖（开发期切 key 不改 config.json）
+ *   ② providerConfig.apiKey    ← config.json 明文存值（全局安装无 .env 注入时自给，与 baseURL 对称）
+ *   ③ undefined                ← 都没有则 factory 层抛错
+ * env 为空串视为未设置（对齐 resolveBaseURL），避免空 key 破坏请求。
+ *
+ * 设计动机（修「读 config.json 却报错指向 .env」的矛盾）：baseURL 早就能从 config.json
+ * 自给（resolveBaseURL 三级解析），key 却只存 apiKeyEnv 名字、取值靠 process.env——全局安装
+ * （node dist/index.js）无 tsx --env-file 注入，process.env 里没 key → 静默报「未设置」并误导
+ * 用户改 .env。key 与 baseURL 同为连接凭证，应同等自给，故补 apiKey 字段 + env 覆盖
+ * （呼应 §1.1 配置自洽、零外部依赖；安全级别同 baseURL，本地文件不入 git/日志/前端）。
+ */
+export function resolveApiKey(pc: ProviderConfig): string | undefined {
+  const fromEnv = pc.apiKeyEnv ? process.env[pc.apiKeyEnv] : undefined;
+  return fromEnv || pc.apiKey;
 }
 
 export function hasCapability(model: string, cap: ModelCapability): boolean {

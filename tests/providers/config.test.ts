@@ -16,6 +16,7 @@ import {
   hasCapability,
   listAvailableModels,
   resolveBaseURL,
+  resolveApiKey,
   isValidationEnabled,
   _resetConfigCacheForTest,
 } from '../../src/providers/config.js';
@@ -205,5 +206,43 @@ describe('resolveBaseURL（env > config > 内置 三级优先级）', () => {
   it('baseURLEnv 与 baseURL 都没有 → 返回 undefined（不传 SDK，交其走协议默认地址）', () => {
     const url = resolveBaseURL({ protocol: 'openai', apiKeyEnv: 'K' });
     expect(url).toBeUndefined();
+  });
+});
+
+// resolveApiKey：key 两级优先级解析（env > config.json.apiKey），与 resolveBaseURL 对称。
+// 修「读 config.json 却报错指向 .env」的自相矛盾：key 也能从 config.json 直接存值，
+// 全局安装（无 .env 注入）靠 config.apiKey 自给；env 仅作临时覆盖（开发/CI 切 key 不改 config）。
+describe('resolveApiKey（env > config.apiKey 两级优先级，对称 resolveBaseURL）', () => {
+  const KEY_ENV = 'ECODE_TEST_MOCK_KEY';
+  beforeEach(() => {
+    delete process.env[KEY_ENV];
+  });
+
+  it('env 有值 → 覆盖 config.apiKey（开发 .env / CI 临时切 key 不改 config）', () => {
+    process.env[KEY_ENV] = 'env-key';
+    const key = resolveApiKey({ protocol: 'openai', apiKeyEnv: KEY_ENV, apiKey: 'cfg-key' });
+    expect(key).toBe('env-key');
+  });
+
+  it('env 未设 → 回退 config.apiKey（全局安装无 .env 注入，靠 config.json 自给）', () => {
+    const key = resolveApiKey({ protocol: 'openai', apiKeyEnv: KEY_ENV, apiKey: 'cfg-key' });
+    expect(key).toBe('cfg-key');
+  });
+
+  it('env 为空字符串 → 视为未设置，回退 config.apiKey', () => {
+    process.env[KEY_ENV] = '';
+    const key = resolveApiKey({ protocol: 'openai', apiKeyEnv: KEY_ENV, apiKey: 'cfg-key' });
+    expect(key).toBe('cfg-key');
+  });
+
+  it('env 与 config.apiKey 都没有 → 返回 undefined（factory 层抛错）', () => {
+    const key = resolveApiKey({ protocol: 'openai', apiKeyEnv: KEY_ENV });
+    expect(key).toBeUndefined();
+  });
+
+  it('向后兼容：旧配置无 apiKey 字段、仅靠 env → env 路径不变', () => {
+    process.env[KEY_ENV] = 'env-only';
+    const key = resolveApiKey({ protocol: 'openai', apiKeyEnv: KEY_ENV });
+    expect(key).toBe('env-only');
   });
 });

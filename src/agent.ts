@@ -323,7 +323,6 @@ export async function* runAgentStream(
   const routingConfig = getRoutingConfig();
   let resolvedModel = opts.model ?? resolveModelForScenario('global', undefined, routingConfig).model;
   let provider = opts.provider ?? createProvider(resolvedModel);
-  const useTools = hasCapability(resolvedModel, 'tools');
   const allow = opts.allow ?? new AllowList();
   // doom_loop 检测器（阶段5d）：跨轮持久，连续同 (tool,input) ≥3 触发，强制询问打破死循环。
   const doom = new DoomLoopDetector();
@@ -358,6 +357,8 @@ export async function* runAgentStream(
   }
   // strip 策略：不带 image blocks（纯文本，LLM 靠 MCP 工具 / 文件路径分析图片）
   const effectiveImages = imageStrategy.strategy === 'inline' ? opts.images : undefined;
+  // useTools 在 vision 降级后重新检测（switch 可能切到不支持 tools 的 vision 模型）
+  const useTools = hasCapability(resolvedModel, 'tools');
 
   // 多模态：images 存在时，user message content 为 block 数组（text + image blocks）。
   const userContent: ECodeContentBlock[] = [{ type: 'text', text: task }];

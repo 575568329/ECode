@@ -88,13 +88,43 @@ function getStrategy(name: string): FoldStrategy {
   return FOLD_STRATEGIES[name] ?? DEFAULT_STRATEGY;
 }
 
+/**
+ * 检测单行紧凑 JSON（对象/数组）→ 缩进美化成多行；否则原样返回。
+ *
+ * 背景：MCP server 常把 JSON.stringify(result) 当单个 text content 返回 →
+ * 单行超长转义 JSON 串。foldContent 的 split('\n') 只得 1 行 → head 截断不触发 →
+ * UI 把整行转义串刷成"乱码"。本函数在折叠前把紧凑 JSON 展开成缩进多行，
+ * 让 head(3) 截断 + Ctrl+O 展开重新生效。
+ *
+ * 保守条件（避免误伤纯文本/已美化 JSON）：
+ *   - trim 后以 { 或 [ 开头；
+ *   - 不含换行（已是多行的 JSON 不重复处理）；
+ *   - JSON.parse 成功且结果是对象/数组（排除 number/string/null/裸文本）。
+ */
+function prettifyCompactJson(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return content;
+  if (trimmed.includes('\n')) return content; // 已多行，不重复美化
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return content; // 非合法 JSON，原样
+  }
+  if (parsed === null || typeof parsed !== 'object') return content; // number/string 等
+  return JSON.stringify(parsed, null, 2);
+}
+
 /** 统一折叠函数：策略驱动，不再 per-tool if-else。
  *  label 中的 'N' 占位符在 head 模式下替换为实际总行数（如 grep 的 "of 5 matches"）。
  *  导出：format-transcript 复用 folded 判定是否进 less 展开（单一规则源）。 */
 export function foldContent(name: string, isError: boolean, content: string): Folded {
-  // 去尾部换行：输出常带尾 \n，split 会产出末尾空串 → 渲染空 ↳ 行（噪声）。
-  const all = content.replace(/\n+$/, '').split('\n');
   const strategy = getStrategy(name);
+  // head/full 模式（显示文本主体）：单行紧凑 JSON → 缩进美化多行（消除 MCP 转义串刷屏）。
+  // summary 模式按原始行数计数，不美化（避免 "Read N lines" 的 N 失真）。
+  const displayContent = strategy.mode === 'summary' ? content : prettifyCompactJson(content);
+  // 去尾部换行：输出常带尾 \n，split 会产出末尾空串 → 渲染空 ↳ 行（噪声）。
+  const all = displayContent.replace(/\n+$/, '').split('\n');
 
   switch (strategy.mode) {
     case 'summary': {

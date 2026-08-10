@@ -266,6 +266,64 @@ describe('foldContent 策略表', () => {
   });
 });
 
+// ---- MCP 单行 JSON 美化（消除转义串刷屏）----
+// MCP server 常把 JSON.stringify(result) 当单个 text 返回 → 单行超长转义 JSON 串。
+// foldContent 的 split('\n') 只得 1 行 → head(3) 截断不触发 → UI 刷一屏转义串。
+// 修复：head/full 模式下检测单行紧凑 JSON → 缩进美化成多行 → 截断自然生效。
+
+describe('foldContent · MCP 单行 JSON 美化', () => {
+  it('MCP 工具返回单行紧凑 JSON → 美化多行 + head(3) 截断', () => {
+    const compact = JSON.stringify({
+      query: 'x',
+      results: [{ title: 'A', url: 'http://a' }, { title: 'B', url: 'http://b' }],
+    });
+    const r = foldContent('mcp__srv__search', false, compact);
+    expect(r.folded).toBe(true); // 美化后多行 → head(3) 截断
+    expect(r.lines.length).toBe(3); // 前 3 行
+    expect(r.lines[0]).toBe('{'); // 美化后首行是 {
+    expect(r.omitted).toBeGreaterThan(0);
+    expect(r.label).toBe('more lines');
+  });
+
+  it('单行 JSON 数组 → 同样美化多行', () => {
+    const r = foldContent('mcp__srv__list', false, JSON.stringify([1, 2, 3, 4, 5]));
+    expect(r.lines[0]).toBe('[');
+    expect(r.folded).toBe(true);
+  });
+
+  it('纯文本（非 JSON）→ 不美化，原样分行', () => {
+    const r = foldContent('mcp__srv__read', false, 'plain text line1\nline2');
+    expect(r.lines).toEqual(['plain text line1', 'line2']);
+  });
+
+  it('已多行美化 JSON → 不重复美化（含换行即跳过）', () => {
+    const pretty = '{\n  "a": 1\n}';
+    const r = foldContent('mcp__srv__x', false, pretty);
+    expect(r.lines).toEqual(['{', '  "a": 1', '}']);
+  });
+
+  it('summary 模式 read_file content 是 JSON → 不美化（行数不失真）', () => {
+    // read_file 读 package.json：content 是单行 JSON，但 summary 只按原始行数计数。
+    // 若美化会变多行 → "Read N lines" 的 N 失真。故 summary 分支必须跳过美化。
+    const r = foldContent('read_file', false, '{"name":"ecode","version":"1.0.0"}');
+    expect(r.lines).toEqual(['Read 1 lines']); // 按原始 1 行计，不是美化后的行数
+  });
+
+  it('以 { 开头但非合法 JSON → parse 失败原样返回', () => {
+    const r = foldContent('mcp__srv__x', false, '{not really json');
+    expect(r.lines).toEqual(['{not really json']);
+  });
+
+  it('ToolDone 端到端：MCP 工具单行 JSON → Block 美化 + more lines + ctrl+o', () => {
+    const compact = JSON.stringify({ results: [{ t: 1 }, { t: 2 }, { t: 3 }, { t: 4 }] });
+    const { lastFrame } = render(<ToolDone name="mcp__web__search" content={compact} isError={false} />);
+    const f = lastFrame() ?? '';
+    expect(f).toContain('{');
+    expect(f).toContain('more lines');
+    expect(f).toContain('(ctrl+o 展开)');
+  });
+});
+
 // ---- 子代理路由 via-line（R4）：Task 气泡显示模型 + 路由来源，§16.5 ----
 
 describe('ToolDone · 子代理路由 via-line（R4）', () => {

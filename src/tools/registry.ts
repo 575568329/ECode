@@ -160,7 +160,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'todo_write',
     description:
-      '更新任务清单(整表替换)。仅用于复杂任务(3 步以上):先规划 todo,推进时标 in_progress、完成标 completed 再继续。简单问答/单步任务禁用(污染常驻面板)。todos 为全量清单(替换当前清单,非增量)。',
+      '更新任务清单(整表替换)。仅用于复杂任务(3 步以上):先规划 todo,推进时标 in_progress、完成标 completed 再继续。简单问答/单步任务禁用(污染常驻面板)。todos 为全量清单(替换当前清单,非增量)。⚠️ 完成判定:只有当工作真正完成(含必要验证,如 build/test 通过)才标 completed——禁止基于"打算做"的意图标记完成(never based on intent);若被阻塞或部分完成,保持 in_progress 并追加一条说明阻塞点的后续 todo。',
     parameters: {
       type: 'object',
       properties: {

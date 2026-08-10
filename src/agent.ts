@@ -330,10 +330,8 @@ export async function* runAgentStream(
   // 工具连续失败追踪器（公共组件）：任意工具连续 isError → 提醒 LLM 换策略。
   // 与 MCP errorStreak 互补：errorStreak 熔断禁用 MCP 工具；failureTracker 只提醒不禁用内置工具。
   const failureTracker = new ToolFailureTracker(3);
-  // agent loop 迭代上限（config.json agent.maxIterations 驱动，默认 25）。
+  // agent loop 迭代上限（config.json agent.maxIterations 驱动，默认 40）。
   const maxIterations = getMaxIterations();
-  // 预算感知提醒已注入标记：只在首次达阈值时注入一次，不重复打扰。
-  let budgetWarningInjected = false;
   // 权限档动态读取（支点：REPL Shift+Tab 运行中切换即时生效）：每次工具 check / Task 派发时调用，
   // 而非 runAgentStream 启动时绑定一次。getPermissionMode 优先（UI 传 ref.current），回退 permissionMode 值。
   const resolveMode = (): PermissionMode => opts.getPermissionMode?.() ?? opts.permissionMode ?? 'default';
@@ -875,23 +873,34 @@ export async function* runAgentStream(
         }
       }
 
-      // ---- 预算感知提醒（迭代 80% 时注入一次，催 LLM 收尾）----
-      // 放在循环末尾（本轮工具已执行完、messages 交替完整），注入的 user 消息不破坏交替规则。
-      // LLM 下一轮看到提醒后会转为总结/收尾，而非继续试错浪费剩余轮数。
-      if (!budgetWarningInjected && iteration >= Math.floor(maxIterations * 0.8) && iteration < maxIterations - 1) {
-        budgetWarningInjected = true;
-        const remaining = maxIterations - iteration - 1;
-        const budgetMsg = `[系统提醒] 你已使用 ${iteration + 1}/${maxIterations} 轮迭代预算，剩余 ${remaining} 轮。请优先总结已完成的成果，停止继续试错。如果任务尚未完成，请说明当前进度和遗留问题。`;
-        yield { type: 'warning', message: `⚠️ 迭代预算告警：已用 ${iteration + 1}/${maxIterations} 轮，剩余 ${remaining} 轮。请尽快收尾。` };
-        messages.push({ role: 'user', content: budgetMsg });
-      }
-
       // 每轮末落盘（与原 runAgent 一致）：跑到第 N 轮崩了，--continue 从第 N 轮续上
       stats.toolCalls += toolCalls.length;
       persistSession(buildSession(), sessionBaseDir);
     }
 
-    // ---- 达 MAX_ITERATIONS → 终止 ----
+    // ---- 达 MAX_ITERATIONS → 强制诚实总结（不静默截断）----
+    // 对齐 opencode MAX_STEPS_PROMPT：模型跑到上限仍未自然结束 → 禁工具 + 注入总结指令，
+    // 强制产出"已完成/未完成/后续建议"的诚实收尾。预算对 LLM 全程隐藏（无 80% 告警）——
+    // 提前告警会诱导 LLM 放弃 todo 假性完成；只在最后一刻强制诚实总结，让用户拿到真实进度。
+    try {
+      messages.push({
+        role: 'user',
+        content: `[系统提醒] 已达本会话最大迭代轮数（${maxIterations}），工具已禁用。请仅用文本诚实总结，不要谎报完成：\n1. 简述已完成的工作\n2. 明确列出尚未完成的任务（不要标记为已完成）\n3. 给出后续建议（用户如何继续）`,
+      });
+      const summaryStream = provider.stream(
+        { model: resolvedModel, system, messages, tools: [] },
+        { signal: opts.signal },
+      );
+      // 转发总结的 text_delta（UI 实时显示），消费完即结束（无需处理工具调用）
+      const summaryConsumer = consumeStream(summaryStream, opts.signal);
+      while (true) {
+        const { value, done } = await summaryConsumer.next();
+        if (done) break;
+        yield value;
+      }
+    } catch {
+      // 总结调用失败不阻塞：仍 yield completed，用户至少知道已达上限
+    }
     persistSession(buildSession(), sessionBaseDir);
     yield {
       type: 'completed',

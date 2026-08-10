@@ -273,9 +273,18 @@ function validateModelUniqueness(cfg: ECodeConfig): void {
  * 遍历 providers，返回首个命中模型的 {config, providerKey}。
  */
 function findModel(cfg: ECodeConfig, modelId: string): ModelResolution | undefined {
+  const lower = modelId.toLowerCase();
   for (const [pk, pc] of Object.entries(cfg.providers)) {
-    const mc = pc.models?.[modelId];
-    if (mc) return { config: mc, providerKey: pk };
+    if (!pc.models) continue;
+    // 精确匹配优先（区分大小写）：同时存在大小写近似 key 时精确的赢，无歧义。
+    const exact = pc.models[modelId];
+    if (exact) return { config: exact, providerKey: pk };
+    // 降级：大小写不敏感匹配。用户 config.json 常按厂商惯例写大写（如 GLM-5.2），
+    // 而代码/测试各处多用小写（glm-5.2）；模型名作标识符，大小写差异不应致静默查不到——
+    // 否则 getContextWindow 兜底 128K，上下文压缩阈值算错。见 debugging #017。
+    for (const [k, v] of Object.entries(pc.models)) {
+      if (k.toLowerCase() === lower) return { config: v, providerKey: pk };
+    }
   }
   return undefined;
 }

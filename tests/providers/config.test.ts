@@ -153,6 +153,25 @@ describe('config（读取文件）', () => {
     // 未配置的模型仍回退默认 128K（getContextWindow 的兜底）
     expect(getContextWindow('unknown-model')).toBe(128_000);
   });
+
+  it('模型名大小写不敏感匹配（用户 config 按厂商惯例写大写 GLM-5.2，小写 glm-5.2 查询应命中）', () => {
+    // 回归 #017：findModel 精确匹配优先，降级大小写不敏感。
+    // 否则用户 config 用大写 key 时，代码/测试用小写查询静默查不到 → getContextWindow 兜底 128K → 阈值算错。
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({
+        defaultModel: 'GLM-5.2',
+        providers: { glm: { protocol: 'openai', apiKeyEnv: 'ZHIPUAI_API_KEY', models: { 'GLM-5.2': { capabilities: ['tools'], contextWindow: 1_000_000 } } } },
+      }),
+    );
+    // 小写查询命中大写 key（核心：大小写不敏感降级）
+    expect(getContextWindow('glm-5.2')).toBe(1_000_000);
+    expect(hasCapability('glm-5.2', 'tools')).toBe(true);
+    // 大写查询仍精确命中（精确优先，大小写不敏感不破坏精确路径）
+    expect(getContextWindow('GLM-5.2')).toBe(1_000_000);
+    // 真不存在的模型仍回退兜底（大小写不敏感 ≠ 万能命中）
+    expect(getContextWindow('unknown-model')).toBe(128_000);
+  });
 });
 
 // resolveBaseURL：baseURL 三级优先级解析（env > config.json > 内置默认/undefined）

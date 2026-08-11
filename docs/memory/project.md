@@ -16,7 +16,7 @@
 ```
 src/index.ts          CLI 入口，解析 argv[2] 作为任务
   └─ runAgent(task)   [src/agent.ts] agent loop 主体
-       for (最多 MAX_ITERATIONS=25 轮):
+       for (最多 MAX_ITERATIONS=40 轮，达上限诚实总结):
          1. anthropic.messages.create({ messages, tools })
          2. text block → stdout；tool_use block → 收集
          3. 无 tool_use → break（最终答案）

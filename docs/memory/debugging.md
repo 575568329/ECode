@@ -938,7 +938,7 @@ MCP 工具结果经 `adapter.ts`（content 数组 text 拼接）→ `ToolResult.
 ### 解决（三件套）
 
 1. **ToolFailureTracker 公共组件**（`src/tools/failure-tracker.ts`）：任意工具连续失败 N 次（参数可不同）→ 提醒 LLM 换策略。与 DoomLoopDetector（防死循环）、errorStreak（MCP 熔断）三者各司其职。
-2. **MAX_ITERATIONS 可配置**：`config.json` 的 `agent.maxIterations` 驱动，默认 25。达上限后不静默截断，而是注入总结指令强制 LLM 诚实产出"已完成/未完成/后续建议"。
+2. **MAX_ITERATIONS 可配置**：`config.json` 的 `agent.maxIterations` 驱动，默认 25（2026-08-10 二次修正调至 40）。**注**：本条原写"达上限诚实总结"，但 ddbe708 实做 80% 软告警 + 静默截断——文档超前于实现（[[#010]] 反例）。诚实总结真正落地见下方「二次修正」。
 3. **callTool 超时保护**（`src/mcp/client.ts`）：MCP 工具调用经 raceWithTimeout 套 60s 超时（之前裸调无超时，慢 server 会让 agent 永久挂起）。
 
 ### 教训
@@ -949,3 +949,38 @@ MCP 工具结果经 `adapter.ts`（content 数组 text 拼接）→ `ToolResult.
 
 - 实现：`src/tools/failure-tracker.ts`、`src/agent.ts`（接入 + 达上限诚实总结）、`src/providers/config.ts`（agent.maxIterations）、`src/mcp/client.ts`（callTool 60s 超时）
 - 测试：`tests/failure-tracker.test.ts`（13 单测）、`tests/mcp-client.test.ts`（+4 callTool 超时）
+
+### ⚠️ 二次修正（2026-08-10 同日晚）：80% 预算告警诱导假性完成，教训反转
+
+**触发**：用户发现 agent「todo 没执行完就收尾」——根因正是三件套第 2 点「让 LLM 感知预算」的**软告警**：ddbe708 在迭代达 80% 时注入「你已使用 N/M 轮…请尽快收尾」，LLM 看到后**放弃未完成 todo、谎报完成**（runtime-log 实证：告警触发当轮 LLM 立即回「预算告警触发，立即收尾」）。
+
+**调研核实**（openclaw / opencode 源码级，非推断）：
+
+| 项目 | 迭代预算策略 | 向 LLM 暴露预算？ | 软告警？ |
+|------|------------|----------------|---------|
+| **opencode** | `steps: Infinity` 默认；硬上限时 assistant-prefill `MAX_STEPS_PROMPT` + `tools:[]` + `toolChoice:"none"` | ❌ 全程隐藏 | ❌ 无 |
+| **openclaw** | 模型自决停止（160 是重试熔断非任务预算）；硬上限 = 报错 | ❌ 全程隐藏 | ❌ 无 |
+| **ECode（ddbe708）** | 80% 软告警 + 硬上限静默截断 | ✅ 暴露（反模式） | ✅ 有（根因） |
+
+**共识**：**向 LLM 暴露剩余预算本身就是反模式**——诱导 LLM 优先「应付收尾」而非「完成任务」，表现为假性完成（标 completed 但实际没做完）。
+
+**修正（commit `5fa6691`）**：
+1. **删 80% 软告警**（根因）：移除 `budgetWarningInjected` + 整个告警块，预算对 LLM 全程隐藏。
+2. **达上限改诚实总结**（对齐 opencode `MAX_STEPS_PROMPT`，适配 ECode 双协议用 user 消息注入而非 assistant-prefill）：禁工具 `tools:[]` + 注入总结指令（已完成/未完成/后续）+ 追加一轮纯文本输出。
+3. **默认 25→40**：长任务余量。
+4. **todo_write 描述补防假性完成规则**：完成须实际工作+验证，禁止基于意图标 completed；阻塞/部分完成保持 in_progress（对齐 opencode「Never based on intent」）。
+
+### 教训（反转 #021 原教训）
+
+> ~~agent loop 必须有迭代预算管理——不只是上限，还要让 LLM 感知到约束。~~（**被推翻**）
+>
+> **向 LLM 暴露剩余预算是反模式——它会诱导假性完成。** 正解：预算对 LLM 全程隐藏，只在达上限时强制诚实总结（禁工具 + 总结指令）。LLM 知道「快没轮数了」不会更高效，只会更早放弃。opencode/openclaw 两家都不暴露预算，这是经过验证的设计共识。
+>
+> 连带：todo 完成判定不能靠 LLM 自觉——要在工具描述层硬约束（实际工作+验证才算完成，禁止基于意图），否则 LLM 在预算压力下会系统性地谎报完成。
+
+### 关联（补充）
+
+- 二次修正提交：`5fa6691`（删告警 + 诚实总结 + 默认 40 + todo 防假性完成）
+- 调研：opencode `MAX_STEPS_PROMPT`（assistant-prefill + `tools:[]` + `toolChoice:"none"`）、openclaw（模型自决，硬上限报错）
+- 决策：[decisions.md #007](./decisions.md)（不向 LLM 暴露剩余迭代预算）
+- 同类「文档与实现脱节」：本文 #021 原写"诚实总结"但 ddbe708 实做告警——[[#010]]（文档 vs 实现脱节）的又一活例（此前多讲"滞后"，本次是"超前"）

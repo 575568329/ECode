@@ -3,16 +3,23 @@
  * Ink <Text color> 用颜色名。集中管理便于后续主题切换（亮/暗）。
  */
 
+/**
+ * 配色（克制语义色板，调研 Claude Code/opencode：1 强调色 + 3 语义色 + 灰阶，砍 *Bright）。
+ * 用 RGB 字面量（避免用户终端 ANSI 自定义导致不一致，呼应 Claude Code theme.ts）。
+ */
 export const theme = {
-  user: 'gray', // 用户消息（灰）
-  assistant: 'white', // 助手文本（默认白）
-  tool: 'cyan', // 工具名（青·明显）
-  success: 'green', // ✓ 成功
-  error: 'red', // ✗ 错误
-  warn: 'yellow', // ⚠ 警告
-  dim: 'gray', // 次要（输出预览/折叠提示/字节数）
-  status: 'blue', // 状态栏
-  activity: 'cyan', // ActivityBar spinner
+  user: '#E6E6E6', // 用户消息文字（亮，不灰；靠 userBg 背景块区分）
+  assistant: '#E6E6E6', // 助手正文
+  tool: '#F5A742', // 工具名（accent 暖橙）
+  success: '#7FD88F', // ✓ 成功（柔和绿）
+  error: '#E06C75', // ✗ 错误（柔和红）
+  warn: '#E5C07B', // ⚠ 警告（暖黄，不刺眼）
+  dim: '#808080', // 次要灰（预览/字节数/折叠提示）
+  status: '#5C9CF5', // StatusBar（蓝）
+  activity: '#F5A742', // ActivityBar spinner（accent）
+  userBg: '#282828', // 用户消息背景块
+  border: '#3C3C3C', // 分隔线/边框
+  info: '#5C9CF5', // 链接/提示符
 } as const
 
 export type Theme = typeof theme

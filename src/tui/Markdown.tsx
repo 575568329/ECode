@@ -133,8 +133,8 @@ function TableBlock({ token }: { token: BlockTok }): ReactElement {
 function renderToken(tok: BlockTok, key: number): ReactNode {
   switch (tok.type) {
     case 'heading': {
-      const palette = ['magentaBright', 'cyanBright', 'greenBright', 'yellowBright', 'blueBright', 'magenta']
-      const color = palette[((tok.depth ?? 1) - 1) % palette.length]
+      // 标题统一 accent + bold（砍五彩 bright，调研：opencode/aider 单色标题，靠粗体分层）
+      const color = '#F5A742'
       return (
         <Box key={key}>
           <Text bold color={color}>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { ReactElement } from 'react'
 import { useInput, Text, Box } from 'ink'
 import { TextInput } from './TextInput.js'
@@ -6,13 +6,27 @@ import { createCursor, type CursorState } from './cursor.js'
 import { commandRegistry, type Command, type CommandResult } from '../commands/registry.js'
 
 /**
- * / 斜杠补全提示：给定当前输入文本，渲染匹配的命令名（纯展示，可单测）。
+ * / 斜杠补全：列表展示 + 上下选中高亮（selectedIdx）。
  */
-export function SlashSuggest({ text }: { text: string }): ReactElement | null {
+export function SlashSuggest({
+  text,
+  selectedIdx = -1,
+}: {
+  text: string
+  selectedIdx?: number
+}): ReactElement | null {
   if (!text.startsWith('/')) return null
   const matches = commandRegistry.match(text.slice(1))
   if (matches.length === 0) return null
-  return <Text dimColor>  {matches.map((c) => `/${c.name}`).join('  ')}</Text>
+  return (
+    <Box flexDirection="column" paddingLeft={2}>
+      {matches.map((c, i) => (
+        <Text key={c.name} inverse={i === selectedIdx}>
+          /{c.name} <Text dimColor>{c.description}</Text>
+        </Text>
+      ))}
+    </Box>
+  )
 }
 
 interface InputStreamProps {
@@ -26,17 +40,22 @@ interface InputStreamProps {
 }
 
 /**
- * 输入流（M2 第 4 步）：TextInput + 历史（↑↓）+ / 补全 + submit 路由（命令 vs 消息）。
+ * 输入流（M2 第 4 步）：TextInput + 历史（↑↓）+ / 补全（↑↓ 选中 + Tab 补全）+ submit 路由。
  *
  * - 命令（/ 开头）：commandRegistry 查找 → run → onCommand 回传结果（/clear 触发 onClear）
  * - 消息：onSubmit + 入历史
- * - 历史：仅输入框空时 ↑↓ 浏览（避免和 ←→ 编辑冲突）
- * - / 补全：SlashSuggest 显示匹配命令
+ * - slash 模式：↑↓ 选中命令、Tab 补全；非 slash：↑↓ 浏览历史
  */
 export function InputStream({ onSubmit, onCommand, onClear, placeholder }: InputStreamProps): ReactElement {
   const [cur, setCur] = useState<CursorState>(() => createCursor(''))
   const [history, setHistory] = useState<string[]>([])
   const [histIdx, setHistIdx] = useState(-1)
+  const [slashIdx, setSlashIdx] = useState(-1)
+
+  // cur.text 变化时重置 slashIdx（重新匹配）
+  useEffect(() => {
+    setSlashIdx(-1)
+  }, [cur.text])
 
   const submit = (text: string): void => {
     const trimmed = text.trim()
@@ -59,8 +78,20 @@ export function InputStream({ onSubmit, onCommand, onClear, placeholder }: Input
     setHistIdx(-1)
   }
 
-  // 历史浏览（↑ 总是触发，↓ 在已浏览时触发；不要求输入框空，和 ←→ 编辑不冲突）
   useInput((_input, key) => {
+    const slashMode = cur.text.startsWith('/')
+    if (slashMode) {
+      const matches = commandRegistry.match(cur.text.slice(1))
+      if (key.upArrow && matches.length > 0) {
+        setSlashIdx((i) => (i <= 0 ? matches.length - 1 : i - 1))
+      } else if (key.downArrow && matches.length > 0) {
+        setSlashIdx((i) => (i >= matches.length - 1 ? 0 : i + 1))
+      } else if (key.tab && slashIdx >= 0 && matches[slashIdx]) {
+        setCur(createCursor(`/${matches[slashIdx].name}`))
+      }
+      return
+    }
+    // 历史（非 slash 模式）
     if (key.upArrow && history.length > 0) {
       const idx = histIdx < 0 ? history.length - 1 : Math.max(0, histIdx - 1)
       setHistIdx(idx)
@@ -86,7 +117,7 @@ export function InputStream({ onSubmit, onCommand, onClear, placeholder }: Input
         onInput={setCur}
         onSubmit={submit}
       />
-      <SlashSuggest text={cur.text} />
+      <SlashSuggest text={cur.text} selectedIdx={slashIdx} />
     </Box>
   )
 }

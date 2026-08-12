@@ -25,27 +25,17 @@ interface ConversationProps {
   streamingText: string | null
   /** 当前轮工具调用（动态区：执行中或已完成未 commit） */
   toolEntries: ToolCallEntry[]
-  /** 动态区底部（InputStream / ActivityBar / StatusBar，第 3/4 步接入） */
+  /** 工具调用全展开（Ctrl+O）；true 则所有动态区 ToolCallView 展开 */
+  expandedAll?: boolean
+  /** 动态区底部（InputStream 等） */
   children?: ReactNode
 }
 
-/**
- * 对话流协调（M2 方案 B.4 的 render.ts）：
- *
- *   <Static items={已完成消息}>          ← 静态历史区（冻结，走单独 buffer，滚动友好）
- *   <Box flexDirection="column">         ← 动态当前区（每帧重渲染，只这一块）
- *     {streamingText && <GrayStreaming>}   流式期灰字占位
- *     {toolEntries.map(<ToolCallView>)}    当前轮工具
- *     {children}                           输入/状态栏
- *   </Box>
- *
- * 流结束时机：调用方把 streamingText 清空 + 把最终消息 push 进 items（移入 Static）。
- * 推入 Static 的充要条件：本轮所有 tool_use 已 finalize（见 M2 方案 B.4）。
- */
 export function Conversation({
   items,
   streamingText,
   toolEntries,
+  expandedAll,
   children,
 }: ConversationProps): ReactElement {
   return (
@@ -56,7 +46,11 @@ export function Conversation({
       <Box flexDirection="column">
         {streamingText !== null && streamingText !== '' && <GrayStreaming text={streamingText} />}
         {toolEntries.map((entry, i) => (
-          <ToolCallView key={entry.use.id ?? i} entry={entry} />
+          <ToolCallView
+            key={entry.use.id ?? i}
+            entry={entry}
+            expanded={expandedAll ? true : undefined}
+          />
         ))}
         {children}
       </Box>

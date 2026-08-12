@@ -6,6 +6,7 @@ import { ErrorBanner } from './ErrorBanner.js'
 import { UserMessage } from './UserMessage.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import { ToolCallView } from './ToolCallView.js'
+import { useInput } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
 import { runLoop, type ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
@@ -62,7 +63,7 @@ function messagesToItems(messages: Message[]): ReactNode[] {
         items.push(<AssistantMessage key={`a${i}`} text={texts.map((t) => t.text).join('')} />)
       }
       for (const tu of uses) {
-        items.push(<ToolCallView key={`t${tu.id}`} entry={{ use: tu, result: results.get(tu.id) }} interactive={false} />)
+        items.push(<ToolCallView key={`t${tu.id}`} entry={{ use: tu, result: results.get(tu.id) }} />)
       }
     }
   }
@@ -97,11 +98,15 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
   const [warn, setWarn] = useState<string | null>(null)
   const [tokens, setTokens] = useState(0)
   const [systemMsgs, setSystemMsgs] = useState<string[]>([])
+  const [expandAll, setExpandAll] = useState(false)
 
   const submit = async (input: string): Promise<void> => {
     if (runningRef.current) return
     runningRef.current = true
     pairedRef.current = new Set()
+    // 乐观：立即显示 user（不等 LLM；runLoop 检测末尾已 user 避免重复 push）
+    messagesRef.current.push({ role: 'user', content: [{ type: 'text', text: input }] })
+    setMessages([...messagesRef.current])
     setError(null)
     setWarn(null)
     setStreamingText('')
@@ -190,6 +195,13 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
 
   const { warning } = useInterrupt({ onInterrupt: () => abortRef.current.abort() })
 
+  // Ctrl+O：全部展开/折叠当前轮工具输出（放弃 Tab 焦点交互）
+  useInput((input, key) => {
+    if (key.ctrl && input === 'o') {
+      setExpandAll((v) => !v)
+    }
+  })
+
   const items = [
     ...messagesToItems(messages),
     ...systemMsgs.map((m, i) => <AssistantMessage key={`sys${i}`} text={m} />),
@@ -210,6 +222,7 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
       activityText={activity.text}
       tokens={tokens}
       warning={warning ?? warn ?? undefined}
+      expandedAll={expandAll}
     >
       {error ? <ErrorBanner error={error} /> : null}
       <InputStream

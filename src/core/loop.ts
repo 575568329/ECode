@@ -61,7 +61,14 @@ export interface LoopRunOptions {
  * @param userInput 本轮用户输入
  */
 export async function runLoop(messages: Message[], userInput: string, opts: LoopRunOptions): Promise<Message[]> {
-  messages.push({ role: 'user', content: [{ type: 'text', text: userInput }] })
+  // 调用方可能已乐观 push user（TUI 立即显示）；检测避免重复
+  const lastMsg = messages.at(-1)
+  const alreadyUser =
+    lastMsg?.role === 'user' &&
+    lastMsg.content.some((b) => b.type === 'text' && (b as { text?: string }).text === userInput)
+  if (!alreadyUser) {
+    messages.push({ role: 'user', content: [{ type: 'text', text: userInput }] })
+  }
 
   for (let iter = 1; iter <= opts.maxIterations; iter++) {
     opts.callbacks.onActivity?.('thinking')

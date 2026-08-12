@@ -26,6 +26,7 @@
 | MVP 技术栈选型解析 | [解析/2026-08-11_MVP-技术栈选型解析_待审核.md](./解析/2026-08-11_MVP-技术栈选型解析_待审核.md) | ESM/TUI/grep/ls/glob/bash/JSON Schema 方案对比，对应 ADR-015 起 |
 | MVP 配置系统与多 Provider 解析 | [解析/2026-08-11_MVP-配置系统与多Provider解析_待审核.md](./解析/2026-08-11_MVP-配置系统与多Provider解析_待审核.md) | 配置分层/JSONC/两层 Provider/两协议/跨 provider 切换，对应 ADR-021 起 |
 | MVP TUI 设计规范 | [规范/2026-08-11_MVP-TUI设计规范_待审核.md](./规范/2026-08-11_MVP-TUI设计规范_待审核.md) | 全屏框架式 + 品牌启动屏 + 适度色彩：界面原型/视觉/键盘/交互流程/组件规格，实现者 |
+| MVP Provider 翻译层与心脏数据流解析 | [解析/2026-08-12_MVP-Provider翻译层与心脏数据流解析_待审核.md](./解析/2026-08-12_MVP-Provider翻译层与心脏数据流解析_待审核.md) | 端到端数据流脑图 / SSE 事件→Delta 翻译 / Translator 状态机 / usage 守卫覆盖（官方 SDK+Vercel+LangChain 三库对比）/ CLI 调用链（makeDeps·runOnce·runLoop）/ 两层循环 / 工具来源扩展性（为什么 loop 不会膨胀） |
 
 > 其余文档按需在各目录补充，命名见下方约定。
 

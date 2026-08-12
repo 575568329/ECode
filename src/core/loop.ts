@@ -176,16 +176,16 @@ async function executeTools(uses: ToolUseBlock[], opts: LoopRunOptions): Promise
   const sideEffects = uses.filter((u) => !opts.tools.get(u.name)?.readonly)
 
   if (readonlys.length > 0) {
-    results.push(...(await Promise.all(readonlys.map((u) => runOne(u, opts)))))
+    results.push(...(await Promise.all(readonlys.map((u) => invokeTool(u, opts)))))
   }
   for (const u of sideEffects) {
-    results.push(await runOne(u, opts))
+    results.push(await invokeTool(u, opts))
   }
   return results
 }
 
 /** 执行单个工具：get → AJV 校验 → 副作用确认 → execute，异常二分（fatal 抛 / recoverable 转 is_error）。 */
-async function runOne(use: ToolUseBlock, opts: LoopRunOptions): Promise<ToolResultBlock> {
+async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<ToolResultBlock> {
   const tool = opts.tools.get(use.name)
   if (!tool) {
     return { type: 'tool_result', tool_use_id: use.id, content: `工具 ${use.name} 不存在`, is_error: true }

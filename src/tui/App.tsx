@@ -9,12 +9,13 @@ import type { ToolCallEntry } from './toolview.js'
 /**
  * App 根组件（M2 第 3 步）：布局骨架。
  *
- *   ┌─ StatusBar（model / 轮数 / token / 成本）─────┐
- *   │ Conversation                                   │
- *   │   <Static items={历史消息}>                    │
- *   │   动态区：streamingText 灰字 + toolEntries     │
- *   │            ActivityBar + children(输入区)      │
- *   └────────────────────────────────────────────────┘
+ *   <Conversation>
+ *     <Static items={历史消息}>              ← 终端原生 scrollback 顶（滚轮友好）
+ *     动态区：
+ *       streamingText 灰字 + toolEntries
+ *       ActivityBar（当前动作）
+ *       StatusBar（model/轮数/token/成本）   ← 底部常驻，输入框上方
+ *       children（输入区）
  *
  * 第 3 步是纯布局骨架（props 驱动）；状态管理 + TuiProvider + loop 接入留第 6 步。
  * children = 输入区（第 4 步 InputStream 注入）。
@@ -56,16 +57,16 @@ export function App({
 }: AppProps): ReactElement {
   return (
     <Box flexDirection="column">
-      <StatusBar
-        model={model}
-        iter={iter}
-        maxIter={maxIter}
-        tokens={tokens}
-        cost={cost}
-        warning={warning}
-      />
       <Conversation items={items} streamingText={streamingText} toolEntries={toolEntries}>
         <ActivityBar state={activity} text={activityText} />
+        <StatusBar
+          model={model}
+          iter={iter}
+          maxIter={maxIter}
+          tokens={tokens}
+          cost={cost}
+          warning={warning}
+        />
         {children}
       </Conversation>
     </Box>

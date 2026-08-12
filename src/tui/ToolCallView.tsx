@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import type { ReactElement } from 'react'
-import { Text, Box } from 'ink'
+import { Text, Box, useFocus, useInput } from 'ink'
 import { summarize, type ToolCallEntry } from './toolview.js'
 import { theme } from './theme.js'
 import { symbols } from './symbols.js'
@@ -26,14 +27,28 @@ function formatBytes(n: number): string {
 
 interface ToolCallViewProps {
   entry: ToolCallEntry
-  /** 受控展开（Ctrl+O 全展时传 true）；不传则按 summarize.collapsed 默认 */
+  /** 受控展开（Ctrl+O 全展时传 true）；不传则内部自管 */
   expanded?: boolean
+  /** 是否可交互（Tab 聚焦 + Enter toggle）；Static（已 commit）传 false */
+  interactive?: boolean
 }
 
-export function ToolCallView({ entry, expanded }: ToolCallViewProps): ReactElement {
+export function ToolCallView({ entry, expanded, interactive = true }: ToolCallViewProps): ReactElement {
   const s = summarize(entry)
-  const collapsed = expanded !== undefined ? !expanded : s.collapsed
+  const { isFocused } = useFocus({ id: entry.use.id, isActive: interactive })
+  const [internalCollapsed, setInternalCollapsed] = useState(s.collapsed)
+  const collapsed = expanded !== undefined ? !expanded : internalCollapsed
   const content = entry.result?.content ?? ''
+
+  useInput(
+    (_input, key) => {
+      if (!isFocused) return
+      if (key.return && expanded === undefined) {
+        setInternalCollapsed((c) => !c)
+      }
+    },
+    { isActive: interactive },
+  )
   const hasOutput = content.length > 0
 
   // 第一列 ⏺ 颜色：running dim / error red / 其余工具色（cyan）
@@ -52,7 +67,7 @@ export function ToolCallView({ entry, expanded }: ToolCallViewProps): ReactEleme
     <Box flexDirection="column">
       <Box>
         <Text color={markColor}>{symbols.tool}</Text>
-        <Text bold color={theme.tool}>
+        <Text bold color={theme.tool} inverse={isFocused}>
           {' '}
           {s.name}
         </Text>

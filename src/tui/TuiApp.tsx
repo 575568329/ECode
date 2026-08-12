@@ -63,7 +63,7 @@ function messagesToItems(messages: Message[]): ReactNode[] {
         items.push(<AssistantMessage key={`a${i}`} text={texts.map((t) => t.text).join('')} />)
       }
       for (const tu of uses) {
-        items.push(<ToolCallView key={`t${tu.id}`} entry={{ use: tu, result: results.get(tu.id) }} />)
+        items.push(<ToolCallView key={`t${tu.id}`} entry={{ use: tu, result: results.get(tu.id) }} interactive={false} />)
       }
     }
   }

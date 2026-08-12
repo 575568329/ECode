@@ -1,14 +1,21 @@
 import type { ReactElement, ReactNode } from 'react'
 import { Static, Box, Text } from 'ink'
 import { ToolCallView } from './ToolCallView.js'
+import { foldStreamText } from './stream.js'
 import type { ToolCallEntry } from './toolview.js'
 
 /**
  * 流式期灰字占位（M2 方案 A：commit 前灰字，commit 后 Markdown 重渲染）。
- * 超过 5 行折叠尾部 + 顶部提示行数 → 留第 2b 步。此处先纯灰字。
+ * 超过 STREAM_MAX_LINES（5）行时折叠头部、显示尾部 5 行 + 顶部提示折叠行数（§4.12）。
  */
 export function GrayStreaming({ text }: { text: string }): ReactElement {
-  return <Text dimColor>{text}</Text>
+  const { lines, folded, total } = foldStreamText(text)
+  return (
+    <Box flexDirection="column">
+      {folded > 0 && <Text dimColor>↑ {folded} 行已折叠（共 {total} 行）</Text>}
+      <Text dimColor>{lines.join('\n')}</Text>
+    </Box>
+  )
 }
 
 interface ConversationProps {

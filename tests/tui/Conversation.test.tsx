@@ -24,6 +24,28 @@ describe('GrayStreaming', () => {
     const { lastFrame } = render(React.createElement(GrayStreaming, { text: '正在生成回答' }))
     expect(lastFrame()).toContain('正在生成回答')
   })
+
+  it('短文本（≤5 行）不折叠', () => {
+    const { lastFrame } = render(React.createElement(GrayStreaming, { text: 'a\nb\nc' }))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('a')
+    expect(f).toContain('c')
+    expect(f).not.toContain('折叠')
+  })
+
+  it('长文本（>5 行）折叠头部 + 顶部提示', () => {
+    const text = '第1行\n第2行\n第3行\n第4行\n第5行\n第6行\n第7行\n第8行'
+    const { lastFrame } = render(React.createElement(GrayStreaming, { text }))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('折叠')
+    expect(f).toContain('共 8 行')
+    // 尾部 5 行显示
+    expect(f).toContain('第4行')
+    expect(f).toContain('第8行')
+    // 头部 3 行被折叠（不显示）
+    expect(f).not.toContain('第1行')
+    expect(f).not.toContain('第3行')
+  })
 })
 
 describe('Conversation', () => {

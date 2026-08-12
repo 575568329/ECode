@@ -9,7 +9,7 @@ import { commandRegistry, type Command, type CommandResult } from '../commands/r
  * / 斜杠补全提示：给定当前输入文本，渲染匹配的命令名（纯展示，可单测）。
  */
 export function SlashSuggest({ text }: { text: string }): ReactElement | null {
-  if (!text.startsWith('/') || text.length <= 1) return null
+  if (!text.startsWith('/')) return null
   const matches = commandRegistry.match(text.slice(1))
   if (matches.length === 0) return null
   return <Text dimColor>  {matches.map((c) => `/${c.name}`).join('  ')}</Text>
@@ -59,9 +59,8 @@ export function InputStream({ onSubmit, onCommand, onClear, placeholder }: Input
     setHistIdx(-1)
   }
 
-  // 历史浏览（仅输入框空时 ↑↓ 触发，不和 ←→ 编辑冲突）
+  // 历史浏览（↑ 总是触发，↓ 在已浏览时触发；不要求输入框空，和 ←→ 编辑不冲突）
   useInput((_input, key) => {
-    if (cur.text !== '') return
     if (key.upArrow && history.length > 0) {
       const idx = histIdx < 0 ? history.length - 1 : Math.max(0, histIdx - 1)
       setHistIdx(idx)

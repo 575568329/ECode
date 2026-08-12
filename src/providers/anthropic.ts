@@ -178,7 +178,12 @@ export class AnthropicProvider implements LLMProvider {
       messages: toAnthropicMsgs(req.messages) as never,
       tools: req.tools as never,
     })
-    // TODO(M2): signal 透传（中断时 stream.abort()），M1 不测中断
+
+    // signal 透传：中断时 abort stream（SDK 抛 AbortError，loop 的 try/catch 固化已生成内容）
+    if (req.signal) {
+      if (req.signal.aborted) stream.abort()
+      else req.signal.addEventListener('abort', () => stream.abort(), { once: true })
+    }
 
     const t = new Translator()
     for await (const e of stream as AsyncIterable<RawEvent>) {

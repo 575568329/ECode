@@ -25,9 +25,11 @@ describe('SlashSuggest', () => {
     expect(lastFrame() ?? '').toBe('')
   })
 
-  it('只有 / 不显示（length<=1）', () => {
+  it('只有 / 显示全部命令', () => {
     const { lastFrame } = render(React.createElement(SlashSuggest, { text: '/' }))
-    expect(lastFrame() ?? '').toBe('')
+    const f = lastFrame() ?? ''
+    expect(f).toContain('/help')
+    expect(f).toContain('/clear')
   })
 
   it('无匹配不显示', () => {

@@ -113,8 +113,8 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }): ReactElemen
 
 /** 表格：cli-table3（CJK 安全，内置 string-width 列宽对齐） */
 function TableBlock({ token }: { token: BlockTok }): ReactElement {
-  const head = (token.header ?? []).map((h) => h.text ?? '')
-  const rows = (token.rows ?? []).map((r) => r.map((c) => c.text ?? ''))
+  const head = (token.header ?? []).map((h) => inlineToAnsi(h.tokens as unknown as InlineTok[]) || (h.text ?? ''))
+  const rows = (token.rows ?? []).map((r) => r.map((c) => inlineToAnsi(c.tokens as unknown as InlineTok[]) || (c.text ?? '')))
   const table = new Table({ head, style: { head: ['cyan'], border: ['gray'] } })
   for (const row of rows) table.push(row)
   const spans = parseAnsi(table.toString())

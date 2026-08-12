@@ -10,6 +10,9 @@
  * REPL 是 M2 重点，用 Ink 全屏 TUI。
  */
 
+// 强制启用 ANSI 颜色（cli-highlight 代码高亮依赖 chalk level；TUI 总要颜色，不受管道影响）
+process.env.FORCE_COLOR = process.env.FORCE_COLOR ?? '1'
+
 import { loadConfig, type M1Config } from '../services/config.js'
 import { AnthropicProvider } from '../providers/anthropic.js'
 import { LLMProviderRegistryImpl } from '../providers/registry.js'

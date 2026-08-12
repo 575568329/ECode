@@ -12,15 +12,40 @@
  * 非 Windows 用系统 sh。按 process.platform 探测，不写死。
  */
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, execSync, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import type { Tool } from '../interface.js'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
-/** Windows 下解析 Git Bash 路径（SHELL 优先，回退常见安装路径）。 */
+/** Windows 下解析 Git Bash 路径：SHELL → 常见安装路径 → where bash 探测 PATH → 回退。 */
 function resolveGitBash(): string {
-  if (process.env.SHELL && process.env.SHELL.includes('bash')) return process.env.SHELL
-  return 'C:\\Program Files\\Git\\bin\\bash.exe'
+  const shell = process.env.SHELL
+  if (shell && shell.includes('bash') && existsSync(shell)) return shell
+  const candidates = [
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe',
+  ]
+  for (const p of candidates) {
+    if (existsSync(p)) return p
+  }
+  // where bash 探测 PATH（Git for Windows 常把 bin 加进 PATH）
+  try {
+    const out = execSync('where bash', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const found = out
+      .split('\n')
+      .map((s) => s.trim())
+      .find((p) => p !== '' && existsSync(p))
+    if (found) return found
+  } catch {
+    // where 不可用或未找到
+  }
+  return candidates[0]
 }
 
 interface ExecResult {

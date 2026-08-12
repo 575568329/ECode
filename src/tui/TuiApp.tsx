@@ -97,6 +97,7 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
   const [error, setError] = useState<AppError | null>(null)
   const [warn, setWarn] = useState<string | null>(null)
   const [tokens, setTokens] = useState(0)
+  const [systemMsgs, setSystemMsgs] = useState<string[]>([])
 
   const submit = async (input: string): Promise<void> => {
     if (runningRef.current) return
@@ -190,7 +191,10 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
 
   const { warning } = useInterrupt({ onInterrupt: () => abortRef.current.abort() })
 
-  const items = messagesToItems(messages)
+  const items = [
+    ...messagesToItems(messages),
+    ...systemMsgs.map((m, i) => <AssistantMessage key={`sys${i}`} text={m} />),
+  ]
   const busy =
     streamingText !== null ||
     activity.state === 'thinking' ||
@@ -210,9 +214,13 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
     >
       <InputStream
         onSubmit={submit}
+        onCommand={(_cmd, result) => {
+          if (result.output) setSystemMsgs((s) => [...s, result.output as string])
+        }}
         onClear={() => {
           messagesRef.current = []
           setMessages([])
+          setSystemMsgs([])
           setTokens(0)
           setWarn(null)
           setError(null)

@@ -25,6 +25,9 @@ import type { ToolContext, ToolRegistry, ToolResult } from '../tools/interface.j
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
 
+/** ActivityBar 状态（TUI §4.10）：loop 各阶段同步给 UI。 */
+export type ActivityState = 'thinking' | 'tool' | 'retry' | 'idle' | 'aborted'
+
 export interface LoopCallbacks {
   /** 流式 text 增量（M2: streamText 灰字占位） */
   onText: (text: string) => void
@@ -32,6 +35,8 @@ export interface LoopCallbacks {
   onToolResult?: (name: string, result: ToolResult) => void
   onUsage?: (inputTokens: number, outputTokens: number) => void
   onWarn?: (msg: string) => void
+  /** ActivityBar 状态同步（M2 TUI 注入；各阶段调用：thinking/tool/retry/idle/aborted） */
+  onActivity?: (state: ActivityState, text?: string) => void
 }
 
 export interface LoopRunOptions {
@@ -59,6 +64,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
   messages.push({ role: 'user', content: [{ type: 'text', text: userInput }] })
 
   for (let iter = 1; iter <= opts.maxIterations; iter++) {
+    opts.callbacks.onActivity?.('thinking')
     const jsonBuf = new Map<string, { name: string; buf: string }>() // tool_use id → 拼接缓冲
     let textBuf = ''
     const newToolUses: ToolUseBlock[] = []
@@ -84,6 +90,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
           case 'tool_use_start':
             jsonBuf.set(d.id, { name: d.name, buf: '' })
             opts.callbacks.onToolStart?.(d.name)
+            opts.callbacks.onActivity?.('tool', `调用 ${d.name}...`)
             break
           case 'tool_use_delta': {
             const entry = jsonBuf.get(d.id)
@@ -135,6 +142,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     // 流内错误处理
     if (streamError) {
       if (streamError.recoverable) {
+        opts.callbacks.onActivity?.('retry', streamError.message)
         opts.callbacks.onWarn?.(streamError.message)
         continue
       }
@@ -142,12 +150,17 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     }
 
     // 停止判定
-    if (stopReason === 'end' || stopReason === 'aborted') break
+    if (stopReason === 'end' || stopReason === 'aborted') {
+      opts.callbacks.onActivity?.(stopReason === 'aborted' ? 'aborted' : 'idle')
+      break
+    }
     if (stopReason === 'length') {
+      opts.callbacks.onActivity?.('idle')
       opts.callbacks.onWarn?.('输出被截断（达到 max_tokens），输入"继续"可续写')
       break
     }
     if (stopReason === 'content_filter') {
+      opts.callbacks.onActivity?.('idle')
       opts.callbacks.onWarn?.('内容被安全过滤')
       break
     }

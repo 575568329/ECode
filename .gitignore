@@ -1,0 +1,23 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+
+# 敏感信息（呼应 AGENTS §5.2）
+.env
+.env.*
+!.env.example
+.ecode/
+*.session.json
+
+# 日志
+*.log
+
+# 编辑器 / 工具
+.vscode/
+.idea/
+.zcode/
+*.swp
+.DS_Store
+Thumbs.db

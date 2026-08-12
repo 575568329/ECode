@@ -1,0 +1,41 @@
+/**
+ * Tool 接口（工具能力分支面）。
+ *
+ * 详设 §2.3。入参校验用 AJV（JSON Schema 原生，零转换）。
+ * readonly 二分：true=只读（可并行、免确认）/ false=有副作用（串行、需确认）。
+ * JSON Schema 扁平化（避开 oneOf/anyOf/$ref）—— GLM 对复杂 schema 支持度未知。
+ */
+
+import type { ToolSpec } from '../core/types.js'
+
+export interface ToolResult {
+  content: string
+  is_error?: boolean
+}
+
+/** 注入给工具，工具无全局状态。M1 最小切片：cwd + signal（config/logger 留 M3/M4）。 */
+export interface ToolContext {
+  cwd: string
+  signal: AbortSignal
+}
+
+export interface Tool {
+  name: string
+  description: string
+  /** JSON Schema（扁平化：type + properties + required + 基础约束） */
+  input_schema: object
+  /** true=只读（可并行、免确认）/ false=有副作用（串行、需确认） */
+  readonly: boolean
+  /** 执行超时（默认 30s），超时转 recoverable 错误 */
+  timeout_ms?: number
+  execute(args: unknown, ctx: ToolContext): Promise<ToolResult>
+}
+
+export interface ToolRegistry {
+  register(t: Tool): void
+  get(name: string): Tool | undefined
+  /** 导出给 LLMProvider 的 tools 参数 */
+  specs(): ToolSpec[]
+  /** AJV 校验：不通过直接返回 ok:false（loop 转 is_error 的 ToolResult，根本不进 Tool） */
+  validate(name: string, input: unknown): { ok: true } | { ok: false; error: string }
+}

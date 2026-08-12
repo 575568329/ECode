@@ -1,0 +1,15 @@
+# 强制 LF 换行（跨平台一致，呼应 AGENTS「新增文件用 \n」）
+* text=auto eol=lf
+
+# 明确文本类型
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.env* text eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.ico binary

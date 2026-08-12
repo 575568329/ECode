@@ -37,7 +37,7 @@ export function previewLine(content: string): string {
 /** 单个工具调用摘要。 */
 export function summarize(entry: ToolCallEntry): ToolSummary {
   const content = entry.result?.content ?? ''
-  const bytes = content.length
+  const bytes = Buffer.byteLength(content, 'utf8')
   return {
     name: entry.use.name,
     inputDigest: inputDigest(entry.use.input),

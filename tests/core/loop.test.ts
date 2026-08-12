@@ -143,4 +143,20 @@ describe('runLoop', () => {
     const messages = await runLoop([], '问', makeOpts(p, []))
     expect(last(messages)).toMatchObject({ type: 'text', text: 'ok' })
   })
+
+  it('abort 中断 → break 不重试（P0#3 防回归）', async () => {
+    let calls = 0
+    const abortProvider: LLMProvider = {
+      type: 'mock',
+      async *run() {
+        calls++
+        const e = new Error('aborted')
+        e.name = 'AbortError'
+        throw e
+      },
+    }
+    const messages = await runLoop([], '问', makeOpts(abortProvider, []))
+    expect(calls).toBe(1) // 只调一次，没重试（P0#3：abort 不走 recoverable 死循环）
+    expect(messages[0].role).toBe('user')
+  })
 })

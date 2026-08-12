@@ -70,6 +70,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     const newToolUses: ToolUseBlock[] = []
     let stopReason: StopReason = 'end'
     let streamError: AppError | null = null
+    let isAborted = false
 
     try {
       for await (const d of opts.provider.run({
@@ -126,7 +127,10 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
       // AbortError 或 SDK 抛出的网络异常：同样走 finally 固化
       if (streamError === null) streamError = toAppError(e)
       const isAbort = e instanceof Error && e.name === 'AbortError'
-      if (isAbort) stopReason = 'aborted'
+      if (isAbort) {
+        stopReason = 'aborted'
+        isAborted = true
+      }
       if (streamError && !streamError.recoverable && !isAbort) throw streamError
     } finally {
       // ★ 固化已生成内容（无论正常/错误/中断，只要本轮产出了东西就保留）
@@ -141,6 +145,11 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
 
     // 流内错误处理
     if (streamError) {
+      // abort 不走 recoverable 重试（避免 abort → retry → abort 死循环）
+      if (isAborted) {
+        opts.callbacks.onActivity?.('aborted')
+        break
+      }
       if (streamError.recoverable) {
         opts.callbacks.onActivity?.('retry', streamError.message)
         opts.callbacks.onWarn?.(streamError.message)

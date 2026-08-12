@@ -1,7 +1,7 @@
 # AGENTS.md — ECode 工作区指令
 
 > **ECode**：终端 Agent CLI，AgentLoop 为心脏，其余能力（工具/模型接入/TUI/斜杠命令/历史/配置/日志）作为分支接入心脏。技术栈 TypeScript 严格模式 / Node.js，TUI 用 Ink，LLM 走 `@anthropic-ai/sdk` 接 Astron 兼容端点（跑 GLM）。
-> **当前状态**：设计完成（`docs/`），代码未启动（M1 待开始，尚无 `package.json`）。
+> **当前状态**：设计完成（`docs/`），M1 心脏最小闭环已完成（AgentLoop + AnthropicProvider + read_file/bash，单次/REPL 双模式），M2-M4 待启动。
 > **永远使用中文与我对话。**
 >
 > 改代码/文档前先读这份。权威设计见 `docs/详设/2026-08-11_ECode-MVP详设_待审核.md`，文档体系以 `docs/README.md` 为权威。

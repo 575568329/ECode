@@ -8,7 +8,7 @@
 
 - **M1 心脏最小闭环已完成** ✅ —— 终端跑通一轮：提问 → LLM 调 `read_file`/`bash` → 回答
 - 设计文档齐全（[`docs/`](docs/README.md)），代码 M1 完成，M2-M4 待启动
-- 测试 45/45 全绿 · 真 LLM 烟测通过（GLM-5.2 经智谱 Anthropic 兼容端点）
+- 测试 47/47 全绿 · 真 LLM 烟测通过（GLM-5.2 经智谱 Anthropic 兼容端点）
 
 ## 快速开始
 
@@ -67,7 +67,7 @@ src/
   tools/       工具（interface + registry 含 AJV / read_file / bash）
   services/    config / logger / history（stub，M3/M4 替换）
 docs/          设计文档（大纲/详设/解析/诊断/决策/规范）
-tests/         镜像 src（45 个单测）
+tests/         镜像 src（47 个单测）
 scripts/       smoke.ts（真 LLM 烟测）
 ```
 

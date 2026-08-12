@@ -16,14 +16,21 @@ import type { Delta, Message, StopReason } from '../core/types.js'
 /** M1 默认输出上限（max_tokens 是 SDK 必填；M4 从 config 透传）。 */
 const DEFAULT_MAX_TOKENS = 8192
 
+/** SDK 流式事件的 usage 形状（input/output/cache，各字段都可能缺失）。 */
+interface RawUsage {
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_input_tokens?: number
+}
+
 /** SDK 流式事件（宽松结构，按 Anthropic 协议；不硬依赖 SDK 内部类型）。 */
 interface RawEvent {
   type: string
   index?: number
-  message?: { usage?: { input_tokens?: number; output_tokens?: number } }
+  message?: { usage?: RawUsage }
   content_block?: { type: string; id?: string; name?: string }
   delta?: { type: string; text?: string; partial_json?: string; stop_reason?: string }
-  usage?: { output_tokens?: number }
+  usage?: RawUsage
   error?: { message?: string }
   [k: string]: unknown
 }
@@ -50,6 +57,7 @@ class Translator {
   private stopReason: StopReason = 'end'
   private usageInput = 0
   private usageOutput = 0
+  private cacheReadTokens: number | undefined
   private sawUsage = false
 
   /** 处理单个事件，返回 0+ 个 Delta。 */
@@ -61,6 +69,7 @@ class Translator {
         if (usage) {
           this.usageInput = usage.input_tokens ?? 0
           this.usageOutput = usage.output_tokens ?? 0
+          if (usage.cache_read_input_tokens != null) this.cacheReadTokens = usage.cache_read_input_tokens
           this.sawUsage = true
         }
         break
@@ -101,7 +110,12 @@ class Translator {
       }
       case 'message_delta': {
         if (e.delta?.stop_reason) this.stopReason = mapStopReason(e.delta.stop_reason)
+        // usage 是累积语义（官方文档原话 "cumulative"）：后值覆盖前值，可选字段守卫。
+        // 兜住 Astron 等兼容端点——它们 message_start 报 0/0，真值放到 message_delta。
+        // （对齐 @anthropic-ai/sdk 0.115+ 与 Vercel AI SDK 的聚合写法。）
         if (e.usage?.output_tokens != null) this.usageOutput = e.usage.output_tokens
+        if (e.usage?.input_tokens != null) this.usageInput = e.usage.input_tokens
+        if (e.usage?.cache_read_input_tokens != null) this.cacheReadTokens = e.usage.cache_read_input_tokens
         break
       }
       case 'error': {
@@ -120,7 +134,13 @@ class Translator {
   flush(): Delta[] {
     const out: Delta[] = []
     if (this.sawUsage) {
-      out.push({ type: 'usage', input_tokens: this.usageInput, output_tokens: this.usageOutput })
+      out.push({
+        type: 'usage',
+        input_tokens: this.usageInput,
+        output_tokens: this.usageOutput,
+        // cache_read_tokens 仅在有值时带上（保持 optional 语义干净）
+        ...(this.cacheReadTokens != null ? { cache_read_tokens: this.cacheReadTokens } : {}),
+      })
     }
     out.push({ type: 'done', stop_reason: this.stopReason })
     return out

@@ -103,4 +103,42 @@ describe('translateAnthropicStream', () => {
       { type: 'done', stop_reason: 'tool_use' },
     ])
   })
+
+  it('兼容端点：message_start 报 0/0，真值在 message_delta → usage 取 delta 的值', () => {
+    // Astron/GLM 等兼容端点：message_start 的 usage 全 0，input/output/cache 真值都放 message_delta。
+    // 守卫覆盖语义：delta 给了就覆盖 start 的初值。修复前这里会得到 input_tokens: 0（bug）。
+    const events = [
+      { type: 'message_start', message: { usage: { input_tokens: 0, output_tokens: 0 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { input_tokens: 169, output_tokens: 5, cache_read_input_tokens: 12 },
+      },
+      { type: 'message_stop' },
+    ]
+    const deltas = translateAnthropicStream(events as never)
+    expect(deltas).toEqual([
+      { type: 'text', text: 'hi' },
+      { type: 'usage', input_tokens: 169, output_tokens: 5, cache_read_tokens: 12 },
+      { type: 'done', stop_reason: 'end' },
+    ])
+  })
+
+  it('标准端点：message_start 给真 input，message_delta 不带 input → 保留 start 的值', () => {
+    // 标准 Anthropic：input 在 message_start 给真值，message_delta 只补 output（不带 input）。
+    // 守卫不通过（input == null）→ 保留 message_start 的初值，证明守卫不会误覆盖。
+    const events = [
+      { type: 'message_start', message: { usage: { input_tokens: 200, output_tokens: 1 } } },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 30 } },
+      { type: 'message_stop' },
+    ]
+    const deltas = translateAnthropicStream(events as never)
+    expect(deltas).toEqual([
+      { type: 'usage', input_tokens: 200, output_tokens: 30 },
+      { type: 'done', stop_reason: 'end' },
+    ])
+  })
 })

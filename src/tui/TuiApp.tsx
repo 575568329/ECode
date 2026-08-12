@@ -2,7 +2,6 @@ import { useRef, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { App } from './App.js'
 import { InputStream } from './InputStream.js'
-import { ShortcutHint } from './ShortcutHint.js'
 import { ErrorBanner } from './ErrorBanner.js'
 import { UserMessage } from './UserMessage.js'
 import { AssistantMessage } from './AssistantMessage.js'
@@ -212,6 +211,7 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
       tokens={tokens}
       warning={warning ?? warn ?? undefined}
     >
+      {error ? <ErrorBanner error={error} /> : null}
       <InputStream
         onSubmit={submit}
         onCommand={(_cmd, result) => {
@@ -227,8 +227,6 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
         }}
         placeholder={busy ? '（处理中，Ctrl+C 中断）...' : '输入消息，/help 查看命令...'}
       />
-      <ShortcutHint context={busy ? 'busy' : 'default'} />
-      {error ? <ErrorBanner error={error} /> : null}
     </App>
   )
 }

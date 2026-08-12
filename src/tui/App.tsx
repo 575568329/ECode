@@ -1,6 +1,7 @@
 import type { ReactElement, ReactNode } from 'react'
-import { Box } from 'ink'
+import { Box, Text } from 'ink'
 import { StatusBar } from './StatusBar.js'
+import { ShortcutHint } from './ShortcutHint.js'
 import { Conversation } from './Conversation.js'
 import { ActivityBar } from './ActivityBar.js'
 import type { ActivityState } from '../core/loop.js'
@@ -55,19 +56,28 @@ export function App({
   warning,
   children,
 }: AppProps): ReactElement {
+  const busy =
+    streamingText !== null ||
+    activity === 'thinking' ||
+    activity === 'tool' ||
+    activity === 'retry'
   return (
     <Box flexDirection="column">
       <Conversation items={items} streamingText={streamingText} toolEntries={toolEntries}>
         <ActivityBar state={activity} text={activityText} />
-        <StatusBar
-          model={model}
-          iter={iter}
-          maxIter={maxIter}
-          tokens={tokens}
-          cost={cost}
-          warning={warning}
-        />
         {children}
+        <Box>
+          <StatusBar
+            model={model}
+            iter={iter}
+            maxIter={maxIter}
+            tokens={tokens}
+            cost={cost}
+            warning={warning}
+          />
+          <Text dimColor> · </Text>
+          <ShortcutHint context={busy ? 'busy' : 'default'} />
+        </Box>
       </Conversation>
     </Box>
   )

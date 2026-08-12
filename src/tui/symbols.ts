@@ -5,7 +5,7 @@
 
 export const symbols = {
   prompt: '❯', // 输入提示符
-  tool: '⚫', // 工具调用标记（Wide 宽 2，避免中文终端 ambiguous=2 错位）
+  tool: '●', // 工具调用标记（U+25CF；配 ToolCallView minWidth=2 锁宽，不依赖字符宽度判定）
   success: '✓', // 成功
   error: '✗', // 失败
   warn: '⚠', // 警告

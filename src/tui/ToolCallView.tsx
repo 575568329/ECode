@@ -66,7 +66,9 @@ export function ToolCallView({ entry, expanded, interactive = true }: ToolCallVi
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color={markColor}>{symbols.tool}</Text>
+        <Box minWidth={2}>
+          <Text color={markColor}>{symbols.tool}</Text>
+        </Box>
         <Text bold color={theme.tool} inverse={isFocused}>
           {' '}
           {s.name}

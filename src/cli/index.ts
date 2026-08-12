@@ -8,10 +8,10 @@
  *
  * argv 单次模式保留 M1 的 stdout 输出（脚本/管道友好，退出不清屏）；
  * REPL 是 M2 重点，用 Ink 全屏 TUI。
+ *
+ * ANSI 颜色（cli-highlight 代码高亮）靠 dev/start script 的 cross-env FORCE_COLOR=1
+ * 在 Node 启动前注入（ESM import 是 hoisted，写在代码里会晚于 chalk 锁 level）。
  */
-
-// 强制启用 ANSI 颜色（cli-highlight 代码高亮依赖 chalk level；TUI 总要颜色，不受管道影响）
-process.env.FORCE_COLOR = process.env.FORCE_COLOR ?? '1'
 
 import { loadConfig, type M1Config } from '../services/config.js'
 import { AnthropicProvider } from '../providers/anthropic.js'

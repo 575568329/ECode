@@ -46,6 +46,8 @@ function mapStopReason(r: unknown): StopReason {
       return 'length'
     case 'stop_sequence':
       return 'end'
+    case 'content_filter':
+      return 'content_filter'
     default:
       return 'end'
   }

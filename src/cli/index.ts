@@ -70,7 +70,7 @@ async function runOnce(messages: Message[], input: string, deps: Deps): Promise<
     callbacks: {
       onText: (t) => process.stdout.write(t),
       onToolStart: (name) => process.stdout.write(`\n⏺ ${name}\n`),
-      onToolResult: (name, r) => {
+      onToolResult: (_id, name, r) => {
         const firstLine = r.content.split('\n')[0]?.slice(0, 80) ?? ''
         process.stdout.write(`  ${name} ${r.is_error ? '✗' : '✓'} ${firstLine}\n`)
       },

@@ -6,9 +6,9 @@
  *   - try/finally 固化（无论正常/错误/中断，已生成内容都进 messages + history）
  *   - 工具执行（§3.2）：readonly 并行 / 副作用串行 + AJV 校验 + 确认 + 错误兜底
  *   - 停止判定 + 空 tool_use 防护
+ *   - recoverable 错误指数退避重试（§6.3，上限 MAX_RETRIES，避免无限重试）
  *
  * 心脏永不出现 `if provider === 'xxx'`（铁律）—— 只通过 opts.provider.run 调用。
- * tui/history/logger 通过 opts 注入（M2 TUI / M4 HistoryStore 替换 stub，零改 loop）。
  */
 
 import type {
@@ -28,15 +28,45 @@ import type { HistoryStore } from '../services/history.js'
 /** ActivityBar 状态（TUI §4.10）：loop 各阶段同步给 UI。 */
 export type ActivityState = 'thinking' | 'tool' | 'retry' | 'idle' | 'aborted'
 
+/** recoverable 错误重试上限 + 指数退避（详设 §6.3；参考 aider retry_delay *= 2） */
+const MAX_RETRIES = 3
+const BASE_RETRY_MS = 500
+const MAX_RETRY_CAP_MS = 8000
+
+/** 可被 AbortSignal 中断的 sleep（退避期间用户 Ctrl+C 立即响应，不傻等） */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      const e = new Error('aborted')
+      e.name = 'AbortError'
+      return reject(e)
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      const e = new Error('aborted')
+      e.name = 'AbortError'
+      reject(e)
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 export interface LoopCallbacks {
   /** 流式 text 增量（M2: streamText 灰字占位） */
   onText: (text: string) => void
   onToolStart?: (name: string) => void
-  onToolResult?: (name: string, result: ToolResult) => void
+  /** 工具执行完成（带 id，便于并发结果精确配对） */
+  onToolResult?: (id: string, name: string, result: ToolResult) => void
   onUsage?: (inputTokens: number, outputTokens: number) => void
   onWarn?: (msg: string) => void
-  /** ActivityBar 状态同步（M2 TUI 注入；各阶段调用：thinking/tool/retry/idle/aborted） */
+  /** ActivityBar 状态同步（各阶段：thinking/tool/retry/idle/aborted） */
   onActivity?: (state: ActivityState, text?: string) => void
+  /** 迭代轮数同步（StatusBar 显示 iter/maxIter） */
+  onIter?: (iter: number, maxIter: number) => void
 }
 
 export interface LoopRunOptions {
@@ -45,12 +75,10 @@ export interface LoopRunOptions {
   logger: Logger
   history: HistoryStore
   callbacks: LoopCallbacks
-  /** provider 配置实例（注入 run） */
   providerReq: { name: string; baseURL: string; apiKey: string; model: string }
   system: string
   maxIterations: number
   toolCtx: ToolContext
-  /** 副作用工具确认（M2 TUI 注入；M1 默认全确认） */
   confirm?: (use: ToolUseBlock) => Promise<boolean>
   signal?: AbortSignal
 }
@@ -70,9 +98,11 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     messages.push({ role: 'user', content: [{ type: 'text', text: userInput }] })
   }
 
+  let retryCount = 0
   for (let iter = 1; iter <= opts.maxIterations; iter++) {
+    opts.callbacks.onIter?.(iter, opts.maxIterations)
     opts.callbacks.onActivity?.('thinking')
-    const jsonBuf = new Map<string, { name: string; buf: string }>() // tool_use id → 拼接缓冲
+    const jsonBuf = new Map<string, { name: string; buf: string }>()
     let textBuf = ''
     const newToolUses: ToolUseBlock[] = []
     let stopReason: StopReason = 'end'
@@ -108,7 +138,6 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
           case 'tool_use_end': {
             const entry = jsonBuf.get(d.id)
             if (entry) {
-              // ★ 流式 JSON 拼接：parse 失败转 __parse_error（后续 AJV 校验失败产 is_error 交 LLM 自纠）
               let input: unknown
               try {
                 input = JSON.parse(entry.buf)
@@ -131,7 +160,6 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
         }
       }
     } catch (e) {
-      // AbortError 或 SDK 抛出的网络异常：同样走 finally 固化
       if (streamError === null) streamError = toAppError(e)
       const isAbort = e instanceof Error && e.name === 'AbortError'
       if (isAbort) {
@@ -140,7 +168,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
       }
       if (streamError && !streamError.recoverable && !isAbort) throw streamError
     } finally {
-      // ★ 固化已生成内容（无论正常/错误/中断，只要本轮产出了东西就保留）
+      // 固化已生成内容（无论正常/错误/中断，只要本轮产出了东西就保留）
       const blocks: ContentBlock[] = []
       if (textBuf) blocks.push({ type: 'text', text: textBuf })
       blocks.push(...newToolUses)
@@ -150,6 +178,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
       }
     }
 
+    if (!streamError) retryCount = 0
     // 流内错误处理
     if (streamError) {
       // abort 不走 recoverable 重试（避免 abort → retry → abort 死循环）
@@ -158,8 +187,20 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
         break
       }
       if (streamError.recoverable) {
-        opts.callbacks.onActivity?.('retry', streamError.message)
+        retryCount += 1
+        if (retryCount > MAX_RETRIES) {
+          opts.callbacks.onWarn?.(`重试 ${MAX_RETRIES} 次仍失败：${streamError.message}`)
+          break
+        }
+        const delay = Math.min(BASE_RETRY_MS * 2 ** (retryCount - 1), MAX_RETRY_CAP_MS)
+        opts.callbacks.onActivity?.('retry', `${streamError.message}（${retryCount}/${MAX_RETRIES}，等 ${delay}ms）`)
         opts.callbacks.onWarn?.(streamError.message)
+        try {
+          await sleep(delay, opts.signal)
+        } catch {
+          opts.callbacks.onActivity?.('aborted')
+          break
+        }
         continue
       }
       throw streamError
@@ -181,9 +222,8 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
       break
     }
     if (stopReason === 'error') throw toFatal('error')
-    // stopReason === 'tool_use' → 执行工具后继续循环
 
-    // ★ 空 tool_use 防护：stop=tool_use 但无工具块时，不执行空工具、不 push 空 user 消息
+    // 空 tool_use 防护
     if (newToolUses.length === 0) {
       opts.callbacks.onWarn?.('LLM 要求工具调用但未给出工具，跳过本轮')
       continue
@@ -220,13 +260,11 @@ async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<Tool
     return { type: 'tool_result', tool_use_id: use.id, content: `工具 ${use.name} 不存在`, is_error: true }
   }
 
-  // AJV 校验：不通过根本不进 Tool
   const v = opts.tools.validate(use.name, use.input)
   if (!v.ok) {
     return { type: 'tool_result', tool_use_id: use.id, content: v.error, is_error: true }
   }
 
-  // 副作用工具：人在回路确认（M1 默认全确认）
   if (!tool.readonly) {
     const confirmed = opts.confirm ? await opts.confirm(use) : true
     if (!confirmed) {
@@ -236,11 +274,11 @@ async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<Tool
 
   try {
     const r = await tool.execute(use.input, opts.toolCtx)
-    opts.callbacks.onToolResult?.(use.name, r)
+    opts.callbacks.onToolResult?.(use.id, use.name, r)
     return { type: 'tool_result', tool_use_id: use.id, content: r.content, is_error: r.is_error }
   } catch (e) {
     const err = toAppError(e)
-    if (!err.recoverable) throw err // fatal → 抛顶层中断 Loop
+    if (!err.recoverable) throw err
     return { type: 'tool_result', tool_use_id: use.id, content: err.message, is_error: true }
   }
 }

@@ -99,6 +99,8 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
   const [tokens, setTokens] = useState(0)
   const [systemMsgs, setSystemMsgs] = useState<string[]>([])
   const [expandAll, setExpandAll] = useState(false)
+  const [iter, setIter] = useState<number | undefined>(undefined)
+  const [maxIter, setMaxIter] = useState<number | undefined>(undefined)
 
   const submit = async (input: string): Promise<void> => {
     if (runningRef.current) return
@@ -129,35 +131,34 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
             setStreamingText(assistantText)
           },
           onToolStart: (name) => setActivity({ state: 'tool', text: name }),
-          onToolResult: (name, r) => {
-            // 从最后一条 assistant 找未配对的同名 tool_use（流式渐进显示）
+          onToolResult: (id, _name, r) => {
+            // 按 id 精确配对 tool_use（并发结果顺序不定，按名字猜会贴错）
             const lastA = [...messagesRef.current]
               .reverse()
               .find((m) => m.role === 'assistant')
-            if (lastA) {
-              const tu = lastA.content.find(
-                (b) =>
-                  b.type === 'tool_use' &&
-                  (b as ToolUseBlock).name === name &&
-                  !pairedRef.current.has((b as ToolUseBlock).id),
-              ) as ToolUseBlock | undefined
-              if (tu) {
-                pairedRef.current.add(tu.id)
-                localTools.push({
-                  use: tu,
-                  result: {
-                    type: 'tool_result',
-                    tool_use_id: tu.id,
-                    content: r.content,
-                    is_error: r.is_error,
-                  },
-                })
-                setToolEntries([...localTools])
-              }
+            const tu = lastA?.content.find(
+              (b) => b.type === 'tool_use' && (b as ToolUseBlock).id === id,
+            ) as ToolUseBlock | undefined
+            if (tu && !pairedRef.current.has(id)) {
+              pairedRef.current.add(id)
+              localTools.push({
+                use: tu,
+                result: {
+                  type: 'tool_result',
+                  tool_use_id: id,
+                  content: r.content,
+                  is_error: r.is_error,
+                },
+              })
+              setToolEntries([...localTools])
             }
             setActivity({ state: 'thinking' })
           },
           onUsage: (inp, out) => setTokens((n) => n + inp + out),
+          onIter: (i, m) => {
+            setIter(i)
+            setMaxIter(m)
+          },
           onActivity: (state, text) => setActivity({ state, text }),
           onWarn: (m) => setWarn(m),
         },
@@ -221,6 +222,8 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
       activity={activity.state}
       activityText={activity.text}
       tokens={tokens}
+      iter={iter}
+      maxIter={maxIter}
       warning={warning ?? warn ?? undefined}
       expandedAll={expandAll}
     >

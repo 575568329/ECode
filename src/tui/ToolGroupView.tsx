@@ -44,7 +44,7 @@ export function ToolGroupView({ tools, expanded = false, done, onToggle }: ToolG
   const headerSuffix = overflow > 0 ? ` ${symbols.trunc} +${overflow} 个` : ''
 
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" marginTop={1} marginBottom={1}>
       <Box>
         <Box minWidth={2}>
           <Text color={theme.tool}>{symbols.tool}</Text>

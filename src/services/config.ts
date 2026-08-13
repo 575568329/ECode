@@ -12,7 +12,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { parse as parseJsonc } from 'jsonc-parser'
+import { parse as parseJsonc, modify, applyEdits, type FormattingOptions } from 'jsonc-parser'
 import dotenv from 'dotenv'
 import type { ProviderReq, ThinkingLevel } from '../providers/interface.js'
 
@@ -216,6 +216,10 @@ export function buildProviderReq(config: Config): ProviderReq {
 
 /** /setup 向导收集的值（writeWizardConfig 用） */
 export interface WizardValues {
+  /** 操作模式：add=新增 provider / edit=编辑现有。首次（无 config）走 add */
+  mode: 'add' | 'edit'
+  /** 目标 provider 名（add 时用户输入；edit 时为现有名） */
+  providerName: string
   type: 'anthropic' | 'openai'
   baseURL: string
   apiKey: string
@@ -223,50 +227,69 @@ export interface WizardValues {
   thinking: ThinkingLevel
 }
 
+/** 向导值的 provider 对象（modify 写入用；字段顺序与 CONFIG_TEMPLATE 一致） */
+function wizardProviderObject(values: WizardValues): Record<string, unknown> {
+  const models = values.models.split(',').map((s) => s.trim()).filter(Boolean)
+  return {
+    type: values.type,
+    baseURL: values.baseURL,
+    apiKey: values.apiKey,
+    models,
+    thinking: values.thinking,
+    maxTokens: 8192,
+  }
+}
+
 /**
- * 向导值 → 写完整 config.json（JSONC 含注释引导；§10.1 步骤 6）。
- * provider name 固定 'default'（Wizard 不问 name；用户可编辑改名）。
+ * 向导值 → 合并进 config.json（增量改单个 provider；§10.1 步骤 6）。
+ *
+ * 用 jsonc-parser modify/applyEdits 基于文本偏移编辑，**保留所有注释和未触及的 provider**
+ * （区别于旧版整文件覆写——P1-5 修复）。
+ *   - mode=add：新 provider 插入 providers map + default 自动切到新 provider（立即生效）
+ *   - mode=edit：覆盖现有 provider 字段，不动 default（用户可能已 /model 切过）
+ *   - config 不存在：用 CONFIG_TEMPLATE 作底（mode 强制 add）
+ *
  * 文件权限 600（Windows chmod 弱化尽力，Linux/macOS 生效）。
  */
 export function writeWizardConfig(values: WizardValues, opts: { configPath?: string } = {}): void {
   // P1-4：写前校验空值——防误按回车用空值覆盖有效 config
+  if (!values.providerName.trim()) throw new Error('[SETUP_INCOMPLETE] provider 名不能为空')
   if (!values.baseURL.trim()) throw new Error('[SETUP_INCOMPLETE] baseURL 不能为空')
   if (!values.apiKey.trim()) throw new Error('[SETUP_INCOMPLETE] apiKey 不能为空')
   if (!values.models.trim()) throw new Error('[SETUP_INCOMPLETE] model 不能为空')
 
   const cfgPath = opts.configPath ?? defaultConfigPath()
+  const fmt: FormattingOptions = { tabSize: 2, insertSpaces: true, eol: '\n' }
   const models = values.models.split(',').map((s) => s.trim()).filter(Boolean)
-  // P1-4：每个字符串值过 JSON.stringify，防 " / \ 换行 等特殊字符破坏 JSON 结构（apiKey 常含特殊字符）
-  const j = JSON.stringify
-  const content = `{
-  // ECode 配置（/setup 向导生成）。编辑后重启生效，或运行时 /model 切换、/setup 重配。
-  "default": { "provider": "default", "model": ${j(models[0] ?? '')} },
 
-  "providers": {
-    "default": {
-      "type": ${j(values.type)},              // 协议：anthropic | openai
-      "baseURL": ${j(values.baseURL)},        // 端点
-      "apiKey": ${j(values.apiKey)},          // API Key
-      "models": ${j(models)},                 // 可用模型（/model 列这些）
-      "thinking": ${j(values.thinking)},      // 思考强度：off | low | medium | high
-      "maxTokens": 8192                       // 单次最大输出 token
-    }
-  },
+  // 读现有文本（不存在 → CONFIG_TEMPLATE 作底，强制 add 语义）
+  let text: string
+  let fileExists = true
+  try {
+    text = fs.readFileSync(cfgPath, 'utf8')
+  } catch {
+    text = CONFIG_TEMPLATE
+    fileExists = false
+  }
 
-  "maxIterations": 50,        // Agent 循环最大轮数
-  "bashMaxOutputBytes": 30720 // bash 输出截断阈值（30KB 头尾中截）
-}
-`
   fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
-  // P1-5：覆盖前备份现有 config（若已存在多 provider 等），用户可从 config.json.bak 恢复
-  if (fs.existsSync(cfgPath)) {
+  // P1-5：写前备份现有 config（modify 算错可从 .bak 恢复）
+  if (fileExists) {
     try {
       fs.copyFileSync(cfgPath, cfgPath + '.bak')
     } catch {
       // 备份失败不阻断写入（只读 fs 等极端情况，尽力）
     }
   }
-  fs.writeFileSync(cfgPath, content, { mode: 0o600 })
+
+  // 增量编辑：modify 计算最小文本编辑（保留注释/未触及内容）→ applyEdits 应用
+  // 关键：每次 modify 基于上一次 applyEdits 的结果文本（不能基于原 text，否则多次编辑偏移错位）
+  let result = applyEdits(text, modify(text, ['providers', values.providerName], wizardProviderObject(values), { formattingOptions: fmt }))
+  // 新增模式：default 自动切到新 provider（立即生效）；编辑模式不动 default
+  if (values.mode === 'add' || !fileExists) {
+    result = applyEdits(result, modify(result, ['default'], { provider: values.providerName, model: models[0] ?? '' }, { formattingOptions: fmt }))
+  }
+  fs.writeFileSync(cfgPath, result, { mode: 0o600 })
 }
 
 /** 配置无效态空壳（P0-4）：cli catch loadConfig 失败时构造，TuiApp 仍能渲染（banner + /setup 可用）。 */

@@ -20,9 +20,10 @@ afterEach(() => {
 })
 
 describe('writeWizardConfig', () => {
-  it('向导值 → 写 config → loadConfig round-trip', () => {
+  it('首次（无 config）→ 用模板作底 + provider name=default + default 自动切', () => {
+    // 无文件 → CONFIG_TEMPLATE 作底，mode 不影响（!fileExists 强制 add 语义）
     writeWizardConfig(
-      { type: 'anthropic', baseURL: 'http://x', apiKey: 'sk-c', models: 'glm-5.2, glm-4', thinking: 'medium' },
+      { mode: 'add', providerName: 'default', type: 'anthropic', baseURL: 'http://x', apiKey: 'sk-c', models: 'glm-5.2, glm-4', thinking: 'medium' },
       { configPath: cfgPath },
     )
     const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
@@ -34,31 +35,90 @@ describe('writeWizardConfig', () => {
     expect(cfg.providers.default.thinking).toBe('medium')
   })
 
-  it('特殊字符 apiKey/baseURL（含 "/\/换行）→ round-trip 正确（P1-4）', () => {
+  it('新增 provider（mode=add）→ 保留现有 provider + default 自动切到新 provider', () => {
+    // 先有一个 astron provider
+    writeConfig(JSON.stringify({
+      default: { provider: 'astron', model: 'glm-5.2' },
+      providers: { astron: { type: 'anthropic', baseURL: 'http://a', apiKey: 'sk-a', models: ['glm-5.2'] } },
+    }))
     writeWizardConfig(
-      { type: 'anthropic', baseURL: 'http://x/"weird"', apiKey: 'sk-"k"\\with\nnl', models: 'm', thinking: 'off' },
+      { mode: 'add', providerName: 'deepseek', type: 'openai', baseURL: 'http://d', apiKey: 'sk-d', models: 'deepseek-v4', thinking: 'off' },
       { configPath: cfgPath },
     )
     const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
-    expect(cfg.providers.default.apiKey).toBe('sk-"k"\\with\nnl')
-    expect(cfg.providers.default.baseURL).toBe('http://x/"weird"')
+    // 关键：astron 保留
+    expect(cfg.providers.astron).toBeDefined()
+    expect(cfg.providers.astron.apiKey).toBe('sk-a')
+    // 新增的 deepseek
+    expect(cfg.providers.deepseek.type).toBe('openai')
+    expect(cfg.providers.deepseek.apiKey).toBe('sk-d')
+    // default 自动切到新 provider
+    expect(cfg.current).toEqual({ name: 'deepseek', model: 'deepseek-v4' })
+  })
+
+  it('编辑现有 provider（mode=edit）→ 覆盖该 provider 字段 + 不动 default + 其他保留', () => {
+    writeConfig(JSON.stringify({
+      default: { provider: 'astron', model: 'glm-5.2' },
+      providers: {
+        astron: { type: 'anthropic', baseURL: 'http://a', apiKey: 'sk-old', models: ['glm-5.2'] },
+        deepseek: { type: 'openai', baseURL: 'http://d', apiKey: 'sk-d', models: ['deepseek-v4'] },
+      },
+    }))
+    writeWizardConfig(
+      { mode: 'edit', providerName: 'astron', type: 'anthropic', baseURL: 'http://a-new', apiKey: 'sk-new', models: 'glm-5.2, glm-4', thinking: 'high' },
+      { configPath: cfgPath },
+    )
+    const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
+    // astron 被改
+    expect(cfg.providers.astron.baseURL).toBe('http://a-new')
+    expect(cfg.providers.astron.apiKey).toBe('sk-new')
+    expect(cfg.providers.astron.models).toEqual(['glm-5.2', 'glm-4'])
+    // deepseek 保留
+    expect(cfg.providers.deepseek.apiKey).toBe('sk-d')
+    // default 不动（仍 astron，不擅自切）
+    expect(cfg.current.name).toBe('astron')
+  })
+
+  it('保留 config 注释（modify 文本偏移编辑不删注释）', () => {
+    const withComment = `{
+  // 我的配置注释（应保留）
+  "default": { "provider": "astron", "model": "glm-5.2" },
+  "providers": { "astron": { "type": "anthropic", "baseURL": "http://a", "apiKey": "sk", "models": ["glm-5.2"] } }
+}`
+    writeConfig(withComment)
+    writeWizardConfig(
+      { mode: 'add', providerName: 'deepseek', type: 'openai', baseURL: 'http://d', apiKey: 'sk-d', models: 'ds', thinking: 'off' },
+      { configPath: cfgPath },
+    )
+    const after = fs.readFileSync(cfgPath, 'utf8')
+    expect(after).toContain('我的配置注释（应保留）')
+  })
+
+  it('特殊字符 apiKey（含 "/\/换行）→ round-trip 正确（P1-4）', () => {
+    writeWizardConfig(
+      { mode: 'add', providerName: 'x', type: 'anthropic', baseURL: 'http://x/"weird"', apiKey: 'sk-"k"\\with\nnl', models: 'm', thinking: 'off' },
+      { configPath: cfgPath },
+    )
+    const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
+    expect(cfg.providers.x.apiKey).toBe('sk-"k"\\with\nnl')
+    expect(cfg.providers.x.baseURL).toBe('http://x/"weird"')
   })
 
   it('空 apiKey → throw SETUP_INCOMPLETE 且不写文件（P1-4）', () => {
     const emptyPath = path.join(tmp, 'empty.json')
     expect(() =>
       writeWizardConfig(
-        { type: 'anthropic', baseURL: 'http://x', apiKey: '   ', models: 'm', thinking: 'off' },
+        { mode: 'add', providerName: 'x', type: 'anthropic', baseURL: 'http://x', apiKey: '   ', models: 'm', thinking: 'off' },
         { configPath: emptyPath },
       ),
     ).toThrow(/SETUP_INCOMPLETE/)
     expect(fs.existsSync(emptyPath)).toBe(false)
   })
 
-  it('覆盖前备份现有 config → config.json.bak（P1-5）', () => {
+  it('写前备份现有 config → config.json.bak（P1-5）', () => {
     writeConfig('{"old":"config"}')
     writeWizardConfig(
-      { type: 'anthropic', baseURL: 'http://x', apiKey: 'sk', models: 'm', thinking: 'off' },
+      { mode: 'add', providerName: 'x', type: 'anthropic', baseURL: 'http://x', apiKey: 'sk', models: 'm', thinking: 'off' },
       { configPath: cfgPath },
     )
     expect(fs.existsSync(cfgPath + '.bak')).toBe(true)

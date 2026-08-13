@@ -323,6 +323,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       )}
       {overlay?.kind === 'setup-wizard' && (
         <Wizard
+          existingProviders={Object.entries(config.providers).map(([name, cfg]) => ({ name, cfg }))}
           onComplete={(values) => {
             // P1-6：write + reload 都进 try——写失败（空值校验/只读/磁盘满）→ banner 提示，不崩 TUI
             try {

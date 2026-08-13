@@ -58,3 +58,32 @@ export function groupByName(entries: ToolCallEntry[]): Map<string, ToolCallEntry
   }
   return groups
 }
+
+/**
+ * 工具合并块折叠态展示的最大工具数（详设 §3 超额策略）。
+ * 折叠态 = 表头 1 + 摘要 MAX_TOOL_VISIBLE + 溢出提示 1 = ≤4 行，不随工具数增长。
+ */
+export const MAX_TOOL_VISIBLE = 2
+
+/** mergeToolGroup 返回：合并块的展示数据。泛型 T 兼容 ToolCallEntry / ActiveTool。 */
+export interface MergedToolGroup<T> {
+  /** 工具总数 */
+  count: number
+  /** 折叠态可见的工具（前 MAX_TOOL_VISIBLE 个，展示摘要） */
+  visible: T[]
+  /** 溢出数（count - visible.length，>0 时显示「还有 N 个」） */
+  overflow: number
+}
+
+/**
+ * 把工具列表合并成一个展示块（详设 §3 超额策略）。
+ * 折叠态恒 ≤4 行：表头 1 + visible 摘要（≤2）+ 溢出提示 1（有溢出时）。
+ * 不随 count 增长——visible 封顶 MAX_TOOL_VISIBLE，超出转溢出计数。
+ * 泛型：动态区传 ActiveTool[]，Static 测试传 ToolCallEntry[]。
+ */
+export function mergeToolGroup<T>(tools: T[]): MergedToolGroup<T> {
+  const count = tools.length
+  const visible = tools.slice(0, MAX_TOOL_VISIBLE)
+  const overflow = Math.max(0, count - visible.length)
+  return { count, visible, overflow }
+}

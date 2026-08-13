@@ -27,6 +27,8 @@
 | MVP 配置系统与多 Provider 解析 | [解析/2026-08-11_MVP-配置系统与多Provider解析_待审核.md](./解析/2026-08-11_MVP-配置系统与多Provider解析_待审核.md) | 配置分层/JSONC/两层 Provider/两协议/跨 provider 切换，对应 ADR-021 起 |
 | MVP TUI 设计规范 | [规范/2026-08-11_MVP-TUI设计规范_待审核.md](./规范/2026-08-11_MVP-TUI设计规范_待审核.md) | 全屏框架式 + 品牌启动屏 + 适度色彩：界面原型/视觉/键盘/交互流程/组件规格，实现者 |
 | MVP Provider 翻译层与心脏数据流解析 | [解析/2026-08-12_MVP-Provider翻译层与心脏数据流解析_待审核.md](./解析/2026-08-12_MVP-Provider翻译层与心脏数据流解析_待审核.md) | 端到端数据流脑图 / SSE 事件→Delta 翻译 / Translator 状态机 / usage 守卫覆盖（官方 SDK+Vercel+LangChain 三库对比）/ CLI 调用链（makeDeps·runOnce·runLoop）/ 两层循环 / 工具来源扩展性（为什么 loop 不会膨胀） |
+| MVP 终端 Markdown 渲染调研 | [解析/2026-08-13_MVP-终端Markdown渲染调研_待审核.md](./解析/2026-08-13_MVP-终端Markdown渲染调研_待审核.md) | 自建渲染器 vs 主流对标（marked-terminal/claude-code/codex/aider/opencode）；流式 markdown 四路线选型；OSC8/CJK/代码高亮；落地借鉴清单 |
+| TUI 渲染方案：最小 Static | [详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_待审核.md](./详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_待审核.md) | M2 去 Static 后满屏/顺序两大问题根治；Static（历史固化）+ 当前轮动态可展开；用户定配置（流式 3 / 工具合并 4 / 下一轮收起）；满屏 clearTerminal 代码级证据；OpenTUI 长期观望 |
 
 > 其余文档按需在各目录补充，命名见下方约定。
 

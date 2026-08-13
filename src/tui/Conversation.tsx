@@ -1,13 +1,28 @@
-import type { ReactElement, ReactNode } from 'react'
-import { Box, Text } from 'ink'
-import { ToolCallView } from './ToolCallView.js'
-import { foldStreamText } from './stream.js'
-import type { ToolCallEntry } from './toolview.js'
-
 /**
- * 流式期灰字占位（M2 方案 A：commit 前灰字，commit 后 Markdown 重渲染）。
- * 超过 STREAM_MAX_LINES（5）行时折叠头部、显示尾部 5 行 + 顶部提示折叠行数（§4.12）。
+ * 对话流（最小 Static 方案，详设 2026-08-13）。
+ *
+ * 两区模型：
+ *   <Static items={committed}>  ← 历史轮（固化 scrollback，滚轮友好，永不重绘）
+ *   动态区（当前轮 active 分区，每帧重绘）：
+ *     ① FoldedUserInput（user message，折叠到 2 行）
+ *     ② ToolGroupView（本轮工具合并块，≤4 行，可展开）
+ *     ③ GrayStreaming（流式灰字，3 行折叠尾部）
+ *     children（ActivityBar / InputStream / 底行）
+ *
+ * 视觉顺序固定 ①②③（不随 LLM 交替抖动）；commit 时按 message.content 原序进 Static。
  */
+import type { ReactElement, ReactNode } from 'react'
+import { Box, Text, Static } from 'ink'
+import { ToolGroupView } from './ToolGroupView.js'
+import { foldStreamText } from './stream.js'
+import { UserMessage } from './UserMessage.js'
+import { AssistantMessage } from './AssistantMessage.js'
+import type { CommittedItem, ActiveState, ActiveTool, CommittedToolCall } from './types.js'
+
+/** 用户输入折叠上限（P1-A：防粘贴长代码撑爆动态区） */
+const USER_INPUT_MAX_LINES = 2
+
+/** 流式灰字占位（commit 前用；超 STREAM_MAX_LINES 行折叠头部） */
 export function GrayStreaming({ text }: { text: string }): ReactElement {
   const { lines, folded, total } = foldStreamText(text)
   return (
@@ -18,46 +33,61 @@ export function GrayStreaming({ text }: { text: string }): ReactElement {
   )
 }
 
+/** 折叠用户输入到 USER_INPUT_MAX_LINES 行（复用 foldStreamText，P1-A） */
+function FoldedUserInput({ text }: { text: string }): ReactElement {
+  const { lines, folded, total } = foldStreamText(text, USER_INPUT_MAX_LINES)
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      {folded > 0 && <Text dimColor>↑ {folded} 行已折叠（共 {total} 行）</Text>}
+      <UserMessage text={lines.join('\n')} />
+    </Box>
+  )
+}
+
+/** CommittedToolCall[] → ActiveTool[]（Static tool-group 收起态渲染用） */
+function callsToTools(calls: CommittedToolCall[]): ActiveTool[] {
+  return calls.map((c) => ({
+    name: c.use.name,
+    use: c.use,
+    result: c.result,
+    status: c.result.is_error ? ('error' as const) : ('done' as const),
+  }))
+}
+
+/** 渲染已固化的 CommittedItem（Static 用） */
+function renderCommitted(item: CommittedItem): ReactNode {
+  switch (item.kind) {
+    case 'user':
+      return <UserMessage text={item.text} />
+    case 'assistant-text':
+      return <AssistantMessage text={item.text} />
+    case 'tool-group':
+      return <ToolGroupView tools={callsToTools(item.calls)} />
+  }
+}
+
 interface ConversationProps {
-  /** 已完成的消息项（动态区渲染，不用 <Static>——避免 /clear 残留 + resize 异常） */
-  items: ReactNode[]
-  /** 当前流式文本（动态区灰字占位）；null/空表示无流式 */
-  streamingText: string | null
-  /** 当前轮工具调用（动态区：执行中或已完成未 commit） */
-  toolEntries: ToolCallEntry[]
-  /** 工具调用全展开（Ctrl+O）；true 则所有 ToolCallView 展开 */
-  expandedAll?: boolean
-  /** 动态区底部（InputStream 等） */
+  committed: CommittedItem[]
+  active: ActiveState
+  onToggleTool?: () => void
   children?: ReactNode
 }
 
-/**
- * 对话流（M2 方案 B.4 的 render.ts）：
- *
- * 不用 Ink <Static>（stock Static 写终端 scrollback，/clear 清不掉 + resize 异常 +
- * 已 commit 的 ToolCallView 不可交互）。改为消息全动态区：每帧重绘，/clear 干净、
- * Ctrl+O 全展开（含历史工具）、resize 稳定。代价：长对话每帧重绘性能（M3 用 memo/虚拟化优化）。
- */
-export function Conversation({
-  items,
-  streamingText,
-  toolEntries,
-  expandedAll,
-  children,
-}: ConversationProps): ReactElement {
+export function Conversation({ committed, active, onToggleTool, children }: ConversationProps): ReactElement {
+  const toolExpanded = active.tools.some((t) => t.use && active.expandedTools.has(t.use.id))
   return (
     <Box flexDirection="column">
-      {items.map((node, i) => (
-        <Box key={i}>{node}</Box>
-      ))}
-      {streamingText !== null && streamingText !== '' && <GrayStreaming text={streamingText} />}
-      {toolEntries.map((entry, i) => (
-        <ToolCallView
-          key={entry.use.id ?? i}
-          entry={entry}
-          expanded={expandedAll ? true : undefined}
-        />
-      ))}
+      <Static items={committed}>
+        {(item: CommittedItem) => (
+          <Box key={item.id}>{renderCommitted(item)}</Box>
+        )}
+      </Static>
+      {/* 动态区：当前轮 ①②③ */}
+      {active.userInput !== '' && <FoldedUserInput text={active.userInput} />}
+      {active.tools.length > 0 && (
+        <ToolGroupView tools={active.tools} expanded={toolExpanded} onToggle={onToggleTool} />
+      )}
+      {active.streamingText !== '' && <GrayStreaming text={active.streamingText} />}
       {children}
     </Box>
   )

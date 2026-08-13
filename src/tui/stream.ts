@@ -5,8 +5,8 @@
  * + 顶部提示折叠掉的行数，避免长输出占满动态区挡住历史。commit 后 Markdown 全量重渲染。
  */
 
-/** 流式灰字最多显示的行数（尾部） */
-export const STREAM_MAX_LINES = 5
+/** 流式灰字最多显示的行数（尾部）；最小 Static 方案压到 3（详设 §3） */
+export const STREAM_MAX_LINES = 3
 
 export interface FoldedStream {
   /** 实际显示的行（尾部 maxLines 行，或全部） */

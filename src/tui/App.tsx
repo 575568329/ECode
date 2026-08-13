@@ -5,24 +5,21 @@ import { ShortcutHint } from './ShortcutHint.js'
 import { Conversation } from './Conversation.js'
 import { ActivityBar } from './ActivityBar.js'
 import type { ActivityState } from '../core/loop.js'
-import type { ToolCallEntry } from './toolview.js'
+import type { CommittedItem, ActiveState } from './types.js'
 
 /**
- * App 根组件（M2 第 3 步）：布局骨架。
+ * App 根组件（最小 Static 方案）：
  *
- *   <Conversation>
- *     <Static items={历史消息}>              ← 终端原生 scrollback 顶（滚轮友好）
- *     动态区：
- *       streamingText 灰字 + toolEntries（expandedAll 全展）
- *       ActivityBar（当前动作，输入框上方）
- *       children（输入区）
- *       底行：StatusBar（model/轮数/token） · ShortcutHint（快捷键）
+ *   <Conversation committed={历史} active={当前轮}>
+ *     <ActivityBar/>
+ *     {children}
+ *     底行：StatusBar · ShortcutHint
  */
 interface AppProps {
   model: string
-  items: ReactNode[]
-  streamingText: string | null
-  toolEntries: ToolCallEntry[]
+  committed: CommittedItem[]
+  active: ActiveState
+  onToggleTool?: () => void
   activity: ActivityState
   activityText?: string
   iter?: number
@@ -30,16 +27,14 @@ interface AppProps {
   tokens?: number
   cost?: string
   warning?: string
-  /** 工具调用全展开（Ctrl+O） */
-  expandedAll?: boolean
   children?: ReactNode
 }
 
 export function App({
   model,
-  items,
-  streamingText,
-  toolEntries,
+  committed,
+  active,
+  onToggleTool,
   activity,
   activityText,
   iter,
@@ -47,22 +42,16 @@ export function App({
   tokens,
   cost,
   warning,
-  expandedAll,
   children,
 }: AppProps): ReactElement {
   const busy =
-    streamingText !== null ||
+    active.streamingText !== '' ||
     activity === 'thinking' ||
     activity === 'tool' ||
     activity === 'retry'
   return (
     <Box flexDirection="column">
-      <Conversation
-        items={items}
-        streamingText={streamingText}
-        toolEntries={toolEntries}
-        expandedAll={expandedAll}
-      >
+      <Conversation committed={committed} active={active} onToggleTool={onToggleTool}>
         <ActivityBar state={activity} text={activityText} />
         {children}
         <Box>

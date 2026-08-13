@@ -3,22 +3,47 @@ import { render } from 'ink-testing-library'
 import React from 'react'
 import { Text } from 'ink'
 import { App } from '../../src/tui/App.js'
-import { UserMessage } from '../../src/tui/UserMessage.js'
-import { AssistantMessage } from '../../src/tui/AssistantMessage.js'
+import { createActive, type CommittedItem, type ActiveTool } from '../../src/tui/types.js'
 import { __resetClockForTest } from '../../src/tui/clock.js'
 
 beforeEach(() => {
   __resetClockForTest()
 })
 
+function tool(
+  opts: { name?: string; id?: string; status?: 'running' | 'done' | 'error'; input?: unknown } = {},
+): ActiveTool {
+  const id = opts.id ?? 't1'
+  const name = opts.name ?? 'bash'
+  const use = {
+    type: 'tool_use' as const,
+    id,
+    name,
+    input: opts.input ?? { command: 'ls' },
+  }
+  const status = opts.status ?? 'running'
+  if (status === 'running') return { name, use, status }
+  return {
+    name,
+    use,
+    status,
+    result: {
+      type: 'tool_result' as const,
+      tool_use_id: id,
+      content: 'ok',
+      is_error: status === 'error',
+    },
+  }
+}
+
 describe('App', () => {
   it('组合渲染：StatusBar + 历史消息', () => {
+    const committed: CommittedItem[] = [{ kind: 'user', id: 'u1', text: '用户提问' }]
     const { lastFrame } = render(
       React.createElement(App, {
         model: 'GLM-5.2',
-        items: [React.createElement(UserMessage, { key: 'u', text: '用户提问' })],
-        streamingText: null,
-        toolEntries: [],
+        committed,
+        active: createActive(),
         activity: 'idle',
       }),
     )
@@ -31,9 +56,8 @@ describe('App', () => {
     const { lastFrame } = render(
       React.createElement(App, {
         model: 'M',
-        items: [],
-        streamingText: null,
-        toolEntries: [],
+        committed: [],
+        active: createActive(),
         activity: 'idle',
         iter: 2,
         maxIter: 50,
@@ -45,13 +69,13 @@ describe('App', () => {
     expect(f).toContain('500 tok')
   })
 
-  it('streaming + thinking 同时显示', () => {
+  it('active.streamingText + thinking 同时显示', () => {
+    const active = { ...createActive(), streamingText: '正在生成回答' }
     const { lastFrame } = render(
       React.createElement(App, {
         model: 'M',
-        items: [],
-        streamingText: '正在生成回答',
-        toolEntries: [],
+        committed: [],
+        active,
         activity: 'thinking',
       }),
     )
@@ -60,16 +84,13 @@ describe('App', () => {
     expect(f).toContain('思考中')
   })
 
-  it('工具调用 + activity=tool', () => {
-    const entry = {
-      use: { type: 'tool_use' as const, id: 't1', name: 'read_file', input: { path: 'a.ts' } },
-    }
+  it('active.tools + activity=tool', () => {
+    const active = { ...createActive(), tools: [tool({ id: 't1', name: 'read_file' })] }
     const { lastFrame } = render(
       React.createElement(App, {
         model: 'M',
-        items: [],
-        streamingText: null,
-        toolEntries: [entry],
+        committed: [],
+        active,
         activity: 'tool',
         activityText: 'read_file',
       }),
@@ -84,33 +105,31 @@ describe('App', () => {
         App,
         {
           model: 'M',
-          items: [],
-          streamingText: null,
-          toolEntries: [],
+          committed: [],
+          active: createActive(),
           activity: 'idle',
         },
         React.createElement(Text, null, '❯ 输入'),
       ),
     )
-    // children 渲染在动态区底部（具体内容由第 4 步 InputStream 提供）
-    // 此处仅验证 App 不因 children 崩溃
     expect(lastFrame()).toBeDefined()
   })
 
   it('复杂组合：历史 + 流式 + 工具 + 状态', () => {
-    const entry = {
-      use: { type: 'tool_use' as const, id: 't1', name: 'bash', input: { command: 'ls' } },
-      result: { type: 'tool_result' as const, tool_use_id: 't1', content: 'file.ts', is_error: false },
+    const committed: CommittedItem[] = [
+      { kind: 'user', id: 'u1', text: '看下文件' },
+      { kind: 'assistant-text', id: 'a1', text: '这是回答' },
+    ]
+    const active = {
+      ...createActive(),
+      streamingText: '继续生成',
+      tools: [tool({ id: 't1', name: 'bash', status: 'done' })],
     }
     const { lastFrame } = render(
       React.createElement(App, {
         model: 'GLM-5.2',
-        items: [
-          React.createElement(UserMessage, { key: 'u', text: '看下文件' }),
-          React.createElement(AssistantMessage, { key: 'a', text: '这是回答' }),
-        ],
-        streamingText: '继续生成',
-        toolEntries: [entry],
+        committed,
+        active,
         activity: 'tool',
         activityText: 'bash',
         iter: 1,

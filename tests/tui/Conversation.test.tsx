@@ -3,21 +3,7 @@ import { render } from 'ink-testing-library'
 import React from 'react'
 import { Text } from 'ink'
 import { Conversation, GrayStreaming } from '../../src/tui/Conversation.js'
-import type { ToolCallEntry } from '../../src/tui/toolview.js'
-
-function makeEntry(opts: { name?: string; running?: boolean; content?: string; id?: string } = {}): ToolCallEntry {
-  const use = {
-    type: 'tool_use' as const,
-    id: opts.id ?? 'u1',
-    name: opts.name ?? 'read_file',
-    input: { path: 'src/x.ts' },
-  }
-  if (opts.running) return { use }
-  return {
-    use,
-    result: { type: 'tool_result' as const, tool_use_id: 'u1', content: opts.content ?? 'ok', is_error: false },
-  }
-}
+import { createActive, type CommittedItem, type ActiveTool } from '../../src/tui/types.js'
 
 describe('GrayStreaming', () => {
   it('灰字显示流式文本', () => {
@@ -25,7 +11,7 @@ describe('GrayStreaming', () => {
     expect(lastFrame()).toContain('正在生成回答')
   })
 
-  it('短文本（≤5 行）不折叠', () => {
+  it('短文本（≤3 行）不折叠', () => {
     const { lastFrame } = render(React.createElement(GrayStreaming, { text: 'a\nb\nc' }))
     const f = lastFrame() ?? ''
     expect(f).toContain('a')
@@ -33,113 +19,132 @@ describe('GrayStreaming', () => {
     expect(f).not.toContain('折叠')
   })
 
-  it('长文本（>5 行）折叠头部 + 顶部提示', () => {
+  it('长文本（>3 行）折叠头部 + 顶部提示', () => {
     const text = '第1行\n第2行\n第3行\n第4行\n第5行\n第6行\n第7行\n第8行'
     const { lastFrame } = render(React.createElement(GrayStreaming, { text }))
     const f = lastFrame() ?? ''
     expect(f).toContain('折叠')
     expect(f).toContain('共 8 行')
-    // 尾部 5 行显示
-    expect(f).toContain('第4行')
+    // 尾部 3 行显示
+    expect(f).toContain('第6行')
     expect(f).toContain('第8行')
-    // 头部 3 行被折叠（不显示）
+    // 头部 5 行被折叠
     expect(f).not.toContain('第1行')
-    expect(f).not.toContain('第3行')
+    expect(f).not.toContain('第5行')
   })
 })
 
+function tool(
+  opts: { name?: string; id?: string; status?: 'running' | 'done' | 'error'; input?: unknown } = {},
+): ActiveTool {
+  const id = opts.id ?? 't1'
+  const name = opts.name ?? 'bash'
+  const use = {
+    type: 'tool_use' as const,
+    id,
+    name,
+    input: opts.input ?? { command: 'ls' },
+  }
+  const status = opts.status ?? 'running'
+  if (status === 'running') return { name, use, status }
+  return {
+    name,
+    use,
+    status,
+    result: {
+      type: 'tool_result' as const,
+      tool_use_id: id,
+      content: 'ok',
+      is_error: status === 'error',
+    },
+  }
+}
+
 describe('Conversation', () => {
-  it('streamingText 非空 → 灰字显示在动态区', () => {
-    const { lastFrame } = render(
-      React.createElement(Conversation, {
-        items: [],
-        streamingText: '流式内容',
-        toolEntries: [],
-      }),
-    )
+  it('active.streamingText 非空 → 灰字显示', () => {
+    const active = { ...createActive(), streamingText: '流式内容' }
+    const { lastFrame } = render(React.createElement(Conversation, { committed: [], active }))
     expect(lastFrame()).toContain('流式内容')
   })
 
-  it('streamingText 为 null → 不显示灰字', () => {
+  it('active 全空 → 动态区无灰字', () => {
     const { lastFrame } = render(
-      React.createElement(Conversation, {
-        items: [],
-        streamingText: null,
-        toolEntries: [],
-      }),
+      React.createElement(Conversation, { committed: [], active: createActive() }),
     )
-    expect(lastFrame()).not.toContain('流式')
+    expect(lastFrame() ?? '').not.toContain('流式')
   })
 
-  it('streamingText 为空串 → 不显示灰字', () => {
-    const { lastFrame } = render(
-      React.createElement(Conversation, {
-        items: [],
-        streamingText: '',
-        toolEntries: [],
-      }),
-    )
-    const frame = lastFrame() ?? ''
-    // 空串不渲染灰字块（避免空 Text 占行）
-    expect(frame.trim()).toBe('')
+  it('active.tools → 渲染 ToolGroupView（合并块）', () => {
+    const active = {
+      ...createActive(),
+      tools: [tool({ id: 't1', name: 'read_file' }), tool({ id: 't2', name: 'bash' })],
+    }
+    const { lastFrame } = render(React.createElement(Conversation, { committed: [], active }))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('2 个工具')
+    expect(f).toContain('read_file')
+    expect(f).toContain('bash')
   })
 
-  it('toolEntries → 渲染 ToolCallView', () => {
-    const { lastFrame } = render(
-      React.createElement(Conversation, {
-        items: [],
-        streamingText: null,
-        toolEntries: [makeEntry({ id: 'u1', running: true }), makeEntry({ id: 'u2', name: 'bash' })],
-      }),
-    )
-    const frame = lastFrame() ?? ''
-    expect(frame).toContain('read_file')
-    expect(frame).toContain('bash')
+  it('active.userInput → 显示用户消息', () => {
+    const active = { ...createActive(), userInput: '帮我写代码' }
+    const { lastFrame } = render(React.createElement(Conversation, { committed: [], active }))
+    expect(lastFrame()).toContain('帮我写代码')
   })
 
-  it('items 进 Static 渲染（历史消息）', () => {
+  it('committed 进 Static 渲染（历史消息）', () => {
+    const committed: CommittedItem[] = [
+      { kind: 'user', id: 'u1', text: '历史用户' },
+      { kind: 'assistant-text', id: 'a1', text: '历史回答' },
+    ]
     const { lastFrame } = render(
-      React.createElement(Conversation, {
-        items: [
-          React.createElement(Text, { key: 'u' }, '用户消息'),
-          React.createElement(Text, { key: 'a' }, '助手回答'),
-        ],
-        streamingText: null,
-        toolEntries: [],
-      }),
+      React.createElement(Conversation, { committed, active: createActive() }),
     )
-    const frame = lastFrame() ?? ''
-    expect(frame).toContain('用户消息')
-    expect(frame).toContain('助手回答')
+    const f = lastFrame() ?? ''
+    expect(f).toContain('历史用户')
+    expect(f).toContain('历史回答')
   })
 
-  it('children 渲染在动态区（输入框占位）', () => {
+  it('children 渲染在动态区', () => {
     const { lastFrame } = render(
       React.createElement(
         Conversation,
-        { items: [], streamingText: null, toolEntries: [] },
+        { committed: [], active: createActive() },
         React.createElement(Text, null, '❯ 输入框'),
       ),
     )
     expect(lastFrame()).toContain('❯ 输入框')
   })
 
-  it('组合：历史 + 流式 + 工具 + 输入 同时渲染', () => {
+  it('组合：历史 + 流式 + 工具 + 输入', () => {
+    const committed: CommittedItem[] = [{ kind: 'user', id: 'u1', text: '历史消息' }]
+    const active = {
+      ...createActive(),
+      streamingText: '正在流式',
+      tools: [tool({ id: 't1', name: 'read_file' })],
+    }
     const { lastFrame } = render(
       React.createElement(
         Conversation,
-        {
-          items: [React.createElement(Text, { key: 'h' }, '历史消息')],
-          streamingText: '正在流式',
-          toolEntries: [makeEntry({ running: true })],
-        },
+        { committed, active },
         React.createElement(Text, null, '底部输入'),
       ),
     )
-    const frame = lastFrame() ?? ''
-    expect(frame).toContain('历史消息')
-    expect(frame).toContain('正在流式')
-    expect(frame).toContain('read_file')
-    expect(frame).toContain('底部输入')
+    const f = lastFrame() ?? ''
+    expect(f).toContain('历史消息')
+    expect(f).toContain('正在流式')
+    expect(f).toContain('1 个工具')
+    expect(f).toContain('底部输入')
+  })
+
+  it('userInput 超过 2 行 → 折叠（P1-A）', () => {
+    const active = { ...createActive(), userInput: '行1\n行2\n行3\n行4\n行5' }
+    const { lastFrame } = render(React.createElement(Conversation, { committed: [], active }))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('折叠')
+    expect(f).toContain('共 5 行')
+    expect(f).toContain('行4')
+    expect(f).toContain('行5')
+    expect(f).not.toContain('行1')
   })
 })

@@ -24,22 +24,22 @@ describe('foldStreamText', () => {
   })
 
   it(`恰好 ${STREAM_MAX_LINES} 行不折叠`, () => {
-    const r = foldStreamText('1\n2\n3\n4\n5')
+    const r = foldStreamText('1\n2\n3')
     expect(r.folded).toBe(0)
     expect(r.total).toBe(STREAM_MAX_LINES)
   })
 
   it(`超过 ${STREAM_MAX_LINES} 行：折叠头部，显示尾部 ${STREAM_MAX_LINES} 行`, () => {
     const r = foldStreamText('1\n2\n3\n4\n5\n6\n7\n8')
-    expect(r.folded).toBe(3)
-    expect(r.lines).toEqual(['4', '5', '6', '7', '8'])
+    expect(r.folded).toBe(5)
+    expect(r.lines).toEqual(['6', '7', '8'])
     expect(r.total).toBe(8)
   })
 
   it('只超 1 行', () => {
-    const r = foldStreamText('1\n2\n3\n4\n5\n6')
+    const r = foldStreamText('1\n2\n3\n4')
     expect(r.folded).toBe(1)
-    expect(r.lines).toEqual(['2', '3', '4', '5', '6'])
+    expect(r.lines).toEqual(['2', '3', '4'])
   })
 
   it('自定义 maxLines', () => {

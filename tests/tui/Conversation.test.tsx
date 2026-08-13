@@ -61,10 +61,16 @@ function tool(
 }
 
 describe('Conversation', () => {
-  it('active.streamingText 非空 → 灰字显示', () => {
-    const active = { ...createActive(), streamingText: '流式内容' }
+  it('active.streamingText + streaming=true → 灰字（GrayStreaming）', () => {
+    const active = { ...createActive(), streamingText: '流式内容', streaming: true }
     const { lastFrame } = render(React.createElement(Conversation, { committed: [], active }))
     expect(lastFrame()).toContain('流式内容')
+  })
+
+  it('active.streamingText + streaming=false → Markdown（流式结束，当前轮保留动态区可展开）', () => {
+    const active = { ...createActive(), streamingText: '完成的回答', streaming: false }
+    const { lastFrame } = render(React.createElement(Conversation, { committed: [], active }))
+    expect(lastFrame()).toContain('完成的回答')
   })
 
   it('active 全空 → 动态区无灰字', () => {

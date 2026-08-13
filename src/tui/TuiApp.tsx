@@ -68,9 +68,14 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
 
   const submit = async (input: string): Promise<void> => {
     if (runningRef.current) return
+    // 兑现上一轮的延迟 commit：当前轮在 runLoop 结束后保留在动态区（可 Ctrl+O 展开），
+    // 直到下次 submit 才 commit 进 Static（收起固化）。符合「当前轮不固定 / 进入下一轮自动收起」。
+    if (messagesRef.current.length > 0) {
+      setCommitted(messagesToCommitted(messagesRef.current))
+    }
     runningRef.current = true
-    // 乐观：当前轮 userInput 立即显示（折叠到 2 行由 Conversation 处理）
-    setActive({ ...createActive(), userInput: input })
+    // 新轮：userInput 乐观显示 + streaming=true（流式灰字）
+    setActive({ ...createActive(), userInput: input, streaming: true })
     setError(null)
     setWarn(null)
     setActivity({ state: 'thinking' })
@@ -137,14 +142,12 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
         toolCtx: { cwd: process.cwd(), signal: abortRef.current.signal },
         signal: abortRef.current.signal,
       })
-      // commit：本轮按原序进 Static，active 清空（= 下一轮收起，不可再展开）
-      setCommitted(messagesToCommitted(messagesRef.current))
-      setActive(createActive())
+      // 不立即 commit：本轮保留在动态区（当前轮可 Ctrl+O 展开）；streaming=false 转 Markdown 显示
+      setActive((a) => ({ ...a, streaming: false }))
       setActivity({ state: 'idle' })
     } catch (e) {
-      // 中断/错误：固化已生成内容（orphan tool 补终态）
-      setCommitted(messagesToCommitted(messagesRef.current))
-      setActive(createActive())
+      // 中断/错误：同样保留动态区（用户看中断内容），下次 submit 才 commit
+      setActive((a) => ({ ...a, streaming: false }))
       if (isAbortError(e)) {
         setActivity({ state: 'aborted' })
       } else {

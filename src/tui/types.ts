@@ -25,8 +25,10 @@ export interface ActiveState {
   userInput: string
   /** 本轮所有工具（累积，合并块 ② 展示） */
   tools: ActiveTool[]
-  /** 本轮流式文本（累积，③ 3 行折叠尾部） */
+  /** 本轮流式文本（累积） */
   streamingText: string
+  /** true=流式中（GrayStreaming 灰字 ③）；false=流式结束（Markdown 渲染，本轮仍在动态区可展开） */
+  streaming: boolean
   /** 展开的工具 id（只对当前轮；commit 时清空 = 下一轮收起） */
   expandedTools: Set<string>
 }
@@ -49,6 +51,7 @@ export function createActive(): ActiveState {
     userInput: '',
     tools: [],
     streamingText: '',
+    streaming: false,
     expandedTools: new Set(),
   }
 }

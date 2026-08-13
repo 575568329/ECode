@@ -87,7 +87,12 @@ export function Conversation({ committed, active, onToggleTool, children }: Conv
       {active.tools.length > 0 && (
         <ToolGroupView tools={active.tools} expanded={toolExpanded} onToggle={onToggleTool} />
       )}
-      {active.streamingText !== '' && <GrayStreaming text={active.streamingText} />}
+      {active.streamingText !== '' &&
+        (active.streaming ? (
+          <GrayStreaming text={active.streamingText} />
+        ) : (
+          <AssistantMessage text={active.streamingText} />
+        ))}
       {children}
     </Box>
   )

@@ -117,3 +117,15 @@ describe('thinkingToOpenai', () => {
     expect(thinkingToOpenai('high')).toEqual({ reasoning_effort: 'high' })
   })
 })
+
+describe('translateOpenaiStream · flush 补发（P2-9）', () => {
+  it('length 截断在 tool_call 中途 → flush 补发 tool_use_end（不丢工具）', () => {
+    const out = translateOpenaiStream([
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: 'tc1', type: 'function', function: { name: 'ls', arguments: '' } }] } }] },
+      { choices: [{ finish_reason: 'length' }] },
+    ])
+    expect(out.some((d) => d.type === 'tool_use_start' && d.id === 'tc1')).toBe(true)
+    expect(out.some((d) => d.type === 'tool_use_end' && d.id === 'tc1')).toBe(true)
+    expect(out.at(-1)?.type).toBe('done')
+  })
+})

@@ -48,7 +48,8 @@ export function Select<T>({ title, items, onSelect, onCancel, emptyHint }: Selec
     } else if (key.downArrow) {
       setIdx((i) => (i >= items.length - 1 ? 0 : i + 1))
     } else if (key.return) {
-      onSelect(items[idx].value)
+      const item = items[idx]
+      if (item) onSelect(item.value) // P2-5：guard 越界（items 变化时 idx 可能超出长度）
     } else if (key.escape || (key.ctrl && input === 'c')) {
       onCancel()
     }

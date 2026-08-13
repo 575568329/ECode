@@ -43,8 +43,8 @@ function mapOpenaiStop(r: string): StopReason {
 }
 
 /** thinking 枚举 → OpenAI reasoning_effort（D9/P0-5）。
- *  仅支持 reasoning_effort 的端点（OpenAI o 系列）生效；不支持的端点（DeepSeek 等）
- *  openai SDK/端点忽略未知参数，不报错、不影响运行。 */
+ *  端点行为差异（P1-8）：OpenAI 官方 o 系列（o1/o3/o4-mini）支持生效；DeepSeek 等第三方端点通常忽略未知参数；
+ *  OpenAI 官方非推理模型（gpt-4o 等）对未知顶层参数可能 400。若此类模型遇 400，config 设 thinking=off。 */
 export function thinkingToOpenai(thinking?: ThinkingLevel): Record<string, unknown> {
   if (!thinking || thinking === 'off') return {} // 不传 = 模型默认
   return { reasoning_effort: thinking } // 'low' | 'medium' | 'high'
@@ -58,6 +58,8 @@ class OpenaiTranslator {
   private sawUsage = false
   /** index → tool 累积（OpenAI 渐进式给 name/id/arguments） */
   private readonly tools = new Map<number, { id: string; name: string; started: boolean }>()
+  /** 已发 tool_use_end 的工具 id（P2-9：flush 补发 started 未 end 的，防 length 截断丢工具） */
+  private readonly ended = new Set<string>()
 
   push(chunk: OpenaiChunk): Delta[] {
     const out: Delta[] = []
@@ -100,16 +102,25 @@ class OpenaiTranslator {
       // finish_reason='tool_calls' → 所有活跃 tool 发 end（loop 侧解析 JSON 调用工具）
       if (choice.finish_reason === 'tool_calls') {
         for (const e of this.tools.values()) {
-          if (e.started) out.push({ type: 'tool_use_end', id: e.id })
+          if (e.started && !this.ended.has(e.id)) {
+            out.push({ type: 'tool_use_end', id: e.id })
+            this.ended.add(e.id)
+          }
         }
       }
     }
     return out
   }
 
-  /** 流结束时补 usage + done。 */
+  /** 流结束时补 usage + done。P2-9：补发 started 但未 end 的工具（length 截断在 tool_call 中途等）。 */
   flush(): Delta[] {
     const out: Delta[] = []
+    for (const e of this.tools.values()) {
+      if (e.started && !this.ended.has(e.id)) {
+        out.push({ type: 'tool_use_end', id: e.id })
+        this.ended.add(e.id)
+      }
+    }
     if (this.sawUsage) {
       out.push({ type: 'usage', input_tokens: this.usageInput, output_tokens: this.usageOutput })
     }
@@ -182,7 +193,8 @@ export class OpenaiProvider implements LLMProvider {
     const stream = await client.chat.completions.create({
       model: req.model,
       messages: toOpenaiMsgs(req.messages, req.system),
-      tools: toOpenaiTools(req.tools),
+      // P2-10：空 tools 数组不传（部分端点对 tools:[] 报 400）
+      ...(req.tools.length > 0 ? { tools: toOpenaiTools(req.tools) } : {}),
       stream: true,
       stream_options: { include_usage: true }, // P1-6：否则 final chunk 无 usage
       ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),

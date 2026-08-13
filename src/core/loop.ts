@@ -110,6 +110,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     let stopReason: StopReason = 'end'
     let streamError: AppError | null = null
     let isAborted = false
+    let pushedThisRound = false // P1-9：本轮是否固化了 assistant（retry 时回滚用）
 
     try {
       opts.logger.debug('provider', 'request', { messageCount: messages.length }, iter)
@@ -181,6 +182,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
       if (blocks.length > 0) {
         messages.push({ role: 'assistant', content: blocks })
         opts.history.append(messages.at(-1)!)
+        pushedThisRound = true
       }
     }
 
@@ -200,6 +202,9 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
         break
       }
       if (streamError.recoverable) {
+        // P1-9：回滚本轮半截 assistant（history 已落盘保留作 trace），避免下轮
+        //   [user, assistant(半截), assistant(重试)] 连续 assistant → Anthropic 400 重试注定失败
+        if (pushedThisRound) messages.pop()
         retryCount += 1
         if (retryCount > MAX_RETRIES) {
           opts.callbacks.onWarn?.(`重试 ${MAX_RETRIES} 次仍失败：${streamError.message}`)

@@ -118,6 +118,18 @@ describe('runLoop', () => {
     expect(last(messages)).toMatchObject({ type: 'text', text: 'recovered' })
   })
 
+  it('recoverable 错误回滚半截 assistant（P1-9）：retry 不留连续 assistant', async () => {
+    const p = new MockProvider([
+      [{ type: 'text', text: '半截' }, { type: 'error', error: { code: 'NET', message: 'err', recoverable: true } }],
+      [{ type: 'text', text: '完整' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const messages = await runLoop([], '问', makeOpts(p, []))
+    // P1-9：半截 assistant 被 messages.pop() 回滚，retry 后只剩完整 assistant（无连续两个 → 避免 Anthropic 400）
+    const assistants = messages.filter((m) => m.role === 'assistant')
+    expect(assistants).toHaveLength(1)
+    expect((assistants[0].content[0] as { text: string }).text).toBe('完整')
+  })
+
   it('fatal 错误 → 抛顶层', async () => {
     const p = new MockProvider([
       [{ type: 'error', error: { code: 'FATAL', message: 'fatal', recoverable: false } }],

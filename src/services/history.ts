@@ -114,6 +114,18 @@ export class FileHistoryStore implements HistoryStore {
     this.ensureDir()
   }
 
+  /** 只读文件首行（P1-13：loadAll 避免全量读大 session 文件，读前 2048 字节取首行足够 meta） */
+  private readFirstLine(filePath: string): string {
+    const fd = fs.openSync(filePath, 'r')
+    try {
+      const buf = Buffer.alloc(2048)
+      const n = fs.readSync(fd, buf, 0, 2048, 0)
+      return buf.toString('utf8', 0, n).split('\n')[0]
+    } finally {
+      fs.closeSync(fd)
+    }
+  }
+
   loadAll(): SessionMeta[] {
     let files: string[]
     try {
@@ -124,7 +136,7 @@ export class FileHistoryStore implements HistoryStore {
     const metas: SessionMeta[] = []
     for (const f of files) {
       try {
-        const firstLine = fs.readFileSync(path.join(this.dir, f), 'utf8').split('\n')[0]
+        const firstLine = this.readFirstLine(path.join(this.dir, f))
         if (!firstLine.trim()) continue
         const parsed = JSON.parse(firstLine) as MetaLine
         if (parsed.meta) {
@@ -135,8 +147,9 @@ export class FileHistoryStore implements HistoryStore {
             firstUser: parsed.firstUser,
           })
         }
-      } catch {
-        // 首行解析失败（损坏文件）跳过
+      } catch (e) {
+        // P2-2：损坏文件跳过但记录（不静默吞）
+        process.stderr.write(`[HistoryStore] 跳过损坏会话文件 ${f}：${e instanceof Error ? e.message : String(e)}\n`)
       }
     }
     // 按 createdAt 倒序（最新在前）
@@ -148,7 +161,11 @@ export class FileHistoryStore implements HistoryStore {
     let content: string
     try {
       content = fs.readFileSync(filePath, 'utf8')
-    } catch {
+    } catch (e) {
+      // P2-2：ENOENT（文件不存在=正常，首次/新 session）静默；其他错误（权限等）记录
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        process.stderr.write(`[HistoryStore] 读取会话失败 ${sessionId}：${e instanceof Error ? e.message : String(e)}\n`)
+      }
       return []
     }
     const messages: Message[] = []
@@ -158,8 +175,9 @@ export class FileHistoryStore implements HistoryStore {
         const parsed = JSON.parse(line) as { meta?: true } & Message
         if (parsed.meta) continue // 跳过 meta 行
         messages.push(parsed as Message)
-      } catch {
-        // 损坏行跳过
+      } catch (e) {
+        // P2-2：损坏行跳过但记录（不静默吞）
+        process.stderr.write(`[HistoryStore] ${sessionId}.jsonl 跳过损坏行：${e instanceof Error ? e.message : String(e)}\n`)
       }
     }
     return messages

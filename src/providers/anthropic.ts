@@ -208,7 +208,8 @@ export class AnthropicProvider implements LLMProvider {
           }),
       ...thinkingField,
       messages: toAnthropicMsgs(req.messages),
-      tools: req.tools,
+      // P2-10：空 tools 数组不传（Anthropic 对 tools:[] 报 400；MVP 恒注册工具但稳健起见）
+      ...(req.tools.length > 0 ? { tools: req.tools } : {}),
     } as never)
 
     // signal 透传：中断时 abort stream（SDK 抛 AbortError，loop 的 try/catch 固化已生成内容）

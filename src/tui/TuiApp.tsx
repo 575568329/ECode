@@ -237,9 +237,13 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     })
   }
 
-  useInput((input, key) => {
-    if (key.ctrl && input === 'o') toggleExpand()
-  })
+  useInput(
+    (input, key) => {
+      if (key.ctrl && input === 'o') toggleExpand()
+    },
+    // P2-4：overlay/confirm 期间不抢 Ctrl+O（picker/confirm 独占输入）
+    { isActive: overlay === null && active.confirm === null },
+  )
 
   const busy =
     active.streamingText !== '' ||

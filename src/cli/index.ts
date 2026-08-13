@@ -96,36 +96,15 @@ async function runOnce(messages: Message[], input: string, deps: Deps): Promise<
 }
 
 async function main(): Promise<void> {
-  // D10：配置有效性判断（不分首次/非首次）。有效 → 正常跑；无效 → argv 报错退出 / REPL+banner
-  let config: Config
-  let banner: string | undefined
-  try {
-    config = loadConfig()
-  } catch (e) {
-    if (process.argv.slice(2).join(' ').trim()) throw e // argv 非交互：报错退出（D6）
-    config = emptyShellConfig() // 空壳 P0-4：TuiApp 仍能渲染（banner + /setup 可用）
-    banner = e instanceof Error ? e.message : String(e)
-  }
-  registerBuiltinCommands()
-
-  // LogStore：JSONL 落盘 <cwd>/.ecode/logs/<sessionId>.jsonl（项目级，运行 trace；D12：ephemeral 数据跟项目走）
+  // P1-16：logger + process handlers 提前到 loadConfig 前（配置失败也要记日志 + 全局兜底尽早挂）
   const sessionId = new Date().toISOString().replace(/[:.]/g, '-')
   const logPath = join(process.cwd(), '.ecode', 'logs', `${sessionId}.jsonl`)
   const logStore = new LogStore(logPath, sessionId)
   const logger = new JsonlLogger(logStore)
-  logger.info('system', 'startup', {
-    model: config.current.model,
-    cwd: process.cwd(),
-    logPath,
-    node: process.version,
-    platform: process.platform,
-    providerType: config.providers[config.current.name]?.type,
-  })
   process.on('exit', () => {
     logger.info('system', 'shutdown', { exitCode: process.exitCode })
     logStore.close()
   })
-  // 崩溃兜底：未捕获异常/拒绝，记 error + 同步 flush 后退（避免丢最后一批排查日志）
   process.on('uncaughtException', (e) => {
     logger.error('system', 'uncaught', { message: e.message, stack: e.stack })
     logStore.close()
@@ -137,6 +116,29 @@ async function main(): Promise<void> {
     logger.error('system', 'unhandled_rejection', { message: msg, stack })
     logStore.close()
     process.exit(1)
+  })
+
+  // D10：配置有效性判断。有效 → 正常跑；无效 → argv 报错退出 / REPL+banner
+  let config: Config
+  let banner: string | undefined
+  try {
+    config = loadConfig()
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    logger.error('system', 'config_load_failed', { message: msg })
+    if (process.argv.slice(2).join(' ').trim()) throw e // argv 非交互：报错退出（exit handler 同步 flush 日志）
+    config = emptyShellConfig() // 空壳 P0-4：TuiApp 仍能渲染（banner + /setup 可用）
+    banner = msg
+  }
+  registerBuiltinCommands()
+
+  logger.info('system', 'startup', {
+    model: config.current.model,
+    cwd: process.cwd(),
+    logPath,
+    node: process.version,
+    platform: process.platform,
+    providerType: config.providers[config.current.name]?.type,
   })
 
   const deps = makeDeps(config, logger, sessionId)

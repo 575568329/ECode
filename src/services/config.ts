@@ -36,6 +36,11 @@ export interface Config {
   logLevel: 'debug' | 'info' | 'warn' | 'error'
 }
 
+/** 默认值（P2-1：集中常量，免多处裸魔法值散落；CONFIG_TEMPLATE/writeWizardConfig 是生成给用户的 config.json 字面量） */
+const DEFAULT_MAX_ITERATIONS = 50
+const DEFAULT_BASH_MAX_BYTES = 30720
+const DEFAULT_LOG_LEVEL: Config['logLevel'] = 'info'
+
 /** 磁盘格式（jsonc-parser 解析，允许注释） */
 interface ConfigFile {
   default?: { provider?: string; model?: string }
@@ -105,8 +110,9 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
   if (opts.loadDotenv !== false) {
     try {
       dotenv.config({ path: path.join(cwd, '.env') })
-    } catch {
-      // .env 读失败静默
+    } catch (e) {
+      // P2-2：不静默吞异常（AGENTS 1.2），stderr 提示（.env 失败不阻断，配置仍从文件读）
+      process.stderr.write(`[CONFIG] .env 加载失败（忽略）：${e instanceof Error ? e.message : String(e)}\n`)
     }
   }
 
@@ -187,9 +193,9 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
   return {
     providers,
     current: { name: providerName, model },
-    maxIterations: file.maxIterations ?? 50,
-    bashMaxOutputBytes: file.bashMaxOutputBytes ?? 30720,
-    logLevel: (file.logLevel as Config['logLevel']) ?? 'info',
+    maxIterations: file.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+    bashMaxOutputBytes: file.bashMaxOutputBytes ?? DEFAULT_BASH_MAX_BYTES,
+    logLevel: (file.logLevel as Config['logLevel']) ?? DEFAULT_LOG_LEVEL,
   }
 }
 
@@ -268,8 +274,8 @@ export function emptyShellConfig(): Config {
   return {
     providers: {},
     current: { name: '', model: '' },
-    maxIterations: 50,
-    bashMaxOutputBytes: 30720,
-    logLevel: 'info',
+    maxIterations: DEFAULT_MAX_ITERATIONS,
+    bashMaxOutputBytes: DEFAULT_BASH_MAX_BYTES,
+    logLevel: DEFAULT_LOG_LEVEL,
   }
 }

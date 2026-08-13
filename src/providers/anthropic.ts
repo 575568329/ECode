@@ -10,11 +10,18 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk'
-import type { LLMProvider, LLMProviderRunRequest } from './interface.js'
+import type { LLMProvider, LLMProviderRunRequest, ThinkingLevel } from './interface.js'
 import type { Delta, Message, StopReason } from '../core/types.js'
 
 /** M1 默认输出上限（max_tokens 是 SDK 必填；M4 从 config 透传）。 */
 const DEFAULT_MAX_TOKENS = 8192
+
+/** thinking 枚举 → Anthropic API 对象（D9，GLM/Anthropic 兼容端点格式 {type, budget_tokens}）。 */
+export function thinkingToAnthropic(thinking?: ThinkingLevel): Record<string, unknown> {
+  if (!thinking || thinking === 'off') return {} // 不传 = 模型默认（disabled）
+  const budget = { low: 2048, medium: 8192, high: 16384 }[thinking]
+  return { thinking: { type: 'enabled', budget_tokens: budget } }
+}
 
 /** SDK 流式事件的 usage 形状（input/output/cache，各字段都可能缺失）。 */
 interface RawUsage {
@@ -176,10 +183,13 @@ export class AnthropicProvider implements LLMProvider {
     const stream = client.messages.stream({
       model: req.model,
       system: req.system,
-      max_tokens: DEFAULT_MAX_TOKENS,
-      messages: toAnthropicMsgs(req.messages) as never,
-      tools: req.tools as never,
-    })
+      max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
+      ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+      ...(req.topP !== undefined ? { top_p: req.topP } : {}),
+      ...thinkingToAnthropic(req.thinking),
+      messages: toAnthropicMsgs(req.messages),
+      tools: req.tools,
+    } as never)
 
     // signal 透传：中断时 abort stream（SDK 抛 AbortError，loop 的 try/catch 固化已生成内容）
     if (req.signal) {

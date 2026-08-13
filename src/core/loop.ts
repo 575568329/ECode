@@ -20,7 +20,7 @@ import type {
   ToolUseBlock,
 } from './types.js'
 import { toAppError, toFatal } from './errors.js'
-import type { LLMProvider } from '../providers/interface.js'
+import type { LLMProvider, ProviderReq } from '../providers/interface.js'
 import type { ToolContext, ToolRegistry, ToolResult } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
@@ -75,7 +75,7 @@ export interface LoopRunOptions {
   logger: Logger
   history: HistoryStore
   callbacks: LoopCallbacks
-  providerReq: { name: string; baseURL: string; apiKey: string; model: string }
+  providerReq: ProviderReq
   system: string
   maxIterations: number
   toolCtx: ToolContext
@@ -96,6 +96,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     lastMsg.content.some((b) => b.type === 'text' && (b as { text?: string }).text === userInput)
   if (!alreadyUser) {
     messages.push({ role: 'user', content: [{ type: 'text', text: userInput }] })
+    opts.history.append(messages.at(-1)!) // P0-3：初始 user 也要落盘（restore 才完整）
   }
 
   let retryCount = 0
@@ -113,10 +114,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     try {
       opts.logger.debug('provider', 'request', { messageCount: messages.length }, iter)
       for await (const d of opts.provider.run({
-        name: opts.providerReq.name,
-        baseURL: opts.providerReq.baseURL,
-        apiKey: opts.providerReq.apiKey,
-        model: opts.providerReq.model,
+        ...opts.providerReq,
         system: opts.system,
         messages,
         tools: opts.tools.specs(),

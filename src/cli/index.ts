@@ -13,8 +13,9 @@
  * 在 Node 启动前注入（ESM import 是 hoisted，写在代码里会晚于 chalk 锁 level）。
  */
 
-import { loadConfig, type M1Config } from '../services/config.js'
+import { loadConfig, buildProviderReq, type Config } from '../services/config.js'
 import { AnthropicProvider } from '../providers/anthropic.js'
+import { OpenaiProvider } from '../providers/openai.js'
 import { LLMProviderRegistryImpl } from '../providers/registry.js'
 import { ToolRegistryImpl } from '../tools/registry.js'
 import { readFileTool } from '../tools/builtin/read_file.js'
@@ -26,11 +27,10 @@ import { writeFileTool } from '../tools/builtin/write_file.js'
 import { editFileTool } from '../tools/builtin/edit_file.js'
 import { JsonlLogger } from '../services/logger.js'
 import { LogStore } from '../services/logstore.js'
-import { NoopHistoryStore } from '../services/history.js'
+import { FileHistoryStore } from '../services/history.js'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { render } from 'ink'
 import React from 'react'
 import { TuiApp } from '../tui/TuiApp.js'
@@ -46,12 +46,13 @@ interface Deps {
   tools: ToolRegistry
   logger: Logger
   history: HistoryStore
-  cfg: M1Config
+  config: Config
 }
 
-function makeDeps(cfg: M1Config, logger: Logger): Deps {
+function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   const providerReg = new LLMProviderRegistryImpl()
   providerReg.register(new AnthropicProvider())
+  providerReg.register(new OpenaiProvider())
   const toolReg = new ToolRegistryImpl()
   toolReg.register(readFileTool)
   toolReg.register(bashTool)
@@ -61,11 +62,11 @@ function makeDeps(cfg: M1Config, logger: Logger): Deps {
   toolReg.register(writeFileTool)
   toolReg.register(editFileTool)
   return {
-    provider: providerReg.getByType(cfg.type),
+    provider: providerReg.getByType(config.providers[config.current.name].type),
     tools: toolReg,
     logger,
-    history: new NoopHistoryStore(),
-    cfg,
+    history: new FileHistoryStore({ sessionId, model: config.current.model }),
+    config,
   }
 }
 
@@ -86,35 +87,30 @@ async function runOnce(messages: Message[], input: string, deps: Deps): Promise<
       onUsage: (inp, out) => process.stdout.write(`\n[tokens: in ${inp} / out ${out}]\n`),
       onWarn: (m) => process.stdout.write(`\n⚠ ${m}\n`),
     },
-    providerReq: {
-      name: deps.cfg.providerName,
-      baseURL: deps.cfg.baseURL,
-      apiKey: deps.cfg.apiKey,
-      model: deps.cfg.model,
-    },
+    providerReq: buildProviderReq(deps.config),
     system: buildSystemPrompt(),
-    maxIterations: deps.cfg.maxIterations,
+    maxIterations: deps.config.maxIterations,
     toolCtx: { cwd: process.cwd(), signal: new AbortController().signal },
   })
   process.stdout.write('\n')
 }
 
 async function main(): Promise<void> {
-  const cfg = loadConfig()
+  const config = loadConfig()
   registerBuiltinCommands()
 
-  // LogStore：JSONL 落盘 ~/.ecode/logs/<sessionId>.jsonl（运行 trace，排查用，不进 context）
+  // LogStore：JSONL 落盘 <cwd>/.ecode/logs/<sessionId>.jsonl（项目级，运行 trace；D12：ephemeral 数据跟项目走）
   const sessionId = new Date().toISOString().replace(/[:.]/g, '-')
-  const logPath = join(homedir(), '.ecode', 'logs', `${sessionId}.jsonl`)
+  const logPath = join(process.cwd(), '.ecode', 'logs', `${sessionId}.jsonl`)
   const logStore = new LogStore(logPath, sessionId)
   const logger = new JsonlLogger(logStore)
   logger.info('system', 'startup', {
-    model: cfg.model,
+    model: config.current.model,
     cwd: process.cwd(),
     logPath,
     node: process.version,
     platform: process.platform,
-    providerType: cfg.type,
+    providerType: config.providers[config.current.name].type,
   })
   process.on('exit', () => {
     logger.info('system', 'shutdown', { exitCode: process.exitCode })
@@ -134,7 +130,7 @@ async function main(): Promise<void> {
     process.exit(1)
   })
 
-  const deps = makeDeps(cfg, logger)
+  const deps = makeDeps(config, logger, sessionId)
 
   // argv 单次模式：M1 stdout 输出 → 跑一次退出
   const initialInput = process.argv.slice(2).join(' ').trim()

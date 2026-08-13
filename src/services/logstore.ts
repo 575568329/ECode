@@ -52,8 +52,12 @@ export class LogStore {
           this.streamErrorNotified = true
         }
       })
-    } catch {
+    } catch (e) {
       this.stream = null
+      // 只读目录/无权限创建失败：日志不落盘但不崩，stderr 提示一次（D12 配套）
+      process.stderr.write(
+        `[LogStore] 日志目录创建失败（只读/无权限？），日志不落盘: ${e instanceof Error ? e.message : String(e)}\n`,
+      )
     }
   }
 

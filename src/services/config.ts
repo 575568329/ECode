@@ -1,15 +1,12 @@
 /**
- * Config 最小切片（M1）。
+ * Config 完整版（M4 P0-1）。
  *
- * 详设 §4.1 + 解析决策 1。M1 只读单 provider 的 baseURL/apiKey/model + maxIterations。
+ * 详设 §4 + M4 §4。providers map + current + per-provider 采样参数。
  * 优先级（高→低）：进程环境变量（含 .env 加载，dev 内部机制）> config 文件 > 默认值。
  *
- * 用户体验（终端用户只感知 config.json）：
- *   - 首次启动检测 ~/.ecode/config.json 不存在 → 自动生成带注释的模板（apiKey 留空）
- *   - 提示用户编辑 config.json 填写 apiKey 后重启
- *   - 创建失败才报错；错误信息只引导编辑 config，不暴露 .env/环境变量（dev 内部）
- *
- * 完整 Config（多 provider/采样参数/交互式向导）留 M4。
+ * 数据分层（D12）：config.json 用户级（~/.ecode/），重要数据防误删。
+ * 配置有效性判断（D10）：不看「首次运行」，只看能否拿到有效 provider
+ *   （apiKey+baseURL+model 齐）。无效 → cli 进 REPL + banner 提示 /setup。
  */
 
 import * as fs from 'node:fs'
@@ -17,29 +14,35 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 import { parse as parseJsonc } from 'jsonc-parser'
 import dotenv from 'dotenv'
+import type { ProviderReq, ThinkingLevel } from '../providers/interface.js'
 
-export interface M1Config {
-  /** 配置实例名（对应 config.providers 的 key，用作 Provider client 缓存键） */
-  providerName: string
-  /** 协议类型（providers[name].type，喂 registry.getByType） */
-  type: string
-  model: string
+/** 单个供应商配置（export：buildProviderReq / Wizard / /model 都要用） */
+export interface ProviderCfg {
+  type: 'anthropic' | 'openai'
   baseURL: string
   apiKey: string
+  models: string[]
+  temperature?: number
+  topP?: number
+  maxTokens?: number
+  thinking?: ThinkingLevel
+}
+
+export interface Config {
+  providers: Record<string, ProviderCfg> // 多 provider map
+  current: { name: string; model: string } // 当前激活（/model 改这个）
   maxIterations: number
+  bashMaxOutputBytes: number
+  logLevel: 'debug' | 'info' | 'warn' | 'error'
 }
 
-interface ProviderCfg {
-  type?: string
-  baseURL?: string
-  apiKey?: string
-  models?: string[]
-}
-
+/** 磁盘格式（jsonc-parser 解析，允许注释） */
 interface ConfigFile {
   default?: { provider?: string; model?: string }
-  providers?: Record<string, ProviderCfg>
+  providers?: Record<string, Partial<ProviderCfg>>
   maxIterations?: number
+  bashMaxOutputBytes?: number
+  logLevel?: string
 }
 
 export interface LoadConfigOpts {
@@ -55,30 +58,37 @@ function defaultConfigPath(): string {
   return path.join(os.homedir(), '.ecode', 'config.json')
 }
 
-/** 首次运行自动生成的模板（JSONC，带注释引导；apiKey 留空让用户填）。 */
+/** 首次运行自动生成的模板（JSONC，带注释引导；§4.4）。 */
 const CONFIG_TEMPLATE = `{
-  // ECode 配置（首次启动自动生成）。编辑后重启生效。
+  // ECode 配置（首次启动自动生成）。编辑后重启生效，或运行时 /model 切换、/setup 重配。
   // 启动默认选中的 供应商+模型
   "default": { "provider": "astron", "model": "glm-5.2" },
 
-  // 供应商：key=自定义名字，value 含协议类型/端点/密钥/可选模型
+  // 供应商：key=自定义名字，value 含协议/端点/密钥/模型/采样参数
   "providers": {
     "astron": {
       "type": "anthropic",                                  // 协议：anthropic | openai
-      "baseURL": "https://open.bigmodel.cn/api/anthropic",  // 智谱 Anthropic 兼容端点（跑 GLM）
-      "apiKey": "",                                         // ← 请填写你的 API Key（必填）
-      "models": ["glm-5.2"]
+      "baseURL": "https://open.bigmodel.cn/api/anthropic",  // 端点（示例，按需改）
+      "apiKey": "",                                         // ← 必填
+      "models": ["glm-5.2"],                                // 可用模型（/model 列这些；可多个）
+      "thinking": "medium",                                 // 思考强度：off | low | medium | high
+      "maxTokens": 8192                                     // 单次最大输出 token
+      // "temperature": 0.7,                                // 采样温度（可选，per-provider）
+      // "topP": 0.95                                       // nucleus sampling（可选）
     }
     // 多供应商示例（按需启用）：
     // "deepseek": {
     //   "type": "openai",
     //   "baseURL": "https://api.deepseek.com/v1",
-    //   "apiKey": "",                                       // ← 请填写
-    //   "models": ["deepseek-v4-pro"]
+    //   "apiKey": "",
+    //   "models": ["deepseek-v4-pro"],
+    //   "thinking": "off"
     // }
   },
 
-  "maxIterations": 50
+  "maxIterations": 50,        // Agent 循环最大轮数
+  "bashMaxOutputBytes": 30720 // bash 输出截断阈值（30KB 头尾中截）
+  // "logLevel": "info"       // 日志级别：debug | info | warn | error
 }
 `
 
@@ -88,7 +98,7 @@ function writeDefaultConfig(cfgPath: string): void {
   fs.writeFileSync(cfgPath, CONFIG_TEMPLATE, 'utf8')
 }
 
-export function loadConfig(opts: LoadConfigOpts = {}): M1Config {
+export function loadConfig(opts: LoadConfigOpts = {}): Config {
   const cwd = opts.cwd ?? process.cwd()
 
   // .env 加载（dev 内部，不暴露给用户；不存在则静默）
@@ -106,7 +116,7 @@ export function loadConfig(opts: LoadConfigOpts = {}): M1Config {
   try {
     file = parseJsonc(fs.readFileSync(cfgPath, 'utf8')) as ConfigFile
   } catch {
-    // config 不存在：首次运行，自动生成模板（除非创建失败）
+    // config 不存在 → 生成完整模板（D10：给编辑起点，但不当判断依据）
     try {
       writeDefaultConfig(cfgPath)
       created = true
@@ -115,42 +125,79 @@ export function loadConfig(opts: LoadConfigOpts = {}): M1Config {
         `[CONFIG_CREATE_FAILED] 无法创建配置文件 ${cfgPath}: ${e instanceof Error ? e.message : String(e)}`,
       )
     }
-    // 新建的模板本次按空解析（靠 env 覆盖，或校验失败提示用户编辑）
     file = {}
   }
 
   // 选 provider：default.provider 优先，否则第一个，否则 'astron'（默认）
-  const providerName = file.default?.provider ?? Object.keys(file.providers ?? {})[0] ?? 'astron'
-  const providerCfg = file.providers?.[providerName] ?? {}
+  const providersIn = file.providers ?? {}
+  const providerName = file.default?.provider ?? Object.keys(providersIn)[0] ?? 'astron'
+  const rawCfg = providersIn[providerName] ?? {}
 
   // 优先级：环境变量（含 dev .env）> config > 默认
-  const type = providerCfg.type ?? process.env.ECODE_TYPE ?? 'anthropic'
-  const model = process.env.ECODE_MODEL ?? file.default?.model ?? providerCfg.models?.[0]
-  const baseURL = process.env.ECODE_BASE_URL ?? providerCfg.baseURL
-  const apiKey = process.env.ANTHROPIC_API_KEY ?? providerCfg.apiKey
-  const maxIterations = file.maxIterations ?? 50
+  const type = (rawCfg.type ?? process.env.ECODE_TYPE ?? 'anthropic') as ProviderCfg['type']
+  const baseURL = process.env.ECODE_BASE_URL ?? rawCfg.baseURL
+  const apiKey = process.env.ANTHROPIC_API_KEY ?? rawCfg.apiKey
+  const model = process.env.ECODE_MODEL ?? file.default?.model ?? rawCfg.models?.[0]
 
-  // 首次生成模板：若 env 没补全关键字段，提示用户编辑 config 后重启
-  if (created) {
-    if (!apiKey || !baseURL || !model) {
-      throw new Error(
-        `[CONFIG_INIT] 首次运行：已为你生成配置模板 ${cfgPath}。请编辑填写 apiKey（及 baseURL/model）后重启。`,
-      )
-    }
-    // env 补全了（dev .env）——继续跑，但提示用户模板已生成可按需编辑
+  // 首次生成模板 + env 补全 → 提示可编辑（继续跑）
+  if (created && apiKey && baseURL && model) {
     process.stderr.write(`[CONFIG] 已生成配置模板 ${cfgPath}（本次用环境变量运行，可按需编辑模板）\n`)
   }
 
-  // 校验：错误信息只引导编辑 config（不暴露 .env/环境变量给终端用户）
+  // D10：统一有效性校验（不分首次/非首次；错误信息引导 /setup 或编辑 config）
   if (!apiKey) {
-    throw new Error(`[NO_API_KEY] 缺少 API Key。请编辑 ${cfgPath} 的 providers.${providerName}.apiKey 填写你的 Key`)
+    throw new Error(`[NO_API_KEY] 缺少 API Key。请编辑 ${cfgPath} 的 providers.${providerName}.apiKey，或运行 /setup`)
   }
   if (!baseURL) {
-    throw new Error(`[NO_BASE_URL] 缺少 baseURL。请编辑 ${cfgPath} 的 providers.${providerName}.baseURL`)
+    throw new Error(`[NO_BASE_URL] 缺少 baseURL。请编辑 ${cfgPath} 的 providers.${providerName}.baseURL，或运行 /setup`)
   }
   if (!model) {
-    throw new Error(`[NO_MODEL] 缺少 model。请编辑 ${cfgPath} 的 default.model 或 providers.${providerName}.models`)
+    throw new Error(`[NO_MODEL] 缺少 model。请编辑 ${cfgPath} 的 default.model，或运行 /setup`)
   }
 
-  return { providerName, type, model, baseURL, apiKey, maxIterations }
+  // 构造 providers map（磁盘 Partial → 完整 ProviderCfg）
+  const providers: Record<string, ProviderCfg> = {}
+  for (const [name, cfg] of Object.entries(providersIn)) {
+    providers[name] = {
+      type: (cfg.type ?? 'anthropic') as ProviderCfg['type'],
+      baseURL: cfg.baseURL ?? '',
+      apiKey: cfg.apiKey ?? '',
+      models: cfg.models ?? [],
+      ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+      ...(cfg.topP !== undefined ? { topP: cfg.topP } : {}),
+      ...(cfg.maxTokens !== undefined ? { maxTokens: cfg.maxTokens } : {}),
+      ...(cfg.thinking !== undefined ? { thinking: cfg.thinking as ThinkingLevel } : {}),
+    }
+  }
+  // env 覆盖当前 provider 关键字段（dev 场景：.env 注入）
+  providers[providerName] = {
+    ...providers[providerName],
+    type,
+    baseURL,
+    apiKey,
+    models: rawCfg.models?.length ? rawCfg.models : [model],
+  }
+
+  return {
+    providers,
+    current: { name: providerName, model },
+    maxIterations: file.maxIterations ?? 50,
+    bashMaxOutputBytes: file.bashMaxOutputBytes ?? 30720,
+    logLevel: (file.logLevel as Config['logLevel']) ?? 'info',
+  }
+}
+
+/** 从 Config 派生 ProviderReq（cli argv + TuiApp submit 共用，避免漂移 P1-3） */
+export function buildProviderReq(config: Config): ProviderReq {
+  const cfg = config.providers[config.current.name]
+  return {
+    name: config.current.name,
+    baseURL: cfg.baseURL,
+    apiKey: cfg.apiKey,
+    model: config.current.model,
+    ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+    ...(cfg.topP !== undefined ? { topP: cfg.topP } : {}),
+    ...(cfg.maxTokens !== undefined ? { maxTokens: cfg.maxTokens } : {}),
+    ...(cfg.thinking !== undefined ? { thinking: cfg.thinking } : {}),
+  }
 }

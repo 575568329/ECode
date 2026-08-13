@@ -1,0 +1,114 @@
+import { describe, it, expect } from 'vitest'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import * as os from 'node:os'
+import { FileHistoryStore, NoopHistoryStore } from '../../src/services/history.js'
+import type { Message } from '../../src/core/types.js'
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-hist-'))
+
+function userMsg(text: string): Message {
+  return { role: 'user', content: [{ type: 'text', text }] }
+}
+function assistantMsg(text: string): Message {
+  return { role: 'assistant', content: [{ type: 'text', text }] }
+}
+
+describe('FileHistoryStore', () => {
+  it('append 写首行 meta + message 行', () => {
+    const dir = path.join(tmp, `a-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'sess-a', model: 'glm-5.2', dir })
+    store.append(userMsg('你好'))
+    store.append(assistantMsg('你好！有什么可以帮你？'))
+    const content = fs.readFileSync(path.join(dir, 'sess-a.jsonl'), 'utf8')
+    const lines = content.trim().split('\n')
+    expect(lines.length).toBe(3) // meta + 2 messages
+    const meta = JSON.parse(lines[0])
+    expect(meta.meta).toBe(true)
+    expect(meta.sessionId).toBe('sess-a')
+    expect(meta.firstUser).toBe('你好')
+    expect(meta.model).toBe('glm-5.2')
+    expect(JSON.parse(lines[1]).role).toBe('user')
+    expect(JSON.parse(lines[2]).role).toBe('assistant')
+  })
+
+  it('存原始 Message（不脱敏，P0-6）', () => {
+    const dir = path.join(tmp, `redact-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'sess-r', model: 'm', dir })
+    // 对话里含 API key（模拟用户贴 key）——必须原样存，脱敏会让 restore 喂不回 LLM
+    store.append(userMsg('我的 key 是 sk-abc1234567890'))
+    const content = fs.readFileSync(path.join(dir, 'sess-r.jsonl'), 'utf8')
+    expect(content).toContain('sk-abc1234567890') // 原文，没变 [REDACTED]
+  })
+
+  it('loadAll 读首行 meta（按 createdAt 倒序）', () => {
+    const dir = path.join(tmp, `load-${Date.now()}`)
+    const s1 = new FileHistoryStore({ sessionId: 'old', model: 'm1', dir })
+    s1.append(userMsg('旧问题'))
+    // 稍后创建 s2（createdAt 更新）
+    const s2 = new FileHistoryStore({ sessionId: 'new', model: 'm2', dir })
+    s2.append(userMsg('新问题'))
+    // 用独立 store 读（loadAll 是无状态目录扫描）
+    const reader = new FileHistoryStore({ sessionId: 'reader', model: 'm', dir })
+    const metas = reader.loadAll()
+    expect(metas).toHaveLength(2) // old + new（reader 构造只 ensureDir，没 append 无文件）
+    expect(metas[0].sessionId).toBe('new') // 倒序：新在前
+    expect(metas[1].sessionId).toBe('old')
+    expect(metas[0].firstUser).toBe('新问题')
+  })
+
+  it('restore 还原 Message[]（跳过 meta 行）', () => {
+    const dir = path.join(tmp, `restore-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'sess-rest', model: 'm', dir })
+    store.append(userMsg('恢复测试'))
+    store.append(assistantMsg('回复'))
+    const reader = new FileHistoryStore({ sessionId: 'reader', model: 'm', dir })
+    const msgs = reader.restore('sess-rest')
+    expect(msgs).toHaveLength(2) // 跳过 meta
+    expect(msgs[0].role).toBe('user')
+    expect(msgs[1].role).toBe('assistant')
+  })
+
+  it('setSessionId 切新文件（旧只读不破坏）', () => {
+    const dir = path.join(tmp, `setid-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'old-sess', model: 'm', dir })
+    store.append(userMsg('旧会话内容'))
+    store.setSessionId('new-sess', 'new-model')
+    store.append(userMsg('新会话内容'))
+    // 旧文件保留
+    const oldContent = fs.readFileSync(path.join(dir, 'old-sess.jsonl'), 'utf8')
+    expect(oldContent).toContain('旧会话内容')
+    expect(oldContent).not.toContain('新会话内容')
+    // 新文件独立
+    const newContent = fs.readFileSync(path.join(dir, 'new-sess.jsonl'), 'utf8')
+    expect(newContent).toContain('新会话内容')
+    expect(newContent).not.toContain('旧会话内容')
+    const newMeta = JSON.parse(newContent.split('\n')[0])
+    expect(newMeta.model).toBe('new-model')
+  })
+
+  it('restore 不存在的 session → 空 []', () => {
+    const dir = path.join(tmp, `miss-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'x', model: 'm', dir })
+    expect(store.restore('nonexistent')).toEqual([])
+  })
+
+  it('loadAll 空/不存在目录 → []', () => {
+    const store = new FileHistoryStore({
+      sessionId: 'x',
+      model: 'm',
+      dir: path.join(tmp, `empty-${Date.now()}-no-such`),
+    })
+    expect(store.loadAll()).toEqual([])
+  })
+})
+
+describe('NoopHistoryStore', () => {
+  it('全部 noop（兜底/测试隔离）', () => {
+    const noop = new NoopHistoryStore()
+    noop.append(userMsg('x'))
+    expect(noop.loadAll()).toEqual([])
+    expect(noop.restore('x')).toEqual([])
+    expect(() => noop.setSessionId('y')).not.toThrow()
+  })
+})

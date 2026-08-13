@@ -16,6 +16,7 @@ import { createActive, type CommittedItem, type ActiveState } from './types.js'
 import { messagesToCommitted, findUse } from './commit.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { buildPreview } from '../services/preview.js'
+import { buildProviderReq, type Config } from '../services/config.js'
 
 /** 清屏（可见区 + scrollback + 光标归位）；/clear 用，清可见区残留 */
 const CLEAR_TERMINAL = '\x1b[2J\x1b[3J\x1b[H'
@@ -25,13 +26,7 @@ export interface TuiAppDeps {
   tools: ToolRegistry
   logger: Logger
   history: HistoryStore
-  cfg: {
-    providerName: string
-    baseURL: string
-    apiKey: string
-    model: string
-    maxIterations: number
-  }
+  config: Config
 }
 
 function isAbortError(e: unknown): boolean {
@@ -130,14 +125,9 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
           onActivity: (state, text) => setActivity({ state, text }),
           onWarn: (m) => setWarn(m),
         },
-        providerReq: {
-          name: deps.cfg.providerName,
-          baseURL: deps.cfg.baseURL,
-          apiKey: deps.cfg.apiKey,
-          model: deps.cfg.model,
-        },
+        providerReq: buildProviderReq(deps.config),
         system: buildSystemPrompt(),
-        maxIterations: deps.cfg.maxIterations,
+        maxIterations: deps.config.maxIterations,
         toolCtx: { cwd: process.cwd(), signal: abortRef.current.signal },
         signal: abortRef.current.signal,
         confirm: async (use) => {
@@ -218,7 +208,7 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
   return (
     <App
       key={clearKey}
-      model={deps.cfg.model}
+      model={deps.config.current.model}
       committed={fullCommitted}
       active={active}
       onToggleTool={hasDoneTool ? toggleExpand : undefined}

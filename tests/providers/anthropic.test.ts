@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { translateAnthropicStream } from '../../src/providers/anthropic.js'
+import { translateAnthropicStream, thinkingToAnthropic } from '../../src/providers/anthropic.js'
 
 /**
  * translateAnthropicStream：把 Anthropic 协议事件序列翻译成统一 Delta 序列。
@@ -140,5 +140,24 @@ describe('translateAnthropicStream', () => {
       { type: 'usage', input_tokens: 200, output_tokens: 30 },
       { type: 'done', stop_reason: 'end' },
     ])
+  })
+})
+
+describe('thinkingToAnthropic', () => {
+  it('off / undefined → 空对象（不传，模型默认）', () => {
+    expect(thinkingToAnthropic('off')).toEqual({})
+    expect(thinkingToAnthropic(undefined)).toEqual({})
+  })
+
+  it('low → enabled + budget 2048', () => {
+    expect(thinkingToAnthropic('low')).toEqual({ thinking: { type: 'enabled', budget_tokens: 2048 } })
+  })
+
+  it('medium → enabled + budget 8192', () => {
+    expect(thinkingToAnthropic('medium')).toEqual({ thinking: { type: 'enabled', budget_tokens: 8192 } })
+  })
+
+  it('high → enabled + budget 16384', () => {
+    expect(thinkingToAnthropic('high')).toEqual({ thinking: { type: 'enabled', budget_tokens: 16384 } })
   })
 })

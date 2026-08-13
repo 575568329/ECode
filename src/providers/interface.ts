@@ -11,13 +11,28 @@
 
 import type { Delta, Message, ToolSpec } from '../core/types.js'
 
-/** provider.run 的入参（配置由调用方注入，实现无状态）。 */
-export interface LLMProviderRunRequest {
+/** 思考强度枚举（D9）：协议无关语义层，各 Provider 内部翻译成自己的机制 */
+export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high'
+
+/**
+ * ProviderReq：从 Config 派生的 provider 调用配置（不含 system/messages/tools/signal，
+ * 那些由 loop 内部注入）。cli argv + TuiApp submit 共用（buildProviderReq，P1-3 去重）。
+ */
+export interface ProviderReq {
   /** 配置实例名（astron/deepseek/...），实现用它缓存 SDK client */
   name: string
   baseURL: string
   apiKey: string
   model: string
+  // M4 采样参数（per-provider，D4）
+  temperature?: number
+  topP?: number
+  maxTokens?: number
+  thinking?: ThinkingLevel
+}
+
+/** provider.run 的入参（ProviderReq + loop 内部注入的 system/messages/tools/signal）。 */
+export interface LLMProviderRunRequest extends ProviderReq {
   system: string
   messages: Message[]
   tools: ToolSpec[]

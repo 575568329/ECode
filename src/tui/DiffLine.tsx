@@ -18,10 +18,10 @@ export function DiffLine({ line }: { line: string }): ReactElement {
     return <Text color={theme.info}>{line}</Text>
   }
   if (line.startsWith('-')) {
-    return <Text color={theme.error}>{line}</Text>
+    return <Text backgroundColor={theme.errorBg}>{line}</Text>
   }
   if (line.startsWith('+')) {
-    return <Text color={theme.success}>{line}</Text>
+    return <Text backgroundColor={theme.successBg}>{line}</Text>
   }
   return <Text>{line}</Text>
 }

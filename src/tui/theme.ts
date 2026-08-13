@@ -10,7 +10,7 @@
 export const theme = {
   user: '#E6E6E6', // 用户消息文字（亮，不灰；靠 userBg 背景块区分）
   assistant: '#E6E6E6', // 助手正文
-  tool: '#ffffff', // 工具名（accent 蓝）
+  tool: '#F5A742', // 工具名（accent 暖橙）
   success: '#7FD88F', // ✓ 成功（柔和绿）
   error: '#E06C75', // ✗ 错误（柔和红）
   warn: '#E5C07B', // ⚠ 警告（暖黄，不刺眼）
@@ -20,6 +20,8 @@ export const theme = {
   userBg: '#282828', // 用户消息背景块
   border: '#3C3C3C', // 分隔线/边框
   info: '#5C9CF5', // 链接/提示符
+  errorBg: '#3a2020', // diff 删除行背景（暗红）
+  successBg: '#1e3020', // diff 新增行背景（暗绿）
 } as const
 
 export type Theme = typeof theme

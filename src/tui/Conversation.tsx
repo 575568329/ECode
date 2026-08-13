@@ -91,7 +91,7 @@ export function Conversation({
       {/* 动态区：当前轮 ①②③ + confirm */}
       {active.userInput !== '' && <FoldedUserInput text={active.userInput} />}
       {active.tools.length > 0 && (
-        <ToolGroupView tools={active.tools} expanded={toolExpanded} onToggle={onToggleTool} />
+        <ToolGroupView tools={active.tools} expanded={toolExpanded} done={!active.streaming} onToggle={onToggleTool} />
       )}
       {active.confirm ? (
         <ConfirmPrompt state={active.confirm} onConfirm={onConfirm} onCancel={onCancel} />

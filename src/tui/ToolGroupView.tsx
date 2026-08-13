@@ -29,12 +29,14 @@ function formatBytes(n: number): string {
  */
 interface ToolGroupViewProps {
   tools: ActiveTool[]
-  /** 受控展开；默认 false（折叠，显示 preview） */
+  /** 受控展开（Ctrl+O 全展）；默认 false（折叠） */
   expanded?: boolean
+  /** 本轮是否结束（runLoop 完成）。副作用工具仅在本轮结束时展开 diff，进行中折叠省空间（本轮可能多 edit） */
+  done?: boolean
   onToggle?: () => void
 }
 
-export function ToolGroupView({ tools, expanded = false, onToggle }: ToolGroupViewProps): ReactElement {
+export function ToolGroupView({ tools, expanded = false, done, onToggle }: ToolGroupViewProps): ReactElement {
   if (tools.length === 0) return <Box />
   const { count, visible, overflow } = mergeToolGroup(tools)
   const shown = expanded ? tools : visible
@@ -75,7 +77,9 @@ export function ToolGroupView({ tools, expanded = false, onToggle }: ToolGroupVi
         // 副作用工具（edit_file/write_file）默认展开输出（直接显示 diff/content），
         // 只读工具默认折叠（▸ preview）；Ctrl+O 全展开覆盖
         const isSideEffect = t.name === 'edit_file' || t.name === 'write_file'
-        const showFull = expanded || isSideEffect
+        // 副作用工具仅在本轮结束（done）时展开 diff；进行中折叠省空间（本轮可能多 edit）；
+        // Static done=undefined → 展开（事后完整看）；Ctrl+O（expanded）强制全展
+        const showFull = expanded || (isSideEffect && done !== false)
         const preview = previewLine(content)
         return (
           <Box key={id} flexDirection="column" paddingLeft={3}>

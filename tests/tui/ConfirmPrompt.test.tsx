@@ -68,4 +68,17 @@ describe('ConfirmPrompt', () => {
     expect(resolved).toBe(false)
     expect(cleared).toBe(true)
   })
+
+  it('回车（默认选中 y）→ resolve(true)', () => {
+    let resolved: boolean | null = null
+    const s = makeState('bash', { command: 'x' }, 'x')
+    s.resolve = (ok) => {
+      resolved = ok
+    }
+    const { stdin } = render(
+      React.createElement(ConfirmPrompt, { state: s, onConfirm: () => {} }),
+    )
+    stdin.write('\r')
+    expect(resolved).toBe(true)
+  })
 })

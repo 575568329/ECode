@@ -1,17 +1,24 @@
+import { useState } from 'react'
 import type { ReactElement } from 'react'
 import { Box, Text, useInput } from 'ink'
 import type { ConfirmState } from './types.js'
 import { theme } from './theme.js'
 
 /**
- * 确认弹窗（详设 §7.3）：副作用工具执行前给用户 y/n 决策。
+ * 确认弹窗（详设 §7.3）：副作用工具执行前给用户决策。
  *
- * - edit_file：unified diff（按行着色：- 红 / + 绿 / @@ 蓝）
+ * 交互：
+ * - ← →：在「执行 / 取消」间切换（默认选中「执行」）
+ * - 回车：确认当前选中（默认直接回车 = 执行）
+ * - y/n：快捷键直接确认（兼容老习惯）
+ * - Ctrl+C：取消该工具（P0#1：useInterrupt 守卫不抢）
+ *
+ * 展示：
+ * - edit_file：unified diff（按行着色：- 红 / + 绿 / @@ 蓝 / --- +++ 加粗）
  * - write_file：content 片段（灰）
- * - bash：完整命令字符串（灰）
+ * - bash：完整命令（灰）
  *
- * useInput 抓 y/n/Ctrl+C → resolve + 清 confirm（P0#1：useInterrupt 守卫不抢 Ctrl+C）。
- * y/n 后组件由父卸载（active.confirm=null），不残留动态区。
+ * y/n/回车后组件由父卸载（active.confirm=null），不残留动态区。
  */
 
 interface ConfirmPromptProps {
@@ -21,7 +28,7 @@ interface ConfirmPromptProps {
   onCancel?: () => void
 }
 
-/** diff 行着色：- 红 / + 绿 / @@ 蓝 / --- +++ 标题加粗 */
+/** diff 行着色：- 红 / + 绿 / @@ 蓝 / --- +++ 加粗 */
 function DiffLine({ line }: { line: string }): ReactElement {
   if (line.startsWith('+++') || line.startsWith('---')) {
     return <Text bold>{line}</Text>
@@ -42,14 +49,27 @@ export function ConfirmPrompt({ state, onConfirm, onCancel }: ConfirmPromptProps
   const input = state.use.input as Record<string, unknown>
   const target = String(input.path ?? input.command ?? '')
   const isDiff = state.use.name === 'edit_file'
+  // 默认选中「执行」（y）—— 直接回车就继续，符合「确认优先」直觉
+  const [selected, setSelected] = useState<'y' | 'n'>('y')
+
+  const decide = (ok: boolean) => {
+    state.resolve(ok)
+    if (ok) onConfirm?.()
+    else onCancel?.()
+  }
 
   useInput((inputChar, key) => {
-    if (inputChar === 'y') {
-      state.resolve(true)
-      onConfirm?.()
-    } else if (inputChar === 'n' || (key.ctrl && inputChar === 'c')) {
-      state.resolve(false)
-      onCancel?.()
+    if (key.leftArrow || key.rightArrow) {
+      // 两个选项，左右键 toggle
+      setSelected((s) => (s === 'y' ? 'n' : 'y'))
+    } else if (inputChar === 'y') {
+      decide(true)
+    } else if (inputChar === 'n') {
+      decide(false)
+    } else if (key.return) {
+      decide(selected === 'y')
+    } else if (key.ctrl && inputChar === 'c') {
+      decide(false)
     }
   })
 
@@ -71,11 +91,14 @@ export function ConfirmPrompt({ state, onConfirm, onCancel }: ConfirmPromptProps
           : <Text dimColor>{state.preview}</Text>}
       </Box>
       <Box marginTop={1}>
-        <Text bold>[y]</Text>
-        <Text dimColor> 执行   </Text>
-        <Text bold>[n]</Text>
-        <Text dimColor> 取消   </Text>
-        <Text dimColor>(Ctrl+C 取消该工具)</Text>
+        <Text inverse={selected === 'y'} bold={selected === 'y'}>
+          {' [y] 执行 '}
+        </Text>
+        <Text>   </Text>
+        <Text inverse={selected === 'n'} bold={selected === 'n'}>
+          {' [n] 取消 '}
+        </Text>
+        <Text dimColor>   ← →选择 · 回车确认 · Ctrl+C 取消</Text>
       </Box>
     </Box>
   )

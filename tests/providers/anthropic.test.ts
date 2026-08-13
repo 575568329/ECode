@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { translateAnthropicStream, thinkingToAnthropic } from '../../src/providers/anthropic.js'
+import { translateAnthropicStream, thinkingToAnthropic, resolveMaxTokens } from '../../src/providers/anthropic.js'
 
 /**
  * translateAnthropicStream：把 Anthropic 协议事件序列翻译成统一 Delta 序列。
@@ -159,5 +159,26 @@ describe('thinkingToAnthropic', () => {
 
   it('high → enabled + budget 16384', () => {
     expect(thinkingToAnthropic('high')).toEqual({ thinking: { type: 'enabled', budget_tokens: 16384 } })
+  })
+})
+
+describe('resolveMaxTokens', () => {
+  it('thinking off/undefined → maxTokens 或默认 8192', () => {
+    expect(resolveMaxTokens(undefined, 'off')).toBe(8192)
+    expect(resolveMaxTokens(undefined, undefined)).toBe(8192)
+    expect(resolveMaxTokens(1000, 'off')).toBe(1000)
+  })
+
+  it('thinking medium + maxTokens 8192 → clamp 到 8193（budget+1，P0-2）', () => {
+    expect(resolveMaxTokens(8192, 'medium')).toBe(8193)
+    expect(resolveMaxTokens(undefined, 'medium')).toBe(8193)
+  })
+
+  it('thinking high → clamp 到 16385', () => {
+    expect(resolveMaxTokens(8192, 'high')).toBe(16385)
+  })
+
+  it('maxTokens 已 > budget → 不变', () => {
+    expect(resolveMaxTokens(20000, 'high')).toBe(20000)
   })
 })

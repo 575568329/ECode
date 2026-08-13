@@ -33,6 +33,37 @@ describe('writeWizardConfig', () => {
     expect(cfg.providers.default.models).toEqual(['glm-5.2', 'glm-4'])
     expect(cfg.providers.default.thinking).toBe('medium')
   })
+
+  it('特殊字符 apiKey/baseURL（含 "/\/换行）→ round-trip 正确（P1-4）', () => {
+    writeWizardConfig(
+      { type: 'anthropic', baseURL: 'http://x/"weird"', apiKey: 'sk-"k"\\with\nnl', models: 'm', thinking: 'off' },
+      { configPath: cfgPath },
+    )
+    const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
+    expect(cfg.providers.default.apiKey).toBe('sk-"k"\\with\nnl')
+    expect(cfg.providers.default.baseURL).toBe('http://x/"weird"')
+  })
+
+  it('空 apiKey → throw SETUP_INCOMPLETE 且不写文件（P1-4）', () => {
+    const emptyPath = path.join(tmp, 'empty.json')
+    expect(() =>
+      writeWizardConfig(
+        { type: 'anthropic', baseURL: 'http://x', apiKey: '   ', models: 'm', thinking: 'off' },
+        { configPath: emptyPath },
+      ),
+    ).toThrow(/SETUP_INCOMPLETE/)
+    expect(fs.existsSync(emptyPath)).toBe(false)
+  })
+
+  it('覆盖前备份现有 config → config.json.bak（P1-5）', () => {
+    writeConfig('{"old":"config"}')
+    writeWizardConfig(
+      { type: 'anthropic', baseURL: 'http://x', apiKey: 'sk', models: 'm', thinking: 'off' },
+      { configPath: cfgPath },
+    )
+    expect(fs.existsSync(cfgPath + '.bak')).toBe(true)
+    expect(fs.readFileSync(cfgPath + '.bak', 'utf8')).toBe('{"old":"config"}')
+  })
 })
 
 describe('emptyShellConfig', () => {
@@ -215,5 +246,14 @@ describe('buildProviderReq', () => {
     const req = buildProviderReq(cfg)
     expect(req.thinking).toBeUndefined()
     expect(req.temperature).toBeUndefined()
+  })
+
+  it('损坏的 config（非法 JSON）→ 抛错且不覆盖原文件（P0-1）', () => {
+    writeConfig('{ "default": invalid !!! garbage }')
+    const before = fs.readFileSync(cfgPath, 'utf8')
+    // jsonc-parser 容错（不抛，返回部分对象）→ loadConfig 走校验失败（NO_API_KEY 等）；
+    // 关键是不管抛什么错，写坏的文件不能被模板覆盖（用户数据不丢）
+    expect(() => loadConfig({ configPath: cfgPath, loadDotenv: false })).toThrow()
+    expect(fs.readFileSync(cfgPath, 'utf8')).toBe(before)
   })
 })

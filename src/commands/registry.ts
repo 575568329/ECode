@@ -98,7 +98,12 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
         const dir = path.dirname(defaultConfigPath())
         const cmd = process.platform === 'win32' ? 'explorer' : 'open'
         try {
-          spawn(cmd, [dir], { detached: true, stdio: 'ignore' }).unref()
+          // P1-11：spawn 失败（ENOENT 等）异步发 'error'，必须有监听否则 uncaughtException → exit
+          const child = spawn(cmd, [dir], { detached: true, stdio: 'ignore' })
+          child.on('error', (e) => {
+            process.stderr.write(`[CONFIG] 打开文件夹失败（${cmd} 未找到？）：${e.message}\n`)
+          })
+          child.unref()
         } catch (e) {
           return { output: `打开配置文件夹失败：${e instanceof Error ? e.message : String(e)}` }
         }

@@ -187,6 +187,11 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
 
   // 清动态/瞬态状态（onClear 和 restoreSession 共用；committed 由调用方设，§9.2 P2-6 别重写一套）
   const resetTransient = () => {
+    // 兜底：若有挂起的 confirm（inactive 本应挡住命令触发，此处 defense-in-depth），取消避免 Promise 永挂
+    if (active.confirm) {
+      active.confirm.resolve(false)
+      confirmRef.current = false
+    }
     setActive(createActive())
     setSystemMsgs([])
     setTokens(0)
@@ -203,6 +208,11 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
   // /history 恢复（§9.2）：restore → 重建 committed → 清瞬态 → 起新 session 续写（D2 旧文件只读）
   const restoreSession = (sessionId: string) => {
     const messages = deps.history.restore(sessionId)
+    // P1-10：restore 返回空（文件缺失/损坏/真空会话）→ 保留当前会话 + 提示，不静默清空
+    if (messages.length === 0) {
+      setSystemMsgs(['⚠ 恢复失败：该会话为空或已损坏（文件缺失/无消息），未切换'])
+      return
+    }
     messagesRef.current = messages
     setCommitted(messagesToCommitted(messages))
     resetTransient()
@@ -310,9 +320,9 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       {overlay?.kind === 'setup-wizard' && (
         <Wizard
           onComplete={(values) => {
-            writeWizardConfig(values)
+            // P1-6：write + reload 都进 try——写失败（空值校验/只读/磁盘满）→ banner 提示，不崩 TUI
             try {
-              // 写入后重载：有效 → 生效 + 清 banner；仍无效（如 apiKey 空）→ 保留提示
+              writeWizardConfig(values)
               setConfig(loadConfig())
               setBanner(undefined)
             } catch (e) {
@@ -358,7 +368,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
           setCommitted([])
           resetTransient()
         }}
-        inactive={overlay !== null}
+        inactive={overlay !== null || active.confirm !== null || runningRef.current}
         placeholder={busy ? '（处理中，Ctrl+C 中断）...' : '输入消息，/help 查看命令...'}
       />
     </App>

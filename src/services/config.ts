@@ -115,14 +115,19 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
   let created = false
   try {
     file = parseJsonc(fs.readFileSync(cfgPath, 'utf8')) as ConfigFile
-  } catch {
-    // config 不存在 → 生成完整模板（D10：给编辑起点，但不当判断依据）
+  } catch (e) {
+    // P0-1：仅文件不存在（ENOENT）才生成模板；解析失败（用户写坏 JSON）绝不覆盖——否则丢密钥/多 provider 配置
+    if (!(e instanceof Error && (e as NodeJS.ErrnoException).code === 'ENOENT')) {
+      throw new Error(
+        `[CONFIG_PARSE_FAILED] 配置文件解析失败 ${cfgPath}：${e instanceof Error ? e.message : String(e)}（请手动修复，或删除该文件后重启以生成模板）`,
+      )
+    }
     try {
       writeDefaultConfig(cfgPath)
       created = true
-    } catch (e) {
+    } catch (ce) {
       throw new Error(
-        `[CONFIG_CREATE_FAILED] 无法创建配置文件 ${cfgPath}: ${e instanceof Error ? e.message : String(e)}`,
+        `[CONFIG_CREATE_FAILED] 无法创建配置文件 ${cfgPath}: ${ce instanceof Error ? ce.message : String(ce)}`,
       )
     }
     file = {}
@@ -134,7 +139,8 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
   const rawCfg = providersIn[providerName] ?? {}
 
   // 优先级：环境变量（含 dev .env）> config > 默认
-  const type = (rawCfg.type ?? process.env.ECODE_TYPE ?? 'anthropic') as ProviderCfg['type']
+  // P1-12：统一 env 优先（与 baseURL/apiKey/model 一致），否则 ECODE_TYPE 切 protocol 无效
+  const type = (process.env.ECODE_TYPE ?? rawCfg.type ?? 'anthropic') as ProviderCfg['type']
   const baseURL = process.env.ECODE_BASE_URL ?? rawCfg.baseURL
   const apiKey = process.env.ANTHROPIC_API_KEY ?? rawCfg.apiKey
   const model = process.env.ECODE_MODEL ?? file.default?.model ?? rawCfg.models?.[0]
@@ -217,20 +223,27 @@ export interface WizardValues {
  * 文件权限 600（Windows chmod 弱化尽力，Linux/macOS 生效）。
  */
 export function writeWizardConfig(values: WizardValues, opts: { configPath?: string } = {}): void {
+  // P1-4：写前校验空值——防误按回车用空值覆盖有效 config
+  if (!values.baseURL.trim()) throw new Error('[SETUP_INCOMPLETE] baseURL 不能为空')
+  if (!values.apiKey.trim()) throw new Error('[SETUP_INCOMPLETE] apiKey 不能为空')
+  if (!values.models.trim()) throw new Error('[SETUP_INCOMPLETE] model 不能为空')
+
   const cfgPath = opts.configPath ?? defaultConfigPath()
   const models = values.models.split(',').map((s) => s.trim()).filter(Boolean)
+  // P1-4：每个字符串值过 JSON.stringify，防 " / \ 换行 等特殊字符破坏 JSON 结构（apiKey 常含特殊字符）
+  const j = JSON.stringify
   const content = `{
   // ECode 配置（/setup 向导生成）。编辑后重启生效，或运行时 /model 切换、/setup 重配。
-  "default": { "provider": "default", "model": "${models[0] ?? ''}" },
+  "default": { "provider": "default", "model": ${j(models[0] ?? '')} },
 
   "providers": {
     "default": {
-      "type": "${values.type}",                                  // 协议：anthropic | openai
-      "baseURL": "${values.baseURL}",                            // 端点
-      "apiKey": "${values.apiKey}",                              // API Key
-      "models": ${JSON.stringify(models)},                       // 可用模型（/model 列这些）
-      "thinking": "${values.thinking}",                          // 思考强度：off | low | medium | high
-      "maxTokens": 8192                                          // 单次最大输出 token
+      "type": ${j(values.type)},              // 协议：anthropic | openai
+      "baseURL": ${j(values.baseURL)},        // 端点
+      "apiKey": ${j(values.apiKey)},          // API Key
+      "models": ${j(models)},                 // 可用模型（/model 列这些）
+      "thinking": ${j(values.thinking)},      // 思考强度：off | low | medium | high
+      "maxTokens": 8192                       // 单次最大输出 token
     }
   },
 
@@ -239,6 +252,14 @@ export function writeWizardConfig(values: WizardValues, opts: { configPath?: str
 }
 `
   fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
+  // P1-5：覆盖前备份现有 config（若已存在多 provider 等），用户可从 config.json.bak 恢复
+  if (fs.existsSync(cfgPath)) {
+    try {
+      fs.copyFileSync(cfgPath, cfgPath + '.bak')
+    } catch {
+      // 备份失败不阻断写入（只读 fs 等极端情况，尽力）
+    }
+  }
   fs.writeFileSync(cfgPath, content, { mode: 0o600 })
 }
 

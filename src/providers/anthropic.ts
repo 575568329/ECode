@@ -16,11 +16,23 @@ import type { Delta, Message, StopReason } from '../core/types.js'
 /** M1 默认输出上限（max_tokens 是 SDK 必填；M4 从 config 透传）。 */
 const DEFAULT_MAX_TOKENS = 8192
 
+/** thinking 枚举 → budget_tokens 映射（D9；P0-2 clamp 共用，提常量免散落 P2-1）。 */
+const THINKING_BUDGET: Record<Exclude<ThinkingLevel, 'off'>, number> = { low: 2048, medium: 8192, high: 16384 }
+
 /** thinking 枚举 → Anthropic API 对象（D9，GLM/Anthropic 兼容端点格式 {type, budget_tokens}）。 */
 export function thinkingToAnthropic(thinking?: ThinkingLevel): Record<string, unknown> {
-  if (!thinking || thinking === 'off') return {} // 不传 = 模型默认（disabled）
-  const budget = { low: 2048, medium: 8192, high: 16384 }[thinking]
-  return { thinking: { type: 'enabled', budget_tokens: budget } }
+  if (!thinking || thinking === 'off') return {}
+  return { thinking: { type: 'enabled', budget_tokens: THINKING_BUDGET[thinking] } }
+}
+
+/**
+ * 解析最终 max_tokens（P0-2 修复）：Anthropic 要求 max_tokens **严格大于** thinking.budget_tokens，
+ * 否则 400。thinking enabled 时 clamp 到 budget+1（默认 medium=8192 → max_tokens 至少 8193）；
+ * off 时用 config 值或默认。
+ */
+export function resolveMaxTokens(maxTokens: number | undefined, thinking?: ThinkingLevel): number {
+  const budget = !thinking || thinking === 'off' ? undefined : THINKING_BUDGET[thinking]
+  return budget !== undefined ? Math.max(maxTokens ?? DEFAULT_MAX_TOKENS, budget + 1) : maxTokens ?? DEFAULT_MAX_TOKENS
 }
 
 /** SDK 流式事件的 usage 形状（input/output/cache，各字段都可能缺失）。 */
@@ -180,27 +192,41 @@ export class AnthropicProvider implements LLMProvider {
     const client = this.clients.get(req.name) ?? new Anthropic({ baseURL: req.baseURL, apiKey: req.apiKey })
     if (!this.clients.has(req.name)) this.clients.set(req.name, client)
 
+    const thinkingField = thinkingToAnthropic(req.thinking)
+    const isThinking = (thinkingField.thinking as { type?: string } | undefined)?.type === 'enabled'
+
     const stream = client.messages.stream({
       model: req.model,
       system: req.system,
-      max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
-      ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-      ...(req.topP !== undefined ? { top_p: req.topP } : {}),
-      ...thinkingToAnthropic(req.thinking),
+      max_tokens: resolveMaxTokens(req.maxTokens, req.thinking),
+      // P1-7：thinking enabled 时禁自定义 temperature/top_p（Anthropic 扩展思考约束，否则 400）
+      ...(isThinking
+        ? {}
+        : {
+            ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+            ...(req.topP !== undefined ? { top_p: req.topP } : {}),
+          }),
+      ...thinkingField,
       messages: toAnthropicMsgs(req.messages),
       tools: req.tools,
     } as never)
 
     // signal 透传：中断时 abort stream（SDK 抛 AbortError，loop 的 try/catch 固化已生成内容）
+    const onAbort = () => stream.abort()
     if (req.signal) {
       if (req.signal.aborted) stream.abort()
-      else req.signal.addEventListener('abort', () => stream.abort(), { once: true })
+      else req.signal.addEventListener('abort', onAbort, { once: true })
     }
 
-    const t = new Translator()
-    for await (const e of stream as AsyncIterable<RawEvent>) {
-      for (const d of t.push(e)) yield d
+    try {
+      const t = new Translator()
+      for await (const e of stream as AsyncIterable<RawEvent>) {
+        for (const d of t.push(e)) yield d
+      }
+      for (const d of t.flush()) yield d
+    } finally {
+      // P1-14：流结束（正常/异常/中断）后摘除 abort 监听器，避免长 REPL 累积监听 + 闭包持有的 stream
+      if (req.signal) req.signal.removeEventListener('abort', onAbort)
     }
-    for (const d of t.flush()) yield d
   }
 }

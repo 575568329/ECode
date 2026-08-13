@@ -30,6 +30,7 @@
 | MVP 终端 Markdown 渲染调研 | [解析/2026-08-13_MVP-终端Markdown渲染调研_已完成.md](./解析/2026-08-13_MVP-终端Markdown渲染调研_已完成.md) | 自建渲染器 vs 主流对标（marked-terminal/claude-code/codex/aider/opencode）；流式 markdown 四路线选型；OSC8/CJK/代码高亮；落地借鉴清单 |
 | TUI 渲染方案：最小 Static | [详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_已完成.md](./详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_已完成.md) | M2 去 Static 后满屏/顺序两大问题根治；Static（历史固化）+ 当前轮动态可展开；用户定配置（流式 3 / 工具合并 4 / 下一轮收起）；满屏 clearTerminal 代码级证据；OpenTUI 长期观望 |
 | M3 工具与确认实施方案 | [详设/2026-08-13_M3-工具与确认实施方案_已完成.md](./详设/2026-08-13_M3-工具与确认实施方案_已完成.md) | 5 工具（ls/glob/grep/write_file/edit_file）schema + bash 安全（截断/拦截）+ ConfirmPrompt（diff 确认）+ .ecodeignore；D1-D7 决策拍板；小切片策略（只读先发） |
+| M4 持久化与配置实施方案 | [详设/2026-08-13_M4-持久化与配置实施方案_待审核.md](./详设/2026-08-13_M4-持久化与配置实施方案_待审核.md) | HistoryStore 真存储 + /history /model 命令 + 配置完整（采样参数）+ OpenaiProvider + 首次向导；D1-D7 拍板；MVP 收官 |
 
 > 其余文档按需在各目录补充，命名见下方约定。
 

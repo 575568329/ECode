@@ -1,28 +1,32 @@
 /**
- * Logger stub（M1）。
+ * Logger（AGENTS §2.7）：全系统唯一写入入口经 LogStore 落 JSONL。
  *
- * M3/M4 替换为完整 LogStore（JSONL 结构化、异步批量 flush、轮转、集中脱敏），
- * 详设 §4.4。M1 只占接口位，emit 落 console.debug（不阻塞主循环）。
- * LogStore ≠ HistoryStore（详设 §4.4.5）：前者是运行 trace，不进 context。
+ * LogStore ≠ HistoryStore：Logger 是运行 trace（调试用，**不进 context**）；
+ * HistoryStore 是对话 messages（喂 LLM）。payload 在 LogStore 内经 redact 脱敏。
  */
 
-export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
-
-export interface LogEvent {
-  level: LogLevel
-  /** 'system' | 'loop' | 'provider' | 'tool' | 'tui' | 'error' */
-  category: string
-  event: string
-  payload?: Record<string, unknown>
-}
+import type { LogStore, LogCategory } from './logstore.js'
 
 export interface Logger {
-  emit(e: LogEvent): void
+  debug(category: LogCategory, event: string, payload?: unknown, iterNum?: number): void
+  info(category: LogCategory, event: string, payload?: unknown, iterNum?: number): void
+  warn(category: LogCategory, event: string, payload?: unknown, iterNum?: number): void
+  error(category: LogCategory, event: string, payload?: unknown, iterNum?: number): void
 }
 
-/** M1 stub：emit 落 console.debug（M3 替换为 LogStore.emit）。 */
-export class ConsoleLogger implements Logger {
-  emit(e: LogEvent): void {
-    console.debug(`[${e.level}] ${e.category}/${e.event}`)
+/** JsonlLogger：所有日志经 LogStore 落 JSONL（异步批量 + 脱敏 + error 立即 flush）。 */
+export class JsonlLogger implements Logger {
+  constructor(private readonly store: LogStore) {}
+  debug(c: LogCategory, e: string, p?: unknown, i?: number) {
+    this.store.emit('debug', c, e, p, i)
+  }
+  info(c: LogCategory, e: string, p?: unknown, i?: number) {
+    this.store.emit('info', c, e, p, i)
+  }
+  warn(c: LogCategory, e: string, p?: unknown, i?: number) {
+    this.store.emit('warn', c, e, p, i)
+  }
+  error(c: LogCategory, e: string, p?: unknown, i?: number) {
+    this.store.emit('error', c, e, p, i)
   }
 }

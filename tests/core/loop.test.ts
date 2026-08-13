@@ -4,7 +4,7 @@ import type { LLMProvider, LLMProviderRunRequest } from '../../src/providers/int
 import type { Delta, Message } from '../../src/core/types.js'
 import { ToolRegistryImpl } from '../../src/tools/registry.js'
 import type { Tool } from '../../src/tools/interface.js'
-import { ConsoleLogger } from '../../src/services/logger.js'
+import type { Logger } from '../../src/services/logger.js'
 import { NoopHistoryStore } from '../../src/services/history.js'
 
 /** MockProvider：按脚本逐轮吐预设 Delta 序列（不发网络）。 */
@@ -20,13 +20,15 @@ class MockProvider implements LLMProvider {
 
 const sig = () => new AbortController().signal
 
+const noopLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+
 function makeOpts(provider: LLMProvider, tools: Tool[]): LoopRunOptions {
   const reg = new ToolRegistryImpl()
   for (const t of tools) reg.register(t)
   return {
     provider,
     tools: reg,
-    logger: new ConsoleLogger(),
+    logger: noopLogger,
     history: new NoopHistoryStore(),
     callbacks: { onText: vi.fn(), onWarn: vi.fn() },
     providerReq: { name: 'test', baseURL: 'http://x', apiKey: 'sk', model: 'm' },

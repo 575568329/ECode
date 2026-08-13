@@ -19,9 +19,12 @@ import { LLMProviderRegistryImpl } from '../providers/registry.js'
 import { ToolRegistryImpl } from '../tools/registry.js'
 import { readFileTool } from '../tools/builtin/read_file.js'
 import { bashTool } from '../tools/builtin/bash.js'
-import { ConsoleLogger } from '../services/logger.js'
+import { JsonlLogger } from '../services/logger.js'
+import { LogStore } from '../services/logstore.js'
 import { NoopHistoryStore } from '../services/history.js'
 import { runLoop } from '../core/loop.js'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { render } from 'ink'
 import React from 'react'
 import { TuiApp } from '../tui/TuiApp.js'
@@ -45,7 +48,7 @@ interface Deps {
   cfg: M1Config
 }
 
-function makeDeps(cfg: M1Config): Deps {
+function makeDeps(cfg: M1Config, logger: Logger): Deps {
   const providerReg = new LLMProviderRegistryImpl()
   providerReg.register(new AnthropicProvider())
   const toolReg = new ToolRegistryImpl()
@@ -54,7 +57,7 @@ function makeDeps(cfg: M1Config): Deps {
   return {
     provider: providerReg.getByType(cfg.type),
     tools: toolReg,
-    logger: new ConsoleLogger(),
+    logger,
     history: new NoopHistoryStore(),
     cfg,
   }
@@ -93,7 +96,16 @@ async function runOnce(messages: Message[], input: string, deps: Deps): Promise<
 async function main(): Promise<void> {
   const cfg = loadConfig()
   registerBuiltinCommands()
-  const deps = makeDeps(cfg)
+
+  // LogStore：JSONL 落盘 ~/.ecode/logs/<sessionId>.jsonl（运行 trace，排查用，不进 context）
+  const sessionId = new Date().toISOString().replace(/[:.]/g, '-')
+  const logPath = join(homedir(), '.ecode', 'logs', `${sessionId}.jsonl`)
+  const logStore = new LogStore(logPath, sessionId)
+  const logger = new JsonlLogger(logStore)
+  logger.info('system', 'startup', { model: cfg.model, cwd: process.cwd(), logPath })
+  process.on('exit', () => logStore.close())
+
+  const deps = makeDeps(cfg, logger)
 
   // argv 单次模式：M1 stdout 输出 → 跑一次退出
   const initialInput = process.argv.slice(2).join(' ').trim()

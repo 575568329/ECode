@@ -102,6 +102,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
   for (let iter = 1; iter <= opts.maxIterations; iter++) {
     opts.callbacks.onIter?.(iter, opts.maxIterations)
     opts.callbacks.onActivity?.('thinking')
+    opts.logger.info('loop', 'iter_start', { iter, max: opts.maxIterations, model: opts.providerReq.model }, iter)
     const jsonBuf = new Map<string, { name: string; buf: string }>()
     let textBuf = ''
     const newToolUses: ToolUseBlock[] = []
@@ -110,6 +111,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     let isAborted = false
 
     try {
+      opts.logger.debug('provider', 'request', { messageCount: messages.length }, iter)
       for await (const d of opts.provider.run({
         name: opts.providerReq.name,
         baseURL: opts.providerReq.baseURL,
@@ -181,9 +183,16 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     if (!streamError) retryCount = 0
     // 流内错误处理
     if (streamError) {
+      opts.logger.error(
+        'loop',
+        'stream_error',
+        { code: streamError.code, message: streamError.message, recoverable: streamError.recoverable, isAborted },
+        iter,
+      )
       // abort 不走 recoverable 重试（避免 abort → retry → abort 死循环）
       if (isAborted) {
         opts.callbacks.onActivity?.('aborted')
+        opts.logger.info('loop', 'aborted', { iter }, iter)
         break
       }
       if (streamError.recoverable) {
@@ -209,6 +218,7 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     // 停止判定
     if (stopReason === 'end' || stopReason === 'aborted') {
       opts.callbacks.onActivity?.(stopReason === 'aborted' ? 'aborted' : 'idle')
+      opts.logger.info('loop', 'stop', { stopReason, iter })
       break
     }
     if (stopReason === 'length') {
@@ -275,6 +285,12 @@ async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<Tool
   try {
     const r = await tool.execute(use.input, opts.toolCtx)
     opts.callbacks.onToolResult?.(use.id, use.name, r)
+    opts.logger.info('tool', 'result', {
+      id: use.id,
+      name: use.name,
+      is_error: r.is_error,
+      bytes: Buffer.byteLength(r.content, 'utf8'),
+    })
     return { type: 'tool_result', tool_use_id: use.id, content: r.content, is_error: r.is_error }
   } catch (e) {
     const err = toAppError(e)

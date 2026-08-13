@@ -1,7 +1,7 @@
 # AGENTS.md — ECode 工作区指令
 
 > **ECode**：终端 Agent CLI，AgentLoop 为心脏，其余能力（工具/模型接入/TUI/斜杠命令/历史/配置/日志）作为分支接入心脏。技术栈 TypeScript 严格模式 / Node.js，TUI 用 Ink，LLM 走 `@anthropic-ai/sdk` 接 Astron 兼容端点（跑 GLM）。
-> **当前状态**：M1（心脏）+ M2（TUI 最小 Static）+ M3（工具集 ls/glob/grep/write_file/edit_file + ConfirmPrompt + bash 安全 + .ecodeignore）已完成（测试 328/328），M4（HistoryStore 持久化 / `/history` `/model` / 配置完整 / 首次向导）待启动。
+> **当前状态**：M1（心脏）+ M2（TUI 最小 Static）+ M3（工具集 ls/glob/grep/write_file/edit_file + ConfirmPrompt + bash 安全 + .ecodeignore）+ M4（HistoryStore 持久化 / `/history` `/model` `/setup` 向导 / `/config` / OpenaiProvider / 配置完整）**全部完成**（测试 409/409 + tsc 零）。M4 经角色审阅修复（3 P0 + 11 P1 + 8 P2）。后续 M5（上下文压缩 / Skill / MCP）方案草案待审。
 > **永远使用中文与我对话。**
 >
 > 改代码/文档前先读这份。权威设计见 `docs/详设/2026-08-11_ECode-MVP详设_待审核.md`，文档体系以 `docs/README.md` 为权威。

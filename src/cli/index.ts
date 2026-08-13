@@ -19,10 +19,14 @@ import { LLMProviderRegistryImpl } from '../providers/registry.js'
 import { ToolRegistryImpl } from '../tools/registry.js'
 import { readFileTool } from '../tools/builtin/read_file.js'
 import { bashTool } from '../tools/builtin/bash.js'
+import { lsTool } from '../tools/builtin/ls.js'
+import { globTool } from '../tools/builtin/glob.js'
+import { grepTool } from '../tools/builtin/grep.js'
 import { JsonlLogger } from '../services/logger.js'
 import { LogStore } from '../services/logstore.js'
 import { NoopHistoryStore } from '../services/history.js'
 import { runLoop } from '../core/loop.js'
+import { buildSystemPrompt } from '../core/system.js'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { render } from 'ink'
@@ -34,11 +38,6 @@ import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
 import type { Message } from '../core/types.js'
-
-const SYSTEM_PROMPT = `你是 ECode，一个终端 Agent CLI。你能通过工具读文件、执行命令，帮用户完成编程任务。
-当前工作目录：${process.cwd()}
-当前平台：${process.platform}
-回复用中文。`
 
 interface Deps {
   provider: LLMProvider
@@ -54,6 +53,9 @@ function makeDeps(cfg: M1Config, logger: Logger): Deps {
   const toolReg = new ToolRegistryImpl()
   toolReg.register(readFileTool)
   toolReg.register(bashTool)
+  toolReg.register(lsTool)
+  toolReg.register(globTool)
+  toolReg.register(grepTool)
   return {
     provider: providerReg.getByType(cfg.type),
     tools: toolReg,
@@ -86,7 +88,7 @@ async function runOnce(messages: Message[], input: string, deps: Deps): Promise<
       apiKey: deps.cfg.apiKey,
       model: deps.cfg.model,
     },
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(),
     maxIterations: deps.cfg.maxIterations,
     toolCtx: { cwd: process.cwd(), signal: new AbortController().signal },
   })

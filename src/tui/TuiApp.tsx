@@ -14,11 +14,7 @@ import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
 import { createActive, type CommittedItem, type ActiveState } from './types.js'
 import { messagesToCommitted, findUse } from './commit.js'
-
-const SYSTEM_PROMPT = `你是 ECode，一个终端 Agent CLI。你能通过工具读文件、执行命令，帮用户完成编程任务。
-当前工作目录：${process.cwd()}
-当前平台：${process.platform}
-回复用中文。`
+import { buildSystemPrompt } from '../core/system.js'
 
 /** 清屏（可见区 + scrollback + 光标归位）；/clear 用，清可见区残留 */
 const CLEAR_TERMINAL = '\x1b[2J\x1b[3J\x1b[H'
@@ -137,7 +133,7 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
           apiKey: deps.cfg.apiKey,
           model: deps.cfg.model,
         },
-        system: SYSTEM_PROMPT,
+        system: buildSystemPrompt(),
         maxIterations: deps.cfg.maxIterations,
         toolCtx: { cwd: process.cwd(), signal: abortRef.current.signal },
         signal: abortRef.current.signal,

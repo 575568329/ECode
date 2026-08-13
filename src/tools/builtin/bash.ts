@@ -62,6 +62,37 @@ function spawnShell(command: string, cwd: string): ChildProcess {
   return spawn(command, { cwd, shell: 'sh' })
 }
 
+/** 输出截断阈值（§5.1：30KB；config 可配扩展留 M4） */
+const BASH_MAX_OUTPUT_BYTES = 30_720
+
+/** 危险命令正则黑名单（§5.2，D4：命中直接 is_error，不 spawn、不让 LLM 重试）。 */
+const DANGEROUS_PATTERNS = [
+  /rm\s+-\w*r\w*f?\s+\/(\s|$)/, // rm -rf /
+  /rm\s+-\w*r\w*f?\s+--no-preserve-root/, // rm -rf --no-preserve-root
+  /\bsudo\b/, // sudo（提权）
+  />\s*\/dev\/sd[a-z]/, // 写裸盘
+  /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\};\s*:/, // fork bomb :(){:|:&};:
+  /\|\s*(sh|bash)\b/, // curl|sh
+  /\bmkfs\b/, // 格式化
+  /dd\s+.*of=\/dev\/disc/, // dd 写盘
+]
+
+export function isDangerous(command: string): boolean {
+  return DANGEROUS_PATTERNS.some((re) => re.test(command))
+}
+
+/** 输出超阈值时头尾各半中截（§5.1：防刷屏 + 防 LLM 编造截断内容）。 */
+export function truncateOutput(s: string): string {
+  const bytes = Buffer.byteLength(s, 'utf8')
+  if (bytes <= BASH_MAX_OUTPUT_BYTES) return s
+  const half = Math.floor(BASH_MAX_OUTPUT_BYTES / 2)
+  const buf = Buffer.from(s, 'utf8')
+  const head = buf.subarray(0, half).toString('utf8')
+  const tail = buf.subarray(bytes - half).toString('utf8')
+  const omitted = bytes - BASH_MAX_OUTPUT_BYTES
+  return `${head}\n…（中间 ${omitted} 字节已截断，需要完整用 read_file/grep，不要编造）\n${tail}`
+}
+
 export const bashTool: Tool = {
   name: 'bash',
   description: '执行 shell 命令（Git Bash / sh）。命令在当前工作目录执行。退出码非 0 时输出含 stderr 和退出码。',
@@ -77,6 +108,10 @@ export const bashTool: Tool = {
 
   async execute(args, ctx) {
     const { command } = args as { command: string }
+    // 危险命令拦截（D4：正则黑名单，命中直接 is_error，不 spawn）
+    if (isDangerous(command)) {
+      return { content: `危险命令已拦截：${command}`, is_error: true }
+    }
     const timeout = this.timeout_ms ?? DEFAULT_TIMEOUT_MS
 
     return new Promise<ExecResult>((resolve) => {
@@ -119,7 +154,7 @@ export const bashTool: Tool = {
         if (stdout) parts.push(stdout)
         if (stderr) parts.push(`[stderr]\n${stderr}`)
         if (code !== 0) parts.push(`[退出码 ${code}]`)
-        done({ content: parts.join('\n') || '(无输出)' })
+        done({ content: truncateOutput(parts.join('\n') || '(无输出)') })
       })
 
       // 中断：abort 杀进程

@@ -56,7 +56,8 @@ function renderCommitted(item: CommittedItem): ReactNode {
     case 'assistant-text':
       return <AssistantMessage text={item.text} />
     case 'tool-group':
-      return <ToolGroupView tools={callsToTools(item.calls)} />
+      // Static 完整展示（expanded=true：详设 §7.5，scrollback 不怕长，事后滚轮看 diff/输出全文）
+      return <ToolGroupView tools={callsToTools(item.calls)} expanded={true} />
   }
 }
 

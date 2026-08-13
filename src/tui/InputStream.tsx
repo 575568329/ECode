@@ -5,9 +5,7 @@ import { TextInput } from './TextInput.js'
 import { createCursor, type CursorState } from './cursor.js'
 import { commandRegistry, type Command, type CommandResult } from '../commands/registry.js'
 
-/**
- * / 斜杠补全：列表展示 + 上下选中高亮（selectedIdx）。
- */
+/** / 斜杠补全：列表展示 + 上下选中高亮（selectedIdx）。 */
 export function SlashSuggest({
   text,
   selectedIdx = -1,
@@ -30,21 +28,16 @@ export function SlashSuggest({
 }
 
 interface InputStreamProps {
-  /** 普通消息提交（非 / 开头） */
   onSubmit: (text: string) => void
-  /** 命令执行结果回调（App 决定怎么显示 output） */
   onCommand?: (cmd: Command, result: CommandResult) => void
-  /** /clear 副作用 */
   onClear?: () => void
   placeholder?: string
 }
 
 /**
- * 输入流（M2 第 4 步）：TextInput + 历史（↑↓）+ / 补全（↑↓ 选中 + Tab 补全）+ submit 路由。
- *
- * - 命令（/ 开头）：commandRegistry 查找 → run → onCommand 回传结果（/clear 触发 onClear）
- * - 消息：onSubmit + 入历史
- * - slash 模式：↑↓ 选中命令、Tab 补全；非 slash：↑↓ 浏览历史
+ * 输入流：TextInput + 历史（↑↓）+ / 补全（↑↓ 选中 + Enter 执行选中 + Tab 补全）。
+ * - slash 模式 + 选中 + Enter → 直接执行选中命令（不需先 Tab 补全）
+ * - slash 模式 + 未选中 + Enter → submit 当前文本（如 /xyz → 未知命令）
  */
 export function InputStream({ onSubmit, onCommand, onClear, placeholder }: InputStreamProps): ReactElement {
   const [cur, setCur] = useState<CursorState>(() => createCursor(''))
@@ -76,6 +69,18 @@ export function InputStream({ onSubmit, onCommand, onClear, placeholder }: Input
     }
     setCur(createCursor(''))
     setHistIdx(-1)
+  }
+
+  // Enter：slash 模式 + 选中 → 执行选中命令；否则 submit 文本
+  const handleTextSubmit = (text: string): void => {
+    if (text.startsWith('/') && slashIdx >= 0) {
+      const matches = commandRegistry.match(text.slice(1))
+      if (matches[slashIdx]) {
+        submit(`/${matches[slashIdx].name}`)
+        return
+      }
+    }
+    submit(text)
   }
 
   useInput((_input, key) => {
@@ -115,7 +120,7 @@ export function InputStream({ onSubmit, onCommand, onClear, placeholder }: Input
         caret={cur.caret}
         placeholder={placeholder}
         onInput={setCur}
-        onSubmit={submit}
+        onSubmit={handleTextSubmit}
       />
       <SlashSuggest text={cur.text} selectedIdx={slashIdx} />
     </Box>

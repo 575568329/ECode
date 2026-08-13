@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useMemo } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { App } from './App.js'
 import { InputStream } from './InputStream.js'
@@ -101,6 +101,7 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
   const [expandAll, setExpandAll] = useState(false)
   const [iter, setIter] = useState<number | undefined>(undefined)
   const [maxIter, setMaxIter] = useState<number | undefined>(undefined)
+  const [clearKey, setClearKey] = useState(0)
 
   const submit = async (input: string): Promise<void> => {
     if (runningRef.current) return
@@ -203,10 +204,13 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
     }
   })
 
-  const items = [
-    ...messagesToItems(messages),
-    ...systemMsgs.map((m, i) => <AssistantMessage key={`sys${i}`} text={m} />),
-  ]
+  const items = useMemo(
+    () => [
+      ...messagesToItems(messages),
+      ...systemMsgs.map((m, i) => <AssistantMessage key={`sys${i}`} text={m} />),
+    ],
+    [messages, systemMsgs],
+  )
   const busy =
     streamingText !== null ||
     activity.state === 'thinking' ||
@@ -215,6 +219,7 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
 
   return (
     <App
+      key={clearKey}
       model={deps.cfg.model}
       items={items}
       streamingText={streamingText}
@@ -231,15 +236,21 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
       <InputStream
         onSubmit={submit}
         onCommand={(_cmd, result) => {
-          if (result.output) setSystemMsgs((s) => [...s, result.output as string])
+          // 替换（不累积）：多次 /help 只显示最新一次，避免反复打印
+          setSystemMsgs(result.output ? [result.output as string] : [])
         }}
         onClear={() => {
           messagesRef.current = []
           setMessages([])
           setSystemMsgs([])
           setTokens(0)
+          setIter(undefined)
+          setMaxIter(undefined)
           setWarn(null)
           setError(null)
+          setExpandAll(false)
+          // remount App（重置 <Static> 的内部 index，避免 /clear 后消息不渲染）
+          setClearKey((k) => k + 1)
         }}
         placeholder={busy ? '（处理中，Ctrl+C 中断）...' : '输入消息，/help 查看命令...'}
       />

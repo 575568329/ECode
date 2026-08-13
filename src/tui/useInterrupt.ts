@@ -16,8 +16,10 @@ const DEFAULT_WINDOW_MS = 1500
 export function useInterrupt(opts: {
   onInterrupt: () => void
   windowMs?: number
+  /** 返回 true 时抑制 Ctrl+C（confirm 期间不 abort，由 ConfirmPrompt 独占，P0#1） */
+  isActive?: () => boolean
 }): { warning: string | null } {
-  const { onInterrupt, windowMs = DEFAULT_WINDOW_MS } = opts
+  const { onInterrupt, windowMs = DEFAULT_WINDOW_MS, isActive } = opts
   const lastPressRef = useRef(0)
   const [warning, setWarning] = useState<string | null>(null)
 
@@ -30,6 +32,7 @@ export function useInterrupt(opts: {
 
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
+      if (isActive?.() === true) return // confirm 期间：让 ConfirmPrompt 独占 Ctrl+C
       const now = Date.now()
       if (now - lastPressRef.current < windowMs) {
         process.exit(0)

@@ -1,19 +1,13 @@
 /**
- * 对话流（最小 Static 方案，详设 2026-08-13）。
+ * 对话流（最小 Static 方案 + M3 ConfirmPrompt，详设 §7）。
  *
- * 两区模型：
- *   <Static items={committed}>  ← 历史轮（固化 scrollback，滚轮友好，永不重绘）
- *   动态区（当前轮 active 分区，每帧重绘）：
- *     ① FoldedUserInput（user message，折叠到 2 行）
- *     ② ToolGroupView（本轮工具合并块，≤4 行，可展开）
- *     ③ GrayStreaming（流式灰字，3 行折叠尾部）
- *     children（ActivityBar / InputStream / 底行）
- *
- * 视觉顺序固定 ①②③（不随 LLM 交替抖动）；commit 时按 message.content 原序进 Static。
+ * 两区模型：Static（历史固化）+ 动态区（当前轮 ①②③ + confirm 弹窗）。
+ * confirm 期间（active.confirm 非空）ConfirmPrompt 替代 ③ 流式位（此时流式已停）。
  */
 import type { ReactElement, ReactNode } from 'react'
 import { Box, Text, Static } from 'ink'
 import { ToolGroupView } from './ToolGroupView.js'
+import { ConfirmPrompt } from './ConfirmPrompt.js'
 import { foldStreamText } from './stream.js'
 import { UserMessage } from './UserMessage.js'
 import { AssistantMessage } from './AssistantMessage.js'
@@ -70,11 +64,22 @@ interface ConversationProps {
   committed: CommittedItem[]
   active: ActiveState
   onToggleTool?: () => void
+  onConfirm?: () => void
+  onCancel?: () => void
   children?: ReactNode
 }
 
-export function Conversation({ committed, active, onToggleTool, children }: ConversationProps): ReactElement {
-  const toolExpanded = active.tools.some((t) => t.use && active.expandedTools.has(t.use.id))
+export function Conversation({
+  committed,
+  active,
+  onToggleTool,
+  onConfirm,
+  onCancel,
+  children,
+}: ConversationProps): ReactElement {
+  const toolExpanded = active.tools.some(
+    (t) => t.use && active.expandedTools.has(t.use.id),
+  )
   return (
     <Box flexDirection="column">
       <Static items={committed}>
@@ -82,17 +87,21 @@ export function Conversation({ committed, active, onToggleTool, children }: Conv
           <Box key={item.id}>{renderCommitted(item)}</Box>
         )}
       </Static>
-      {/* 动态区：当前轮 ①②③ */}
+      {/* 动态区：当前轮 ①②③ + confirm */}
       {active.userInput !== '' && <FoldedUserInput text={active.userInput} />}
       {active.tools.length > 0 && (
         <ToolGroupView tools={active.tools} expanded={toolExpanded} onToggle={onToggleTool} />
       )}
-      {active.streamingText !== '' &&
+      {active.confirm ? (
+        <ConfirmPrompt state={active.confirm} onConfirm={onConfirm} onCancel={onCancel} />
+      ) : (
+        active.streamingText !== '' &&
         (active.streaming ? (
           <GrayStreaming text={active.streamingText} />
         ) : (
           <AssistantMessage text={active.streamingText} />
-        ))}
+        ))
+      )}
       {children}
     </Box>
   )

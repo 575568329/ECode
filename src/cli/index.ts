@@ -22,6 +22,8 @@ import { bashTool } from '../tools/builtin/bash.js'
 import { lsTool } from '../tools/builtin/ls.js'
 import { globTool } from '../tools/builtin/glob.js'
 import { grepTool } from '../tools/builtin/grep.js'
+import { writeFileTool } from '../tools/builtin/write_file.js'
+import { editFileTool } from '../tools/builtin/edit_file.js'
 import { JsonlLogger } from '../services/logger.js'
 import { LogStore } from '../services/logstore.js'
 import { NoopHistoryStore } from '../services/history.js'
@@ -56,6 +58,8 @@ function makeDeps(cfg: M1Config, logger: Logger): Deps {
   toolReg.register(lsTool)
   toolReg.register(globTool)
   toolReg.register(grepTool)
+  toolReg.register(writeFileTool)
+  toolReg.register(editFileTool)
   return {
     provider: providerReg.getByType(cfg.type),
     tools: toolReg,

@@ -31,6 +31,17 @@ export interface ActiveState {
   streaming: boolean
   /** 展开的工具 id（只对当前轮；commit 时清空 = 下一轮收起） */
   expandedTools: Set<string>
+  /** 等待用户确认的副作用工具（非 null 时 ConfirmPrompt 渲染，loop 挂起；详设 §7） */
+  confirm: ConfirmState | null
+}
+
+/** confirm 弹窗状态（loop await confirm 期间挂起，onConfirm/onCancel resolve） */
+export interface ConfirmState {
+  use: ToolUseBlock
+  /** 预览内容（edit_file=unified diff 文本；write_file=新增片段；bash=命令字符串；着色由 ConfirmPrompt 负责） */
+  preview: string
+  /** resolve（onConfirm→true / onCancel→false，loop 收到后继续或转 is_error） */
+  resolve: (ok: boolean) => void
 }
 
 /** Static 区已固化的工具调用（必有 result） */
@@ -53,5 +64,6 @@ export function createActive(): ActiveState {
     streamingText: '',
     streaming: false,
     expandedTools: new Set(),
+    confirm: null,
   }
 }

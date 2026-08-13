@@ -8,9 +8,9 @@ import type { ActivityState } from '../core/loop.js'
 import type { CommittedItem, ActiveState } from './types.js'
 
 /**
- * App 根组件（最小 Static 方案）：
+ * App 根组件（最小 Static + M3 ConfirmPrompt）：
  *
- *   <Conversation committed={历史} active={当前轮}>
+ *   <Conversation committed={历史} active={当前轮} onConfirm/onCancel={弹窗}>
  *     <ActivityBar/>
  *     {children}
  *     底行：StatusBar · ShortcutHint
@@ -20,6 +20,8 @@ interface AppProps {
   committed: CommittedItem[]
   active: ActiveState
   onToggleTool?: () => void
+  onConfirm?: () => void
+  onCancel?: () => void
   activity: ActivityState
   activityText?: string
   iter?: number
@@ -35,6 +37,8 @@ export function App({
   committed,
   active,
   onToggleTool,
+  onConfirm,
+  onCancel,
   activity,
   activityText,
   iter,
@@ -46,12 +50,19 @@ export function App({
 }: AppProps): ReactElement {
   const busy =
     active.streamingText !== '' ||
+    active.confirm !== null ||
     activity === 'thinking' ||
     activity === 'tool' ||
     activity === 'retry'
   return (
     <Box flexDirection="column">
-      <Conversation committed={committed} active={active} onToggleTool={onToggleTool}>
+      <Conversation
+        committed={committed}
+        active={active}
+        onToggleTool={onToggleTool}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      >
         <ActivityBar state={activity} text={activityText} />
         {children}
         <Box>

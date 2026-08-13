@@ -15,6 +15,7 @@ import type { HistoryStore } from '../services/history.js'
 import { createActive, type CommittedItem, type ActiveState } from './types.js'
 import { messagesToCommitted, findUse } from './commit.js'
 import { buildSystemPrompt } from '../core/system.js'
+import { buildPreview } from '../services/preview.js'
 
 /** 清屏（可见区 + scrollback + 光标归位）；/clear 用，清可见区残留 */
 const CLEAR_TERMINAL = '\x1b[2J\x1b[3J\x1b[H'
@@ -48,6 +49,8 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
   const messagesRef = useRef<Message[]>([])
   const abortRef = useRef<AbortController>(new AbortController())
   const runningRef = useRef(false)
+  // 同步 confirm 状态给 useInterrupt isActive（避免 stale closure；P0#1）
+  const confirmRef = useRef(false)
 
   const [committed, setCommitted] = useState<CommittedItem[]>([])
   const [active, setActive] = useState<ActiveState>(() => createActive())
@@ -137,6 +140,16 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
         maxIterations: deps.cfg.maxIterations,
         toolCtx: { cwd: process.cwd(), signal: abortRef.current.signal },
         signal: abortRef.current.signal,
+        confirm: async (use) => {
+          // D5：callback 内部算预览（不污染 Tool 接口）；P1#3：catch 异常不杀 Loop
+          const preview = await buildPreview(use, process.cwd()).catch(
+            (e) => `⚠ 无法生成预览：${e instanceof Error ? e.message : String(e)}`,
+          )
+          confirmRef.current = true
+          return new Promise<boolean>((resolve) => {
+            setActive((a) => ({ ...a, confirm: { use, preview, resolve } }))
+          })
+        },
       })
       // 不立即 commit：本轮保留在动态区（当前轮可 Ctrl+O 展开）；streaming=false 转 Markdown 显示
       setActive((a) => ({ ...a, streaming: false }))
@@ -155,7 +168,16 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
     }
   }
 
-  const { warning } = useInterrupt({ onInterrupt: () => abortRef.current.abort() })
+  // 清 confirm（ConfirmPrompt 内先 resolve 再调它）
+  const clearConfirm = () => {
+    confirmRef.current = false
+    setActive((a) => ({ ...a, confirm: null }))
+  }
+  const { warning } = useInterrupt({
+    onInterrupt: () => abortRef.current.abort(),
+    // P0#1：confirm 期间不 abort（由 ConfirmPrompt 独占 Ctrl+C，只取消该工具）
+    isActive: () => confirmRef.current,
+  })
 
   // Ctrl+O：toggle 当前轮工具展开/收起（只对有 use 的 done 工具）
   const toggleExpand = () => {
@@ -200,6 +222,8 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
       committed={fullCommitted}
       active={active}
       onToggleTool={hasDoneTool ? toggleExpand : undefined}
+      onConfirm={clearConfirm}
+      onCancel={clearConfirm}
       activity={activity.state}
       activityText={activity.text}
       tokens={tokens}

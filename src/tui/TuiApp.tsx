@@ -8,7 +8,7 @@ import { useInterrupt } from './useInterrupt.js'
 import { runLoop, type ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
 import type { AppError, Message } from '../core/types.js'
-import type { LLMProvider } from '../providers/interface.js'
+import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
@@ -17,12 +17,13 @@ import { messagesToCommitted, findUse } from './commit.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { buildPreview } from '../services/preview.js'
 import { buildProviderReq, type Config } from '../services/config.js'
+import { ModelPicker, type ModelEntry } from './ModelPicker.js'
 
 /** 清屏（可见区 + scrollback + 光标归位）；/clear 用，清可见区残留 */
 const CLEAR_TERMINAL = '\x1b[2J\x1b[3J\x1b[H'
 
 export interface TuiAppDeps {
-  provider: LLMProvider
+  providerRegistry: LLMProviderRegistry
   tools: ToolRegistry
   logger: Logger
   history: HistoryStore
@@ -46,6 +47,8 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
   const runningRef = useRef(false)
   // 同步 confirm 状态给 useInterrupt isActive（避免 stale closure；P0#1）
   const confirmRef = useRef(false)
+  // 同步 picker 覆盖状态给 useInterrupt（同 confirm：覆盖期间 Ctrl+C 由 picker 处理，不中断 loop）
+  const pickerRef = useRef(false)
 
   const [committed, setCommitted] = useState<CommittedItem[]>([])
   const [active, setActive] = useState<ActiveState>(() => createActive())
@@ -59,6 +62,10 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
   const [iter, setIter] = useState<number | undefined>(undefined)
   const [maxIter, setMaxIter] = useState<number | undefined>(undefined)
   const [clearKey, setClearKey] = useState(0)
+  // config 是 state 不是 props（§8.1.1）：/model 改 current → setConfig → 重渲染，下次 submit 用新 current
+  const [config, setConfig] = useState<Config>(() => deps.config)
+  // 覆盖层（/model 等）：非 null 时独占输入（ModelPicker 渲染 + InputStream inactive）
+  const [overlay, setOverlay] = useState<{ kind: 'model-picker' } | null>(null)
 
   const submit = async (input: string): Promise<void> => {
     if (runningRef.current) return
@@ -77,7 +84,7 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
 
     try {
       await runLoop(messagesRef.current, input, {
-        provider: deps.provider,
+        provider: deps.providerRegistry.getByType(config.providers[config.current.name].type),
         tools: deps.tools,
         logger: deps.logger,
         history: deps.history,
@@ -125,9 +132,9 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
           onActivity: (state, text) => setActivity({ state, text }),
           onWarn: (m) => setWarn(m),
         },
-        providerReq: buildProviderReq(deps.config),
+        providerReq: buildProviderReq(config),
         system: buildSystemPrompt(),
-        maxIterations: deps.config.maxIterations,
+        maxIterations: config.maxIterations,
         toolCtx: { cwd: process.cwd(), signal: abortRef.current.signal },
         signal: abortRef.current.signal,
         confirm: async (use) => {
@@ -165,8 +172,8 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
   }
   const { warning } = useInterrupt({
     onInterrupt: () => abortRef.current.abort(),
-    // P0#1：confirm 期间不 abort（由 ConfirmPrompt 独占 Ctrl+C，只取消该工具）
-    isActive: () => confirmRef.current,
+    // P0#1：confirm/picker 覆盖期间不 abort（由覆盖组件独占 Ctrl+C）
+    isActive: () => confirmRef.current || pickerRef.current,
   })
 
   // Ctrl+O：toggle 当前轮工具展开/收起（只对有 use 的 done 工具）
@@ -205,10 +212,18 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
 
   const hasDoneTool = active.tools.some((t) => t.use)
 
+  // /model 可选项：providers 笛卡尔积（name × models），方案 §8.2
+  const entries: ModelEntry[] = []
+  for (const [name, cfg] of Object.entries(config.providers)) {
+    for (const model of cfg.models) {
+      entries.push({ name, model })
+    }
+  }
+
   return (
     <App
       key={clearKey}
-      model={deps.config.current.model}
+      model={config.current.model}
       committed={fullCommitted}
       active={active}
       onToggleTool={hasDoneTool ? toggleExpand : undefined}
@@ -222,11 +237,31 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
       warning={warning ?? warn ?? undefined}
     >
       {error ? <ErrorBanner error={error} /> : null}
+      {overlay?.kind === 'model-picker' && (
+        <ModelPicker
+          entries={entries}
+          current={config.current}
+          onPick={(e) => {
+            setConfig((c) => ({ ...c, current: { name: e.name, model: e.model } }))
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+          onCancel={() => {
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+        />
+      )}
       <InputStream
         onSubmit={submit}
         onCommand={(_cmd, result) => {
           if (result.action === 'expand') {
             toggleExpand()
+            return
+          }
+          if (result.action === 'pick-model') {
+            pickerRef.current = true
+            setOverlay({ kind: 'model-picker' })
             return
           }
           // 替换（不累积）：多次 /help 只显示最新
@@ -247,6 +282,7 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
           // remount App（重置 <Static> 内部 index，避免 /clear 后消息不渲染）
           setClearKey((k) => k + 1)
         }}
+        inactive={overlay !== null}
         placeholder={busy ? '（处理中，Ctrl+C 中断）...' : '输入消息，/help 查看命令...'}
       />
     </App>

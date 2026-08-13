@@ -57,6 +57,7 @@ describe('内置命令', () => {
     const r = commandRegistry.get('help')!.run()
     expect(r.output).toContain('/help')
     expect(r.output).toContain('/clear')
+    expect(r.output).toContain('/model')
   })
 
   it('/clear 返回 action=clear', () => {
@@ -65,6 +66,10 @@ describe('内置命令', () => {
 
   it('/expand 返回 action=expand', () => {
     expect(commandRegistry.get('expand')!.run().action).toBe('expand')
+  })
+
+  it('/model 返回 action=pick-model', () => {
+    expect(commandRegistry.get('model')!.run().action).toBe('pick-model')
   })
 
   it('match("he") 含 help', () => {

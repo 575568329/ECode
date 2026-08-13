@@ -35,14 +35,14 @@ import { render } from 'ink'
 import React from 'react'
 import { TuiApp } from '../tui/TuiApp.js'
 import { registerBuiltinCommands } from '../commands/registry.js'
-import type { LLMProvider } from '../providers/interface.js'
+import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
 import type { Message } from '../core/types.js'
 
 interface Deps {
-  provider: LLMProvider
+  providerRegistry: LLMProviderRegistry
   tools: ToolRegistry
   logger: Logger
   history: HistoryStore
@@ -62,7 +62,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   toolReg.register(writeFileTool)
   toolReg.register(editFileTool)
   return {
-    provider: providerReg.getByType(config.providers[config.current.name].type),
+    providerRegistry: providerReg,
     tools: toolReg,
     logger,
     history: new FileHistoryStore({ sessionId, model: config.current.model }),
@@ -73,7 +73,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
 /** argv 单次模式：M1 stdout 输出（流式打印 + 工具摘要）。 */
 async function runOnce(messages: Message[], input: string, deps: Deps): Promise<void> {
   await runLoop(messages, input, {
-    provider: deps.provider,
+    provider: deps.providerRegistry.getByType(deps.config.providers[deps.config.current.name].type),
     tools: deps.tools,
     logger: deps.logger,
     history: deps.history,

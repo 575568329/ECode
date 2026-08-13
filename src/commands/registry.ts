@@ -9,8 +9,8 @@
 export interface CommandResult {
   /** 给用户的输出文本（如 /help 的列表） */
   output?: string
-  /** 副作用 action（由调用方解释：clear=清空会话 / expand=展开折叠工具输出） */
-  action?: 'clear' | 'expand'
+  /** 副作用 action（由调用方解释：clear=清空会话 / expand=展开折叠工具输出 / pick-model=弹模型选择器） */
+  action?: 'clear' | 'expand' | 'pick-model'
 }
 
 export interface Command {
@@ -69,5 +69,10 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     name: 'expand',
     description: '展开/折叠工具输出',
     run: () => ({ action: 'expand' }),
+  })
+  registry.register({
+    name: 'model',
+    description: '切换供应商/模型',
+    run: () => ({ action: 'pick-model' }),
   })
 }

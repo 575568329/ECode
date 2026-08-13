@@ -52,6 +52,8 @@ interface TextInputProps {
   placeholder?: string
   onInput?: (next: CursorState) => void
   onSubmit?: (text: string) => void
+  /** 禁用按键（覆盖层显示时，避免按键漏进输入框） */
+  inactive?: boolean
 }
 
 /**
@@ -61,7 +63,7 @@ interface TextInputProps {
  * - useInput 接键：字符 / Backspace / Delete / ← / → / Home / End / Enter
  * - value/caret 由父控制（InputStream 管 history / 补全）；停泊原生光标留后续
  */
-export function TextInput({ value, caret, placeholder, onInput, onSubmit }: TextInputProps): ReactElement {
+export function TextInput({ value, caret, placeholder, onInput, onSubmit, inactive }: TextInputProps): ReactElement {
   const cur: CursorState = { text: value, caret }
   useInput((input, key) => {
     if (key.return) {
@@ -95,6 +97,6 @@ export function TextInput({ value, caret, placeholder, onInput, onSubmit }: Text
     if (!key.ctrl && !key.meta && !key.escape && input !== '') {
       onInput?.(insert(cur, input))
     }
-  })
+  }, { isActive: !inactive })
   return <InputRender text={value} caret={caret} placeholder={placeholder} />
 }

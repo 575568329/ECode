@@ -32,6 +32,8 @@ interface InputStreamProps {
   onCommand?: (cmd: Command, result: CommandResult) => void
   onClear?: () => void
   placeholder?: string
+  /** 禁用按键（覆盖层显示时，方向键/字符不漏进历史导航与输入框） */
+  inactive?: boolean
 }
 
 /**
@@ -39,7 +41,7 @@ interface InputStreamProps {
  * - slash 模式 + 选中 + Enter → 直接执行选中命令（不需先 Tab 补全）
  * - slash 模式 + 未选中 + Enter → submit 当前文本（如 /xyz → 未知命令）
  */
-export function InputStream({ onSubmit, onCommand, onClear, placeholder }: InputStreamProps): ReactElement {
+export function InputStream({ onSubmit, onCommand, onClear, placeholder, inactive }: InputStreamProps): ReactElement {
   const [cur, setCur] = useState<CursorState>(() => createCursor(''))
   const [history, setHistory] = useState<string[]>([])
   const [histIdx, setHistIdx] = useState(-1)
@@ -111,7 +113,7 @@ export function InputStream({ onSubmit, onCommand, onClear, placeholder }: Input
         setCur(createCursor(history[idx]))
       }
     }
-  })
+  }, { isActive: !inactive })
 
   return (
     <Box flexDirection="column">
@@ -121,6 +123,7 @@ export function InputStream({ onSubmit, onCommand, onClear, placeholder }: Input
         placeholder={placeholder}
         onInput={setCur}
         onSubmit={handleTextSubmit}
+        inactive={inactive}
       />
       <SlashSuggest text={cur.text} selectedIdx={slashIdx} />
     </Box>

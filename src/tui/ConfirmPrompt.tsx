@@ -3,6 +3,7 @@ import type { ReactElement } from 'react'
 import { Box, Text, useInput } from 'ink'
 import type { ConfirmState } from './types.js'
 import { theme } from './theme.js'
+import { DiffLine } from './DiffLine.js'
 
 /**
  * 确认弹窗（详设 §7.3）：副作用工具执行前给用户决策。
@@ -26,23 +27,6 @@ interface ConfirmPromptProps {
   /** 清 active.confirm（父卸载本组件） */
   onConfirm?: () => void
   onCancel?: () => void
-}
-
-/** diff 行着色：- 红 / + 绿 / @@ 蓝 / --- +++ 加粗 */
-function DiffLine({ line }: { line: string }): ReactElement {
-  if (line.startsWith('+++') || line.startsWith('---')) {
-    return <Text bold>{line}</Text>
-  }
-  if (line.startsWith('@@')) {
-    return <Text color={theme.info}>{line}</Text>
-  }
-  if (line.startsWith('-')) {
-    return <Text color={theme.error}>{line}</Text>
-  }
-  if (line.startsWith('+')) {
-    return <Text color={theme.success}>{line}</Text>
-  }
-  return <Text>{line}</Text>
 }
 
 export function ConfirmPrompt({ state, onConfirm, onCancel }: ConfirmPromptProps): ReactElement {

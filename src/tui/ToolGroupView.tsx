@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { Box, Text } from 'ink'
 import { mergeToolGroup, inputDigest, previewLine } from './toolview.js'
+import { DiffLine } from './DiffLine.js'
 import { theme } from './theme.js'
 import { symbols } from './symbols.js'
 import type { ActiveTool } from './types.js'
@@ -91,9 +92,18 @@ export function ToolGroupView({ tools, expanded = false, onToggle }: ToolGroupVi
                       {'  '}
                       {symbols.foldExpanded} 输出 ({formatBytes(bytes)})
                     </Text>
-                    <Text color={t.status === 'error' ? theme.error : undefined}>
-                      {content}
-                    </Text>
+                    {isSideEffect ? (
+                      // edit_file/write_file：按行着色（diff 风格：- 红 / + 绿 / @@ 蓝）
+                      content.split('\n').map((line, i) => (
+                        <Box key={i}>
+                          <DiffLine line={line} />
+                        </Box>
+                      ))
+                    ) : (
+                      <Text color={t.status === 'error' ? theme.error : undefined}>
+                        {content}
+                      </Text>
+                    )}
                   </>
                 ) : (
                   <Text dimColor>

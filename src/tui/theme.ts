@@ -10,7 +10,7 @@
 export const theme = {
   user: '#E6E6E6', // 用户消息文字（亮，不灰；靠 userBg 背景块区分）
   assistant: '#E6E6E6', // 助手正文
-  tool: '#ffffff', // 工具名（accent 蓝）
+  tool: '#000000', // 工具名（accent 蓝）
   success: '#7FD88F', // ✓ 成功（柔和绿）
   error: '#E06C75', // ✗ 错误（柔和红）
   warn: '#E5C07B', // ⚠ 警告（暖黄，不刺眼）

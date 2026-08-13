@@ -1,6 +1,6 @@
 ---
 layer: tui
-status: draft
+status: stable
 depends_on:
   - 详设/2026-08-12_M2-TUI实施方案_待审核.md
   - 详设/2026-08-11_ECode-MVP详设_待审核.md（§5 TUI / §10 M2）

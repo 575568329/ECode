@@ -1,6 +1,6 @@
 ---
 layer: tui
-status: review
+status: stable
 related_adr: []
 reviewed_doc:
   - 详设/2026-08-12_M2-TUI实施方案_待审核.md（§4 方案 B 流式 markdown）

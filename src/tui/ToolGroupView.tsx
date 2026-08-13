@@ -71,6 +71,10 @@ export function ToolGroupView({ tools, expanded = false, onToggle }: ToolGroupVi
         const content = t.result?.content ?? ''
         const hasOutput = content.length > 0
         const bytes = Buffer.byteLength(content, 'utf8')
+        // 副作用工具（edit_file/write_file）默认展开输出（直接显示 diff/content），
+        // 只读工具默认折叠（▸ preview）；Ctrl+O 全展开覆盖
+        const isSideEffect = t.name === 'edit_file' || t.name === 'write_file'
+        const showFull = expanded || isSideEffect
         const preview = previewLine(content)
         return (
           <Box key={id} flexDirection="column" paddingLeft={3}>
@@ -81,7 +85,7 @@ export function ToolGroupView({ tools, expanded = false, onToggle }: ToolGroupVi
             </Box>
             {hasOutput && (
               <Box flexDirection="column">
-                {expanded ? (
+                {showFull ? (
                   <>
                     <Text dimColor>
                       {'  '}

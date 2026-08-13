@@ -13,7 +13,7 @@
  * 在 Node 启动前注入（ESM import 是 hoisted，写在代码里会晚于 chalk 锁 level）。
  */
 
-import { loadConfig, buildProviderReq, type Config } from '../services/config.js'
+import { loadConfig, buildProviderReq, emptyShellConfig, type Config } from '../services/config.js'
 import { AnthropicProvider } from '../providers/anthropic.js'
 import { OpenaiProvider } from '../providers/openai.js'
 import { LLMProviderRegistryImpl } from '../providers/registry.js'
@@ -96,7 +96,16 @@ async function runOnce(messages: Message[], input: string, deps: Deps): Promise<
 }
 
 async function main(): Promise<void> {
-  const config = loadConfig()
+  // D10：配置有效性判断（不分首次/非首次）。有效 → 正常跑；无效 → argv 报错退出 / REPL+banner
+  let config: Config
+  let banner: string | undefined
+  try {
+    config = loadConfig()
+  } catch (e) {
+    if (process.argv.slice(2).join(' ').trim()) throw e // argv 非交互：报错退出（D6）
+    config = emptyShellConfig() // 空壳 P0-4：TuiApp 仍能渲染（banner + /setup 可用）
+    banner = e instanceof Error ? e.message : String(e)
+  }
   registerBuiltinCommands()
 
   // LogStore：JSONL 落盘 <cwd>/.ecode/logs/<sessionId>.jsonl（项目级，运行 trace；D12：ephemeral 数据跟项目走）
@@ -110,7 +119,7 @@ async function main(): Promise<void> {
     logPath,
     node: process.version,
     platform: process.platform,
-    providerType: config.providers[config.current.name].type,
+    providerType: config.providers[config.current.name]?.type,
   })
   process.on('exit', () => {
     logger.info('system', 'shutdown', { exitCode: process.exitCode })
@@ -146,7 +155,7 @@ async function main(): Promise<void> {
   }
 
   // REPL 模式：Ink TUI（exitOnCtrlC:false，由 TuiApp 的 useInterrupt 自处理双击退出）
-  render(React.createElement(TuiApp, { deps }), { exitOnCtrlC: false })
+  render(React.createElement(TuiApp, { deps, banner }), { exitOnCtrlC: false })
 }
 
 main().catch((e) => {

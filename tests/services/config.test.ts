@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { loadConfig, buildProviderReq } from '../../src/services/config.js'
+import { loadConfig, buildProviderReq, writeWizardConfig, emptyShellConfig } from '../../src/services/config.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-cfg-'))
 const cfgPath = path.join(tmp, 'config.json')
@@ -17,6 +17,33 @@ beforeEach(() => {
 })
 afterEach(() => {
   process.env = { ...baseEnv }
+})
+
+describe('writeWizardConfig', () => {
+  it('向导值 → 写 config → loadConfig round-trip', () => {
+    writeWizardConfig(
+      { type: 'anthropic', baseURL: 'http://x', apiKey: 'sk-c', models: 'glm-5.2, glm-4', thinking: 'medium' },
+      { configPath: cfgPath },
+    )
+    const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
+    expect(cfg.current).toEqual({ name: 'default', model: 'glm-5.2' })
+    expect(cfg.providers.default.type).toBe('anthropic')
+    expect(cfg.providers.default.baseURL).toBe('http://x')
+    expect(cfg.providers.default.apiKey).toBe('sk-c')
+    expect(cfg.providers.default.models).toEqual(['glm-5.2', 'glm-4'])
+    expect(cfg.providers.default.thinking).toBe('medium')
+  })
+})
+
+describe('emptyShellConfig', () => {
+  it('空壳结构（providers 空 + current 空，供配置无效态）', () => {
+    const cfg = emptyShellConfig()
+    expect(cfg.providers).toEqual({})
+    expect(cfg.current).toEqual({ name: '', model: '' })
+    expect(cfg.maxIterations).toBe(50)
+    expect(cfg.bashMaxOutputBytes).toBe(30720)
+    expect(cfg.logLevel).toBe('info')
+  })
 })
 
 describe('loadConfig', () => {

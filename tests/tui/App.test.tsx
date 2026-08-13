@@ -37,6 +37,31 @@ function tool(
 }
 
 describe('App', () => {
+  it('banner 渲染在顶部（醒目 warn 色）', () => {
+    const { lastFrame } = render(
+      React.createElement(App, {
+        model: 'glm-5.2',
+        committed: [],
+        active: createActive(),
+        banner: '配置不完整：缺少 API Key',
+      }),
+    )
+    const f = lastFrame() ?? ''
+    expect(f).toContain('配置不完整')
+    expect(f).toContain('⚠')
+  })
+
+  it('无 banner 不渲染 banner 区', () => {
+    const { lastFrame } = render(
+      React.createElement(App, {
+        model: 'glm-5.2',
+        committed: [],
+        active: createActive(),
+      }),
+    )
+    expect(lastFrame() ?? '').not.toContain('⚠')
+  })
+
   it('组合渲染：StatusBar + 历史消息', () => {
     const committed: CommittedItem[] = [{ kind: 'user', id: 'u1', text: '用户提问' }]
     const { lastFrame } = render(

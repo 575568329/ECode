@@ -12,7 +12,7 @@ import { TuiApp } from '../../src/tui/TuiApp.js'
 import { LLMProviderRegistryImpl } from '../../src/providers/registry.js'
 import { ToolRegistryImpl } from '../../src/tools/registry.js'
 import { commandRegistry, registerBuiltinCommands } from '../../src/commands/registry.js'
-import type { Config } from '../../src/services/config.js'
+import { emptyShellConfig, type Config } from '../../src/services/config.js'
 import type { Logger } from '../../src/services/logger.js'
 import type { HistoryStore } from '../../src/services/history.js'
 import type { Message } from '../../src/core/types.js'
@@ -201,5 +201,43 @@ describe('TuiApp /model', () => {
     stdin.write('\r')
     await flush()
     expect(lastFrame() ?? '').toContain('无历史会话')
+  })
+
+  // ---------- /setup + 配置无效态（D10）----------
+  it('配置无效（空壳）→ banner 渲染（cli 传入）', () => {
+    const { lastFrame } = render(
+      React.createElement(TuiApp, {
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config: emptyShellConfig() },
+        banner: '配置不完整：缺少 API Key',
+      }),
+    )
+    expect(lastFrame() ?? '').toContain('配置不完整')
+  })
+
+  it('配置无效 submit → banner 提示 /setup（不 runLoop）', async () => {
+    const { stdin, lastFrame } = render(
+      React.createElement(TuiApp, {
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config: emptyShellConfig() },
+      }),
+    )
+    stdin.write('hi')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    expect(lastFrame() ?? '').toContain('配置不完整')
+  })
+
+  it('/setup → Wizard 显示（第一步 type）', async () => {
+    const { stdin, lastFrame } = render(
+      React.createElement(TuiApp, {
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config: emptyShellConfig() },
+      }),
+    )
+    stdin.write('/setup')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    expect(lastFrame() ?? '').toContain('协议类型')
+    expect(lastFrame() ?? '').toContain('1/5')
   })
 })

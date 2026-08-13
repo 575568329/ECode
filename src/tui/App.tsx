@@ -6,6 +6,7 @@ import { Conversation } from './Conversation.js'
 import { ActivityBar } from './ActivityBar.js'
 import type { ActivityState } from '../core/loop.js'
 import type { CommittedItem, ActiveState } from './types.js'
+import { theme } from './theme.js'
 
 /**
  * App 根组件（最小 Static + M3 ConfirmPrompt）：
@@ -29,6 +30,8 @@ interface AppProps {
   tokens?: number
   cost?: string
   warning?: string
+  /** 配置无效/不完整提示（顶部醒目，启动态；区别于 warning 进 StatusBar） */
+  banner?: string
   children?: ReactNode
 }
 
@@ -46,6 +49,7 @@ export function App({
   tokens,
   cost,
   warning,
+  banner,
   children,
 }: AppProps): ReactElement {
   const busy =
@@ -56,6 +60,11 @@ export function App({
     activity === 'retry'
   return (
     <Box flexDirection="column">
+      {banner !== undefined && (
+        <Box borderStyle="round" borderColor={theme.warn} paddingX={1}>
+          <Text color={theme.warn}>⚠ {banner}</Text>
+        </Box>
+      )}
       <Conversation
         committed={committed}
         active={active}

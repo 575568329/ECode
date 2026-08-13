@@ -16,9 +16,10 @@ import { createActive, type CommittedItem, type ActiveState } from './types.js'
 import { messagesToCommitted, findUse } from './commit.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { buildPreview } from '../services/preview.js'
-import { buildProviderReq, type Config } from '../services/config.js'
+import { buildProviderReq, loadConfig, writeWizardConfig, type Config } from '../services/config.js'
 import { ModelPicker, type ModelEntry } from './ModelPicker.js'
 import { HistoryPicker } from './HistoryPicker.js'
+import { Wizard } from './Wizard.js'
 import type { SessionMeta } from '../services/history.js'
 
 /** 清屏（可见区 + scrollback + 光标归位）；/clear 用，清可见区残留 */
@@ -43,7 +44,7 @@ function isAbortError(e: unknown): boolean {
  * - active：当前轮活跃状态（分区累积：userInput / tools / streamingText）
  * - 一轮一 commit：runLoop 结束 → messagesToCommitted → setCommitted；active 清空
  */
-export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
+export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; banner?: string }): ReactElement {
   const messagesRef = useRef<Message[]>([])
   const abortRef = useRef<AbortController>(new AbortController())
   const runningRef = useRef(false)
@@ -66,13 +67,22 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
   const [clearKey, setClearKey] = useState(0)
   // config 是 state 不是 props（§8.1.1）：/model 改 current → setConfig → 重渲染，下次 submit 用新 current
   const [config, setConfig] = useState<Config>(() => deps.config)
-  // 覆盖层（/model·/history 等）：非 null 时独占输入（picker 渲染 + InputStream inactive）
-  const [overlay, setOverlay] = useState<{ kind: 'model-picker' } | { kind: 'pick-history' } | null>(null)
+  // 覆盖层（/model·/history·/setup 等）：非 null 时独占输入（picker 渲染 + InputStream inactive）
+  const [overlay, setOverlay] = useState<
+    { kind: 'model-picker' } | { kind: 'pick-history' } | { kind: 'setup-wizard' } | null
+  >(null)
   // /history 打开时载入的会话列表（loadAll 只在打开时调一次，避免 render 热路径同步 IO）
   const [historyMetas, setHistoryMetas] = useState<SessionMeta[]>([])
+  // banner（配置无效提示；初始从 cli 传入，/setup 成功后清，submit 配置无效时设）
+  const [banner, setBanner] = useState<string | undefined>(initialBanner)
 
   const submit = async (input: string): Promise<void> => {
     if (runningRef.current) return
+    // 配置无效态（空壳 Config）：不 runLoop，提示 /setup；/setup /history /clear 等命令不受影响
+    if (!config.providers[config.current.name]) {
+      setBanner('配置不完整，输入 /setup 配置')
+      return
+    }
     // 兑现上一轮的延迟 commit：当前轮在 runLoop 结束后保留在动态区（可 Ctrl+O 展开），
     // 直到下次 submit 才 commit 进 Static（收起固化）。符合「当前轮不固定 / 进入下一轮自动收起」。
     if (messagesRef.current.length > 0) {
@@ -254,6 +264,7 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
     <App
       key={clearKey}
       model={config.current.model}
+      banner={banner}
       committed={fullCommitted}
       active={active}
       onToggleTool={hasDoneTool ? toggleExpand : undefined}
@@ -296,6 +307,26 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
           }}
         />
       )}
+      {overlay?.kind === 'setup-wizard' && (
+        <Wizard
+          onComplete={(values) => {
+            writeWizardConfig(values)
+            try {
+              // 写入后重载：有效 → 生效 + 清 banner；仍无效（如 apiKey 空）→ 保留提示
+              setConfig(loadConfig())
+              setBanner(undefined)
+            } catch (e) {
+              setBanner(e instanceof Error ? e.message : String(e))
+            }
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+          onCancel={() => {
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+        />
+      )}
       <InputStream
         onSubmit={submit}
         onCommand={(_cmd, result) => {
@@ -312,6 +343,11 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
             setHistoryMetas(deps.history.loadAll())
             pickerRef.current = true
             setOverlay({ kind: 'pick-history' })
+            return
+          }
+          if (result.action === 'start-setup') {
+            pickerRef.current = true
+            setOverlay({ kind: 'setup-wizard' })
             return
           }
           // 替换（不累积）：多次 /help 只显示最新

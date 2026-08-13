@@ -5,12 +5,16 @@
  * 命令的副作用通过 action 字段交回调用方（InputStream/App）解释，保持 registry 纯逻辑。
  */
 
+import { spawn } from 'node:child_process'
+import * as path from 'node:path'
+import { defaultConfigPath } from '../services/config.js'
+
 /** 命令执行结果：输出文本（给用户）+ 可选副作用 action */
 export interface CommandResult {
   /** 给用户的输出文本（如 /help 的列表） */
   output?: string
-  /** 副作用 action（由调用方解释：clear=清空会话 / expand=展开折叠工具输出 / pick-model=弹模型选择器 / pick-history=弹历史选择器） */
-  action?: 'clear' | 'expand' | 'pick-model' | 'pick-history'
+  /** 副作用 action（由调用方解释：clear=清空会话 / expand=展开折叠工具输出 / pick-model=弹模型选择器 / pick-history=弹历史选择器 / start-setup=弹配置向导） */
+  action?: 'clear' | 'expand' | 'pick-model' | 'pick-history' | 'start-setup'
 }
 
 export interface Command {
@@ -80,4 +84,26 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     description: '列出/恢复历史会话',
     run: () => ({ action: 'pick-history' }),
   })
+  registry.register({
+    name: 'setup',
+    description: '配置向导（重配供应商/密钥）',
+    run: () => ({ action: 'start-setup' }),
+  })
+  // /config：仅桌面平台注册（win32=explorer / darwin=open；linux·WSL 无可靠 opener → 用 /setup）
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    registry.register({
+      name: 'config',
+      description: '打开配置文件夹',
+      run: () => {
+        const dir = path.dirname(defaultConfigPath())
+        const cmd = process.platform === 'win32' ? 'explorer' : 'open'
+        try {
+          spawn(cmd, [dir], { detached: true, stdio: 'ignore' }).unref()
+        } catch (e) {
+          return { output: `打开配置文件夹失败：${e instanceof Error ? e.message : String(e)}` }
+        }
+        return { output: '已打开 ~/.ecode 配置文件夹（编辑后重启生效）' }
+      },
+    })
+  }
 }

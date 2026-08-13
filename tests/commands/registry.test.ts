@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { CommandRegistry, registerBuiltinCommands, commandRegistry } from '../../src/commands/registry.js'
 
 describe('CommandRegistry', () => {
@@ -59,6 +59,7 @@ describe('内置命令', () => {
     expect(r.output).toContain('/clear')
     expect(r.output).toContain('/model')
     expect(r.output).toContain('/history')
+    expect(r.output).toContain('/setup')
   })
 
   it('/clear 返回 action=clear', () => {
@@ -77,6 +78,10 @@ describe('内置命令', () => {
     expect(commandRegistry.get('history')!.run().action).toBe('pick-history')
   })
 
+  it('/setup 返回 action=start-setup', () => {
+    expect(commandRegistry.get('setup')!.run().action).toBe('start-setup')
+  })
+
   it('match("he") 含 help', () => {
     expect(commandRegistry.match('he').map((c) => c.name)).toContain('help')
   })
@@ -85,5 +90,33 @@ describe('内置命令', () => {
     registerBuiltinCommands()
     registerBuiltinCommands()
     expect(commandRegistry.list().filter((c) => c.name === 'help')).toHaveLength(1)
+  })
+})
+
+describe('/config 平台判断', () => {
+  const origPlatform = process.platform
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true })
+  })
+
+  it('win32 注册 /config（explorer）', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    const r = new CommandRegistry()
+    registerBuiltinCommands(r)
+    expect(r.get('config')).toBeDefined()
+  })
+
+  it('darwin 注册 /config（open）', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    const r = new CommandRegistry()
+    registerBuiltinCommands(r)
+    expect(r.get('config')).toBeDefined()
+  })
+
+  it('linux 不注册 /config（无可靠 opener，用 /setup）', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    const r = new CommandRegistry()
+    registerBuiltinCommands(r)
+    expect(r.get('config')).toBeUndefined()
   })
 })

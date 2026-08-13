@@ -54,7 +54,7 @@ export interface LoadConfigOpts {
   loadDotenv?: boolean
 }
 
-function defaultConfigPath(): string {
+export function defaultConfigPath(): string {
   return path.join(os.homedir(), '.ecode', 'config.json')
 }
 
@@ -199,5 +199,56 @@ export function buildProviderReq(config: Config): ProviderReq {
     ...(cfg.topP !== undefined ? { topP: cfg.topP } : {}),
     ...(cfg.maxTokens !== undefined ? { maxTokens: cfg.maxTokens } : {}),
     ...(cfg.thinking !== undefined ? { thinking: cfg.thinking } : {}),
+  }
+}
+
+/** /setup 向导收集的值（writeWizardConfig 用） */
+export interface WizardValues {
+  type: 'anthropic' | 'openai'
+  baseURL: string
+  apiKey: string
+  models: string // 逗号分隔（写时 split + trim → string[]）
+  thinking: ThinkingLevel
+}
+
+/**
+ * 向导值 → 写完整 config.json（JSONC 含注释引导；§10.1 步骤 6）。
+ * provider name 固定 'default'（Wizard 不问 name；用户可编辑改名）。
+ * 文件权限 600（Windows chmod 弱化尽力，Linux/macOS 生效）。
+ */
+export function writeWizardConfig(values: WizardValues, opts: { configPath?: string } = {}): void {
+  const cfgPath = opts.configPath ?? defaultConfigPath()
+  const models = values.models.split(',').map((s) => s.trim()).filter(Boolean)
+  const content = `{
+  // ECode 配置（/setup 向导生成）。编辑后重启生效，或运行时 /model 切换、/setup 重配。
+  "default": { "provider": "default", "model": "${models[0] ?? ''}" },
+
+  "providers": {
+    "default": {
+      "type": "${values.type}",                                  // 协议：anthropic | openai
+      "baseURL": "${values.baseURL}",                            // 端点
+      "apiKey": "${values.apiKey}",                              // API Key
+      "models": ${JSON.stringify(models)},                       // 可用模型（/model 列这些）
+      "thinking": "${values.thinking}",                          // 思考强度：off | low | medium | high
+      "maxTokens": 8192                                          // 单次最大输出 token
+    }
+  },
+
+  "maxIterations": 50,        // Agent 循环最大轮数
+  "bashMaxOutputBytes": 30720 // bash 输出截断阈值（30KB 头尾中截）
+}
+`
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
+  fs.writeFileSync(cfgPath, content, { mode: 0o600 })
+}
+
+/** 配置无效态空壳（P0-4）：cli catch loadConfig 失败时构造，TuiApp 仍能渲染（banner + /setup 可用）。 */
+export function emptyShellConfig(): Config {
+  return {
+    providers: {},
+    current: { name: '', model: '' },
+    maxIterations: 50,
+    bashMaxOutputBytes: 30720,
+    logLevel: 'info',
   }
 }

@@ -9,8 +9,8 @@
 export interface CommandResult {
   /** 给用户的输出文本（如 /help 的列表） */
   output?: string
-  /** 副作用 action（由调用方解释：clear=清空会话 / expand=展开折叠工具输出 / pick-model=弹模型选择器） */
-  action?: 'clear' | 'expand' | 'pick-model'
+  /** 副作用 action（由调用方解释：clear=清空会话 / expand=展开折叠工具输出 / pick-model=弹模型选择器 / pick-history=弹历史选择器） */
+  action?: 'clear' | 'expand' | 'pick-model' | 'pick-history'
 }
 
 export interface Command {
@@ -74,5 +74,10 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     name: 'model',
     description: '切换供应商/模型',
     run: () => ({ action: 'pick-model' }),
+  })
+  registry.register({
+    name: 'history',
+    description: '列出/恢复历史会话',
+    run: () => ({ action: 'pick-history' }),
   })
 }

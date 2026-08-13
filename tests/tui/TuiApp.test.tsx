@@ -15,6 +15,7 @@ import { commandRegistry, registerBuiltinCommands } from '../../src/commands/reg
 import type { Config } from '../../src/services/config.js'
 import type { Logger } from '../../src/services/logger.js'
 import type { HistoryStore } from '../../src/services/history.js'
+import type { Message } from '../../src/core/types.js'
 
 const config: Config = {
   providers: {
@@ -133,5 +134,72 @@ describe('TuiApp /model', () => {
     // 让 runLoop 的微任务跑（provider.run 是空 async generator，会立即 done）
     await flush()
     expect(getByType).toHaveBeenCalledWith('openai')
+  })
+
+  // ---------- /history ----------
+  it('/history → 显示历史列表（含 firstUser）', async () => {
+    const history = {
+      ...noopHistory,
+      loadAll: () => [
+        { sessionId: 's1', createdAt: '2026-08-13T10:00:00.000Z', model: 'glm-5.2', firstUser: '帮我写函数' },
+      ],
+    } as unknown as HistoryStore
+    const { stdin, lastFrame } = render(
+      React.createElement(TuiApp, {
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history, config },
+      }),
+    )
+    stdin.write('/history')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    const f = lastFrame() ?? ''
+    expect(f).toContain('恢复历史会话')
+    expect(f).toContain('帮我写函数')
+  })
+
+  it('选中 → restore 注入 + setSessionId 续写 + committed 重建', async () => {
+    const restored: Message[] = [
+      { role: 'user', content: [{ type: 'text', text: '之前问的问题' }] },
+      { role: 'assistant', content: [{ type: 'text', text: '之前的回答' }] },
+    ]
+    const restore = vi.fn(() => restored)
+    const setSessionId = vi.fn()
+    const history = {
+      ...noopHistory,
+      loadAll: () => [
+        { sessionId: 's1', createdAt: '2026-08-13T10:00:00.000Z', model: 'glm-5.2', firstUser: '之前问的问题' },
+      ],
+      restore,
+      setSessionId,
+    } as unknown as HistoryStore
+    const { stdin, lastFrame } = render(
+      React.createElement(TuiApp, {
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history, config },
+      }),
+    )
+    stdin.write('/history')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    stdin.write('\r') // 选中第一项恢复
+    await flush()
+    expect(restore).toHaveBeenCalledWith('s1')
+    expect(setSessionId).toHaveBeenCalled()
+    // committed 重建：含恢复的 assistant 文本（messagesToCommitted）
+    expect(lastFrame() ?? '').toContain('之前的回答')
+  })
+
+  it('空历史 → 显示「无历史会话」', async () => {
+    const { stdin, lastFrame } = render(
+      React.createElement(TuiApp, {
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config },
+      }),
+    )
+    stdin.write('/history')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    expect(lastFrame() ?? '').toContain('无历史会话')
   })
 })

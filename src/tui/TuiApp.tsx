@@ -18,6 +18,8 @@ import { buildSystemPrompt } from '../core/system.js'
 import { buildPreview } from '../services/preview.js'
 import { buildProviderReq, type Config } from '../services/config.js'
 import { ModelPicker, type ModelEntry } from './ModelPicker.js'
+import { HistoryPicker } from './HistoryPicker.js'
+import type { SessionMeta } from '../services/history.js'
 
 /** 清屏（可见区 + scrollback + 光标归位）；/clear 用，清可见区残留 */
 const CLEAR_TERMINAL = '\x1b[2J\x1b[3J\x1b[H'
@@ -64,8 +66,10 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
   const [clearKey, setClearKey] = useState(0)
   // config 是 state 不是 props（§8.1.1）：/model 改 current → setConfig → 重渲染，下次 submit 用新 current
   const [config, setConfig] = useState<Config>(() => deps.config)
-  // 覆盖层（/model 等）：非 null 时独占输入（ModelPicker 渲染 + InputStream inactive）
-  const [overlay, setOverlay] = useState<{ kind: 'model-picker' } | null>(null)
+  // 覆盖层（/model·/history 等）：非 null 时独占输入（picker 渲染 + InputStream inactive）
+  const [overlay, setOverlay] = useState<{ kind: 'model-picker' } | { kind: 'pick-history' } | null>(null)
+  // /history 打开时载入的会话列表（loadAll 只在打开时调一次，避免 render 热路径同步 IO）
+  const [historyMetas, setHistoryMetas] = useState<SessionMeta[]>([])
 
   const submit = async (input: string): Promise<void> => {
     if (runningRef.current) return
@@ -170,6 +174,32 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
     confirmRef.current = false
     setActive((a) => ({ ...a, confirm: null }))
   }
+
+  // 清动态/瞬态状态（onClear 和 restoreSession 共用；committed 由调用方设，§9.2 P2-6 别重写一套）
+  const resetTransient = () => {
+    setActive(createActive())
+    setSystemMsgs([])
+    setTokens(0)
+    setIter(undefined)
+    setMaxIter(undefined)
+    setWarn(null)
+    setError(null)
+    // 清可见区 + scrollback（清 Static 残留）+ 光标归位
+    process.stdout.write(CLEAR_TERMINAL)
+    // remount App（重置 <Static> 内部 index，避免 /clear 后消息不渲染）
+    setClearKey((k) => k + 1)
+  }
+
+  // /history 恢复（§9.2）：restore → 重建 committed → 清瞬态 → 起新 session 续写（D2 旧文件只读）
+  const restoreSession = (sessionId: string) => {
+    const messages = deps.history.restore(sessionId)
+    messagesRef.current = messages
+    setCommitted(messagesToCommitted(messages))
+    resetTransient()
+    // 续写进新文件（起新 sessionId）；model 用当前 config（用户可能已 /model 切过）
+    const newId = new Date().toISOString().replace(/[:.]/g, '-')
+    deps.history.setSessionId(newId, config.current.model)
+  }
   const { warning } = useInterrupt({
     onInterrupt: () => abortRef.current.abort(),
     // P0#1：confirm/picker 覆盖期间不 abort（由覆盖组件独占 Ctrl+C）
@@ -252,6 +282,20 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
           }}
         />
       )}
+      {overlay?.kind === 'pick-history' && (
+        <HistoryPicker
+          metas={historyMetas}
+          onSelect={(sid) => {
+            restoreSession(sid)
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+          onCancel={() => {
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+        />
+      )}
       <InputStream
         onSubmit={submit}
         onCommand={(_cmd, result) => {
@@ -264,23 +308,19 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
             setOverlay({ kind: 'model-picker' })
             return
           }
+          if (result.action === 'pick-history') {
+            setHistoryMetas(deps.history.loadAll())
+            pickerRef.current = true
+            setOverlay({ kind: 'pick-history' })
+            return
+          }
           // 替换（不累积）：多次 /help 只显示最新
           setSystemMsgs(result.output ? [result.output as string] : [])
         }}
         onClear={() => {
           messagesRef.current = []
           setCommitted([])
-          setActive(createActive())
-          setSystemMsgs([])
-          setTokens(0)
-          setIter(undefined)
-          setMaxIter(undefined)
-          setWarn(null)
-          setError(null)
-          // 清可见区 + scrollback（清 Static 残留）+ 光标归位
-          process.stdout.write(CLEAR_TERMINAL)
-          // remount App（重置 <Static> 内部 index，避免 /clear 后消息不渲染）
-          setClearKey((k) => k + 1)
+          resetTransient()
         }}
         inactive={overlay !== null}
         placeholder={busy ? '（处理中，Ctrl+C 中断）...' : '输入消息，/help 查看命令...'}

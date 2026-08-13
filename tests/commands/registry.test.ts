@@ -58,6 +58,7 @@ describe('内置命令', () => {
     expect(r.output).toContain('/help')
     expect(r.output).toContain('/clear')
     expect(r.output).toContain('/model')
+    expect(r.output).toContain('/history')
   })
 
   it('/clear 返回 action=clear', () => {
@@ -70,6 +71,10 @@ describe('内置命令', () => {
 
   it('/model 返回 action=pick-model', () => {
     expect(commandRegistry.get('model')!.run().action).toBe('pick-model')
+  })
+
+  it('/history 返回 action=pick-history', () => {
+    expect(commandRegistry.get('history')!.run().action).toBe('pick-history')
   })
 
   it('match("he") 含 help', () => {

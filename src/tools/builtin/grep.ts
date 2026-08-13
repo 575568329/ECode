@@ -49,6 +49,19 @@ export const grepTool: Tool = {
     }
 
     try {
+      // path 是文件 → 只搜该文件（避免 fast-glob 把文件当目录 scandir → ENOTDIR）
+      const stat = await fs.stat(cwd).catch(() => null)
+      if (stat?.isFile()) {
+        const content = await fs.readFile(cwd, 'utf8')
+        const fileLines = content.split('\n')
+        const matched: string[] = []
+        for (let i = 0; i < fileLines.length; i++) {
+          if (re.test(fileLines[i])) {
+            matched.push(`${rel ?? cwd}:${i + 1}: ${fileLines[i].trim()}`)
+          }
+        }
+        return { content: matched.length > 0 ? matched.join('\n') : '(无匹配)' }
+      }
       const files = await fg(glob ?? '**/*', {
         cwd,
         caseSensitiveMatch: true,

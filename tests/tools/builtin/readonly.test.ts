@@ -90,4 +90,10 @@ describe('grepTool', () => {
     const r = await grepTool.execute({ pattern: '(' }, ctx)
     expect(r.is_error).toBe(true)
   })
+
+  it('path 是文件 → 只搜该文件（不报 ENOTDIR）', async () => {
+    const r = await grepTool.execute({ pattern: 'const x', path: 'a.ts' }, ctx)
+    expect(r.is_error).toBeFalsy()
+    expect(r.content).toContain('a.ts:1:')
+  })
 })

@@ -37,7 +37,7 @@ export interface TuiAppDeps {
 }
 
 /** 把已 commit 的 messages 转成渲染项：user text / assistant text / 工具调用（配对 tool_result） */
-function messagesToItems(messages: Message[]): ReactNode[] {
+function messagesToItems(messages: Message[], expandedAll?: boolean): ReactNode[] {
   const items: ReactNode[] = []
   // 收集所有 tool_result（配对 tool_use_id）
   const results = new Map<string, ToolResultBlock>()
@@ -63,7 +63,13 @@ function messagesToItems(messages: Message[]): ReactNode[] {
         items.push(<AssistantMessage key={`a${i}`} text={texts.map((t) => t.text).join('')} />)
       }
       for (const tu of uses) {
-        items.push(<ToolCallView key={`t${tu.id}`} entry={{ use: tu, result: results.get(tu.id) }} />)
+        items.push(
+          <ToolCallView
+            key={`t${tu.id}`}
+            entry={{ use: tu, result: results.get(tu.id) }}
+            expanded={expandedAll ? true : undefined}
+          />,
+        )
       }
     }
   }
@@ -206,10 +212,10 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
 
   const items = useMemo(
     () => [
-      ...messagesToItems(messages),
+      ...messagesToItems(messages, expandAll),
       ...systemMsgs.map((m, i) => <AssistantMessage key={`sys${i}`} text={m} />),
     ],
-    [messages, systemMsgs],
+    [messages, systemMsgs, expandAll],
   )
   const busy =
     streamingText !== null ||

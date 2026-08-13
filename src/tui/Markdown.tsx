@@ -201,13 +201,25 @@ function renderToken(tok: BlockTok, key: number): ReactNode {
   }
 }
 
+/** 解码常见 HTML 实体（LLM 回复常含 &nbsp; 等缩进，终端原样显示会乱） */
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
 /** Markdown 渲染主组件：给已 commit 的助手消息用 */
 export function Markdown({ text }: { text: string }): ReactElement {
+  const decoded = decodeHtmlEntities(text)
   // 快速路径：无 markdown 语法 → 纯文本按宽度折行（跳过 lexer）
-  if (!hasMarkdownSyntax(text)) {
-    return <AnsiText ansi={text} wrap={true} />
+  if (!hasMarkdownSyntax(decoded)) {
+    return <AnsiText ansi={decoded} wrap={true} />
   }
-  const tokens = marked.lexer(text) as unknown as BlockTok[]
+  const tokens = marked.lexer(decoded) as unknown as BlockTok[]
   return (
     <Box flexDirection="column">
       {tokens.map((tok, i) => renderToken(tok, i))}

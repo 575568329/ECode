@@ -242,6 +242,10 @@ export function TuiApp({ deps }: { deps: TuiAppDeps }): ReactElement {
       <InputStream
         onSubmit={submit}
         onCommand={(_cmd, result) => {
+          if (result.action === 'expand') {
+            setExpandAll((v) => !v)
+            return
+          }
           // 替换（不累积）：多次 /help 只显示最新一次，避免反复打印
           setSystemMsgs(result.output ? [result.output as string] : [])
         }}

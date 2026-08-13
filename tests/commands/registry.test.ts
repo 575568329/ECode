@@ -63,6 +63,10 @@ describe('内置命令', () => {
     expect(commandRegistry.get('clear')!.run().action).toBe('clear')
   })
 
+  it('/expand 返回 action=expand', () => {
+    expect(commandRegistry.get('expand')!.run().action).toBe('expand')
+  })
+
   it('match("he") 含 help', () => {
     expect(commandRegistry.match('he').map((c) => c.name)).toContain('help')
   })

@@ -9,8 +9,8 @@
 export interface CommandResult {
   /** 给用户的输出文本（如 /help 的列表） */
   output?: string
-  /** 副作用 action（由调用方解释：clear=清空会话） */
-  action?: 'clear'
+  /** 副作用 action（由调用方解释：clear=清空会话 / expand=展开折叠工具输出） */
+  action?: 'clear' | 'expand'
 }
 
 export interface Command {
@@ -64,5 +64,10 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     name: 'clear',
     description: '清空当前会话',
     run: () => ({ action: 'clear' }),
+  })
+  registry.register({
+    name: 'expand',
+    description: '展开/折叠工具输出',
+    run: () => ({ action: 'expand' }),
   })
 }

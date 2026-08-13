@@ -2,13 +2,14 @@
  * LogStore（AGENTS §2.7）：全系统唯一写入入口，JSONL 落盘。
  *
  * - 异步批量 flush（默认 100 条或 500ms），error 立即 flush
- * - close() 同步 flush（exit 前调，崩溃不丢关键日志）
+ * - close() **同步** flush（writeFileSync）：exit handler 是同步的，WriteStream async write
+ *   不保证落盘 → 用 writeFileSync 兜住最后一批，崩溃/退出不丢关键日志
  * - payload 经 redact 脱敏（密钥不落日志）
- * - ≠ HistoryStore：LogStore 是运行 trace（调试用，**不进 context**）；
- *   HistoryStore 是对话 messages（喂 LLM、/history 恢复）。靠 sessionId 关联。
+ * - ≠ HistoryStore：LogStore 是运行 trace（调试，**不进 context**）；
+ *   HistoryStore 是对话 messages（喂 LLM）。靠 sessionId 关联。
  */
 
-import { createWriteStream, mkdirSync } from 'node:fs'
+import { createWriteStream, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { WriteStream } from 'node:fs'
 import { redact } from './redact.js'
@@ -31,20 +32,26 @@ export class LogStore {
   private flushTimer: NodeJS.Timeout | null = null
   private readonly stream: WriteStream | null
   private closed = false
-  /** 已 flush 的行（测试断言用；生产从文件读） */
+  private streamErrorNotified = false
+  /** 已 flush 的行（仅 recordWritten=true 时记，供测试断言；生产 false 避免内存泄漏） */
   readonly written: string[] = []
 
   constructor(
-    logPath: string,
+    private readonly logPath: string,
     private readonly sessionId: string,
     private readonly maxBuffer = 100,
     private readonly flushMs = 500,
+    private readonly recordWritten = false,
   ) {
     try {
       mkdirSync(dirname(logPath), { recursive: true })
       this.stream = createWriteStream(logPath, { flags: 'a' })
-      // 落盘失败不阻塞主流程（只丢日志）
-      this.stream.on('error', () => {})
+      this.stream.on('error', (e) => {
+        if (!this.streamErrorNotified) {
+          process.stderr.write(`[LogStore] 日志落盘失败（后续不再提示）: ${e.message}\n`)
+          this.streamErrorNotified = true
+        }
+      })
     } catch {
       this.stream = null
     }
@@ -85,20 +92,40 @@ export class LogStore {
 
   flush(): void {
     if (this.buffer.length === 0) return
-    const lines = this.buffer.map((e) => JSON.stringify(e)).join('\n') + '\n'
-    for (const e of this.buffer) this.written.push(JSON.stringify(e))
-    if (this.stream) this.stream.write(lines)
+    this.writeBuffer(this.stream ? this.stream.write.bind(this.stream) : null)
+  }
+
+  /** 关闭：同步 flush（exit handler 同步，用 writeFileSync 不丢最后一批） */
+  close(): void {
+    if (this.closed) return
+    if (this.buffer.length > 0) {
+      const lines = this.buffer.map((e) => JSON.stringify(e)).join('\n') + '\n'
+      try {
+        writeFileSync(this.logPath, lines, { flag: 'a' })
+        if (this.recordWritten) {
+          for (const e of this.buffer) this.written.push(JSON.stringify(e))
+        }
+      } catch {
+        // 同步落盘失败只能吞（不能阻塞退出）
+      }
+      this.buffer = []
+    }
+    this.stream?.end()
+    this.closed = true
+  }
+
+  private writeBuffer(write: ((s: string) => void) | null): void {
+    if (this.recordWritten) {
+      for (const e of this.buffer) this.written.push(JSON.stringify(e))
+    }
+    if (write) {
+      const lines = this.buffer.map((e) => JSON.stringify(e)).join('\n') + '\n'
+      write(lines)
+    }
     this.buffer = []
     if (this.flushTimer !== null) {
       clearTimeout(this.flushTimer)
       this.flushTimer = null
     }
-  }
-
-  close(): void {
-    if (this.closed) return
-    this.flush()
-    this.stream?.end()
-    this.closed = true
   }
 }

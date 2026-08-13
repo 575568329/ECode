@@ -152,6 +152,12 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
           }
           case 'usage':
             opts.callbacks.onUsage?.(d.input_tokens, d.output_tokens)
+            opts.logger.debug(
+              'provider',
+              'usage',
+              { input: d.input_tokens, output: d.output_tokens },
+              iter,
+            )
             break
           case 'error':
             streamError = d.error
@@ -204,6 +210,12 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
         const delay = Math.min(BASE_RETRY_MS * 2 ** (retryCount - 1), MAX_RETRY_CAP_MS)
         opts.callbacks.onActivity?.('retry', `${streamError.message}（${retryCount}/${MAX_RETRIES}，等 ${delay}ms）`)
         opts.callbacks.onWarn?.(streamError.message)
+        opts.logger.warn(
+          'provider',
+          'retry',
+          { attempt: retryCount, code: streamError.code, backoff_ms: delay },
+          iter,
+        )
         try {
           await sleep(delay, opts.signal)
         } catch {
@@ -224,18 +236,24 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     if (stopReason === 'length') {
       opts.callbacks.onActivity?.('idle')
       opts.callbacks.onWarn?.('输出被截断（达到 max_tokens），输入"继续"可续写')
+      opts.logger.warn('loop', 'max_tokens_truncated', { iter })
       break
     }
     if (stopReason === 'content_filter') {
       opts.callbacks.onActivity?.('idle')
       opts.callbacks.onWarn?.('内容被安全过滤')
+      opts.logger.warn('loop', 'content_filter', { iter })
       break
     }
-    if (stopReason === 'error') throw toFatal('error')
+    if (stopReason === 'error') {
+      opts.logger.error('loop', 'fatal_stop', { stopReason }, iter)
+      throw toFatal('error')
+    }
 
     // 空 tool_use 防护
     if (newToolUses.length === 0) {
       opts.callbacks.onWarn?.('LLM 要求工具调用但未给出工具，跳过本轮')
+      opts.logger.warn('loop', 'empty_tool_use', { iter })
       continue
     }
 
@@ -266,6 +284,12 @@ async function executeTools(uses: ToolUseBlock[], opts: LoopRunOptions): Promise
 /** 执行单个工具：get → AJV 校验 → 副作用确认 → execute，异常二分（fatal 抛 / recoverable 转 is_error）。 */
 async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<ToolResultBlock> {
   const tool = opts.tools.get(use.name)
+  opts.logger.debug('tool', 'invoke', {
+    id: use.id,
+    name: use.name,
+    input: use.input,
+    readonly: tool?.readonly,
+  })
   if (!tool) {
     return { type: 'tool_result', tool_use_id: use.id, content: `工具 ${use.name} 不存在`, is_error: true }
   }

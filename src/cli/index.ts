@@ -102,8 +102,31 @@ async function main(): Promise<void> {
   const logPath = join(homedir(), '.ecode', 'logs', `${sessionId}.jsonl`)
   const logStore = new LogStore(logPath, sessionId)
   const logger = new JsonlLogger(logStore)
-  logger.info('system', 'startup', { model: cfg.model, cwd: process.cwd(), logPath })
-  process.on('exit', () => logStore.close())
+  logger.info('system', 'startup', {
+    model: cfg.model,
+    cwd: process.cwd(),
+    logPath,
+    node: process.version,
+    platform: process.platform,
+    providerType: cfg.type,
+  })
+  process.on('exit', () => {
+    logger.info('system', 'shutdown', { exitCode: process.exitCode })
+    logStore.close()
+  })
+  // 崩溃兜底：未捕获异常/拒绝，记 error + 同步 flush 后退（避免丢最后一批排查日志）
+  process.on('uncaughtException', (e) => {
+    logger.error('system', 'uncaught', { message: e.message, stack: e.stack })
+    logStore.close()
+    process.exit(1)
+  })
+  process.on('unhandledRejection', (r) => {
+    const msg = r instanceof Error ? r.message : String(r)
+    const stack = r instanceof Error ? r.stack : undefined
+    logger.error('system', 'unhandled_rejection', { message: msg, stack })
+    logStore.close()
+    process.exit(1)
+  })
 
   const deps = makeDeps(cfg, logger)
 

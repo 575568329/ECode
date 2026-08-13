@@ -6,10 +6,11 @@ import { LogStore } from '../../src/services/logstore.js'
 const tmp = join(tmpdir(), `ecode-logstore-${Date.now()}`)
 let counter = 0
 
+/** recordWritten=true（测试断言 written；生产 false） */
 function newStore(maxBuffer = 3, flushMs = 100): LogStore {
   counter += 1
   const path = join(tmp, `${counter}-${Math.random().toString(36).slice(2)}.jsonl`)
-  return new LogStore(path, 'sess-test', maxBuffer, flushMs)
+  return new LogStore(path, 'sess-test', maxBuffer, flushMs, true)
 }
 
 afterEach(() => {

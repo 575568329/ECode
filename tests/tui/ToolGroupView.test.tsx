@@ -119,4 +119,27 @@ describe('ToolGroupView', () => {
       ).lastFrame() ?? ''
     expect(f).toContain('▸')
   })
+
+  it('done + 有输出：折叠态显示 ▸ preview 首行（修复：输出不再被捏掉）', () => {
+    const f = view([
+      makeTool({
+        name: 'read_file',
+        status: 'done',
+        id: 't1',
+        input: { path: 'pkg.json' },
+        content: 'name: ecode\nversion: 0.1',
+      }),
+    ])
+    expect(f).toContain('▸')
+    expect(f).toContain('name: ecode') // preview 首行可见
+  })
+
+  it('展开态：显示 ▾ 输出 + 完整 content', () => {
+    const f = view(
+      [makeTool({ name: 'read_file', status: 'done', id: 't1', content: '完整文件内容' })],
+      true,
+    )
+    expect(f).toContain('▾')
+    expect(f).toContain('完整文件内容')
+  })
 })

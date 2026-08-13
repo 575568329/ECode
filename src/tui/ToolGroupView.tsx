@@ -1,23 +1,34 @@
 import type { ReactElement } from 'react'
 import { Box, Text } from 'ink'
-import { mergeToolGroup, inputDigest } from './toolview.js'
+import { mergeToolGroup, inputDigest, previewLine } from './toolview.js'
 import { theme } from './theme.js'
 import { symbols } from './symbols.js'
 import type { ActiveTool } from './types.js'
+
+/** 字节数格式化（B/KB/MB）。与 ToolCallView 一致，复用同一展示约定。 */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
+  return `${(n / 1024 / 1024).toFixed(1)}MB`
+}
 
 /**
  * 工具合并块（详设 §3 超额策略）。
  *
  * 折叠态恒 ≤4 行：表头 1 + visible 摘要（≤2）+ 溢出提示 1。
  * 不随工具数增长——visible 封顶 MAX_TOOL_VISIBLE，超出转溢出计数。
- * 展开态：全部工具摘要（临时增高，仅当前轮可展开）。
+ * 展开态：全部工具摘要 + **输出全文**（临时增高，仅当前轮可展开）。
+ *
+ * 每工具含输出区（与旧 ToolCallView 一致）：
+ *   折叠：▸ preview 首行（截断 + …NB）
+ *   展开：▾ 输出 (NB) + 完整 content
  *
  * 动态区（当前轮）：expanded 受控 + onToggle 可交互。
- * Static（历史 tool-group）：不传 expanded/onToggle，收起固化。
+ * Static（历史 tool-group）：不传 expanded/onToggle，收起固化（含 ▸ preview）。
  */
 interface ToolGroupViewProps {
   tools: ActiveTool[]
-  /** 受控展开；默认 false（折叠） */
+  /** 受控展开；默认 false（折叠，显示 preview） */
   expanded?: boolean
   onToggle?: () => void
 }
@@ -57,11 +68,40 @@ export function ToolGroupView({ tools, expanded = false, onToggle }: ToolGroupVi
             : t.status === 'done'
               ? { sym: symbols.success, color: theme.success }
               : null // running：无 tail（等 done 才 ✓/✗）
+        const content = t.result?.content ?? ''
+        const hasOutput = content.length > 0
+        const bytes = Buffer.byteLength(content, 'utf8')
+        const preview = previewLine(content)
         return (
-          <Box key={id} paddingLeft={3}>
-            <Text dimColor>{t.name}</Text>
-            {digest !== '' && <Text dimColor> {digest}</Text>}
-            {tail && <Text color={tail.color}> {tail.sym}</Text>}
+          <Box key={id} flexDirection="column" paddingLeft={3}>
+            <Box>
+              <Text dimColor>{t.name}</Text>
+              {digest !== '' && <Text dimColor> {digest}</Text>}
+              {tail && <Text color={tail.color}> {tail.sym}</Text>}
+            </Box>
+            {hasOutput && (
+              <Box flexDirection="column">
+                {expanded ? (
+                  <>
+                    <Text dimColor>
+                      {'  '}
+                      {symbols.foldExpanded} 输出 ({formatBytes(bytes)})
+                    </Text>
+                    <Text color={t.status === 'error' ? theme.error : undefined}>
+                      {content}
+                    </Text>
+                  </>
+                ) : (
+                  <Text dimColor>
+                    {'  '}
+                    {symbols.foldCollapsed} {preview}
+                    {content.length > preview.length
+                      ? ` ${symbols.trunc}(${formatBytes(bytes)})`
+                      : ''}
+                  </Text>
+                )}
+              </Box>
+            )}
           </Box>
         )
       })}

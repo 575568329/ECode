@@ -47,9 +47,11 @@ export function InputStream({ onSubmit, onCommand, onClear, placeholder, inactiv
   const [histIdx, setHistIdx] = useState(-1)
   const [slashIdx, setSlashIdx] = useState(-1)
 
-  // cur.text 变化时重置 slashIdx（重新匹配）
+  // cur.text 变化时重置 slashIdx：有匹配默认选中第一个（UI 高亮 + 回车执行第一个），
+  // 无匹配 -1（不显示建议列表）
   useEffect(() => {
-    setSlashIdx(-1)
+    const matches = cur.text.startsWith('/') ? commandRegistry.match(cur.text.slice(1)) : []
+    setSlashIdx(matches.length > 0 ? 0 : -1)
   }, [cur.text])
 
   const submit = (text: string): void => {

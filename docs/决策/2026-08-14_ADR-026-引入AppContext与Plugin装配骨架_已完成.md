@@ -14,7 +14,7 @@ related_analysis: []
 ECode 当前的能力装配集中在 `cli/index.ts` 的 `makeDeps()`：手写 `new` + `register()` 把全部内置 tool / provider / command 装进两个 Registry 与 `Deps`，再传给心脏（`runLoop`）和 TUI（`TuiApp`）。这套"中心化硬编码装配"在 MVP 阶段足够简单，但两个即将到来的里程碑会把它撑爆：
 
 - **M5 上下文压缩**（`详设/2026-08-14_后续-M5实施方案_已完成.md`）要引入 `CompactionOrchestrator` + `CompactionStrategy` registry，其 P9 明确写"cli makeDeps 注入编排器（注册 summarize 策略 + lastUsage 闭包）"。
-- **M6 能力扩展面**（`详设/2026-08-14_后续-M6实施方案_待审核.md`）要引入 Skill / MCP / Plugin 三个子系统。其中 Plugin 系统（P1-P7）的 `PluginLoader` 在启动期把外部第三方插件"分发到各 Registry"。
+- **M6 能力扩展面**（`详设/2026-08-14_后续-M6实施方案_已完成.md`）要引入 Skill / MCP / Plugin 三个子系统。其中 Plugin 系统（P1-P7）的 `PluginLoader` 在启动期把外部第三方插件"分发到各 Registry"。
 
 问题在于：`makeDeps` 是唯一的装配点，每加一个子系统就要回来改它；各 Registry（`ToolRegistry` / `LLMProviderRegistry` / `CommandRegistry`，未来 + 压缩策略 registry / SkillRegistry / MCP registry）散落在不同模块，没有统一的装配契约；M6 的 `PluginLoader` 要硬编码知道每个 Registry 的引用才能分发。
 

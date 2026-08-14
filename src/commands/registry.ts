@@ -14,7 +14,7 @@ export interface CommandResult {
   /** 给用户的输出文本（如 /help 的列表） */
   output?: string
   /** 副作用 action（由调用方解释：clear=清空会话 / expand=展开折叠工具输出 / pick-model=弹模型选择器 / pick-history=弹历史选择器 / start-setup=弹配置向导） */
-  action?: 'clear' | 'expand' | 'pick-model' | 'pick-history' | 'start-setup'
+  action?: 'clear' | 'expand' | 'pick-model' | 'pick-history' | 'start-setup' | 'compact'
 }
 
 export interface Command {
@@ -88,6 +88,11 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     name: 'setup',
     description: '配置向导（重配供应商/密钥）',
     run: () => ({ action: 'start-setup' }),
+  })
+  registry.register({
+    name: 'compact',
+    description: '手动压缩对话（摘要旧消息，释放上下文）',
+    run: () => ({ action: 'compact' }),
   })
   // /config：仅桌面平台注册（win32=explorer / darwin=open；linux·WSL 无可靠 opener → 用 /setup）
   if (process.platform === 'win32' || process.platform === 'darwin') {

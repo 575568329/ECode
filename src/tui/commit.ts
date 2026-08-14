@@ -8,10 +8,11 @@
  *
  * findUse：从 messages 按 id 反查 tool_use（onToolResult 时配对 active.tools 用）。
  */
-import type { Message, TextBlock, ToolUseBlock, ToolResultBlock } from '../core/types.js'
+import { isBoundary, type HistoryLine, type Message, type TextBlock, type ToolUseBlock, type ToolResultBlock } from '../core/types.js'
 import type { CommittedItem, CommittedToolCall } from './types.js'
 
-export function messagesToCommitted(messages: Message[]): CommittedItem[] {
+export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
+  const messages = lines.filter((l): l is Message => !isBoundary(l))
   const items: CommittedItem[] = []
   // 配对 tool_result（在 user message 内）
   const results = new Map<string, ToolResultBlock>()
@@ -75,11 +76,11 @@ export function messagesToCommitted(messages: Message[]): CommittedItem[] {
   return items
 }
 
-/** 从 messages 按 id 反查 tool_use（从末尾找 last assistant）。 */
-export function findUse(messages: Message[], id: string): ToolUseBlock | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]
-    if (m.role === 'assistant') {
+/** 从 lines 按 id 反查 tool_use（从末尾找 last assistant；跳过 boundary 行）。 */
+export function findUse(lines: HistoryLine[], id: string): ToolUseBlock | undefined {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = lines[i]
+    if (!isBoundary(m) && m.role === 'assistant') {
       const found = m.content.find(
         (b) => b.type === 'tool_use' && (b as ToolUseBlock).id === id,
       )

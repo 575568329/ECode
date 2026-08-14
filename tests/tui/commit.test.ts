@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { messagesToCommitted, findUse } from '../../src/tui/commit.js'
-import type { Message, ToolUseBlock, ToolResultBlock, TextBlock } from '../../src/core/types.js'
+import type { HistoryLine, Message, ToolUseBlock, ToolResultBlock, TextBlock } from '../../src/core/types.js'
 
 function userText(text: string): Message {
   return { role: 'user', content: [{ type: 'text', text }] }
@@ -98,5 +98,30 @@ describe('findUse', () => {
 
   it('找不到返回 undefined', () => {
     expect(findUse([], 'x')).toBeUndefined()
+  })
+})
+
+describe('boundary 适配（M5 P5：HistoryLine[] 过滤 boundary）', () => {
+  it('messagesToCommitted 跳过 boundary 行', () => {
+    const lines: HistoryLine[] = [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { compact_boundary: true, summary: '摘要', tailStartIndex: 0, preTokens: 0 },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+    ]
+    const items = messagesToCommitted(lines)
+    // boundary 不生成 item：user(hi) + assistant-text(ok)
+    expect(items).toHaveLength(2)
+    expect(items[0]).toMatchObject({ kind: 'user', text: 'hi' })
+    expect(items[1]).toMatchObject({ kind: 'assistant-text', text: 'ok' })
+  })
+
+  it('findUse 跳过 boundary 行反查 tool_use', () => {
+    const use = (id: string): ToolUseBlock => ({ type: 'tool_use', id, name: 'bash', input: {} })
+    const lines: HistoryLine[] = [
+      { role: 'assistant', content: [use('t1')] },
+      { compact_boundary: true, summary: 's', tailStartIndex: 0, preTokens: 0 },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r' }] },
+    ]
+    expect(findUse(lines, 't1')?.name).toBe('bash')
   })
 })

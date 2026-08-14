@@ -7,7 +7,9 @@ import { useInput } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
 import { runLoop, type ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
-import type { AppError, Message } from '../core/types.js'
+import type { AppError, HistoryLine } from '../core/types.js'
+import { makeOnBeforeRequest } from '../services/compaction/hook.js'
+import type { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
@@ -31,6 +33,8 @@ export interface TuiAppDeps {
   logger: Logger
   history: HistoryStore
   config: Config
+  orchestrator: CompactionOrchestrator
+  lastUsage: { input: number; output: number; cacheRead: number; cacheCreation: number }
 }
 
 function isAbortError(e: unknown): boolean {
@@ -45,7 +49,7 @@ function isAbortError(e: unknown): boolean {
  * - 一轮一 commit：runLoop 结束 → messagesToCommitted → setCommitted；active 清空
  */
 export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; banner?: string }): ReactElement {
-  const messagesRef = useRef<Message[]>([])
+  const messagesRef = useRef<HistoryLine[]>([])
   const abortRef = useRef<AbortController>(new AbortController())
   const runningRef = useRef(false)
   // 同步 confirm 状态给 useInterrupt isActive（避免 stale closure；P0#1）
@@ -95,10 +99,15 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     setWarn(null)
     setActivity({ state: 'thinking' })
     abortRef.current = new AbortController()
+    const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
+    const providerReq = buildProviderReq(config)
+    const system = buildSystemPrompt()
+    const onCompacted = (m: HistoryLine[]) => setCommitted(messagesToCommitted(m))
+    const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted)
 
     try {
       await runLoop(messagesRef.current, input, {
-        provider: deps.providerRegistry.getByType(config.providers[config.current.name].type),
+        provider,
         tools: deps.tools,
         logger: deps.logger,
         history: deps.history,
@@ -138,7 +147,13 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
             })
             setActivity({ state: 'thinking' })
           },
-          onUsage: (inp, out) => setTokens((n) => n + inp + out),
+          onUsage: (inp, out, cache) => {
+            deps.lastUsage.input = inp
+            deps.lastUsage.output = out
+            deps.lastUsage.cacheRead = cache?.read ?? 0
+            deps.lastUsage.cacheCreation = cache?.creation ?? 0
+            setTokens((n) => n + inp + out)
+          },
           onIter: (i, m) => {
             setIter(i)
             setMaxIter(m)
@@ -146,11 +161,13 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
           onActivity: (state, text) => setActivity({ state, text }),
           onWarn: (m) => setWarn(m),
         },
-        providerReq: buildProviderReq(config),
-        system: buildSystemPrompt(),
+        providerReq,
+        system,
         maxIterations: config.maxIterations,
         toolCtx: { cwd: process.cwd(), signal: abortRef.current.signal },
         signal: abortRef.current.signal,
+        onBeforeRequest,
+        onCompacted,
         confirm: async (use) => {
           // D5：callback 内部算预览（不污染 Tool 接口）；P1#3：catch 异常不杀 Loop
           const preview = await buildPreview(use, process.cwd()).catch(
@@ -206,6 +223,17 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
   }
 
   // /history 恢复（§9.2）：restore → 重建 committed → 清瞬态 → 起新 session 续写（D2 旧文件只读）
+  /** M5：手动 /compact——触发编排器强制压缩 + 重建 committed（boundary 追加到 messagesRef） */
+  const compactManual = async (): Promise<void> => {
+    if (messagesRef.current.length === 0) return
+    if (!config.providers[config.current.name]) return
+    const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
+    const providerReq = buildProviderReq(config)
+    const onCompacted = (m: HistoryLine[]) => setCommitted(messagesToCommitted(m))
+    const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, buildSystemPrompt(), onCompacted)
+    await hook(messagesRef.current, 'overflow') // overflow = 强制压缩（绕过阈值判定）
+  }
+
   const restoreSession = (sessionId: string) => {
     const messages = deps.history.restore(sessionId)
     // P1-10：restore 返回空（文件缺失/损坏/真空会话）→ 保留当前会话 + 提示，不静默清空
@@ -363,6 +391,10 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
           if (result.action === 'start-setup') {
             pickerRef.current = true
             setOverlay({ kind: 'setup-wizard' })
+            return
+          }
+          if (result.action === 'compact') {
+            void compactManual()
             return
           }
           // 替换（不累积）：多次 /help 只显示最新

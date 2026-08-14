@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { messagesToCommitted, findUse } from '../../src/tui/commit.js'
-import type { HistoryLine, Message, ToolUseBlock, ToolResultBlock, TextBlock } from '../../src/core/types.js'
+import type { HistoryLine, BoundaryLine, Message, ToolUseBlock, ToolResultBlock, TextBlock } from '../../src/core/types.js'
 
 function userText(text: string): Message {
   return { role: 'user', content: [{ type: 'text', text }] }
@@ -20,6 +20,33 @@ describe('messagesToCommitted', () => {
     const items = messagesToCommitted([userText('你好')])
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({ kind: 'user', text: '你好' })
+  })
+
+  it('boundary 行 → compacted 标记按原序插入（removedCount=tailStartIndex）', () => {
+    const b = (tailStartIndex: number): BoundaryLine => ({
+      compact_boundary: true,
+      summary: '摘要',
+      tailStartIndex,
+      preTokens: 1000,
+    })
+    const lines: HistoryLine[] = [userText('q1'), asstText('a1'), userText('q2'), b(2), userText('q3')]
+    const items = messagesToCommitted(lines)
+    // q1/a1/q2 在 boundary 前（3 条 Message）→ 标记插在 q2 之后、q3 之前
+    expect(items.map((i) => i.kind)).toEqual(['user', 'assistant-text', 'user', 'compacted', 'user'])
+    expect(items[3]).toMatchObject({ kind: 'compacted', removedCount: 2 })
+  })
+
+  it('boundary 在末尾（压缩刚发生，tail 已在 boundary 前）→ 标记在最后', () => {
+    const b = (tailStartIndex: number): BoundaryLine => ({
+      compact_boundary: true,
+      summary: '摘要',
+      tailStartIndex,
+      preTokens: 1000,
+    })
+    const lines: HistoryLine[] = [userText('q1'), asstText('a1'), userText('q2'), b(2)]
+    const items = messagesToCommitted(lines)
+    expect(items.map((i) => i.kind)).toEqual(['user', 'assistant-text', 'user', 'compacted'])
+    expect(items[3]).toMatchObject({ kind: 'compacted', removedCount: 2 })
   })
 
   it('assistant text → assistant-text', () => {
@@ -101,18 +128,19 @@ describe('findUse', () => {
   })
 })
 
-describe('boundary 适配（M5 P5：HistoryLine[] 过滤 boundary）', () => {
-  it('messagesToCommitted 跳过 boundary 行', () => {
+describe('boundary 适配（M5：boundary → compacted 标记，不再静默过滤）', () => {
+  it('messagesToCommitted 把 boundary 转成 compacted 标记（原序）', () => {
     const lines: HistoryLine[] = [
       { role: 'user', content: [{ type: 'text', text: 'hi' }] },
       { compact_boundary: true, summary: '摘要', tailStartIndex: 0, preTokens: 0 },
       { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
     ]
     const items = messagesToCommitted(lines)
-    // boundary 不生成 item：user(hi) + assistant-text(ok)
-    expect(items).toHaveLength(2)
+    // boundary 在第 1 条 Message 后 → 标记插在 user(hi) 与 assistant-text(ok) 之间
+    expect(items).toHaveLength(3)
     expect(items[0]).toMatchObject({ kind: 'user', text: 'hi' })
-    expect(items[1]).toMatchObject({ kind: 'assistant-text', text: 'ok' })
+    expect(items[1]).toMatchObject({ kind: 'compacted', removedCount: 0 })
+    expect(items[2]).toMatchObject({ kind: 'assistant-text', text: 'ok' })
   })
 
   it('findUse 跳过 boundary 行反查 tool_use', () => {

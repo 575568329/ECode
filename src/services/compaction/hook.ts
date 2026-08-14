@@ -27,6 +27,7 @@ const EFFECTIVE_WINDOW_RATIO = 0.9
  * @param history boundary 落盘句柄（P0-3：不传则只在内存，重启丢失）
  * @param signal 摘要 LLM 调用的中断信号（P1-5）
  * @param onCompacted 压缩完成回调（hook 统一调，覆盖 pressure/overflow/手动三条路径）
+ * @param onCompacting 压缩开始回调（UI 提示「正在压缩」——摘要 LLM 调用可能数十秒，别让用户以为卡死）
  */
 export function makeOnBeforeRequest(
   orchestrator: CompactionOrchestrator,
@@ -36,6 +37,7 @@ export function makeOnBeforeRequest(
   onCompacted: (messages: HistoryLine[]) => void,
   history?: HistoryStore,
   signal?: AbortSignal,
+  onCompacting?: () => void,
 ): (messages: HistoryLine[], trigger?: 'pressure' | 'overflow') => Promise<Message[]> {
   return async (messages, trigger = 'pressure') => {
     let ctx = buildContextMessages(messages)
@@ -46,6 +48,7 @@ export function makeOnBeforeRequest(
 
     // overflow（400 兜底/手动 /compact）强制压缩；pressure 超阈才压缩
     if (trigger === 'overflow' || estimated > threshold) {
+      onCompacting?.()
       const compacted = await orchestrator.run({
         trigger,
         messages: ctx,

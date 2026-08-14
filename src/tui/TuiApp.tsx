@@ -107,8 +107,12 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
     const providerReq = buildProviderReq(config)
     const system = buildSystemPrompt()
-    const onCompacted = (m: HistoryLine[]) => setCommitted(messagesToCommitted(m))
-    const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted, deps.history, abortRef.current.signal)
+    const onCompacted = (m: HistoryLine[]) => {
+      setCommitted(messagesToCommitted(m))
+      setSystemMsgs(['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）'])
+    }
+    const onCompacting = () => setSystemMsgs(['正在压缩对话...'])
+    const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted, deps.history, abortRef.current.signal, onCompacting)
 
     try {
       await runLoop(messagesRef.current, input, {

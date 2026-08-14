@@ -55,6 +55,8 @@ export type CommittedItem =
   | { kind: 'user'; id: string; text: string }
   | { kind: 'assistant-text'; id: string; text: string }
   | { kind: 'tool-group'; id: string; calls: CommittedToolCall[] }
+  /** M5 压缩点标记：上方 removedCount 条已摘要进模型上下文（UI 仍显示全量原文） */
+  | { kind: 'compacted'; id: string; removedCount: number }
 
 /** 创建空 ActiveState（初始 / commit 后 / clear 后） */
 export function createActive(): ActiveState {

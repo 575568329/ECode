@@ -58,6 +58,13 @@ function renderCommitted(item: CommittedItem): ReactNode {
     case 'tool-group':
       // Static 完整展示（expanded=true：详设 §7.5，scrollback 不怕长，事后滚轮看 diff/输出全文）
       return <ToolGroupView tools={callsToTools(item.calls)} expanded={true} />
+    case 'compacted':
+      // M5 压缩点标记：UI 显示全量原文（投影分离），此处告知模型上下文已被摘要
+      return (
+        <Text dimColor>
+          ⇕ 已压缩（上方 {item.removedCount} 条已摘要进上下文，原文仍显示）
+        </Text>
+      )
   }
 }
 

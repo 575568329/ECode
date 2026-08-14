@@ -13,6 +13,14 @@ import type { CommittedItem, CommittedToolCall } from './types.js'
 
 export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
   const messages = lines.filter((l): l is Message => !isBoundary(l))
+  // boundary → 压缩标记插入点（key=boundary 前的 Message 数；value=被摘要条数 tailStartIndex）。
+  // UI 显示全量原文（投影分离），标记按原序插入，告知「此处之上的消息已摘要进模型上下文」。
+  const boundaryMarks = new Map<number, number>()
+  let msgCount = 0
+  for (const line of lines) {
+    if (isBoundary(line)) boundaryMarks.set(msgCount, line.tailStartIndex)
+    else msgCount++
+  }
   const items: CommittedItem[] = []
   // 配对 tool_result（在 user message 内）
   const results = new Map<string, ToolResultBlock>()
@@ -34,7 +42,13 @@ export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
       pending = []
     }
   }
-  for (let i = 0; i < messages.length; i++) {
+  for (let i = 0; i <= messages.length; i++) {
+    const mark = boundaryMarks.get(i)
+    if (mark !== undefined) {
+      flush()
+      items.push({ kind: 'compacted', id: `c${n++}`, removedCount: mark })
+    }
+    if (i === messages.length) break
     const m = messages[i]
     if (m.role === 'user') {
       const text = m.content

@@ -4,6 +4,11 @@ import {
   splitMessages,
   preserveToolPairs,
   extractSummary,
+  serializeMessage,
+  groupBatches,
+  splitTextHalf,
+  batchBudgetTokens,
+  TOOL_RESULT_MAX_CHARS,
 } from '../../../src/services/compaction/summarize.js'
 import type { Message, Delta } from '../../../src/core/types.js'
 import type { LLMProvider, LLMProviderRunRequest } from '../../../src/providers/interface.js'
@@ -188,5 +193,121 @@ describe('SummarizeStrategy.run', () => {
       ctx({ provider, messages: [summaryMsg, ...tail], previousSummary: '旧摘要' }),
     )
     expect(r.compacted).toBe(false) // head 剥掉 summaryMsg 后为空 → 无新内容可摘要
+  })
+})
+
+describe('分批路径（v2：超大 head 的 map-reduce）', () => {
+  /** 可编程 mock：按调用序返回预设（Delta[] 或 throw），并记录每次请求。 */
+  function seqProvider(
+    steps: Array<Delta[] | Error>,
+  ): LLMProvider & { calls: LLMProviderRunRequest[] } {
+    const calls: LLMProviderRunRequest[] = []
+    let i = 0
+    return {
+      type: 'seq',
+      calls,
+      async *run(req: LLMProviderRunRequest): AsyncIterable<Delta> {
+        calls.push(req)
+        const step = steps[Math.min(i++, steps.length - 1)]
+        if (step instanceof Error) throw step
+        for (const d of step) yield d
+      },
+    }
+  }
+
+  const ok = (text: string): Delta[] => [
+    { type: 'text', text: `<summary>${text}</summary>` },
+    { type: 'done', stop_reason: 'end' },
+  ]
+
+  /** 分批用例的 ctx 构造（SummarizeStrategy.run 的 ctx helper 在别的 describe 块内，这里独立一份）。 */
+  function mkCtx(overrides: Partial<CompactionContext> & { provider: LLMProvider }): CompactionContext {
+    return {
+      messages: bigTextMessages(30),
+      tokenCount: 600000,
+      effectiveWindow: 30000,
+      trigger: 'manual',
+      providerReq: PROVIDER_REQ,
+      ...overrides,
+    }
+  }
+
+  it('serializeMessage：text/tool_use/tool_result 各形态 + 超长 tool result 截断', () => {
+    const m: Message = {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '我来看下' },
+        { type: 'tool_use', id: 't1', name: 'bash', input: { cmd: 'ls' } },
+        { type: 'tool_result', tool_use_id: 't1', content: 'x'.repeat(TOOL_RESULT_MAX_CHARS + 5000), is_error: true },
+      ],
+    }
+    const s = serializeMessage(m)
+    expect(s).toContain('[Assistant]: 我来看下')
+    expect(s).toContain('[Assistant tool call]: bash({"cmd":"ls"})')
+    expect(s).toContain('[Tool error]:')
+    expect(s).toContain(`原文 ${TOOL_RESULT_MAX_CHARS + 5000} 字符`)
+    expect(s.length).toBeLessThan(TOOL_RESULT_MAX_CHARS + 500) // 确实截断了
+  })
+
+  it('groupBatches：按字节预算组批 + 超大单块截断独立成批', () => {
+    const blocks = ['a'.repeat(4000), 'b'.repeat(4000), 'c'.repeat(4000), 'h'.repeat(9000)]
+    const batches = groupBatches(blocks, 8100)
+    // 前两块 4000+2+4000=8002 ≤ 8100 同批；第三块触发新批；9000 > 8100 截断独立成批
+    expect(batches.length).toBe(3)
+    expect(batches[0]).toContain('aaaa')
+    expect(batches[0]).toContain('bbbb')
+    expect(batches[2]).toContain('原文 9000 字符')
+  })
+
+  it('splitTextHalf：优先换行边界；附近无换行则腰斩', () => {
+    const [a, b] = splitTextHalf('line1\nline2\nline3\nline4')
+    expect(a).toBe('line1\nline2') // 中点附近换行处切
+    expect(b).toBe('\nline3\nline4')
+    const [x, y] = splitTextHalf('abcdefgh') // 无换行
+    expect(x).toBe('abcd')
+    expect(y).toBe('efgh')
+  })
+
+  it('batchBudgetTokens：减法公式（窗口−输出−buffer−system）+ 下限钳', () => {
+    expect(batchBudgetTokens(180000)).toBe(180000 - 4096 - 8000 - 1500)
+    expect(batchBudgetTokens(10000)).toBe(20000) // 钳下限，避免窗口小退化成几十批
+  })
+
+  it('head 超批预算 → 分批 map×2 + reduce×1，批首含作用域声明', async () => {
+    // effectiveWindow=30000 → budget=16404 token；30 条×1000 token → tail 8 条、head 22 条=22000 > 16404 → 分 2 批
+    const provider = seqProvider([ok('段1'), ok('段2'), ok('## 目标\n- 最终')])
+    const r = await new SummarizeStrategy().run(mkCtx({ provider }))
+    expect(r.compacted).toBe(true)
+    expect(r.summary).toBe('## 目标\n- 最终')
+    expect(r.tailStartIndex).toBe(22)
+    expect(provider.calls.length).toBe(3) // 2 map + 1 reduce
+    const batch1Text = (provider.calls[0].messages[0].content[0] as { text: string }).text
+    expect(batch1Text).toContain('第 1/2 段') // 作用域声明
+    expect(batch1Text).toContain('不要写总结性结尾')
+    const reduceText = (provider.calls[2].messages[0].content[0] as { text: string }).text
+    expect(reduceText).toContain('【第 1 段（时序）】') // reduce 输入是分段摘要
+  })
+
+  it('批 400（CONTEXT_TOO_LONG）→ 二分重试后成功（不丢内容）', async () => {
+    const ctl = Object.assign(new Error('prompt is too long: 90000 > 65616'), { status: 400 })
+    const provider = seqProvider([
+      ctl, // 批1 第一次：400 → 二分
+      ok('批1前半'), // 批1 前半
+      ok('批1后半'), // 批1 后半
+      ok('段2'), // 批2
+      ok('final'), // reduce
+    ])
+    const r = await new SummarizeStrategy().run(mkCtx({ provider }))
+    expect(r.compacted).toBe(true)
+    expect(r.summary).toBe('final')
+    expect(provider.calls.length).toBe(5) // 1失败 + 2半批 + 1批2 + 1 reduce
+  })
+
+  it('非 context-too-long 错误 → 不二分，整次降级 compacted:false', async () => {
+    const provider = seqProvider([new Error('network down')])
+    const r = await new SummarizeStrategy().run(mkCtx({ provider }))
+    expect(r.compacted).toBe(false)
+    // 并行 map：两批同时发起（2 次调用），失败的那批不二分不重试
+    expect(provider.calls.length).toBe(2)
   })
 })

@@ -254,7 +254,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       const lenBefore = messagesRef.current.length
       const onCompacted = (m: HistoryLine[]) => setCommitted(messagesToCommitted(m))
       const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, buildSystemPrompt(), onCompacted, deps.history)
-      await hook(messagesRef.current, 'overflow') // overflow = 强制压缩（绕过阈值判定）
+      await hook(messagesRef.current, 'manual') // manual = 强制压缩 + 重置熔断（用户明确要求时给机会）
       setSystemMsgs(
         messagesRef.current.length > lenBefore
           ? ['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）']

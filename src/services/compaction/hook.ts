@@ -40,7 +40,7 @@ export function makeOnBeforeRequest(
   signal?: AbortSignal,
   onCompacting?: () => void,
   onCompactFail?: () => void,
-): (messages: HistoryLine[], trigger?: 'pressure' | 'overflow') => Promise<Message[]> {
+): (messages: HistoryLine[], trigger?: 'pressure' | 'overflow' | 'manual') => Promise<Message[]> {
   return async (messages, trigger = 'pressure') => {
     let ctx = buildContextMessages(messages)
     const ctxWindow = await resolveContextWindow(providerReq.model, providerReq.contextWindow)

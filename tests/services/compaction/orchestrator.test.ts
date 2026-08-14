@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   CompactionOrchestrator,
   findLastSummary,
@@ -113,6 +113,38 @@ describe('CompactionOrchestrator', () => {
   it('无策略 → false', async () => {
     const orch = new CompactionOrchestrator()
     expect(await orch.run(baseOpts([]))).toBe(false)
+  })
+
+  it('熔断：连续 3 次压缩失败 → 不再自动重试；manual 重置；成功重置', async () => {
+    const orch = new CompactionOrchestrator()
+    const fail = mockStrategy({ name: 'f', result: { compacted: false } })
+    orch.register(fail)
+    // 3 次失败（每次都真的调了策略 run）
+    expect(await orch.run(baseOpts([]))).toBe(false)
+    expect(await orch.run(baseOpts([]))).toBe(false)
+    expect(await orch.run(baseOpts([]))).toBe(false)
+    expect(orch.isTripped()).toBe(true)
+    // 熔断后自动触发：直接 false，策略不再被调
+    const ran = vi.fn()
+    orch.register(mockStrategy({ name: 'n', result: { compacted: false }, ran }))
+    expect(await orch.run(baseOpts([]))).toBe(false)
+    expect(ran).not.toHaveBeenCalled()
+    // manual 触发重置计数 → 策略重新可跑
+    const all: HistoryLine[] = []
+    orch.register(mockStrategy({ name: 'ok', result: { compacted: true, summary: '手动成功', tailStartIndex: 0 } }))
+    expect(await orch.run({ ...baseOpts(all), trigger: 'manual' })).toBe(true)
+    expect(orch.isTripped()).toBe(false)
+    // 成功重置后，自动触发恢复正常路径
+    expect(await orch.run(baseOpts(all))).toBe(true)
+  })
+
+  it('熔断不误伤：shouldRun 全挡住（策略未真正执行）→ 不进失败计数', async () => {
+    const orch = new CompactionOrchestrator()
+    orch.register(mockStrategy({ name: 'skip', shouldRun: false, result: { compacted: false } }))
+    await orch.run(baseOpts([]))
+    await orch.run(baseOpts([]))
+    await orch.run(baseOpts([]))
+    expect(orch.isTripped()).toBe(false) // 没真正跑，不算失败
   })
 
   it('滚动 summary：未传 previousSummary → 从 allMessages 找最后 boundary', async () => {

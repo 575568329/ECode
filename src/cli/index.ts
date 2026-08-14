@@ -40,6 +40,7 @@ import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
 import { makeOnBeforeRequest } from '../services/compaction/hook.js'
+import { resolveContextWindow } from '../services/contextWindow.js'
 import { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../services/compaction/summarize.js'
 import type { HistoryLine } from '../core/types.js'
@@ -68,6 +69,9 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   toolReg.register(editFileTool)
   const orchestrator = new CompactionOrchestrator()
   orchestrator.register(new SummarizeStrategy())
+  // models.dev 预热（fire-and-forget）：进程首次无缓存时 resolveContextWindow 联网拉取（10s timeout），
+  // 不预热会恰好卡在用户第一轮提问的压缩判定前——启动期提前拉，失败静默（走内置表兜底）
+  void resolveContextWindow(config.current.model, config.providers[config.current.name]?.contextWindow).catch(() => {})
   return {
     providerRegistry: providerReg,
     tools: toolReg,

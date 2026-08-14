@@ -151,4 +151,42 @@ describe('SummarizeStrategy.run', () => {
     expect(capturedSystem).toContain('更新以下锚定摘要')
     expect(capturedSystem).toContain('旧锚定摘要内容')
   })
+
+  it('滚动去重：previousSummary 存在时 head 剥掉投影 index-0 的旧 summaryMsg（不双重表示）', async () => {
+    let capturedMessages: Message[] = []
+    const spy: LLMProvider = {
+      type: 'spy',
+      async *run(req: LLMProviderRunRequest): AsyncIterable<Delta> {
+        capturedMessages = req.messages
+        yield { type: 'text', text: '<summary>更新后</summary>' }
+        yield { type: 'done', stop_reason: 'end' }
+      },
+    }
+    // 模拟投影 ctx：index-0 是 buildContextMessages 构造的旧 summaryMsg（前缀标记）
+    const summaryMsg: Message = {
+      role: 'user',
+      content: [{ type: 'text', text: '[此前对话已压缩] 旧锚定摘要' }],
+    }
+    const messages = [summaryMsg, ...bigTextMessages(20)] // 21 条：投影 summaryMsg + 20 条真实消息
+    await new SummarizeStrategy().run(ctx({ provider: spy, messages, previousSummary: '旧锚定摘要' }))
+    // tail 留 8 条（8000 token / 1000），head 原 13 条（含 summaryMsg），剥 1 → 送摘要 12 条
+    expect(capturedMessages.length).toBe(12)
+    expect(capturedMessages.every((m) => !JSON.stringify(m).includes('此前对话已压缩'))).toBe(true)
+  })
+
+  it('滚动去重边界：head 只有旧 summaryMsg（无新内容）→ 不压缩（滚动摘要已涵盖）', async () => {
+    const summaryMsg: Message = {
+      role: 'user',
+      content: [{ type: 'text', text: '[此前对话已压缩] 旧摘要' + 'x'.repeat(40000) }], // 超预算，进 head
+    }
+    const tail = bigTextMessages(2) // 小 tail
+    const provider = mockProvider([
+      { type: 'text', text: '<summary>不该被调到</summary>' },
+      { type: 'done', stop_reason: 'end' },
+    ])
+    const r = await new SummarizeStrategy().run(
+      ctx({ provider, messages: [summaryMsg, ...tail], previousSummary: '旧摘要' }),
+    )
+    expect(r.compacted).toBe(false) // head 剥掉 summaryMsg 后为空 → 无新内容可摘要
+  })
 })

@@ -13,6 +13,7 @@
 
 import type { LLMProviderRunRequest } from '../../providers/interface.js'
 import type { Message } from '../../core/types.js'
+import { SUMMARY_MSG_PREFIX } from '../../core/context.js'
 import type { CompactionStrategy, CompactionContext, CompactionResult } from './strategy.js'
 
 /** 保留区（tail）token 预算：原文保留最近这段，更老的送摘要。 */
@@ -55,8 +56,20 @@ export class SummarizeStrategy implements CompactionStrategy {
     const tailStartIndex = preserveToolPairs(messages, rawTailStart)
     if (tailStartIndex === 0) return { compacted: false } // 不变量把全部纳入 tail，无法压缩
 
-    const head = messages.slice(0, tailStartIndex)
-    if (head.length === 0) return { compacted: false }
+    let head = messages.slice(0, tailStartIndex)
+    // 滚动压缩去重：投影 ctx 的 index-0 是上一轮的 summaryMsg（buildContextMessages 构造），
+    // previousSummary 又已注入 system prompt——双份表示会让 LLM 困惑并逐次漂移。
+    // 剥掉它，head 只含真实对话（旧 tail + 新消息）。
+    if (
+      previousSummary !== undefined &&
+      head.length > 0 &&
+      head[0].role === 'user' &&
+      head[0].content[0]?.type === 'text' &&
+      head[0].content[0].text.startsWith(SUMMARY_MSG_PREFIX)
+    ) {
+      head = head.slice(1)
+    }
+    if (head.length === 0) return { compacted: false } // 无新内容可摘要（head 只有旧 summary），滚动摘要已涵盖
 
     // 3. 构造摘要 prompt（滚动 summary：有 previousSummary 则更新而非重述）
     const system = previousSummary

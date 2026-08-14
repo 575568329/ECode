@@ -26,28 +26,43 @@ export interface OrchestratorOptions extends CompactionContext {
   history?: HistoryStore
 }
 
+/** 熔断阈值：连续 N 次压缩失败后停止自动重试（对齐 claude-code MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES）。 */
+const MAX_CONSECUTIVE_FAILURES = 3
+
 export class CompactionOrchestrator {
   private readonly strategies: CompactionStrategy[] = []
+  private consecutiveFailures = 0
 
   register(s: CompactionStrategy): void {
     this.strategies.push(s)
   }
 
+  /** 熔断是否已触发（连续失败达阈值；手动 /compact 会重置）。 */
+  isTripped(): boolean {
+    return this.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES
+  }
+
   /**
    * 触发压缩：按 cost 排序遍历策略，首个产出 compacted:result 的策略执行。
    * 拿到 summary/tailStartIndex 后构造 boundary 追加到 allMessages（投影派，旧消息不删）。
+   * 熔断：连续 MAX_CONSECUTIVE_FAILURES 次失败后不再自动重试（省掉白烧摘要 LLM 调用）；
+   *   成功重置计数；手动 /compact（trigger='manual'）重置后重试——用户明确要求时给机会。
    * @returns 是否执行了压缩（追加 boundary）
    */
   async run(opts: OrchestratorOptions): Promise<boolean> {
     if (this.strategies.length === 0) return false
+    if (opts.trigger === 'manual') this.consecutiveFailures = 0
+    if (this.isTripped()) return false
 
     // 滚动 summary：显式传入优先，否则从 allMessages 找最后一个 boundary
     const previousSummary = opts.previousSummary ?? findLastSummary(opts.allMessages)
     const sorted = [...this.strategies].sort((a, b) => costRank(a.cost) - costRank(b.cost))
 
+    let ranAny = false // 是否有策略真正执行了 run（全被 shouldRun 挡住不算失败，不进熔断计数）
     for (const s of sorted) {
       const ctx: CompactionContext = { ...opts, previousSummary }
       if (!s.shouldRun(ctx)) continue
+      ranAny = true
       const result = await s.run(ctx)
       if (result.compacted && result.summary != null && result.tailStartIndex != null) {
         // P0-1: 翻译投影相对索引 → 全量 filter Message[] 绝对索引
@@ -68,10 +83,12 @@ export class CompactionOrchestrator {
         }
         opts.allMessages.push(boundary) // 投影派：追加 boundary，旧消息留在前面不删
         opts.history?.appendCompactBoundary(boundary) // P0-3: 落盘（重启/恢复保留压缩态）
+        this.consecutiveFailures = 0 // 成功重置熔断计数
         return true
       }
       // 本策略未产出（compacted:false）→ 继续试下一个更贵的策略
     }
+    if (ranAny) this.consecutiveFailures += 1 // 有策略跑了但未产出 → 记失败（熔断计数）
     return false
   }
 }

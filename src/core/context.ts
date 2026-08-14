@@ -37,7 +37,7 @@ export function buildContextMessages(lines: HistoryLine[]): Message[] {
   const summaryRole: Message['role'] = tail.length > 0 && tail[0].role === 'user' ? 'assistant' : 'user'
   const summaryMsg: Message = {
     role: summaryRole,
-    content: [{ type: 'text', text: `[此前对话已压缩] ${lastBoundary.summary}` }],
+    content: [{ type: 'text', text: `${SUMMARY_MSG_PREFIX}${lastBoundary.summary}` }],
   }
   return [summaryMsg, ...tail]
 }
@@ -46,3 +46,6 @@ export function buildContextMessages(lines: HistoryLine[]): Message[] {
 function isMessage(line: HistoryLine): line is Message {
   return !isBoundary(line)
 }
+
+/** summary 消息的文本前缀（投影时构造；summarize 据此识别并剥掉旧 summary，避免滚动时双重表示）。 */
+export const SUMMARY_MSG_PREFIX = '[此前对话已压缩] '

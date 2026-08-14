@@ -31,13 +31,13 @@
 | TUI 渲染方案：最小 Static | [详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_已完成.md](./详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_已完成.md) | M2 去 Static 后满屏/顺序两大问题根治；Static（历史固化）+ 当前轮动态可展开；用户定配置（流式 3 / 工具合并 4 / 下一轮收起）；满屏 clearTerminal 代码级证据；OpenTUI 长期观望 |
 | M3 工具与确认实施方案 | [详设/2026-08-13_M3-工具与确认实施方案_已完成.md](./详设/2026-08-13_M3-工具与确认实施方案_已完成.md) | 5 工具（ls/glob/grep/write_file/edit_file）schema + bash 安全（截断/拦截）+ ConfirmPrompt（diff 确认）+ .ecodeignore；D1-D7 决策拍板；小切片策略（只读先发） |
 | M4 持久化与配置实施方案 | [详设/2026-08-13_M4-持久化与配置实施方案_待审核.md](./详设/2026-08-13_M4-持久化与配置实施方案_待审核.md) | HistoryStore 真存储 + /history /model 命令 + 配置完整（采样参数）+ OpenaiProvider + 首次向导；D1-D7 拍板；MVP 收官 |
-| 后续 M5 实施方案 | [详设/2026-08-14_后续-M5实施方案_待审核.md](./详设/2026-08-14_后续-M5实施方案_待审核.md) | 上下文压缩 v10（架构定型）**★已实施 P0-P10**（493/493+tsc零）：插件化策略骨架（CompactionStrategy+registry+编排器）+ **单策略 summarize**（切分/不变量/滚动/降级）+ 投影分离（messagesRef全量+buildContextMessages投影，loop不mutate）+ models.dev contextWindow（★GLM-4.6/5=204800）+ cache四维成本+/compact /cost+切换model检测；Skill/MCP→M6 |
+| 后续 M5 实施方案 | [详设/2026-08-14_后续-M5实施方案_已完成.md](./详设/2026-08-14_后续-M5实施方案_已完成.md) | 上下文压缩 v10（架构定型）**★已实施 P0-P10**（493/493+tsc零）：插件化策略骨架（CompactionStrategy+registry+编排器）+ **单策略 summarize**（切分/不变量/滚动/降级）+ 投影分离（messagesRef全量+buildContextMessages投影，loop不mutate）+ models.dev contextWindow（★GLM-4.6/5=204800）+ cache四维成本+/compact /cost+切换model检测；Skill/MCP→M6 |
 | 后续 M6 实施方案 | [详设/2026-08-14_后续-M6实施方案_待审核.md](./详设/2026-08-14_后续-M6实施方案_待审核.md) | Skill 系统 + MCP 客户端 + Plugin 系统（三个独立子系统，顺序 Skill→MCP→Plugin）：Skill **三层渐进式加载 + token 预算 + 蒸馏扩展性**（DistillSource/Trigger/Drafter 三抽象预留 L2-L5 自动蒸馏演进）/ MCP **官方 SDK + stdio&HTTP + mcp__server__tool 适配 + 默认确认** / Plugin **四件套 marketplace+cache+清单+资源接入**（贴 .claude-plugin 格式直接蹭 Claude 官方生态 285+）；三者都注册成 Tool/Command 进 Registry **心脏零改动**；基于 claude-code/opencode/codex + ZCode 本地 plugin 缓存 + MCP 官方规范调研 |
 | 上下文压缩调研 | [解析/2026-08-14_上下文压缩调研_已完成.md](./解析/2026-08-14_上下文压缩调研_已完成.md) | Claude 官方 Context Engineering 三原语（Tool Clearing/Compaction/Memory）+ claude-code 阈值演进（90%→64-75% land the plane）+ 各家迭代摘要；M5 压缩设计依据 |
 | 上下文压缩源码调研 | [解析/2026-08-14_上下文压缩源码调研_已完成.md](./解析/2026-08-14_上下文压缩源码调研_已完成.md) | claude-code 多级管线+9段prompt+不变量保护 / opencode select切分+滚动summary（最干净可抄）/ aider 递归+第一人称prompt / codex 三策略+hooks；四家对比+ECode 组合借鉴；M5 压缩算法最终依据 |
 | history/context 分离 + memory 调研 | [解析/2026-08-14_history与context分离及memory调研_已完成.md](./解析/2026-08-14_history与context分离及memory调研_已完成.md) | ★ opencode 投影模型（filterCompacted，恢复不触发压缩）/ claude-code boundary 截断 / codex replacement_history 快照 / aider 反例（恢复即压缩=ECode原缺陷）；memory：四家 AGENTS.md 注入 + system prompt 分段 + subagent fork；ECode AGENTS.md runtime 未读（最浪费） |
 | ECode 自测方法 | [规范/2026-08-14_ECode自测方法_已完成.md](./规范/2026-08-14_ECode自测方法_已完成.md) | Agent 完全自测体系（5 层）：单测 / ink-testing 渲染 / node 脚本真模块 / argv / **node-pty 真 TUI**（pty 提供 TTY 让 Ink raw mode 工作，管道 stdin 不行；★ 分开写输入+回车避 TextInput 时序坑）|
-| M5 真机测试单 | [诊断/2026-08-14_M5真机测试单_进行中.md](./诊断/2026-08-14_M5真机测试单_进行中.md) | T1-T9 case（压缩触发/命令/数据完整性），含 P0 修复验证重点 + 失败速查表 |
+| M5 真机测试单 | [诊断/2026-08-14_M5真机测试单_已完成.md](./诊断/2026-08-14_M5真机测试单_已完成.md) | T1-T9 case（压缩触发/命令/数据完整性），含 P0 修复验证重点 + 失败速查表 |
 
 > 其余文档按需在各目录补充，命名见下方约定。
 

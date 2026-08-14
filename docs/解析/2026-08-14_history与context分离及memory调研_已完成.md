@@ -4,7 +4,7 @@ status: 已完成
 scope: M5 关键架构修正——history/context 分离（避免恢复即压缩）+ memory/system prompt 设计
 date: 2026-08-14
 related:
-  - 详设/2026-08-14_后续-M5实施方案_待审核.md（M5 方案，§7 history 持久化 + §1 context/history 分离 依据本文档）
+  - 详设/2026-08-14_后续-M5实施方案_已完成.md（M5 方案，§7 history 持久化 + §1 context/history 分离 依据本文档）
   - 解析/2026-08-14_上下文压缩源码调研_已完成.md（压缩算法调研，本文档是其存储/恢复层补充）
 ---
 

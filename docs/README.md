@@ -31,7 +31,8 @@
 | TUI 渲染方案：最小 Static | [详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_已完成.md](./详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_已完成.md) | M2 去 Static 后满屏/顺序两大问题根治；Static（历史固化）+ 当前轮动态可展开；用户定配置（流式 3 / 工具合并 4 / 下一轮收起）；满屏 clearTerminal 代码级证据；OpenTUI 长期观望 |
 | M3 工具与确认实施方案 | [详设/2026-08-13_M3-工具与确认实施方案_已完成.md](./详设/2026-08-13_M3-工具与确认实施方案_已完成.md) | 5 工具（ls/glob/grep/write_file/edit_file）schema + bash 安全（截断/拦截）+ ConfirmPrompt（diff 确认）+ .ecodeignore；D1-D7 决策拍板；小切片策略（只读先发） |
 | M4 持久化与配置实施方案 | [详设/2026-08-13_M4-持久化与配置实施方案_待审核.md](./详设/2026-08-13_M4-持久化与配置实施方案_待审核.md) | HistoryStore 真存储 + /history /model 命令 + 配置完整（采样参数）+ OpenaiProvider + 首次向导；D1-D7 拍板；MVP 收官 |
-| 后续 M5 实施方案 | [详设/2026-08-14_后续-M5实施方案_待审核.md](./详设/2026-08-14_后续-M5实施方案_待审核.md) | 上下文压缩（手动 /compact + 自动阈值触发 + 400 捕获三道防线；aider 递归算法 + gpt-tokenizer 增量计数 + onBeforeRequest hook）；经三角色审阅拆分，Skill→M6、MCP→M7 后置；M5-D1~D10 拍板 |
+| 后续 M5 实施方案 | [详设/2026-08-14_后续-M5实施方案_待审核.md](./详设/2026-08-14_后续-M5实施方案_待审核.md) | 上下文压缩 v4：**Context/History 分离**（history 完整永不压缩）+ **两级压缩**（Level1 Tool Clearing 闲时清工具输出 + Level2 Compaction 主动压缩对话）+ onBeforeRequest hook；基于 Claude 官方三原语调研；Skill→M6、MCP→M7 后置；M5-D1~D12 拍板 |
+| 上下文压缩调研 | [解析/2026-08-14_上下文压缩调研_已完成.md](./解析/2026-08-14_上下文压缩调研_已完成.md) | Claude 官方 Context Engineering 三原语（Tool Clearing/Compaction/Memory）+ claude-code 阈值演进（90%→64-75% land the plane）+ 各家迭代摘要；M5 压缩设计依据 |
 
 > 其余文档按需在各目录补充，命名见下方约定。
 

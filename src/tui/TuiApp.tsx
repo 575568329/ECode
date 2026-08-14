@@ -3,7 +3,7 @@ import type { ReactElement } from 'react'
 import { App } from './App.js'
 import { InputStream } from './InputStream.js'
 import { ErrorBanner } from './ErrorBanner.js'
-import { useInput } from 'ink'
+import { useInput, Text, Box } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
 import { runLoop, type ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
@@ -237,13 +237,27 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
   // /history 恢复（§9.2）：restore → 重建 committed → 清瞬态 → 起新 session 续写（D2 旧文件只读）
   /** M5：手动 /compact——触发编排器强制压缩 + 重建 committed（boundary 追加到 messagesRef） */
   const compactManual = async (): Promise<void> => {
-    if (messagesRef.current.length === 0) return
+    if (messagesRef.current.length === 0) {
+      setSystemMsgs(['（无可压缩对话）'])
+      return
+    }
     if (!config.providers[config.current.name]) return
-    const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
-    const providerReq = buildProviderReq(config)
-    const onCompacted = (m: HistoryLine[]) => setCommitted(messagesToCommitted(m))
-    const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, buildSystemPrompt(), onCompacted, deps.history)
-    await hook(messagesRef.current, 'overflow') // overflow = 强制压缩（绕过阈值判定）
+    setSystemMsgs(['正在压缩对话...'])
+    try {
+      const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
+      const providerReq = buildProviderReq(config)
+      const lenBefore = messagesRef.current.length
+      const onCompacted = (m: HistoryLine[]) => setCommitted(messagesToCommitted(m))
+      const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, buildSystemPrompt(), onCompacted, deps.history)
+      await hook(messagesRef.current, 'overflow') // overflow = 强制压缩（绕过阈值判定）
+      setSystemMsgs(
+        messagesRef.current.length > lenBefore
+          ? ['✓ 已压缩对话（旧消息摘要进 boundary，可在历史回看）']
+          : ['（未压缩——对话太短或摘要失败）'],
+      )
+    } catch (e) {
+      setSystemMsgs(['压缩失败：' + (e instanceof Error ? e.message : String(e))])
+    }
   }
 
   /** M5：切换 model 后检测 context 是否超新窗口（只提示风险，不自动压缩；用户主动 /compact） */
@@ -306,18 +320,9 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     activity.state === 'tool' ||
     activity.state === 'retry'
 
-  // systemMsgs（/help 等命令输出）追加到 committed 末尾显示
-  const fullCommitted: CommittedItem[] =
-    systemMsgs.length > 0
-      ? [
-          ...committed,
-          ...systemMsgs.map((m, i) => ({
-            kind: 'assistant-text' as const,
-            id: `sys${clearKey}_${i}`,
-            text: m,
-          })),
-        ]
-      : committed
+  // systemMsgs（命令反馈）不进 committed——是即时系统消息（非对话历史），
+  // 独立渲染在 InputStream 上方（见 return），避免压在当前轮对话之上
+  const fullCommitted: CommittedItem[] = committed
 
   const hasDoneTool = active.tools.some((t) => t.use)
 
@@ -397,6 +402,15 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
             setOverlay(null)
           }}
         />
+      )}
+      {systemMsgs.length > 0 && (
+        <Box flexDirection="column">
+          {systemMsgs.map((m, i) => (
+            <Text key={`sys${clearKey}_${i}`} dimColor>
+              {m}
+            </Text>
+          ))}
+        </Box>
       )}
       <InputStream
         onSubmit={submit}

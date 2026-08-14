@@ -75,10 +75,12 @@ export function InputStream({ onSubmit, onCommand, onClear, placeholder, inactiv
 
   // Enter：slash 模式 + 选中 → 执行选中命令；否则 submit 文本
   const handleTextSubmit = (text: string): void => {
-    if (text.startsWith('/') && slashIdx >= 0) {
+    if (text.startsWith('/')) {
       const matches = commandRegistry.match(text.slice(1))
-      if (matches[slashIdx]) {
-        submit(`/${matches[slashIdx].name}`)
+      // 有匹配 → 执行选中（↑↓）或默认第一个，避免 /com 回车发出未补全文本当未知命令
+      if (matches.length > 0) {
+        const idx = slashIdx >= 0 && slashIdx < matches.length ? slashIdx : 0
+        submit(`/${matches[idx].name}`)
         return
       }
     }

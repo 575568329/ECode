@@ -11,9 +11,11 @@
  * 心脏永不出现 `if provider === 'xxx'`（铁律）—— 只通过 opts.provider.run 调用。
  */
 
+import { isBoundary } from './types.js'
 import type {
   AppError,
   ContentBlock,
+  HistoryLine,
   Message,
   StopReason,
   ToolResultBlock,
@@ -61,7 +63,7 @@ export interface LoopCallbacks {
   onToolStart?: (name: string) => void
   /** 工具执行完成（带 id，便于并发结果精确配对） */
   onToolResult?: (id: string, name: string, result: ToolResult) => void
-  onUsage?: (inputTokens: number, outputTokens: number) => void
+  onUsage?: (inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }) => void
   onWarn?: (msg: string) => void
   /** ActivityBar 状态同步（各阶段：thinking/tool/retry/idle/aborted） */
   onActivity?: (state: ActivityState, text?: string) => void
@@ -81,6 +83,10 @@ export interface LoopRunOptions {
   toolCtx: ToolContext
   confirm?: (use: ToolUseBlock) => Promise<boolean>
   signal?: AbortSignal
+  /** M5：每轮 provider.run 前的压缩 hook（投影+压缩+返回子集喂 LLM）。不配则 messages 直接喂。 */
+  onBeforeRequest?: (messages: HistoryLine[], trigger?: 'pressure' | 'overflow') => Promise<Message[]>
+  /** M5：压缩完成通知 UI（boundary 已追加到 messages，重建 committed） */
+  onCompacted?: (messages: HistoryLine[]) => void
 }
 
 /**
@@ -88,15 +94,18 @@ export interface LoopRunOptions {
  * @param messages 共享状态（会 mutate 并返回）
  * @param userInput 本轮用户输入
  */
-export async function runLoop(messages: Message[], userInput: string, opts: LoopRunOptions): Promise<Message[]> {
+export async function runLoop(messages: HistoryLine[], userInput: string, opts: LoopRunOptions): Promise<HistoryLine[]> {
   // 调用方可能已乐观 push user（TUI 立即显示）；检测避免重复
   const lastMsg = messages.at(-1)
   const alreadyUser =
-    lastMsg?.role === 'user' &&
-    lastMsg.content.some((b) => b.type === 'text' && (b as { text?: string }).text === userInput)
+    lastMsg && !isBoundary(lastMsg)
+      ? lastMsg.role === 'user' &&
+        lastMsg.content.some((b) => b.type === 'text' && (b as { text?: string }).text === userInput)
+      : false
   if (!alreadyUser) {
-    messages.push({ role: 'user', content: [{ type: 'text', text: userInput }] })
-    opts.history.append(messages.at(-1)!) // P0-3：初始 user 也要落盘（restore 才完整）
+    const userMsg: Message = { role: 'user', content: [{ type: 'text', text: userInput }] }
+    messages.push(userMsg)
+    opts.history.append(userMsg) // P0-3：初始 user 也要落盘（restore 才完整）
   }
 
   let retryCount = 0
@@ -113,11 +122,15 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
     let pushedThisRound = false // P1-9：本轮是否固化了 assistant（retry 时回滚用）
 
     try {
-      opts.logger.debug('provider', 'request', { messageCount: messages.length }, iter)
+      // M5 投影派：每轮用 onBeforeRequest 拿投影子集喂 LLM（hook 内可能触发压缩→追加 boundary）
+      const ctx: Message[] = opts.onBeforeRequest
+        ? await opts.onBeforeRequest(messages)
+        : messages.filter((m): m is Message => !isBoundary(m))
+      opts.logger.debug('provider', 'request', { messageCount: ctx.length, total: messages.length }, iter)
       for await (const d of opts.provider.run({
         ...opts.providerReq,
         system: opts.system,
-        messages,
+        messages: ctx,
         tools: opts.tools.specs(),
         signal: opts.signal,
       })) {
@@ -149,15 +162,15 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
             }
             break
           }
-          case 'usage':
-            opts.callbacks.onUsage?.(d.input_tokens, d.output_tokens)
-            opts.logger.debug(
-              'provider',
-              'usage',
-              { input: d.input_tokens, output: d.output_tokens },
-              iter,
-            )
+          case 'usage': {
+            const cache =
+              d.cache_read_tokens != null || d.cache_creation_tokens != null
+                ? { read: d.cache_read_tokens, creation: d.cache_creation_tokens }
+                : undefined
+            opts.callbacks.onUsage?.(d.input_tokens, d.output_tokens, cache)
+            opts.logger.debug('provider', 'usage', { input: d.input_tokens, output: d.output_tokens }, iter)
             break
+          }
           case 'error':
             streamError = d.error
             break
@@ -180,8 +193,9 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
       if (textBuf) blocks.push({ type: 'text', text: textBuf })
       blocks.push(...newToolUses)
       if (blocks.length > 0) {
-        messages.push({ role: 'assistant', content: blocks })
-        opts.history.append(messages.at(-1)!)
+        const assistantMsg: Message = { role: 'assistant', content: blocks }
+        messages.push(assistantMsg)
+        opts.history.append(assistantMsg)
         pushedThisRound = true
       }
     }
@@ -200,6 +214,15 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
         opts.callbacks.onActivity?.('aborted')
         opts.logger.info('loop', 'aborted', { iter }, iter)
         break
+      }
+      // M5：CONTEXT_TOO_LONG 走压缩兜底（在 recoverable 退避前，避免被吞；recoverable:false 不重试）
+      if (streamError.code === 'CONTEXT_TOO_LONG' && opts.onBeforeRequest) {
+        if (pushedThisRound) messages.pop() // 回滚半截 assistant
+        await opts.onBeforeRequest(messages, 'overflow') // 投影派：编排器追加 boundary
+        opts.onCompacted?.(messages)
+        opts.callbacks.onWarn?.('上下文超限，已压缩对话后重试')
+        retryCount = 0
+        continue
       }
       if (streamError.recoverable) {
         // P1-9：回滚本轮半截 assistant（history 已落盘保留作 trace），避免下轮
@@ -262,8 +285,9 @@ export async function runLoop(messages: Message[], userInput: string, opts: Loop
 
     // 工具执行：只读并行 / 副作用串行
     const results = await executeTools(newToolUses, opts)
-    messages.push({ role: 'user', content: results })
-    opts.history.append(messages.at(-1)!)
+    const resultMsg: Message = { role: 'user', content: results }
+    messages.push(resultMsg)
+    opts.history.append(resultMsg)
   }
 
   return messages

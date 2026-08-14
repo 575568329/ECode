@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { runLoop, type LoopRunOptions } from '../../src/core/loop.js'
 import type { LLMProvider, LLMProviderRunRequest } from '../../src/providers/interface.js'
-import type { Delta, Message } from '../../src/core/types.js'
+import type { Delta, HistoryLine, Message } from '../../src/core/types.js'
 import { ToolRegistryImpl } from '../../src/tools/registry.js'
 import type { Tool } from '../../src/tools/interface.js'
 import type { Logger } from '../../src/services/logger.js'
@@ -172,5 +172,61 @@ describe('runLoop', () => {
     const messages = await runLoop([], '问', makeOpts(abortProvider, []))
     expect(calls).toBe(1) // 只调一次，没重试（P0#3：abort 不走 recoverable 死循环）
     expect(messages[0].role).toBe('user')
+  })
+})
+
+describe('M5 压缩集成（onBeforeRequest hook + 400 兜底）', () => {
+  it('onBeforeRequest 返回的投影子集喂 provider（非全量 messages）', async () => {
+    let received: Message[] = []
+    const spy: LLMProvider = {
+      type: 'spy',
+      async *run(req) {
+        received = req.messages
+        yield { type: 'text', text: 'ok' }
+        yield { type: 'done', stop_reason: 'end' }
+      },
+    }
+    const projection: Message[] = [{ role: 'user', content: [{ type: 'text', text: '投影子集' }] }]
+    const onBeforeRequest = vi.fn(async () => projection)
+    await runLoop([], 'hello', { ...makeOpts(spy, []), onBeforeRequest })
+    expect(onBeforeRequest).toHaveBeenCalled()
+    expect(received).toEqual(projection) // provider 收到投影子集，非全量
+  })
+
+  it('无 onBeforeRequest → messages 过滤 boundary 后喂 provider', async () => {
+    let received: Message[] = []
+    const spy: LLMProvider = {
+      type: 'spy',
+      async *run(req) {
+        received = req.messages
+        yield { type: 'text', text: 'ok' }
+        yield { type: 'done', stop_reason: 'end' }
+      },
+    }
+    const lines: HistoryLine[] = [
+      { compact_boundary: true, summary: '旧摘要', tailStartIndex: 0, preTokens: 0 },
+      { role: 'user', content: [{ type: 'text', text: '继续' }] },
+    ]
+    await runLoop(lines, '新问题', makeOpts(spy, []))
+    // provider 收到的 messages 不含 boundary
+    expect(received.every((m) => !('compact_boundary' in m))).toBe(true)
+  })
+
+  it('CONTEXT_TOO_LONG 400 → onBeforeRequest(overflow) + onCompacted + 重试成功', async () => {
+    const p = new MockProvider([
+      [{ type: 'error', error: { code: 'CONTEXT_TOO_LONG', message: 'too long', recoverable: false } }],
+      [{ type: 'text', text: '压缩后回复' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const triggers: (string | undefined)[] = []
+    const onCompacted = vi.fn()
+    const onBeforeRequest = vi.fn(async (messages: HistoryLine[], trigger?: string) => {
+      triggers.push(trigger)
+      return messages.filter((m): m is Message => !('compact_boundary' in m))
+    })
+    const messages = await runLoop([], 'hello', { ...makeOpts(p, []), onBeforeRequest, onCompacted })
+    expect(triggers).toContain('overflow') // 400 触发 overflow 压缩
+    expect(onCompacted).toHaveBeenCalledTimes(1) // 400 兜底调 onCompacted
+    const lastMsg = messages.at(-1) as Message
+    expect((lastMsg.content[0] as { text: string }).text).toBe('压缩后回复')
   })
 })

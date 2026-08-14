@@ -27,8 +27,19 @@ export class ToolRegistryImpl implements ToolRegistry {
 
   register(t: Tool): void {
     this.tools.set(t.name, t)
+    // skipLocalValidate（外部工具）：跳过预编译——外部 schema 含 $ref/非法结构会让
+    // ajv.compile 直接 throw 炸掉整个注册循环（v3 P1-2）；校验透传给 server
+    if (t.skipLocalValidate === true) {
+      this.validators.delete(t.name)
+      return
+    }
     // 预编译并缓存（工具 schema 不变，一次编译复用）
     this.validators.set(t.name, this.ajv.compile(t.input_schema))
+  }
+
+  unregister(name: string): void {
+    this.tools.delete(name)
+    this.validators.delete(name)
   }
 
   get(name: string): Tool | undefined {
@@ -46,6 +57,7 @@ export class ToolRegistryImpl implements ToolRegistry {
   validate(name: string, input: unknown): { ok: true } | { ok: false; error: string } {
     const tool = this.tools.get(name)
     if (!tool) return { ok: false, error: `工具 ${name} 不存在` }
+    if (tool.skipLocalValidate === true) return { ok: true } // 透传 server 校验（D13）
     const validate = this.validators.get(name)
     if (!validate) return { ok: false, error: `工具 ${name} 校验器未初始化` }
     if (validate(input)) return { ok: true }

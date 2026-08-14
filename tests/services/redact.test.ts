@@ -76,3 +76,21 @@ describe('redact', () => {
     expect(JSON.stringify(r)).toContain('[MAX_DEPTH]')
   })
 })
+
+describe('redact MCP（M6 M-P9）', () => {
+  it('mcpServers 配置的 headers 整块脱敏；env 里密钥模式脱敏', () => {
+    const cfg = {
+      mcpServers: {
+        github: {
+          type: 'http',
+          url: 'https://api.github.com/mcp',
+          headers: { Authorization: 'Bearer ghp_xxx', 'X-Api-Key': 'k' },
+          env: { GITHUB_TOKEN: 'ghp_abcdefabcdefabcdef' },
+        },
+      },
+    }
+    const out = redact(cfg) as typeof cfg
+    expect(JSON.stringify(out)).not.toContain('ghp_')
+    expect((out.mcpServers.github as Record<string, unknown>)['headers']).toBe('[REDACTED]')
+  })
+})

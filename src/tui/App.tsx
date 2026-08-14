@@ -29,6 +29,8 @@ interface AppProps {
   maxIter?: number
   tokens?: number
   cost?: string
+  /** MCP 段（StatusBar 透传，M6） */
+  mcp?: string
   warning?: string
   /** 配置无效/不完整提示（顶部醒目，启动态；区别于 warning 进 StatusBar） */
   banner?: string
@@ -48,6 +50,7 @@ export function App({
   maxIter,
   tokens,
   cost,
+  mcp,
   warning,
   banner,
   children,
@@ -81,6 +84,7 @@ export function App({
             maxIter={maxIter}
             tokens={tokens}
             cost={cost}
+            mcp={mcp}
             warning={warning}
           />
           <Text dimColor> · </Text>

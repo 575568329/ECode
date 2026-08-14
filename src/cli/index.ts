@@ -34,7 +34,7 @@ import { join } from 'node:path'
 import { render } from 'ink'
 import React from 'react'
 import { TuiApp } from '../tui/TuiApp.js'
-import { registerBuiltinCommands } from '../commands/registry.js'
+import { registerBuiltinCommands, commandRegistry } from '../commands/registry.js'
 import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
@@ -43,6 +43,10 @@ import { makeOnBeforeRequest } from '../services/compaction/hook.js'
 import { resolveContextWindow } from '../services/contextWindow.js'
 import { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../services/compaction/summarize.js'
+import { skillTool } from '../tools/builtin/skill.js'
+import { skillRegistry, createSkillRegistry } from '../services/skill.js'
+import { setupMcp } from '../services/mcp/setup.js'
+import type { McpManager } from '../services/mcp/manager.js'
 import type { HistoryLine } from '../core/types.js'
 
 interface Deps {
@@ -53,6 +57,9 @@ interface Deps {
   config: Config
   orchestrator: CompactionOrchestrator
   lastUsage: { input: number; output: number; cacheRead: number; cacheCreation: number }
+  skillRegistry: ReturnType<typeof createSkillRegistry>
+  mcpManager: McpManager | null
+  mcpPendingApproval?: { file: string; approve: () => Promise<void> }
 }
 
 function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
@@ -67,11 +74,16 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   toolReg.register(grepTool)
   toolReg.register(writeFileTool)
   toolReg.register(editFileTool)
+  toolReg.register(skillTool)
   const orchestrator = new CompactionOrchestrator()
   orchestrator.register(new SummarizeStrategy())
   // models.dev 预热（fire-and-forget）：进程首次无缓存时 resolveContextWindow 联网拉取（10s timeout），
   // 不预热会恰好卡在用户第一轮提问的压缩判定前——启动期提前拉，失败静默（走内置表兜底）
   void resolveContextWindow(config.current.model, config.providers[config.current.name]?.contextWindow).catch(() => {})
+  // M6 M-P9：MCP 接线（cache 命中注册零连接；工具经 adaptTool 注册；项目级未批准走二段）
+  const mcp = setupMcp(config, toolReg, {
+    warn: (m) => logger.warn('mcp', 'setup', { message: m }),
+  })
   return {
     providerRegistry: providerReg,
     tools: toolReg,
@@ -80,6 +92,9 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
     config,
     orchestrator,
     lastUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    skillRegistry,
+    mcpManager: mcp.manager,
+    ...(mcp.pendingApproval !== undefined ? { mcpPendingApproval: mcp.pendingApproval } : {}),
   }
 }
 
@@ -87,9 +102,17 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
 async function runOnce(messages: HistoryLine[], input: string, deps: Deps): Promise<void> {
   const provider = deps.providerRegistry.getByType(deps.config.providers[deps.config.current.name].type)
   const providerReq = buildProviderReq(deps.config)
-  const system = buildSystemPrompt()
+  const ctxWindow = await resolveContextWindow(
+    deps.config.current.model,
+    deps.config.providers[deps.config.current.name]?.contextWindow,
+  )
+  const system = buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindow)
   const onCompacted = (_messages: HistoryLine[]) => process.stdout.write('\n[已压缩对话]\n')
-  const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted, deps.history)
+  const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, {
+    onCompacted,
+    history: deps.history,
+    tools: deps.tools.specs(),
+  })
   await runLoop(messages, input, {
     provider,
     tools: deps.tools,
@@ -131,6 +154,11 @@ async function main(): Promise<void> {
     logger.info('system', 'shutdown', { exitCode: process.exitCode })
     logStore.close()
   })
+  // M6：MCP 子进程清理（best-effort——exit 内不能 await；SDK close 发 SIGTERM）
+  let mcpManagerRef: McpManager | null = null
+  process.on('exit', () => {
+    void mcpManagerRef?.stop()
+  })
   process.on('uncaughtException', (e) => {
     logger.error('system', 'uncaught', { message: e.message, stack: e.stack })
     logStore.close()
@@ -168,6 +196,12 @@ async function main(): Promise<void> {
   })
 
   const deps = makeDeps(config, logger, sessionId)
+  mcpManagerRef = deps.mcpManager
+
+  // M6 S-P8：skill 发现（项目级+用户级扫描；失败静默——skill 缺失不阻塞启动）
+  await skillRegistry.load({ builtinCommandNames: commandRegistry.list().map((c) => c.name) }).catch(() => {})
+  for (const w of skillRegistry.loadWarnings) logger.warn('skill', 'load_warning', { message: w })
+  logger.info('skill', 'loaded', { count: skillRegistry.list().length })
 
   // argv 单次模式：M1 stdout 输出 → 跑一次退出
   const initialInput = process.argv.slice(2).join(' ').trim()

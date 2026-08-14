@@ -13,15 +13,29 @@ import { defaultConfigPath } from '../services/config.js'
 export interface CommandResult {
   /** 给用户的输出文本（如 /help 的列表） */
   output?: string
+  /** action 附带参数（如 /mcp reconnect db 的 server 名） */
+  payload?: string
   /** 副作用 action（由调用方解释：clear=清空会话 / expand=展开折叠工具输出 / pick-model=弹模型选择器 / pick-history=弹历史选择器 / start-setup=弹配置向导） */
-  action?: 'clear' | 'expand' | 'pick-model' | 'pick-history' | 'start-setup' | 'compact' | 'cost'
+  action?:
+    | 'clear'
+    | 'expand'
+    | 'pick-model'
+    | 'pick-history'
+    | 'start-setup'
+    | 'compact'
+    | 'cost'
+    | 'skill-panel'
+    | 'skill-create'
+    | 'open-mcp-panel'
+    | 'mcp-reconnect'
 }
 
 export interface Command {
   /** 命令名（不含 /，如 'help'） */
   name: string
   description: string
-  run: () => CommandResult
+  /** 执行；args = 命令名后的参数文本（如 `/mcp reconnect db` → 'reconnect db'），无参 undefined */
+  run: (args?: string) => CommandResult
 }
 
 export class CommandRegistry {
@@ -98,6 +112,27 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     name: 'cost',
     description: '查看 token 用量与成本',
     run: () => ({ action: 'cost' }),
+  })
+  registry.register({
+    name: 'skill',
+    description: '浏览/选用 Skill（面板）',
+    run: () => ({ action: 'skill-panel' }),
+  })
+  registry.register({
+    name: 'skill-create',
+    description: '从当前会话蒸馏 Skill（起草→预览→创建/升级）',
+    run: () => ({ action: 'skill-create' }),
+  })
+  registry.register({
+    name: 'mcp',
+    description: 'MCP 服务管理（面板；/mcp reconnect <name> 直达）',
+    run: (args?: string) => {
+      if (args !== undefined && args.startsWith('reconnect')) {
+        const target = args.slice('reconnect'.length).trim()
+        return { action: 'mcp-reconnect' as const, ...(target !== '' ? { payload: target } : {}) }
+      }
+      return { action: 'open-mcp-panel' as const }
+    },
   })
   // /config：仅桌面平台注册（win32=explorer / darwin=open；linux·WSL 无可靠 opener → 用 /setup）
   if (process.platform === 'win32' || process.platform === 'darwin') {

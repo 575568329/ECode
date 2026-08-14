@@ -3,10 +3,15 @@
  *
  * 含工具职责区分（详设 §2.3 行 231），避免 LLM 在 ls/glob/grep/read_file 间选错。
  * M3 新增 write_file/edit_file 后，职责指引更关键。
+ * M6 S-P4：可选注入 skill 清单（<available_skills>，受 token 预算约束）——
+ * 调用方传 listForPrompt() 结果与 ctxWindow（TuiApp 缓存值），不传则零 skill 开销。
  */
 
-export function buildSystemPrompt(): string {
-  return `你是 ECode，一个终端 Agent CLI。你能通过工具读文件、执行命令、搜索代码，帮用户完成编程任务。
+import type { SkillInfo } from '../services/skill.js'
+import { renderSkillListing, listingBudget } from '../services/skill/listing.js'
+
+export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number): string {
+  let base = `你是 ECode，一个终端 Agent CLI。你能通过工具读文件、执行命令、搜索代码，帮用户完成编程任务。
 当前工作目录：${process.cwd()}
 当前平台：${process.platform}
 
@@ -20,4 +25,9 @@ export function buildSystemPrompt(): string {
 - bash <command>：执行 shell 命令
 
 回复用中文。`
+  if (skills !== undefined && skills.length > 0) {
+    const listing = renderSkillListing(skills, listingBudget(ctxWindow ?? 200_000))
+    if (listing !== '') base += '\n\n' + listing
+  }
+  return base
 }

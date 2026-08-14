@@ -9,6 +9,8 @@ interface StatusBarProps {
   tokens?: number
   cost?: string
   warning?: string
+  /** MCP 段（M6：'MCP 2/3' / 'MCP 连接中…'；undefined 不显示） */
+  mcp?: string
 }
 
 /** token 数人类可读：< 1000 显示原值，否则 k */
@@ -18,7 +20,7 @@ function formatTokens(n: number): string {
 }
 
 /** 顶栏：model / 轮数 / token / 成本 / 警告（TUI 规范 §4.2/§7） */
-export function StatusBar({ model, iter, maxIter, tokens, cost, warning }: StatusBarProps): ReactElement {
+export function StatusBar({ model, iter, maxIter, tokens, cost, warning, mcp }: StatusBarProps): ReactElement {
   return (
     <Box>
       <Text color={theme.status}>ECode · </Text>
@@ -31,6 +33,7 @@ export function StatusBar({ model, iter, maxIter, tokens, cost, warning }: Statu
         </Text>
       )}
       {tokens !== undefined && <Text dimColor> · {formatTokens(tokens)}</Text>}
+      {mcp !== undefined && <Text dimColor> · {mcp}</Text>}
       {cost !== undefined && <Text dimColor> · {cost}</Text>}
       {warning !== undefined && <Text color={theme.warn}> · {warning}</Text>}
     </Box>

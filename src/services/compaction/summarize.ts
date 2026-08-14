@@ -20,6 +20,7 @@ import type { LLMProviderRunRequest } from '../../providers/interface.js'
 import type { Message } from '../../core/types.js'
 import { toAppError } from '../../core/errors.js'
 import { SUMMARY_MSG_PREFIX } from '../../core/context.js'
+import { estimateTokens, estimateMessageTokens, estimateMessagesTokens } from '../tokenizer.js'
 import type { CompactionStrategy, CompactionContext, CompactionResult } from './strategy.js'
 
 /** 保留区（tail）token 预算：原文保留最近这段，更老的送摘要。 */
@@ -150,7 +151,7 @@ async function summarizeInBatches(head: Message[], ctx: CompactionContext): Prom
     )
     let summary = await reducePartials(partials, ctx)
     // reduce 后校验：final summary + tail + system 必须装得进新窗口（aider 同款闸）
-    if (estimateTextTokens(summary) + RECENT_BUDGET_TOKENS + SCOPE_SYSTEM_RESERVE_TOKENS > ctx.effectiveWindow) {
+    if (estimateTokens(summary) + RECENT_BUDGET_TOKENS + SCOPE_SYSTEM_RESERVE_TOKENS > ctx.effectiveWindow) {
       summary = await reducePartials([summary], ctx) // 极端情况：summary 自身再摘一轮
     }
     return summary || null
@@ -313,34 +314,10 @@ export function extractSummary(raw: string): string {
   return m ? m[1].trim() : ''
 }
 
-// —— 估算辅助（与 tokenizer.ts 同口径：UTF-8 字节/4）—— //
+// —— 估算辅助已收敛进 tokenizer.ts（M5 债 #3：estimateTokens/estimateMessageTokens/
+//    estimateMessagesTokens 统一导出，summarize 与 skill listing 共用同一口径）—— //
 
-function estimateTextTokens(text: string): number {
-  return Math.ceil(Buffer.byteLength(text, 'utf8') / 4)
-}
-
-function estimateMessagesTokens(msgs: Message[]): number {
-  let bytes = 0
-  for (const m of msgs) bytes += messageBytes(m)
-  return Math.ceil(bytes / 4)
-}
-
-/** 估算单消息 token（bytes/4，各 block 展开计长）。 */
-function estimateMessageTokens(msg: Message): number {
-  return Math.ceil(messageBytes(msg) / 4)
-}
-
-function messageBytes(msg: Message): number {
-  let bytes = 0
-  for (const block of msg.content) {
-    if (block.type === 'text') bytes += Buffer.byteLength(block.text, 'utf8')
-    else if (block.type === 'tool_use')
-      bytes += Buffer.byteLength(block.name, 'utf8') + Buffer.byteLength(safeJsonStringify(block.input), 'utf8')
-    else if (block.type === 'tool_result') bytes += Buffer.byteLength(block.content, 'utf8')
-  }
-  return bytes
-}
-
+/** 防御性 JSON 序列化（serializeMessage 的 tool_use 转写用）。 */
 function safeJsonStringify(input: unknown): string {
   try {
     return JSON.stringify(input ?? '')

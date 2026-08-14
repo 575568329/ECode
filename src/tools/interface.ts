@@ -28,11 +28,18 @@ export interface Tool {
   readonly: boolean
   /** 执行超时（默认 30s），超时转 recoverable 错误 */
   timeout_ms?: number
+  /**
+   * 外部工具（MCP）：跳过本地 AJV 校验/预编译，参数透传给 server 校验（M6-D13）。
+   * server 是实现方最懂参数约束；且外部 schema（draft-2020-12/$ref/oneOf）可能让 AJV 编译直接 throw。
+   */
+  skipLocalValidate?: boolean
   execute(args: unknown, ctx: ToolContext): Promise<ToolResult>
 }
 
 export interface ToolRegistry {
   register(t: Tool): void
+  /** 注销（MCP server 断开后清理 / M7 plugin disable 卸载用；不存在时静默） */
+  unregister(name: string): void
   get(name: string): Tool | undefined
   /** 导出给 LLMProvider 的 tools 参数 */
   specs(): ToolSpec[]

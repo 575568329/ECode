@@ -11,6 +11,14 @@
 import { isBoundary, type HistoryLine, type Message, type TextBlock, type ToolUseBlock, type ToolResultBlock } from '../core/types.js'
 import type { CommittedItem, CommittedToolCall } from './types.js'
 
+/** committed 层 user 文本截断（S4.4 v6）：手动 skill 展开全文可达数百行，静态区只保 ~10 行。 */
+const USER_TEXT_MAX_LINES = 10
+export function truncateUserText(text: string): string {
+  const lines = text.split('\n')
+  if (lines.length <= USER_TEXT_MAX_LINES) return text
+  return [...lines.slice(0, USER_TEXT_MAX_LINES), `…（共 ${lines.length} 行，已截断）`].join('\n')
+}
+
 export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
   const messages = lines.filter((l): l is Message => !isBoundary(l))
   // boundary → 压缩标记插入点（key=boundary 前的 Message 数；value=被摘要条数 tailStartIndex）。
@@ -57,7 +65,7 @@ export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
         .join('')
       if (text) {
         flush()
-        items.push({ kind: 'user', id: `u${i}`, text })
+        items.push({ kind: 'user', id: `u${i}`, text: truncateUserText(text) })
       }
       // tool_result 不生成 item（已配对进 tool-group）
     } else if (m.role === 'assistant') {

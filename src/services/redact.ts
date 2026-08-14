@@ -5,7 +5,8 @@
  *   - sk-xxx（Anthropic）/ AKIA（AWS）/ 64 位 hex（GLM/DeepSeek 等通用）
  *   - GLM key 格式 {id}.{secret}
  *   - env 赋值：XXX_API_KEY=... / XXX_TOKEN=... / XXX_SECRET=...（保留 key 名，值替换）
- * 字段：apiKey/token/authorization/bearer/secret/password（子串匹配，覆盖 camelCase 变体）
+ * 字段：apiKey/token/authorization/bearer/secret/password/headers（子串匹配，覆盖 camelCase 变体；
+ *       headers 整体替换——MCP server 的认证头常见 X-Api-Key/Authorization，逐键枚举不如整块盖掉）
  *
  * 注意：64-hex 会误杀合法 SHA-256（安全偏向，可接受）；递归有环引用保护 + 深度上限。
  */
@@ -18,6 +19,10 @@ const SENSITIVE_FIELDS = [
   'secret',
   'password',
   'bearer',
+  // MCP（M6）：env/headers 整字段脱敏（server 配置进日志/历史时密钥不落盘）
+  'headers',
+  'x-api-key',
+  'api-key',
 ]
 
 function redactString(s: string): string {

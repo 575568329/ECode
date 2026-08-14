@@ -8,6 +8,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render } from 'ink-testing-library'
 import React from 'react'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { TuiApp } from '../../src/tui/TuiApp.js'
 import { LLMProviderRegistryImpl } from '../../src/providers/registry.js'
 import { ToolRegistryImpl } from '../../src/tools/registry.js'
@@ -15,6 +17,7 @@ import { commandRegistry, registerBuiltinCommands } from '../../src/commands/reg
 import { emptyShellConfig, type Config } from '../../src/services/config.js'
 import { CompactionOrchestrator } from '../../src/services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../../src/services/compaction/summarize.js'
+import { SkillRegistry } from '../../src/services/skill.js'
 import type { Logger } from '../../src/services/logger.js'
 import type { HistoryStore } from '../../src/services/history.js'
 import type { Message } from '../../src/core/types.js'
@@ -59,6 +62,9 @@ function makeDeps(overrides: Partial<{ config: Config }> = {}) {
     config: overrides.config ?? config,
     orchestrator,
     lastUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    // M6：tmp 目录实例（不触真实 ~/.ecode/skills；测试不 load，空注册表即可）
+    skillRegistry: new SkillRegistry({ userDir: path.join(os.tmpdir(), 'ecode-tui-test-skills') }),
+    mcpManager: null,
   }
 }
 
@@ -125,7 +131,7 @@ describe('TuiApp /model', () => {
 
     const { stdin } = render(
       React.createElement(TuiApp, {
-        deps: { providerRegistry: spyReg, tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config },
+        deps: { providerRegistry: spyReg, tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config, skillRegistry: makeDeps().skillRegistry, mcpManager: null },
       }),
     )
     // 切到 deepseek（openai 协议）
@@ -156,7 +162,7 @@ describe('TuiApp /model', () => {
     } as unknown as HistoryStore
     const { stdin, lastFrame } = render(
       React.createElement(TuiApp, {
-        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history, config },
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history, config, skillRegistry: makeDeps().skillRegistry, mcpManager: null },
       }),
     )
     stdin.write('/history')
@@ -185,7 +191,7 @@ describe('TuiApp /model', () => {
     } as unknown as HistoryStore
     const { stdin, lastFrame } = render(
       React.createElement(TuiApp, {
-        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history, config },
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history, config, skillRegistry: makeDeps().skillRegistry, mcpManager: null },
       }),
     )
     stdin.write('/history')
@@ -203,7 +209,7 @@ describe('TuiApp /model', () => {
   it('空历史 → 显示「无历史会话」', async () => {
     const { stdin, lastFrame } = render(
       React.createElement(TuiApp, {
-        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config },
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config, skillRegistry: makeDeps().skillRegistry, mcpManager: null },
       }),
     )
     stdin.write('/history')
@@ -217,7 +223,7 @@ describe('TuiApp /model', () => {
   it('配置无效（空壳）→ banner 渲染（cli 传入）', () => {
     const { lastFrame } = render(
       React.createElement(TuiApp, {
-        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config: emptyShellConfig() },
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config: emptyShellConfig(), skillRegistry: makeDeps().skillRegistry, mcpManager: null },
         banner: '配置不完整：缺少 API Key',
       }),
     )
@@ -227,7 +233,7 @@ describe('TuiApp /model', () => {
   it('配置无效 submit → banner 提示 /setup（不 runLoop）', async () => {
     const { stdin, lastFrame } = render(
       React.createElement(TuiApp, {
-        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config: emptyShellConfig() },
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config: emptyShellConfig(), skillRegistry: makeDeps().skillRegistry, mcpManager: null },
       }),
     )
     stdin.write('hi')
@@ -240,7 +246,7 @@ describe('TuiApp /model', () => {
   it('/setup → Wizard 显示（第一步 type）', async () => {
     const { stdin, lastFrame } = render(
       React.createElement(TuiApp, {
-        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config: emptyShellConfig() },
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config: emptyShellConfig(), skillRegistry: makeDeps().skillRegistry, mcpManager: null },
       }),
     )
     stdin.write('/setup')

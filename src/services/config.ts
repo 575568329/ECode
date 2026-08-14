@@ -36,6 +36,8 @@ export interface Config {
   maxIterations: number
   bashMaxOutputBytes: number
   logLevel: 'debug' | 'info' | 'warn' | 'error'
+  /** MCP servers（M6；用户级配置，项目级 .mcp.json 在 mcp/config.ts 单独合并） */
+  mcpServers?: Record<string, import('./mcp/config.js').McpServerConfig>
 }
 
 /** 默认值（P2-1：集中常量，免多处裸魔法值散落；CONFIG_TEMPLATE/writeWizardConfig 是生成给用户的 config.json 字面量） */
@@ -50,6 +52,7 @@ interface ConfigFile {
   maxIterations?: number
   bashMaxOutputBytes?: number
   logLevel?: string
+  mcpServers?: Record<string, import('./mcp/config.js').McpServerConfig>
 }
 
 export interface LoadConfigOpts {
@@ -199,6 +202,7 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     maxIterations: file.maxIterations ?? DEFAULT_MAX_ITERATIONS,
     bashMaxOutputBytes: file.bashMaxOutputBytes ?? DEFAULT_BASH_MAX_BYTES,
     logLevel: (file.logLevel as Config['logLevel']) ?? DEFAULT_LOG_LEVEL,
+    ...(file.mcpServers !== undefined ? { mcpServers: file.mcpServers } : {}),
   }
 }
 

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { App } from './App.js'
 import { InputStream } from './InputStream.js'
@@ -7,7 +7,7 @@ import { useInput, Text, Box } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
 import { runLoop, type ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
-import type { AppError, HistoryLine } from '../core/types.js'
+import type { AppError, HistoryLine, Message } from '../core/types.js'
 import { makeOnBeforeRequest } from '../services/compaction/hook.js'
 import { tokensToCost } from '../services/pricing.js'
 import { buildContextMessages } from '../core/context.js'
@@ -21,11 +21,31 @@ import type { HistoryStore } from '../services/history.js'
 import { createActive, type CommittedItem, type ActiveState } from './types.js'
 import { messagesToCommitted, findUse } from './commit.js'
 import { buildSystemPrompt } from '../core/system.js'
+import { expandSkill, type SkillRegistry } from '../services/skill.js'
+import {
+  callLLM,
+  DRAFT_SYSTEM,
+  MERGER_SYSTEM,
+  buildDraftUser,
+  buildMergerUser,
+  serializeSession,
+  parseCandidate,
+  parseMergerVerdicts,
+  conflictTitles,
+  decisionsFromVerdicts,
+  patchBodyFromVerdicts,
+  renderCreatePreview,
+  renderUpgradePreview,
+} from '../services/skill/distill.js'
 import { buildPreview } from '../services/preview.js'
 import { buildProviderReq, loadConfig, writeWizardConfig, type Config } from '../services/config.js'
 import { ModelPicker, type ModelEntry } from './ModelPicker.js'
 import { HistoryPicker } from './HistoryPicker.js'
 import { Wizard } from './Wizard.js'
+import { SkillPanel } from './SkillPanel.js'
+import { McpPanel } from './McpPanel.js'
+import { Select } from './Select.js'
+import type { McpManager, McpServerSnapshot } from '../services/mcp/manager.js'
 import type { SessionMeta } from '../services/history.js'
 
 /** 清屏（可见区 + scrollback + 光标归位）；/clear 用，清可见区残留 */
@@ -39,6 +59,12 @@ export interface TuiAppDeps {
   config: Config
   orchestrator: CompactionOrchestrator
   lastUsage: { input: number; output: number; cacheRead: number; cacheCreation: number }
+  /** M6：skill 注册表（清单注入 + 手动触发展开） */
+  skillRegistry: SkillRegistry
+  /** M6：MCP 管理器（null = 未初始化，如 argv 单次模式简化路径） */
+  mcpManager: McpManager | null
+  /** M6：项目级 .mcp.json 待批准（启动检测，TuiApp 弹批准 overlay） */
+  mcpPendingApproval?: { file: string; approve: () => Promise<void> }
 }
 
 function isAbortError(e: unknown): boolean {
@@ -60,6 +86,8 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
   const confirmRef = useRef(false)
   // 同步 picker 覆盖状态给 useInterrupt（同 confirm：覆盖期间 Ctrl+C 由 picker 处理，不中断 loop）
   const pickerRef = useRef(false)
+  // ctxWindow 缓存（S-P4：submit 热路径同步用，启动解析一次 + 切模型刷新；默认 200k 兜底）
+  const ctxWindowRef = useRef(200_000)
 
   const [committed, setCommitted] = useState<CommittedItem[]>([])
   const [active, setActive] = useState<ActiveState>(() => createActive())
@@ -78,14 +106,22 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
   const [config, setConfig] = useState<Config>(() => deps.config)
   // 覆盖层（/model·/history·/setup 等）：非 null 时独占输入（picker 渲染 + InputStream inactive）
   const [overlay, setOverlay] = useState<
-    { kind: 'model-picker' } | { kind: 'pick-history' } | { kind: 'setup-wizard' } | null
+    | { kind: 'model-picker' }
+    | { kind: 'pick-history' }
+    | { kind: 'setup-wizard' }
+    | { kind: 'skill-panel' }
+    | { kind: 'mcp-panel' }
+    | { kind: 'select'; title: string; options: string[]; resolve: (v: string | undefined) => void }
+    | null
   >(null)
+  // 面板回填通道（S-P6 D32：SkillPanel Enter → `/name ` 写入输入框，不直接执行）
+  const [insert, setInsert] = useState<{ text: string; seq: number } | undefined>(undefined)
   // /history 打开时载入的会话列表（loadAll 只在打开时调一次，避免 render 热路径同步 IO）
   const [historyMetas, setHistoryMetas] = useState<SessionMeta[]>([])
   // banner（配置无效提示；初始从 cli 传入，/setup 成功后清，submit 配置无效时设）
   const [banner, setBanner] = useState<string | undefined>(initialBanner)
 
-  const submit = async (input: string): Promise<void> => {
+  const submit = async (input: string, display?: string): Promise<void> => {
     if (runningRef.current) return
     // 配置无效态（空壳 Config）：不 runLoop，提示 /setup；/setup /history /clear 等命令不受影响
     if (!config.providers[config.current.name]) {
@@ -98,22 +134,31 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       setCommitted(messagesToCommitted(messagesRef.current))
     }
     runningRef.current = true
-    // 新轮：userInput 乐观显示 + streaming=true（流式灰字）
-    setActive({ ...createActive(), userInput: input, streaming: true })
+    // 新轮：userInput 乐观显示 + streaming=true（流式灰字）。
+    // display（S4.4 最小 display/content 分离）：手动 skill 触发时输入框/转录显示原始
+    // `/name args`，消息本体是展开全文（runLoop 的 userInput 必须传全文，防 alreadyUser 双推）
+    setActive({ ...createActive(), userInput: display ?? input, streaming: true })
     setError(null)
     setWarn(null)
     setActivity({ state: 'thinking' })
     abortRef.current = new AbortController()
     const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
     const providerReq = buildProviderReq(config)
-    const system = buildSystemPrompt()
+    const system = buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindowRef.current)
     const onCompacted = (m: HistoryLine[]) => {
       setCommitted(messagesToCommitted(m))
       setSystemMsgs(['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）'])
     }
     const onCompacting = () => setSystemMsgs(['正在压缩对话...'])
     const onCompactFail = () => setSystemMsgs(['（压缩未完成——对话太短或摘要失败，稍后自动重试）'])
-    const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted, deps.history, abortRef.current.signal, onCompacting, onCompactFail)
+    const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, {
+      onCompacted,
+      history: deps.history,
+      signal: abortRef.current.signal,
+      onCompacting,
+      onCompactFail,
+      tools: deps.tools.specs(), // M6：MCP 工具 schema 计入压缩估算（v3 P1-1）
+    })
 
     try {
       await runLoop(messagesRef.current, input, {
@@ -240,9 +285,116 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
   }
 
   // /history 恢复（§9.2）：restore → 重建 committed → 清瞬态 → 起新 session 续写（D2 旧文件只读）
+  /** 通用单选 overlay（S-P7 冲突裁决等异步交互；Esc/ctrl+c → resolve undefined） */
+  const askSelect = (title: string, options: string[]): Promise<string | undefined> => {
+    return new Promise((resolve) => {
+      pickerRef.current = true
+      setOverlay({ kind: 'select', title, options, resolve })
+    })
+  }
+
+  /** 蒸馏预览确认（复用 active.confirm 通道；合成 use 走 ConfirmPrompt 默认渲染分支） */
+  const askPreviewConfirm = (preview: string, what: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      confirmRef.current = true
+      setActive((a) => ({
+        ...a,
+        confirm: {
+          use: { type: 'tool_use', id: `skill-create-${Date.now()}`, name: what, input: {} },
+          preview,
+          resolve,
+        },
+      }))
+    })
+  }
+
+  /** M6 M-P6：/mcp reconnect 直达（面板外子命令） */
+  const mcpReconnect = async (name?: string): Promise<void> => {
+    if (deps.mcpManager === null) {
+      setSystemMsgs(['（MCP 未启用）'])
+      return
+    }
+    setSystemMsgs([`正在重连${name !== undefined && name !== '' ? ` ${name}` : '全部'} MCP server...`])
+    const r = await deps.mcpManager.reconnect(name).catch(() => ({ ok: [] as string[], failed: [] as { name: string; error: string }[] }))
+    setSystemMsgs([
+      r.failed.length === 0
+        ? `✓ MCP 重连完成（${r.ok.length} 个成功）`
+        : `MCP 重连：成功 ${r.ok.length} 个 / 失败 ${r.failed.length} 个（${r.failed.map((f) => `${f.name}: ${f.error}`).join('；')}）`,
+    ])
+  }
+
+  /** M6 S-P7：/skill-create——读会话 → LLM 起草 → 预览 → 创建/升级（人审卡点两处） */
+  const skillCreate = async (): Promise<void> => {
+    if (!config.providers[config.current.name]) return
+    const msgs = buildContextMessages(messagesRef.current)
+    if (msgs.length === 0) {
+      setSystemMsgs(['（会话为空，先聊几轮再 /skill-create 蒸馏）'])
+      return
+    }
+    setSystemMsgs(['正在从会话起草 skill...'])
+    try {
+      const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
+      const providerReq = buildProviderReq(config)
+      const userMsg = (text: string): Message => ({
+        role: 'user',
+        content: [{ type: 'text', text }],
+      })
+      const raw = await callLLM(provider, providerReq, DRAFT_SYSTEM, [userMsg(buildDraftUser(serializeSession(msgs)))])
+      const candidate = parseCandidate(raw)
+      const existing = deps.skillRegistry.get(candidate.name)
+      if (existing === undefined) {
+        // 创建路径：预览（采用/放弃）
+        const ok = await askPreviewConfirm(renderCreatePreview(candidate), 'skill-create')
+        if (!ok) {
+          setSystemMsgs(['（已放弃起草；可调整会话后再跑 /skill-create）'])
+          return
+        }
+        const r = await deps.skillRegistry.install(candidate)
+        setSystemMsgs([`✓ 已创建 skill「${candidate.name}」（${r.path}）`])
+      } else {
+        // 升级路径：merger 三态 → 冲突裁决 → diff 预览 → install
+        const mRaw = await callLLM(
+          provider,
+          providerReq,
+          MERGER_SYSTEM,
+          [userMsg(buildMergerUser(existing, candidate))],
+        )
+        const verdicts = parseMergerVerdicts(mRaw)
+        const conflicts = conflictTitles(verdicts)
+        let resolution: 'keep' | 'adopt' = 'keep'
+        if (conflicts.length > 0) {
+          const pick = await askSelect(
+            `「${candidate.name}」升级有 ${conflicts.length} 处冲突：${conflicts.join('、')}`,
+            ['保留现有（推荐）', '采用新'],
+          )
+          if (pick === undefined) {
+            setSystemMsgs(['（已放弃升级）'])
+            return
+          }
+          resolution = pick.startsWith('保留') ? 'keep' : 'adopt'
+        }
+        const ok = await askPreviewConfirm(renderUpgradePreview(candidate, verdicts, resolution), 'skill-create')
+        if (!ok) {
+          setSystemMsgs(['（已放弃升级；可再跑 /skill-create 重试）'])
+          return
+        }
+        const r = await deps.skillRegistry.install(
+          { ...candidate, body: patchBodyFromVerdicts(candidate.body, verdicts, resolution) },
+          decisionsFromVerdicts(candidate.body, verdicts, resolution),
+        )
+        setSystemMsgs([
+          r.mode === 'upgraded'
+            ? `✓ 已升级 skill「${candidate.name}」（旧版备份：${r.backedUpTo}）`
+            : `✓ 已创建 skill「${candidate.name}」（${r.path}）`,
+        ])
+      }
+    } catch (e) {
+      setSystemMsgs(['蒸馏失败：' + (e instanceof Error ? e.message : String(e))])
+    }
+  }
+
   /** M5：手动 /compact——触发编排器强制压缩 + 重建 committed（boundary 追加到 messagesRef） */
-  const compactManual = async (): Promise<void> => {
-    if (messagesRef.current.length === 0) {
+  const compactManual = async (): Promise<void> => {    if (messagesRef.current.length === 0) {
       setSystemMsgs(['（无可压缩对话）'])
       return
     }
@@ -253,7 +405,11 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       const providerReq = buildProviderReq(config)
       const lenBefore = messagesRef.current.length
       const onCompacted = (m: HistoryLine[]) => setCommitted(messagesToCommitted(m))
-      const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, buildSystemPrompt(), onCompacted, deps.history)
+      const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindowRef.current), {
+        onCompacted,
+        history: deps.history,
+        tools: deps.tools.specs(),
+      })
       await hook(messagesRef.current, 'manual') // manual = 强制压缩 + 重置熔断（用户明确要求时给机会）
       setSystemMsgs(
         messagesRef.current.length > lenBefore
@@ -267,8 +423,9 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
 
   /** M5：切换 model 后检测 context 是否超新窗口（只提示风险，不自动压缩；用户主动 /compact） */
   const checkModelWindow = async (model: string, providerName: string): Promise<void> => {
-    const ctxTokens = estimateContextTokens(buildSystemPrompt(), buildContextMessages(messagesRef.current))
+    const ctxTokens = estimateContextTokens(buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindowRef.current), buildContextMessages(messagesRef.current))
     const newWindow = await resolveContextWindow(model, config.providers[providerName]?.contextWindow)
+    ctxWindowRef.current = newWindow // S-P4：切模型刷新缓存（后续 submit 的 skill 清单预算随之适配）
     const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(0)}k`)
     if (ctxTokens > newWindow) {
       setBanner(
@@ -300,6 +457,53 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     isActive: () => confirmRef.current || pickerRef.current,
   })
 
+  // ctxWindow 缓存初始化（S-P4）：启动解析一次（models.dev 预热已由 M5 #4 修复），失败保持默认
+  useEffect(() => {
+    void resolveContextWindow(config.current.model, config.providers[config.current.name]?.contextWindow)
+      .then((w) => {
+        ctxWindowRef.current = w
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅启动一次
+  }, [])
+
+  // M6 M-P7：MCP 状态订阅（onEvent → setState → StatusBar/面板读快照）+ 启动警告
+  const [mcpSnapshots, setMcpSnapshots] = useState<McpServerSnapshot[]>(() => deps.mcpManager?.status() ?? [])
+  const [, setMcpApproving] = useState(false)
+
+  useEffect(() => {
+    const mgr = deps.mcpManager
+    if (mgr == null) return // null/undefined 都视为未启用（防御内联 deps 漏传）
+    setMcpSnapshots(mgr.status())
+    const unsub = mgr.subscribe(() => setMcpSnapshots(mgr.status()))
+    return unsub
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deps 不变（挂载期一次）
+  }, [])
+  useEffect(() => {
+    const pending = deps.mcpPendingApproval
+    if (pending === undefined) return
+    setSystemMsgs([`检测到项目级 ${pending.file}，需要批准后才会连接 MCP server`])
+    setMcpApproving(true)
+    void (async () => {
+      const pick = await askSelect(`批准项目级 ${pending.file}？（含 MCP server 定义，可 spawn 子进程）`, [
+        '批准并连接',
+        '本次会话不连接',
+      ])
+      if (pick !== undefined && pick.startsWith('批准')) {
+        try {
+          await pending.approve()
+          setSystemMsgs(['✓ 已批准并接入项目级 MCP server'])
+        } catch (e) {
+          setSystemMsgs(['接入失败：' + (e instanceof Error ? e.message : String(e))])
+        }
+      } else {
+        setSystemMsgs(['（本次会话未连接项目级 MCP；下次启动会再询问）'])
+      }
+      setMcpApproving(false)
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（二段启动，M4.1）
+  }, [])
+
   // Ctrl+O：toggle 当前轮工具展开/收起（只对有 use 的 done 工具）
   const toggleExpand = () => {
     setActive((a) => {
@@ -318,6 +522,16 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     // P2-4：overlay/confirm 期间不抢 Ctrl+O（picker/confirm 独占输入）
     { isActive: overlay === null && active.confirm === null },
   )
+
+  // M6 M-P7：StatusBar MCP 段（有启用的 server 才显示；连接中瞬时态）
+  const mcpSegment = useMemo(() => {
+    if (mcpSnapshots.length === 0) return undefined
+    const enabled = mcpSnapshots.filter((s) => s.status !== 'disabled')
+    if (enabled.length === 0) return undefined
+    if (enabled.some((s) => s.status === 'connecting')) return 'MCP 连接中…'
+    const connected = enabled.filter((s) => s.status === 'connected').length
+    return `MCP ${connected}/${enabled.length}`
+  }, [mcpSnapshots])
 
   const busy =
     active.streamingText !== '' ||
@@ -351,6 +565,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       onCancel={clearConfirm}
       activity={activity.state}
       activityText={activity.text}
+      mcp={mcpSegment}
       tokens={tokens}
       iter={iter}
       maxIter={maxIter}
@@ -408,6 +623,53 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
           }}
         />
       )}
+      {overlay?.kind === 'skill-panel' && (
+        <SkillPanel
+          skills={deps.skillRegistry.listForCompletion()}
+          onPick={(fill) => {
+            // D32：回填输入框（带尾随空格留传参位），不直接执行
+            setInsert({ text: fill, seq: Date.now() })
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+          onCancel={() => {
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+        />
+      )}
+      {overlay?.kind === 'mcp-panel' && (
+        <McpPanel
+          snapshots={mcpSnapshots}
+          onReconnect={async (n) => {
+            await deps.mcpManager?.reconnect(n)
+          }}
+          onDisconnect={async (n) => {
+            await deps.mcpManager?.close(n)
+          }}
+          onCancel={() => {
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+          toolsOf={(n) => deps.mcpManager?.toolsOf(n) ?? []}
+        />
+      )}
+      {overlay?.kind === 'select' && (
+        <Select
+          title={overlay.title}
+          items={overlay.options.map((o) => ({ label: o, value: o }))}
+          onSelect={(v) => {
+            overlay.resolve(v)
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+          onCancel={() => {
+            overlay.resolve(undefined)
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+        />
+      )}
       {systemMsgs.length > 0 && (
         <Box flexDirection="column">
           {systemMsgs.map((m, i) => (
@@ -419,9 +681,23 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       )}
       <InputStream
         onSubmit={submit}
+        onSkillInvoke={(name, args) => {
+          // S4.4 手动触发：展开全文作 userInput，原始 `/name args` 作 display
+          const info = deps.skillRegistry.get(name)
+          if (info === undefined) return
+          void submit(
+            expandSkill(info, args),
+            `/${name}${args !== undefined && args !== '' ? ` ${args}` : ''}`,
+          )
+        }}
         onCommand={(_cmd, result) => {
           if (result.action === 'expand') {
             toggleExpand()
+            return
+          }
+          if (result.action === 'skill-panel') {
+            pickerRef.current = true
+            setOverlay({ kind: 'skill-panel' })
             return
           }
           if (result.action === 'pick-model') {
@@ -442,6 +718,19 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
           }
           if (result.action === 'compact') {
             void compactManual()
+            return
+          }
+          if (result.action === 'skill-create') {
+            void skillCreate()
+            return
+          }
+          if (result.action === 'open-mcp-panel') {
+            pickerRef.current = true
+            setOverlay({ kind: 'mcp-panel' })
+            return
+          }
+          if (result.action === 'mcp-reconnect') {
+            void mcpReconnect(result.payload)
             return
           }
           if (result.action === 'cost') {
@@ -471,6 +760,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
           resetTransient()
         }}
         inactive={overlay !== null || active.confirm !== null || runningRef.current}
+        insert={insert}
         placeholder={busy ? '（处理中，Ctrl+C 中断）...' : '输入消息，/help 查看命令...'}
       />
     </App>

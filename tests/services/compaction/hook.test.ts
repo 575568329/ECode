@@ -43,7 +43,7 @@ describe('makeOnBeforeRequest（端到端集成）', () => {
     orchestrator.register(new SummarizeStrategy())
     const onCompacted = vi.fn()
     const providerReq: ProviderReq = { name: 't', baseURL: 'x', apiKey: 'k', model: 'glm-4.6', contextWindow }
-    const hook = makeOnBeforeRequest(orchestrator, provider, providerReq, 'sys', onCompacted)
+    const hook = makeOnBeforeRequest(orchestrator, provider, providerReq, 'sys', { onCompacted })
     return { hook, onCompacted }
   }
 
@@ -88,7 +88,7 @@ describe('makeOnBeforeRequest（端到端集成）', () => {
     orchestrator.register(new SummarizeStrategy())
     const onCompacted = vi.fn()
     const providerReq: ProviderReq = { name: 't', baseURL: 'x', apiKey: 'k', model: 'glm-4.6', contextWindow: 10000 }
-    const hook = makeOnBeforeRequest(orchestrator, failProvider, providerReq, 'sys', onCompacted)
+    const hook = makeOnBeforeRequest(orchestrator, failProvider, providerReq, 'sys', { onCompacted })
     const messages: HistoryLine[] = bigTextMessages(20)
     const ctx = await hook(messages, 'overflow')
     expect(onCompacted).not.toHaveBeenCalled() // 摘要失败 → 不追加 boundary

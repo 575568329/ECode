@@ -15,20 +15,37 @@
  * chat template / tool schema / 图片 tile。真实计费一律用 API usage。
  */
 
-import type { Message, ContentBlock } from '../core/types.js'
+import type { Message, ContentBlock, ToolSpec } from '../core/types.js'
 
 /** 文本 → token 估算（UTF-8 字节数/4 向上取整）。 */
 export function estimateTokens(text: string): number {
   return Math.ceil(Buffer.byteLength(text, 'utf8') / 4)
 }
 
-/** 估算 system + messages 的总 token（各 content block 展开成文本按字节计）。 */
-export function estimateContextTokens(system: string, messages: Message[]): number {
+/** 单消息 token 估算（M5 债 #3 收敛点：summarize/压缩估算共用统一口径，消除分叉）。 */
+export function estimateMessageTokens(msg: Message): number {
+  return Math.ceil(messageBytes(msg) / 4)
+}
+
+/** 消息序列 token 估算（estimateMessageTokens 累加）。 */
+export function estimateMessagesTokens(msgs: Message[]): number {
+  return msgs.reduce((sum, m) => sum + estimateMessageTokens(m), 0)
+}
+
+/**
+ * 估算 system + messages（+ 可选工具 specs）的总 token。
+ * tools（M6 v3 P1-1）：MCP 工具 schema 直发给 LLM 也占上下文（20+ 工具可达 15K+ token），
+ * 不计入则压缩判定低估 → 压到 summary 仍可能 400。specs JSON 序列化后按字节计。
+ */
+export function estimateContextTokens(system: string, messages: Message[], tools?: ToolSpec[]): number {
   let bytes = Buffer.byteLength(system, 'utf8')
   for (const msg of messages) {
     for (const block of msg.content) {
       bytes += blockBytes(block)
     }
+  }
+  if (tools !== undefined) {
+    bytes += Buffer.byteLength(JSON.stringify(tools), 'utf8')
   }
   return Math.ceil(bytes / 4)
 }
@@ -43,6 +60,13 @@ function blockBytes(block: ContentBlock): number {
     case 'tool_result':
       return Buffer.byteLength(block.content, 'utf8')
   }
+}
+
+/** 单消息字节数（blockBytes 累加；estimateMessageTokens/estimateContextTokens 共用）。 */
+function messageBytes(msg: Message): number {
+  let bytes = 0
+  for (const block of msg.content) bytes += blockBytes(block)
+  return bytes
 }
 
 /** 防御性 JSON 序列化计长（工具入参理论上可序列化，但仍兜底）。 */

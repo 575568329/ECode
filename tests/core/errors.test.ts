@@ -65,6 +65,55 @@ describe('toAppError', () => {
   })
 })
 
+describe('CONTEXT_TOO_LONG（400 上下文超限分类，M5 §6.5）', () => {
+  it('Anthropic 400 body（error.error.message 二层嵌套）→ CONTEXT_TOO_LONG + recoverable:false', () => {
+    const e = Object.assign(new Error('Request failed'), {
+      status: 400,
+      error: { type: 'invalid_request_error', error: { type: 'invalid_request_error', message: 'context length exceeded 200000 tokens' } },
+    })
+    const err = toAppError(e)
+    expect(err.code).toBe('CONTEXT_TOO_LONG')
+    expect(err.recoverable).toBe(false)
+  })
+
+  it('OpenAI 400 body（error.message 一层）→ CONTEXT_TOO_LONG', () => {
+    const e = Object.assign(new Error('Request failed'), {
+      status: 400,
+      error: { message: "This model's maximum context window is 128000 tokens" },
+    })
+    const err = toAppError(e)
+    expect(err.code).toBe('CONTEXT_TOO_LONG')
+    expect(err.recoverable).toBe(false)
+  })
+
+  it('裸 message 400（prompt is too long）→ CONTEXT_TOO_LONG', () => {
+    const e = Object.assign(new Error('prompt is too long: 250000 tokens > 200000 maximum'), { status: 400 })
+    const err = toAppError(e)
+    expect(err.code).toBe('CONTEXT_TOO_LONG')
+    expect(err.recoverable).toBe(false)
+  })
+
+  it('maximum...token 表述 → CONTEXT_TOO_LONG', () => {
+    const e = Object.assign(new Error('Request failed'), {
+      status: 400,
+      error: { message: 'You exceeded the maximum number of tokens allowed' },
+    })
+    const err = toAppError(e)
+    expect(err.code).toBe('CONTEXT_TOO_LONG')
+  })
+
+  it('非 context 的 400（参数错误）→ HTTP_ERROR，不误判', () => {
+    const e = Object.assign(new Error('Request failed'), {
+      status: 400,
+      error: { message: 'temperature must be between 0 and 2' },
+    })
+    const err = toAppError(e)
+    expect(err.code).not.toBe('CONTEXT_TOO_LONG')
+    expect(err.code).toBe('HTTP_ERROR')
+    expect(err.recoverable).toBe(true)
+  })
+})
+
 describe('toFatal', () => {
   it("stop_reason='error' → fatal STREAM_ERROR", () => {
     const err = toFatal('error')

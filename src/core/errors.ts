@@ -113,6 +113,35 @@ function fromHttpStatus(status: number, e: unknown): AppError {
   if (status >= 500) {
     return { code: 'UPSTREAM_ERROR', message: `上游错误: ${msg}`, recoverable: true, retryable: true, context: { status } }
   }
+  // 400：区分上下文超限（压缩兜底，recoverable:false 跳过退避走 M5 §6.3）vs 其它参数错误（交 LLM 自纠）
+  if (status === 400) {
+    const bodyMsg = extractErrorMessage(e)
+    if (bodyMsg && CONTEXT_TOO_LONG_RE.test(bodyMsg)) {
+      return { code: 'CONTEXT_TOO_LONG', message: `上下文超限: ${bodyMsg}`, recoverable: false, context: { status } }
+    }
+  }
   // 其它 4xx 等：默认 recoverable
   return { code: 'HTTP_ERROR', message: msg, recoverable: true, context: { status } }
+}
+
+/** 上下文超限正则：各家端点表述不一（context length / window / token / too long / maximum token），宽匹配。 */
+const CONTEXT_TOO_LONG_RE = /context.*(length|window|token)|too long|maximum.*token/i
+
+/** 从 SDK 错误对象防御性提取 body message（各家嵌套结构不同）。
+ * 优先级：e.error.error.message（Anthropic 二层）> e.error.message（OpenAI 一层）> e.message（裸）。 */
+function extractErrorMessage(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined
+  const obj = e as Record<string, unknown>
+  const err1 = obj.error
+  if (err1 !== null && typeof err1 === 'object') {
+    const err2 = (err1 as Record<string, unknown>).error
+    if (err2 !== null && typeof err2 === 'object') {
+      const m2 = (err2 as Record<string, unknown>).message
+      if (typeof m2 === 'string') return m2
+    }
+    const m1 = (err1 as Record<string, unknown>).message
+    if (typeof m1 === 'string') return m1
+  }
+  if (e instanceof Error) return e.message
+  return undefined
 }

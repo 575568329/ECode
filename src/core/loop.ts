@@ -186,7 +186,10 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         stopReason = 'aborted'
         isAborted = true
       }
-      if (streamError && !streamError.recoverable && !isAbort) throw streamError
+      // P0-2: CONTEXT_TOO_LONG 不 fatal throw（真实 provider 400 是 throw APIError，非 SSE error delta），
+      //   让它落到下方压缩兜底分支；其它 !recoverable 才 fatal throw
+      if (streamError && !streamError.recoverable && !isAbort && streamError.code !== 'CONTEXT_TOO_LONG')
+        throw streamError
     } finally {
       // 固化已生成内容（无论正常/错误/中断，只要本轮产出了东西就保留）
       const blocks: ContentBlock[] = []
@@ -215,11 +218,16 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         opts.logger.info('loop', 'aborted', { iter }, iter)
         break
       }
-      // M5：CONTEXT_TOO_LONG 走压缩兜底（在 recoverable 退避前，避免被吞；recoverable:false 不重试）
+      // M5：CONTEXT_TOO_LONG 走压缩兜底（在 recoverable 退避前；P0-2 改为不 fatal throw 后此处可达）
       if (streamError.code === 'CONTEXT_TOO_LONG' && opts.onBeforeRequest) {
         if (pushedThisRound) messages.pop() // 回滚半截 assistant
-        await opts.onBeforeRequest(messages, 'overflow') // 投影派：编排器追加 boundary
-        opts.onCompacted?.(messages)
+        const lenBefore = messages.length
+        await opts.onBeforeRequest(messages, 'overflow') // 投影派：编排器追加 boundary（hook 内统一调 onCompacted）
+        // P1-4: 检查是否真压缩（messages 增长=新 boundary）；未压缩 → 压缩失败，break 不空转到 maxIterations
+        if (messages.length === lenBefore) {
+          opts.callbacks.onWarn?.('上下文超限且压缩失败，建议 /clear 起新会话')
+          break
+        }
         opts.callbacks.onWarn?.('上下文超限，已压缩对话后重试')
         retryCount = 0
         continue

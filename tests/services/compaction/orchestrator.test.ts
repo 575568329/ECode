@@ -55,7 +55,8 @@ describe('CompactionOrchestrator', () => {
     expect(isBoundary(all[0]!)).toBe(true)
     const b = all[0] as BoundaryLine
     expect(b.summary).toBe('摘要')
-    expect(b.tailStartIndex).toBe(5)
+    // P0-1: tailStartIndex 经编排器翻译（投影→全量绝对）；baseOpts messages 空 → anchor undefined → absIdx=0
+    expect(b.tailStartIndex).toBe(0)
     expect(b.preTokens).toBe(999)
   })
 

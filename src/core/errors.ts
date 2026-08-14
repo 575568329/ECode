@@ -124,8 +124,8 @@ function fromHttpStatus(status: number, e: unknown): AppError {
   return { code: 'HTTP_ERROR', message: msg, recoverable: true, context: { status } }
 }
 
-/** 上下文超限正则：各家端点表述不一（context length / window / token / too long / maximum token），宽匹配。 */
-const CONTEXT_TOO_LONG_RE = /context.*(length|window|token)|too long|maximum.*token/i
+/** 上下文超限正则：各家端点表述不一，宽匹配但要求 context/token/length 语义（避免「某字段 too long」误判）。 */
+const CONTEXT_TOO_LONG_RE = /context.*(length|window|token|exceed)|maximum.*context|prompt.*too.*long|(exceed|maximum).*token/i
 
 /** 从 SDK 错误对象防御性提取 body message（各家嵌套结构不同）。
  * 优先级：e.error.error.message（Anthropic 二层）> e.error.message（OpenAI 一层）> e.message（裸）。 */

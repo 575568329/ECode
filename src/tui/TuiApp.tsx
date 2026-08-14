@@ -108,7 +108,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     const providerReq = buildProviderReq(config)
     const system = buildSystemPrompt()
     const onCompacted = (m: HistoryLine[]) => setCommitted(messagesToCommitted(m))
-    const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted)
+    const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted, deps.history, abortRef.current.signal)
 
     try {
       await runLoop(messagesRef.current, input, {
@@ -242,7 +242,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
     const providerReq = buildProviderReq(config)
     const onCompacted = (m: HistoryLine[]) => setCommitted(messagesToCommitted(m))
-    const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, buildSystemPrompt(), onCompacted)
+    const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, buildSystemPrompt(), onCompacted, deps.history)
     await hook(messagesRef.current, 'overflow') // overflow = 强制压缩（绕过阈值判定）
   }
 
@@ -261,7 +261,8 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
   }
 
   const restoreSession = (sessionId: string) => {
-    const messages = deps.history.restore(sessionId)
+    // P0-3：用 restoreFull（含 boundary），让压缩态跨重启存活；restore() 过滤 boundary 会导致恢复即超限
+    const messages = deps.history.restoreFull(sessionId)
     // P1-10：restore 返回空（文件缺失/损坏/真空会话）→ 保留当前会话 + 提示，不静默清空
     if (messages.length === 0) {
       setSystemMsgs(['⚠ 恢复失败：该会话为空或已损坏（文件缺失/无消息），未切换'])

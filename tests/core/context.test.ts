@@ -27,7 +27,7 @@ describe('buildContextMessages（投影纯函数）', () => {
     ]
     const result = buildContextMessages(lines)
     expect(result).toHaveLength(4) // summary + tail1 + tail2 + new1
-    expect(result[0]).toEqual({ role: 'user', content: [{ type: 'text', text: summaryText('摘要') }] })
+    expect(result[0]).toEqual({ role: 'assistant', content: [{ type: 'text', text: summaryText('摘要') }] })
     expect(result[1]).toEqual(msg('tail1'))
     expect(result[2]).toEqual(msg('tail2'))
     expect(result[3]).toEqual(msg('new1'))
@@ -44,7 +44,7 @@ describe('buildContextMessages（投影纯函数）', () => {
     // msgs（过滤两个 boundary）= [old, mid, recent]；最后 boundary tailStartIndex=1
     // 投影 = [新摘要] + msgs[1..] = [新摘要, mid, recent]
     const result = buildContextMessages(lines)
-    expect(result[0]).toEqual({ role: 'user', content: [{ type: 'text', text: summaryText('新摘要') }] })
+    expect(result[0]).toEqual({ role: 'assistant', content: [{ type: 'text', text: summaryText('新摘要') }] })
     expect(result[1]).toEqual(msg('mid'))
     expect(result[2]).toEqual(msg('recent'))
   })
@@ -71,6 +71,6 @@ describe('buildContextMessages（投影纯函数）', () => {
     ]
     const result = buildContextMessages(lines)
     expect(result).toHaveLength(3) // summary + a + b
-    expect(result[0]).toEqual({ role: 'user', content: [{ type: 'text', text: summaryText('初始摘要') }] })
+    expect(result[0]).toEqual({ role: 'assistant', content: [{ type: 'text', text: summaryText('初始摘要') }] })
   })
 })

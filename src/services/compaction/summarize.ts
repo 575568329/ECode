@@ -69,6 +69,7 @@ export class SummarizeStrategy implements CompactionStrategy {
       system,
       messages: head,
       tools: [],
+      ...(ctx.signal ? { signal: ctx.signal } : {}), // P1-5：摘要可中断
     }
     let raw = ''
     try {

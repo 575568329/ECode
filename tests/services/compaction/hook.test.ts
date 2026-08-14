@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { makeOnBeforeRequest } from '../../../src/services/compaction/hook.js'
+import { buildContextMessages } from '../../../src/core/context.js'
 import { CompactionOrchestrator } from '../../../src/services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../../../src/services/compaction/summarize.js'
 import type { LLMProvider, ProviderReq } from '../../../src/providers/interface.js'
@@ -54,7 +55,7 @@ describe('makeOnBeforeRequest（端到端集成）', () => {
     expect(onCompacted).toHaveBeenCalledTimes(1)
     expect(isBoundary(messages.at(-1)!)).toBe(true) // boundary 追加到 messages
     // 投影子集首条是 summary 消息（[此前对话已压缩] + 摘要）
-    expect(ctx[0]).toMatchObject({ role: 'user' })
+    // P1-3: summaryMsg role 看 tail[0]（避开连续同 role），不固定 user
     expect((ctx[0].content[0] as { text: string }).text).toContain('完成 M5')
   })
 
@@ -93,5 +94,20 @@ describe('makeOnBeforeRequest（端到端集成）', () => {
     expect(onCompacted).not.toHaveBeenCalled() // 摘要失败 → 不追加 boundary
     expect(messages.every((m) => !isBoundary(m))).toBe(true) // messages 不变
     expect(ctx).toHaveLength(20) // 返回原全量投影（降级）
+  })
+
+  it('连续两次压缩 → 第二次投影不暴涨（P0-1 回归：索引翻译防泄漏累加）', async () => {
+    const { hook } = setup(10000)
+    const messages: HistoryLine[] = bigTextMessages(40) // 40000 token
+    await hook(messages, 'overflow') // 第一次压缩
+    const ctx1Len = buildContextMessages(messages).length
+    const boundaryCount1 = messages.filter(isBoundary).length
+    await hook(messages, 'overflow') // 第二次压缩（关键：索引翻译在此前会错位）
+    const ctx2Len = buildContextMessages(messages).length
+    const boundaryCount2 = messages.filter(isBoundary).length
+    expect(boundaryCount2).toBe(boundaryCount1 + 1) // 多追加一个 boundary
+    // P0-1 修复前：第二次投影暴涨（索引错位 → 已摘要的旧消息泄漏回投影，越压越多）；
+    //   修复后第二次投影 ≤ 第一次（tailStartIndex 翻译成全量绝对索引）
+    expect(ctx2Len).toBeLessThanOrEqual(ctx1Len)
   })
 })

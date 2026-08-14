@@ -11,16 +11,19 @@
  * boundary 是投影锚点：buildContextMessages（§7.2）识别最后一个 boundary，返回 summary+tail。
  */
 
-import { isBoundary, type BoundaryLine, type HistoryLine } from '../../core/types.js'
+import { isBoundary, type BoundaryLine, type HistoryLine, type Message } from '../../core/types.js'
 // re-export：boundary 类型集中在 core/types（避免 core/context → services 依赖），orchestrator 转出方便外部用
 export type { BoundaryLine, HistoryLine } from '../../core/types.js'
 export { isBoundary } from '../../core/types.js'
 import type { CompactionStrategy, CompactionContext } from './strategy.js'
+import type { HistoryStore } from '../history.js'
 
 /** 编排器入参 = 策略上下文 + 全量 messages（追加 boundary 的目标）。 */
 export interface OrchestratorOptions extends CompactionContext {
   /** 全量 messages（含历史 boundary）；编排器追加新 boundary 到此 */
   allMessages: HistoryLine[]
+  /** history 句柄（boundary 落盘；不传则只在内存追加，重启丢失） */
+  history?: HistoryStore
 }
 
 export class CompactionOrchestrator {
@@ -47,13 +50,24 @@ export class CompactionOrchestrator {
       if (!s.shouldRun(ctx)) continue
       const result = await s.run(ctx)
       if (result.compacted && result.summary != null && result.tailStartIndex != null) {
+        // P0-1: 翻译投影相对索引 → 全量 filter Message[] 绝对索引
+        // （summarize 在投影 ctx 上算 tailStartIndex，buildContextMessages 在全量 filter 上用，二者参考系不同；
+        //   不翻译则第 2 次压缩错位 → 投影泄漏累加 + 可能造 tool 孤儿 400）
+        const allMsgs = opts.allMessages.filter((l): l is Message => !isBoundary(l))
+        const anchor = opts.messages[result.tailStartIndex] // 投影 ctx 的 tail 起点 Message
+        let absIdx = allMsgs.length // 默认全摘要（anchor 是 summaryMsg 或越界 → indexOf -1）
+        if (anchor) {
+          const found = allMsgs.indexOf(anchor)
+          if (found >= 0) absIdx = found
+        }
         const boundary: BoundaryLine = {
           compact_boundary: true,
           summary: result.summary,
-          tailStartIndex: result.tailStartIndex,
+          tailStartIndex: absIdx,
           preTokens: result.preTokens ?? opts.tokenCount,
         }
         opts.allMessages.push(boundary) // 投影派：追加 boundary，旧消息留在前面不删
+        opts.history?.appendCompactBoundary(boundary) // P0-3: 落盘（重启/恢复保留压缩态）
         return true
       }
       // 本策略未产出（compacted:false）→ 继续试下一个更贵的策略

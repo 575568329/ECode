@@ -34,7 +34,8 @@ describe('tokensToCost', () => {
   })
 
   it('未命中模型 → null（成本未知）', () => {
-    expect(tokensToCost('glm-5.2', { input: 100, output: 100, cacheRead: 0, cacheCreation: 0 })).toBeNull()
+    // glm-5.2 已收录；用未收录的测 null
+    expect(tokensToCost('glm-5.3', { input: 100, output: 100, cacheRead: 0, cacheCreation: 0 })).toBeNull()
     expect(tokensToCost('unknown-model', { input: 100, output: 100, cacheRead: 0, cacheCreation: 0 })).toBeNull()
   })
 
@@ -53,9 +54,9 @@ describe('lookupPricing', () => {
     expect(lookupPricing('glm-4.6-air')?.input).toBe(5)
   })
 
-  it('版本号不误匹配（glm-5.2 ≠ glm-5）', () => {
-    // 'glm-5.2' 不 startsWith 'glm-5-'（'.' 非 '-'），故不匹配 glm-5 → null
-    expect(lookupPricing('glm-5.2')).toBeNull()
+  it('版本号不误匹配（glm-5.3 ≠ glm-5）', () => {
+    // 'glm-5.3' 不 startsWith 'glm-5-'（'.' 非 '-'），故不匹配 glm-5 → null
+    expect(lookupPricing('glm-5.3')).toBeNull()
   })
 
   it('未命中 → null', () => {

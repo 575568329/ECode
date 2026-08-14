@@ -31,12 +31,15 @@ export function buildContextMessages(lines: HistoryLine[]): Message[] {
   if (!lastBoundary) return msgs
 
   // 有 boundary → [summary 消息] + tailStartIndex 之后的 Message（tail 原文 + 新消息）
+  const start = Math.max(0, Math.min(lastBoundary.tailStartIndex, msgs.length)) // P2-14: 双向钳（防负/越界）
+  const tail = msgs.slice(start)
+  // P1-3: summaryMsg role 避开与 tail[0] 撞同 role（连续 user/assistant → 部分端点 400）
+  const summaryRole: Message['role'] = tail.length > 0 && tail[0].role === 'user' ? 'assistant' : 'user'
   const summaryMsg: Message = {
-    role: 'user',
+    role: summaryRole,
     content: [{ type: 'text', text: `[此前对话已压缩] ${lastBoundary.summary}` }],
   }
-  const start = Math.min(lastBoundary.tailStartIndex, msgs.length)
-  return [summaryMsg, ...msgs.slice(start)]
+  return [summaryMsg, ...tail]
 }
 
 /** HistoryLine 是 Message（非 boundary）。 */

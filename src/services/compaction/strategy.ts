@@ -30,6 +30,8 @@ export interface CompactionContext {
   providerReq: ProviderReq
   /** 滚动 summary：上一次的摘要文本（多次压缩时回喂更新，避免摘要嵌套漂移） */
   previousSummary?: string
+  /** AbortSignal（P1-5：摘要 LLM 调用可中断，透传 loop 的 signal） */
+  signal?: AbortSignal
 }
 
 /** 策略返回（纯计算输出：摘要文本 + 保留区起点）。 */

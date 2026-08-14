@@ -85,7 +85,7 @@ async function runOnce(messages: HistoryLine[], input: string, deps: Deps): Prom
   const providerReq = buildProviderReq(deps.config)
   const system = buildSystemPrompt()
   const onCompacted = (_messages: HistoryLine[]) => process.stdout.write('\n[已压缩对话]\n')
-  const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted)
+  const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted, deps.history)
   await runLoop(messages, input, {
     provider,
     tools: deps.tools,

@@ -221,11 +221,15 @@ describe('M5 压缩集成（onBeforeRequest hook + 400 兜底）', () => {
     const onCompacted = vi.fn()
     const onBeforeRequest = vi.fn(async (messages: HistoryLine[], trigger?: string) => {
       triggers.push(trigger)
+      // P1-4: overflow 时追加 boundary（模拟真压缩），让 loop 的 lenBefore 检查通过
+      if (trigger === 'overflow') {
+        messages.push({ compact_boundary: true, summary: '压缩', tailStartIndex: 0, preTokens: 0 })
+      }
       return messages.filter((m): m is Message => !('compact_boundary' in m))
     })
     const messages = await runLoop([], 'hello', { ...makeOpts(p, []), onBeforeRequest, onCompacted })
     expect(triggers).toContain('overflow') // 400 触发 overflow 压缩
-    expect(onCompacted).toHaveBeenCalledTimes(1) // 400 兜底调 onCompacted
+    // P1-6: onCompacted 由 hook 统一调（此处 mock 绕过 hook，loop 不再直接调）
     const lastMsg = messages.at(-1) as Message
     expect((lastMsg.content[0] as { text: string }).text).toBe('压缩后回复')
   })

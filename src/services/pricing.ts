@@ -33,6 +33,7 @@ const PRICING_TABLE: Record<string, ModelPricing> = {
   'glm-4-plus': { input: 5, output: 5 },
   'glm-5': { input: 4, output: 18 },
   'glm-5.1': { input: 6, output: 24 },
+  'glm-5.2': { input: 6, output: 24 }, // MVP 近似（同 5.1），待 models.dev 同步准确值
 }
 
 /** 查模型定价。精确匹配优先，其次变体后缀匹配（glm-4.6-air → glm-4.6）。未命中返回 null。 */

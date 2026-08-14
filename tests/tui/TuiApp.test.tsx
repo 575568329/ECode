@@ -31,10 +31,14 @@ const config: Config = {
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger
 const noopHistory = {
   append() {},
+  appendCompactBoundary() {},
   loadAll() {
     return []
   },
   restore() {
+    return []
+  },
+  restoreFull() {
     return []
   },
   setSessionId() {},
@@ -163,14 +167,14 @@ describe('TuiApp /model', () => {
       { role: 'user', content: [{ type: 'text', text: '之前问的问题' }] },
       { role: 'assistant', content: [{ type: 'text', text: '之前的回答' }] },
     ]
-    const restore = vi.fn(() => restored)
+    const restoreFull = vi.fn(() => restored)
     const setSessionId = vi.fn()
     const history = {
       ...noopHistory,
       loadAll: () => [
         { sessionId: 's1', createdAt: '2026-08-13T10:00:00.000Z', model: 'glm-5.2', firstUser: '之前问的问题' },
       ],
-      restore,
+      restoreFull,
       setSessionId,
     } as unknown as HistoryStore
     const { stdin, lastFrame } = render(
@@ -184,7 +188,7 @@ describe('TuiApp /model', () => {
     await flush()
     stdin.write('\r') // 选中第一项恢复
     await flush()
-    expect(restore).toHaveBeenCalledWith('s1')
+    expect(restoreFull).toHaveBeenCalledWith('s1')
     expect(setSessionId).toHaveBeenCalled()
     // committed 重建：含恢复的 assistant 文本（messagesToCommitted）
     expect(lastFrame() ?? '').toContain('之前的回答')

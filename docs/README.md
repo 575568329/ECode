@@ -31,8 +31,10 @@
 | TUI 渲染方案：最小 Static | [详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_已完成.md](./详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_已完成.md) | M2 去 Static 后满屏/顺序两大问题根治；Static（历史固化）+ 当前轮动态可展开；用户定配置（流式 3 / 工具合并 4 / 下一轮收起）；满屏 clearTerminal 代码级证据；OpenTUI 长期观望 |
 | M3 工具与确认实施方案 | [详设/2026-08-13_M3-工具与确认实施方案_已完成.md](./详设/2026-08-13_M3-工具与确认实施方案_已完成.md) | 5 工具（ls/glob/grep/write_file/edit_file）schema + bash 安全（截断/拦截）+ ConfirmPrompt（diff 确认）+ .ecodeignore；D1-D7 决策拍板；小切片策略（只读先发） |
 | M4 持久化与配置实施方案 | [详设/2026-08-13_M4-持久化与配置实施方案_待审核.md](./详设/2026-08-13_M4-持久化与配置实施方案_待审核.md) | HistoryStore 真存储 + /history /model 命令 + 配置完整（采样参数）+ OpenaiProvider + 首次向导；D1-D7 拍板；MVP 收官 |
-| 后续 M5 实施方案 | [详设/2026-08-14_后续-M5实施方案_待审核.md](./详设/2026-08-14_后续-M5实施方案_待审核.md) | 上下文压缩 v7：**Context/History 分离** + **两级压缩**（Tool Clearing + Compaction）+ **contextWindow models.dev 远程库**（opencode 同栈可参考+收录智谱+5min缓存+构建期快照离线兜底，自动跟进新模型）+ **token usage 锚定**（不装 tokenizer）+ 绝对值阈值；★ GLM-5=200K（纠正 1M 错误）；Skill→M6/MCP→M7 后置 |
+| 后续 M5 实施方案 | [详设/2026-08-14_后续-M5实施方案_待审核.md](./详设/2026-08-14_后续-M5实施方案_待审核.md) | 上下文压缩 v8：**Context/History 分离** + **三级压缩**（L1 claude-code 工具清理+不变量保护 / L2 opencode select+滚动summary+结构化prompt / L3 aider递归+codex开窗兜底）+ **contextWindow models.dev 远程库** + **token usage 锚定**；基于四家源码调研；Skill/MCP→M6 |
+| 后续 M6 实施方案 | [详设/2026-08-14_后续-M6实施方案_待审核.md](./详设/2026-08-14_后续-M6实施方案_待审核.md) | Skill 系统 + MCP 客户端（原 M6/M7 合并为一篇，两个独立子系统）：Skill **三层渐进式加载**（清单注入 system prompt + LLM 自主调 SkillTool + body 作 tool_result）/ MCP **官方 SDK + stdio&HTTP + mcp__server__tool 适配 + 默认确认**；两者都注册成 Tool 进 Registry **心脏零改动**；基于 claude-code/opencode/codex 三家源码 + MCP 官方规范调研 |
 | 上下文压缩调研 | [解析/2026-08-14_上下文压缩调研_已完成.md](./解析/2026-08-14_上下文压缩调研_已完成.md) | Claude 官方 Context Engineering 三原语（Tool Clearing/Compaction/Memory）+ claude-code 阈值演进（90%→64-75% land the plane）+ 各家迭代摘要；M5 压缩设计依据 |
+| 上下文压缩源码调研 | [解析/2026-08-14_上下文压缩源码调研_已完成.md](./解析/2026-08-14_上下文压缩源码调研_已完成.md) | claude-code 多级管线+9段prompt+不变量保护 / opencode select切分+滚动summary（最干净可抄）/ aider 递归+第一人称prompt / codex 三策略+hooks；四家对比+ECode 组合借鉴；M5 压缩算法最终依据 |
 
 > 其余文档按需在各目录补充，命名见下方约定。
 

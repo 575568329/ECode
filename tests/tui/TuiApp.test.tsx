@@ -13,6 +13,8 @@ import { LLMProviderRegistryImpl } from '../../src/providers/registry.js'
 import { ToolRegistryImpl } from '../../src/tools/registry.js'
 import { commandRegistry, registerBuiltinCommands } from '../../src/commands/registry.js'
 import { emptyShellConfig, type Config } from '../../src/services/config.js'
+import { CompactionOrchestrator } from '../../src/services/compaction/orchestrator.js'
+import { SummarizeStrategy } from '../../src/services/compaction/summarize.js'
 import type { Logger } from '../../src/services/logger.js'
 import type { HistoryStore } from '../../src/services/history.js'
 import type { Message } from '../../src/core/types.js'
@@ -47,12 +49,16 @@ const noopHistory = {
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
 
 function makeDeps(overrides: Partial<{ config: Config }> = {}) {
+  const orchestrator = new CompactionOrchestrator()
+  orchestrator.register(new SummarizeStrategy())
   return {
     providerRegistry: new LLMProviderRegistryImpl(),
     tools: new ToolRegistryImpl(),
     logger: noopLogger,
     history: noopHistory,
     config: overrides.config ?? config,
+    orchestrator,
+    lastUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
   }
 }
 
@@ -243,5 +249,38 @@ describe('TuiApp /model', () => {
     await flush()
     expect(lastFrame() ?? '').toContain('协议类型')
     expect(lastFrame() ?? '').toContain('1/5')
+  })
+})
+
+describe('TuiApp /cost + 命令补全（M5）', () => {
+  beforeEach(() => {
+    commandRegistry.clear()
+    registerBuiltinCommands()
+  })
+
+  it('/cost → 显示本轮 token 四维 + 成本（systemMsgs 渲染在输入框上方）', async () => {
+    const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps() }))
+    await flush()
+    stdin.write('/cost')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    const f = lastFrame() ?? ''
+    expect(f).toContain('本轮 token')
+    expect(f).toContain('input 0')
+    expect(f).toContain('会话累计成本')
+  })
+
+  it('/com 回车 → 补全执行 /compact（不发出 /com 当未知命令）', async () => {
+    const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps() }))
+    await flush()
+    stdin.write('/com')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    const f = lastFrame() ?? ''
+    // /com 补全为 /compact（problem 2 修复）；新会话 messages 空 → compactManual 反馈「无可压缩」(problem 3)
+    expect(f).toContain('无可压缩')
+    expect(f).not.toContain('未知命令') // 不再当未知命令发出
   })
 })

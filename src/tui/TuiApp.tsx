@@ -112,7 +112,8 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       setSystemMsgs(['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）'])
     }
     const onCompacting = () => setSystemMsgs(['正在压缩对话...'])
-    const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted, deps.history, abortRef.current.signal, onCompacting)
+    const onCompactFail = () => setSystemMsgs(['（压缩未完成——对话太短或摘要失败，稍后自动重试）'])
+    const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted, deps.history, abortRef.current.signal, onCompacting, onCompactFail)
 
     try {
       await runLoop(messagesRef.current, input, {
@@ -256,7 +257,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       await hook(messagesRef.current, 'overflow') // overflow = 强制压缩（绕过阈值判定）
       setSystemMsgs(
         messagesRef.current.length > lenBefore
-          ? ['✓ 已压缩对话（旧消息摘要进 boundary，可在历史回看）']
+          ? ['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）']
           : ['（未压缩——对话太短或摘要失败）'],
       )
     } catch (e) {

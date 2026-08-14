@@ -28,6 +28,7 @@ const EFFECTIVE_WINDOW_RATIO = 0.9
  * @param signal 摘要 LLM 调用的中断信号（P1-5）
  * @param onCompacted 压缩完成回调（hook 统一调，覆盖 pressure/overflow/手动三条路径）
  * @param onCompacting 压缩开始回调（UI 提示「正在压缩」——摘要 LLM 调用可能数十秒，别让用户以为卡死）
+ * @param onCompactFail 压缩未执行/失败回调（与 onCompacting 配对——不调则「正在压缩」提示残留界面）
  */
 export function makeOnBeforeRequest(
   orchestrator: CompactionOrchestrator,
@@ -38,6 +39,7 @@ export function makeOnBeforeRequest(
   history?: HistoryStore,
   signal?: AbortSignal,
   onCompacting?: () => void,
+  onCompactFail?: () => void,
 ): (messages: HistoryLine[], trigger?: 'pressure' | 'overflow') => Promise<Message[]> {
   return async (messages, trigger = 'pressure') => {
     let ctx = buildContextMessages(messages)
@@ -63,6 +65,8 @@ export function makeOnBeforeRequest(
       if (compacted) {
         onCompacted(messages) // boundary 已追加，通知 UI 重建 committed
         ctx = buildContextMessages(messages) // 压缩后重新投影
+      } else {
+        onCompactFail?.() // 未执行/失败（太短/摘要失败/熔断）——清掉「正在压缩」提示
       }
     }
     return ctx

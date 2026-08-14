@@ -29,6 +29,8 @@ export interface ProviderReq {
   topP?: number
   maxTokens?: number
   thinking?: ThinkingLevel
+  /** 上下文窗口覆盖（M5 §5 escape hatch；不配则 models.dev 探测） */
+  contextWindow?: number
 }
 
 /** provider.run 的入参（ProviderReq + loop 内部注入的 system/messages/tools/signal）。 */

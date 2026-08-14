@@ -26,6 +26,8 @@ export interface ProviderCfg {
   topP?: number
   maxTokens?: number
   thinking?: ThinkingLevel
+  /** 上下文窗口覆盖（escape hatch；不配则 models.dev 自动探测，M5 §5） */
+  contextWindow?: number
 }
 
 export interface Config {
@@ -179,6 +181,7 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
       ...(cfg.topP !== undefined ? { topP: cfg.topP } : {}),
       ...(cfg.maxTokens !== undefined ? { maxTokens: cfg.maxTokens } : {}),
       ...(cfg.thinking !== undefined ? { thinking: cfg.thinking as ThinkingLevel } : {}),
+      ...(cfg.contextWindow !== undefined ? { contextWindow: cfg.contextWindow } : {}),
     }
   }
   // env 覆盖当前 provider 关键字段（dev 场景：.env 注入）
@@ -211,6 +214,7 @@ export function buildProviderReq(config: Config): ProviderReq {
     ...(cfg.topP !== undefined ? { topP: cfg.topP } : {}),
     ...(cfg.maxTokens !== undefined ? { maxTokens: cfg.maxTokens } : {}),
     ...(cfg.thinking !== undefined ? { thinking: cfg.thinking } : {}),
+    ...(cfg.contextWindow !== undefined ? { contextWindow: cfg.contextWindow } : {}),
   }
 }
 

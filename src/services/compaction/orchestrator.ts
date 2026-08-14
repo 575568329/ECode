@@ -11,24 +11,11 @@
  * boundary 是投影锚点：buildContextMessages（§7.2）识别最后一个 boundary，返回 summary+tail。
  */
 
-import type { Message } from '../../core/types.js'
+import { isBoundary, type BoundaryLine, type HistoryLine } from '../../core/types.js'
+// re-export：boundary 类型集中在 core/types（避免 core/context → services 依赖），orchestrator 转出方便外部用
+export type { BoundaryLine, HistoryLine } from '../../core/types.js'
+export { isBoundary } from '../../core/types.js'
 import type { CompactionStrategy, CompactionContext } from './strategy.js'
-
-/** 压缩边界行（投影锚点）。history append-only 追加；buildContextMessages 识别最后一个裁剪。 */
-export interface BoundaryLine {
-  compact_boundary: true
-  summary: string
-  tailStartIndex: number
-  preTokens: number
-}
-
-/** history 存储行：消息 or 边界（联合类型，避免 boundary 破坏 Message 结构，M5 §11）。 */
-export type HistoryLine = Message | BoundaryLine
-
-/** boundary 类型守卫。 */
-export function isBoundary(line: HistoryLine): line is BoundaryLine {
-  return typeof line === 'object' && line !== null && (line as BoundaryLine).compact_boundary === true
-}
 
 /** 编排器入参 = 策略上下文 + 全量 messages（追加 boundary 的目标）。 */
 export interface OrchestratorOptions extends CompactionContext {

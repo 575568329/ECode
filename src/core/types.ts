@@ -81,3 +81,20 @@ export type Delta =
   | { type: 'usage'; input_tokens: number; output_tokens: number; cache_read_tokens?: number; cache_creation_tokens?: number }
   | { type: 'error'; error: AppError }
   | { type: 'done'; stop_reason: StopReason }
+
+// —— 压缩边界（M5 §7）：history 存 Message | BoundaryLine 联合，buildContextMessages 识别最后一个 boundary 投影 ——
+/** 压缩边界行（投影锚点）。append-only 追加到 history，不删旧消息。 */
+export interface BoundaryLine {
+  compact_boundary: true
+  summary: string
+  tailStartIndex: number
+  preTokens: number
+}
+
+/** history 存储行：消息 or 边界（联合类型，避免 boundary 破坏 Message 结构，M5 §11）。 */
+export type HistoryLine = Message | BoundaryLine
+
+/** boundary 类型守卫。 */
+export function isBoundary(line: HistoryLine): line is BoundaryLine {
+  return typeof line === 'object' && line !== null && (line as BoundaryLine).compact_boundary === true
+}

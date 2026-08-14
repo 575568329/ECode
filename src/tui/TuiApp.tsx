@@ -10,6 +10,9 @@ import { toAppError } from '../core/errors.js'
 import type { AppError, HistoryLine } from '../core/types.js'
 import { makeOnBeforeRequest } from '../services/compaction/hook.js'
 import { tokensToCost } from '../services/pricing.js'
+import { buildContextMessages } from '../core/context.js'
+import { estimateContextTokens } from '../services/tokenizer.js'
+import { resolveContextWindow } from '../services/contextWindow.js'
 import type { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
@@ -243,6 +246,20 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     await hook(messagesRef.current, 'overflow') // overflow = 强制压缩（绕过阈值判定）
   }
 
+  /** M5：切换 model 后检测 context 是否超新窗口（只提示风险，不自动压缩；用户主动 /compact） */
+  const checkModelWindow = async (model: string, providerName: string): Promise<void> => {
+    const ctxTokens = estimateContextTokens(buildSystemPrompt(), buildContextMessages(messagesRef.current))
+    const newWindow = await resolveContextWindow(model, config.providers[providerName]?.contextWindow)
+    const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(0)}k`)
+    if (ctxTokens > newWindow) {
+      setBanner(
+        `当前对话（约 ${fmt(ctxTokens)} tokens）超出 ${model} 窗口（${fmt(newWindow)}）。建议 /compact 压缩后继续（注意：压缩有损，可能丢失细节），或 /clear 起新会话。`,
+      )
+    } else {
+      setBanner(undefined)
+    }
+  }
+
   const restoreSession = (sessionId: string) => {
     const messages = deps.history.restore(sessionId)
     // P1-10：restore 返回空（文件缺失/损坏/真空会话）→ 保留当前会话 + 提示，不静默清空
@@ -337,6 +354,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
             setConfig((c) => ({ ...c, current: { name: e.name, model: e.model } }))
             pickerRef.current = false
             setOverlay(null)
+            void checkModelWindow(e.model, e.name)
           }}
           onCancel={() => {
             pickerRef.current = false

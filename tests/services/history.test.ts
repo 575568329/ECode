@@ -103,6 +103,61 @@ describe('FileHistoryStore', () => {
   })
 })
 
+describe('FileHistoryStore boundary 支持（M5 P6）', () => {
+  it('appendCompactBoundary 追加 boundary 行（append-only，旧消息不删）', () => {
+    const dir = path.join(tmp, `b-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'sess-b', model: 'm', dir })
+    store.append(userMsg('旧消息1'))
+    store.append(assistantMsg('旧消息2'))
+    store.appendCompactBoundary({ compact_boundary: true, summary: '摘要', tailStartIndex: 1, preTokens: 500 })
+    store.append(userMsg('新消息'))
+    const lines = fs.readFileSync(path.join(dir, 'sess-b.jsonl'), 'utf8').trim().split('\n')
+    expect(lines.length).toBe(5) // meta + 2 旧 + boundary + 新
+    const boundary = JSON.parse(lines[3])
+    expect(boundary.compact_boundary).toBe(true)
+    expect(boundary.summary).toBe('摘要')
+  })
+
+  it('restoreFull 返回全量 HistoryLine（含 boundary，跳过 meta）', () => {
+    const dir = path.join(tmp, `c-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'sess-c', model: 'm', dir })
+    store.append(userMsg('m1'))
+    store.appendCompactBoundary({ compact_boundary: true, summary: 's', tailStartIndex: 0, preTokens: 0 })
+    store.append(assistantMsg('m2'))
+    const lines = store.restoreFull('sess-c')
+    expect(lines.length).toBe(3) // m1 + boundary + m2（meta 跳过）
+    expect((lines[0] as Message).role).toBe('user')
+    expect((lines[1] as { compact_boundary?: true }).compact_boundary).toBe(true)
+    expect((lines[2] as Message).role).toBe('assistant')
+  })
+
+  it('restore 过滤 boundary，返回纯 Message（M4 兼容）', () => {
+    const dir = path.join(tmp, `d-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'sess-d', model: 'm', dir })
+    store.append(userMsg('m1'))
+    store.appendCompactBoundary({ compact_boundary: true, summary: 's', tailStartIndex: 0, preTokens: 0 })
+    store.append(assistantMsg('m2'))
+    const msgs = store.restore('sess-d')
+    expect(msgs.length).toBe(2) // m1 + m2（boundary 过滤）
+    expect(msgs.every((m) => 'role' in m)).toBe(true)
+  })
+
+  it('restoreFull + buildContextMessages 联动（投影子集喂 LLM）', async () => {
+    const { buildContextMessages } = await import('../../src/core/context.js')
+    const dir = path.join(tmp, `e-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'sess-e', model: 'm', dir })
+    store.append(userMsg('old1'))
+    store.append(userMsg('old2'))
+    store.append(userMsg('tail1'))
+    store.appendCompactBoundary({ compact_boundary: true, summary: '压缩摘要', tailStartIndex: 2, preTokens: 100 })
+    store.append(userMsg('new1'))
+    const ctx = buildContextMessages(store.restoreFull('sess-e'))
+    // 投影 = [summary] + msgs[2..] = [summary, tail1, new1]
+    expect(ctx.length).toBe(3)
+    expect((ctx[0].content[0] as { text: string }).text).toContain('压缩摘要')
+  })
+})
+
 describe('NoopHistoryStore', () => {
   it('全部 noop（兜底/测试隔离）', () => {
     const noop = new NoopHistoryStore()

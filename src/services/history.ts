@@ -18,7 +18,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import type { Message } from '../core/types.js'
+import { isBoundary, type BoundaryLine, type HistoryLine, type Message } from '../core/types.js'
 
 export interface SessionMeta {
   sessionId: string
@@ -32,8 +32,12 @@ export interface HistoryStore {
   append(msg: Message): void
   /** 列所有会话 meta（读每个文件首行，按 createdAt 倒序） */
   loadAll(): SessionMeta[]
-  /** 读某会话全部 messages（跳过 meta 行） */
+  /** 读某会话全部 messages（跳过 meta + boundary 行，纯 Message；M4 兼容） */
   restore(sessionId: string): Message[]
+  /** 读某会话全量行（含 boundary，跳过 meta；M5 投影/UI/审计用） */
+  restoreFull(sessionId: string): HistoryLine[]
+  /** 压缩时追加 boundary 行（append-only，不删旧消息；投影锚点） */
+  appendCompactBoundary(boundary: BoundaryLine): void
   /** 切换 sessionId（/history 恢复后续写新文件；旧文件只读不破坏，D2） */
   setSessionId(id: string, model?: string): void
 }
@@ -103,6 +107,11 @@ export class FileHistoryStore implements HistoryStore {
     this.writeLine(JSON.stringify(msg))
   }
 
+  /** 压缩时追加 boundary 行（append-only，旧消息不删；投影锚点） */
+  appendCompactBoundary(boundary: BoundaryLine): void {
+    this.writeLine(JSON.stringify(boundary))
+  }
+
   /** 切换 sessionId（/history 恢复后续写新文件；旧文件只读不破坏，D2） */
   setSessionId(id: string, model?: string): void {
     if (id === this.sessionId) return
@@ -156,41 +165,51 @@ export class FileHistoryStore implements HistoryStore {
     return metas.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   }
 
-  restore(sessionId: string): Message[] {
+  /** 读全量行（含 boundary，跳过 meta；M5 投影/UI/审计用） */
+  restoreFull(sessionId: string): HistoryLine[] {
     const filePath = path.join(this.dir, `${sessionId}.jsonl`)
     let content: string
     try {
       content = fs.readFileSync(filePath, 'utf8')
     } catch (e) {
-      // P2-2：ENOENT（文件不存在=正常，首次/新 session）静默；其他错误（权限等）记录
+      // ENOENT（文件不存在=正常，首次/新 session）静默；其他错误（权限等）记录
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
         process.stderr.write(`[HistoryStore] 读取会话失败 ${sessionId}：${e instanceof Error ? e.message : String(e)}\n`)
       }
       return []
     }
-    const messages: Message[] = []
+    const lines: HistoryLine[] = []
     for (const line of content.split('\n')) {
       if (!line.trim()) continue
       try {
-        const parsed = JSON.parse(line) as { meta?: true } & Message
+        const parsed = JSON.parse(line) as { meta?: true; compact_boundary?: true } & HistoryLine
         if (parsed.meta) continue // 跳过 meta 行
-        messages.push(parsed as Message)
+        lines.push(parsed.compact_boundary ? (parsed as BoundaryLine) : (parsed as Message))
       } catch (e) {
-        // P2-2：损坏行跳过但记录（不静默吞）
+        // 损坏行跳过但记录（不静默吞）
         process.stderr.write(`[HistoryStore] ${sessionId}.jsonl 跳过损坏行：${e instanceof Error ? e.message : String(e)}\n`)
       }
     }
-    return messages
+    return lines
+  }
+
+  /** 读纯 Message（跳过 meta + boundary 行；M4 兼容） */
+  restore(sessionId: string): Message[] {
+    return this.restoreFull(sessionId).filter((l): l is Message => !isBoundary(l))
   }
 }
 
 /** M1 stub（保留：未注入时兜底 / 测试隔离）。 */
 export class NoopHistoryStore implements HistoryStore {
   append(_msg: Message): void {}
+  appendCompactBoundary(_boundary: BoundaryLine): void {}
   loadAll(): SessionMeta[] {
     return []
   }
   restore(_sessionId: string): Message[] {
+    return []
+  }
+  restoreFull(_sessionId: string): HistoryLine[] {
     return []
   }
   setSessionId(_id: string, _model?: string): void {}

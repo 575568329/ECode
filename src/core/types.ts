@@ -78,6 +78,6 @@ export type Delta =
   | { type: 'tool_use_start'; id: string; name: string }
   | { type: 'tool_use_delta'; id: string; partial_json: string }
   | { type: 'tool_use_end'; id: string }
-  | { type: 'usage'; input_tokens: number; output_tokens: number; cache_read_tokens?: number }
+  | { type: 'usage'; input_tokens: number; output_tokens: number; cache_read_tokens?: number; cache_creation_tokens?: number }
   | { type: 'error'; error: AppError }
   | { type: 'done'; stop_reason: StopReason }

@@ -17,6 +17,15 @@ describe('translateOpenaiStream', () => {
     expect(deltas.at(-1)).toEqual({ type: 'done', stop_reason: 'end' })
   })
 
+  it('prompt_tokens_details.cached_tokens → cache_read_tokens（OpenAI prompt cache）', () => {
+    const chunks = [
+      { choices: [{ delta: { content: 'hi' }, finish_reason: null }] },
+      { choices: [], usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 80 } } },
+    ]
+    const deltas = translateOpenaiStream(chunks as never)
+    expect(deltas).toContainEqual({ type: 'usage', input_tokens: 100, output_tokens: 5, cache_read_tokens: 80 })
+  })
+
   it('tool_calls → tool_use_start/delta/end + done(tool_use)', () => {
     const chunks = [
       {

@@ -40,6 +40,7 @@ interface RawUsage {
   input_tokens?: number
   output_tokens?: number
   cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
 }
 
 /** SDK 流式事件（宽松结构，按 Anthropic 协议；不硬依赖 SDK 内部类型）。 */
@@ -79,6 +80,7 @@ class Translator {
   private usageInput = 0
   private usageOutput = 0
   private cacheReadTokens: number | undefined
+  private cacheCreationTokens: number | undefined
   private sawUsage = false
 
   /** 处理单个事件，返回 0+ 个 Delta。 */
@@ -91,6 +93,7 @@ class Translator {
           this.usageInput = usage.input_tokens ?? 0
           this.usageOutput = usage.output_tokens ?? 0
           if (usage.cache_read_input_tokens != null) this.cacheReadTokens = usage.cache_read_input_tokens
+          if (usage.cache_creation_input_tokens != null) this.cacheCreationTokens = usage.cache_creation_input_tokens
           this.sawUsage = true
         }
         break
@@ -137,6 +140,7 @@ class Translator {
         if (e.usage?.output_tokens != null) this.usageOutput = e.usage.output_tokens
         if (e.usage?.input_tokens != null) this.usageInput = e.usage.input_tokens
         if (e.usage?.cache_read_input_tokens != null) this.cacheReadTokens = e.usage.cache_read_input_tokens
+        if (e.usage?.cache_creation_input_tokens != null) this.cacheCreationTokens = e.usage.cache_creation_input_tokens
         break
       }
       case 'error': {
@@ -159,8 +163,9 @@ class Translator {
         type: 'usage',
         input_tokens: this.usageInput,
         output_tokens: this.usageOutput,
-        // cache_read_tokens 仅在有值时带上（保持 optional 语义干净）
+        // cache 维度仅在有值时带上（保持 optional 语义干净）
         ...(this.cacheReadTokens != null ? { cache_read_tokens: this.cacheReadTokens } : {}),
+        ...(this.cacheCreationTokens != null ? { cache_creation_tokens: this.cacheCreationTokens } : {}),
       })
     }
     out.push({ type: 'done', stop_reason: this.stopReason })

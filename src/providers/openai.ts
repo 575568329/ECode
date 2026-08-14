@@ -23,7 +23,7 @@ interface OpenaiChunk {
     }
     finish_reason?: string | null
   }>
-  usage?: { prompt_tokens?: number; completion_tokens?: number }
+  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
 }
 
 /** OpenAI finish_reason → 规范 StopReason。 */
@@ -55,6 +55,7 @@ class OpenaiTranslator {
   private stopReason: StopReason = 'end'
   private usageInput = 0
   private usageOutput = 0
+  private cacheReadTokens: number | undefined
   private sawUsage = false
   /** index → tool 累积（OpenAI 渐进式给 name/id/arguments） */
   private readonly tools = new Map<number, { id: string; name: string; started: boolean }>()
@@ -69,6 +70,10 @@ class OpenaiTranslator {
     if (chunk.usage) {
       this.usageInput = chunk.usage.prompt_tokens ?? 0
       this.usageOutput = chunk.usage.completion_tokens ?? 0
+      // OpenAI 的 prompt cache 命中数在 prompt_tokens_details.cached_tokens（§4.7）
+      if (chunk.usage.prompt_tokens_details?.cached_tokens != null) {
+        this.cacheReadTokens = chunk.usage.prompt_tokens_details.cached_tokens
+      }
       this.sawUsage = true
     }
     if (!choice) return out
@@ -122,7 +127,12 @@ class OpenaiTranslator {
       }
     }
     if (this.sawUsage) {
-      out.push({ type: 'usage', input_tokens: this.usageInput, output_tokens: this.usageOutput })
+      out.push({
+        type: 'usage',
+        input_tokens: this.usageInput,
+        output_tokens: this.usageOutput,
+        ...(this.cacheReadTokens != null ? { cache_read_tokens: this.cacheReadTokens } : {}),
+      })
     }
     out.push({ type: 'done', stop_reason: this.stopReason })
     return out

@@ -127,6 +127,24 @@ describe('translateAnthropicStream', () => {
     ])
   })
 
+  it('cache 维度四维齐全：cache_read + cache_creation 都翻译', () => {
+    // message_start 带 cache_creation（写 cache），message_delta 带 cache_read（读 cache）
+    const events = [
+      { type: 'message_start', message: { usage: { input_tokens: 200, output_tokens: 1, cache_creation_input_tokens: 50 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 3, cache_read_input_tokens: 150 } },
+      { type: 'message_stop' },
+    ]
+    const deltas = translateAnthropicStream(events as never)
+    expect(deltas).toEqual([
+      { type: 'text', text: 'ok' },
+      { type: 'usage', input_tokens: 200, output_tokens: 3, cache_read_tokens: 150, cache_creation_tokens: 50 },
+      { type: 'done', stop_reason: 'end' },
+    ])
+  })
+
   it('标准端点：message_start 给真 input，message_delta 不带 input → 保留 start 的值', () => {
     // 标准 Anthropic：input 在 message_start 给真值，message_delta 只补 output（不带 input）。
     // 守卫不通过（input == null）→ 保留 message_start 的初值，证明守卫不会误覆盖。

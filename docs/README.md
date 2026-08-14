@@ -31,7 +31,7 @@
 | TUI 渲染方案：最小 Static | [详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_已完成.md](./详设/2026-08-13_ECode-TUI渲染架构_最小Static详设_已完成.md) | M2 去 Static 后满屏/顺序两大问题根治；Static（历史固化）+ 当前轮动态可展开；用户定配置（流式 3 / 工具合并 4 / 下一轮收起）；满屏 clearTerminal 代码级证据；OpenTUI 长期观望 |
 | M3 工具与确认实施方案 | [详设/2026-08-13_M3-工具与确认实施方案_已完成.md](./详设/2026-08-13_M3-工具与确认实施方案_已完成.md) | 5 工具（ls/glob/grep/write_file/edit_file）schema + bash 安全（截断/拦截）+ ConfirmPrompt（diff 确认）+ .ecodeignore；D1-D7 决策拍板；小切片策略（只读先发） |
 | M4 持久化与配置实施方案 | [详设/2026-08-13_M4-持久化与配置实施方案_待审核.md](./详设/2026-08-13_M4-持久化与配置实施方案_待审核.md) | HistoryStore 真存储 + /history /model 命令 + 配置完整（采样参数）+ OpenaiProvider + 首次向导；D1-D7 拍板；MVP 收官 |
-| 后续 M5 实施方案 | [详设/2026-08-14_后续-M5实施方案_待审核.md](./详设/2026-08-14_后续-M5实施方案_待审核.md) | 上下文压缩 v5：**Context/History 分离** + **两级压缩**（Tool Clearing + Compaction）+ **contextWindow 三级 fallback**（config 覆盖>查表 GLM-5=1M>安全默认）+ **token usage 锚定**（不装 tokenizer）+ 绝对值阈值；基于 Claude 官方+4 家源码调研；Skill→M6/MCP→M7 后置 |
+| 后续 M5 实施方案 | [详设/2026-08-14_后续-M5实施方案_待审核.md](./详设/2026-08-14_后续-M5实施方案_待审核.md) | 上下文压缩 v6：**Context/History 分离** + **两级压缩**（Tool Clearing + Compaction）+ **contextWindow litellm 远程库**（24h缓存+离线兜底，自动跟进新模型，GLM 全收录）+ **token usage 锚定**（不装 tokenizer）+ 绝对值阈值；基于 Claude 官方+4 家源码+litellm 调研；Skill→M6/MCP→M7 后置 |
 | 上下文压缩调研 | [解析/2026-08-14_上下文压缩调研_已完成.md](./解析/2026-08-14_上下文压缩调研_已完成.md) | Claude 官方 Context Engineering 三原语（Tool Clearing/Compaction/Memory）+ claude-code 阈值演进（90%→64-75% land the plane）+ 各家迭代摘要；M5 压缩设计依据 |
 
 > 其余文档按需在各目录补充，命名见下方约定。

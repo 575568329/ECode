@@ -39,7 +39,10 @@ import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
-import type { Message } from '../core/types.js'
+import { makeOnBeforeRequest } from '../services/compaction/hook.js'
+import { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
+import { SummarizeStrategy } from '../services/compaction/summarize.js'
+import type { HistoryLine } from '../core/types.js'
 
 interface Deps {
   providerRegistry: LLMProviderRegistry
@@ -47,6 +50,8 @@ interface Deps {
   logger: Logger
   history: HistoryStore
   config: Config
+  orchestrator: CompactionOrchestrator
+  lastUsage: { input: number; output: number; cacheRead: number; cacheCreation: number }
 }
 
 function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
@@ -61,19 +66,28 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   toolReg.register(grepTool)
   toolReg.register(writeFileTool)
   toolReg.register(editFileTool)
+  const orchestrator = new CompactionOrchestrator()
+  orchestrator.register(new SummarizeStrategy())
   return {
     providerRegistry: providerReg,
     tools: toolReg,
     logger,
     history: new FileHistoryStore({ sessionId, model: config.current.model }),
     config,
+    orchestrator,
+    lastUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
   }
 }
 
 /** argv 单次模式：M1 stdout 输出（流式打印 + 工具摘要）。 */
-async function runOnce(messages: Message[], input: string, deps: Deps): Promise<void> {
+async function runOnce(messages: HistoryLine[], input: string, deps: Deps): Promise<void> {
+  const provider = deps.providerRegistry.getByType(deps.config.providers[deps.config.current.name].type)
+  const providerReq = buildProviderReq(deps.config)
+  const system = buildSystemPrompt()
+  const onCompacted = (_messages: HistoryLine[]) => process.stdout.write('\n[已压缩对话]\n')
+  const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, onCompacted)
   await runLoop(messages, input, {
-    provider: deps.providerRegistry.getByType(deps.config.providers[deps.config.current.name].type),
+    provider,
     tools: deps.tools,
     logger: deps.logger,
     history: deps.history,
@@ -84,13 +98,21 @@ async function runOnce(messages: Message[], input: string, deps: Deps): Promise<
         const firstLine = r.content.split('\n')[0]?.slice(0, 80) ?? ''
         process.stdout.write(`  ${name} ${r.is_error ? '✗' : '✓'} ${firstLine}\n`)
       },
-      onUsage: (inp, out) => process.stdout.write(`\n[tokens: in ${inp} / out ${out}]\n`),
+      onUsage: (inp, out, cache) => {
+        deps.lastUsage.input = inp
+        deps.lastUsage.output = out
+        deps.lastUsage.cacheRead = cache?.read ?? 0
+        deps.lastUsage.cacheCreation = cache?.creation ?? 0
+        process.stdout.write(`\n[tokens: in ${inp} / out ${out}]\n`)
+      },
       onWarn: (m) => process.stdout.write(`\n⚠ ${m}\n`),
     },
-    providerReq: buildProviderReq(deps.config),
-    system: buildSystemPrompt(),
+    providerReq,
+    system,
     maxIterations: deps.config.maxIterations,
     toolCtx: { cwd: process.cwd(), signal: new AbortController().signal },
+    onBeforeRequest,
+    onCompacted,
   })
   process.stdout.write('\n')
 }
@@ -146,7 +168,7 @@ async function main(): Promise<void> {
   // argv 单次模式：M1 stdout 输出 → 跑一次退出
   const initialInput = process.argv.slice(2).join(' ').trim()
   if (initialInput) {
-    const messages: Message[] = []
+    const messages: HistoryLine[] = []
     try {
       await runOnce(messages, initialInput, deps)
     } catch (e) {

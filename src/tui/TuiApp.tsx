@@ -9,6 +9,7 @@ import { runLoop, type ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
 import type { AppError, HistoryLine } from '../core/types.js'
 import { makeOnBeforeRequest } from '../services/compaction/hook.js'
+import { tokensToCost } from '../services/pricing.js'
 import type { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
@@ -65,6 +66,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
   const [error, setError] = useState<AppError | null>(null)
   const [warn, setWarn] = useState<string | null>(null)
   const [tokens, setTokens] = useState(0)
+  const [sessionCost, setSessionCost] = useState(0)
   const [systemMsgs, setSystemMsgs] = useState<string[]>([])
   const [iter, setIter] = useState<number | undefined>(undefined)
   const [maxIter, setMaxIter] = useState<number | undefined>(undefined)
@@ -153,6 +155,12 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
             deps.lastUsage.cacheRead = cache?.read ?? 0
             deps.lastUsage.cacheCreation = cache?.creation ?? 0
             setTokens((n) => n + inp + out)
+            // M5：累加本轮成本（cache 四维拆分；未命中模型跳过不累加）
+            const c = tokensToCost(config.current.model, {
+              input: inp, output: out,
+              cacheRead: cache?.read ?? 0, cacheCreation: cache?.creation ?? 0,
+            })
+            if (c != null) setSessionCost((s) => s + c)
           },
           onIter: (i, m) => {
             setIter(i)
@@ -212,6 +220,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     setActive(createActive())
     setSystemMsgs([])
     setTokens(0)
+    setSessionCost(0)
     setIter(undefined)
     setMaxIter(undefined)
     setWarn(null)
@@ -395,6 +404,24 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
           }
           if (result.action === 'compact') {
             void compactManual()
+            return
+          }
+          if (result.action === 'cost') {
+            const u = deps.lastUsage
+            const lineCost = tokensToCost(config.current.model, {
+              input: u.input, output: u.output, cacheRead: u.cacheRead, cacheCreation: u.cacheCreation,
+            })
+            setSystemMsgs(
+              lineCost == null
+                ? [
+                    `本轮 token：input ${u.input} / output ${u.output} / cache_read ${u.cacheRead} / cache_creation ${u.cacheCreation}`,
+                    '会话累计成本：成本未知（模型未收录定价，可在 config 配 contextWindow）',
+                  ]
+                : [
+                    `本轮 token：input ${u.input} / output ${u.output} / cache_read ${u.cacheRead} / cache_creation ${u.cacheCreation}`,
+                    `会话累计成本：¥${sessionCost.toFixed(4)}`,
+                  ],
+            )
             return
           }
           // 替换（不累积）：多次 /help 只显示最新

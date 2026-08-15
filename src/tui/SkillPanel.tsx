@@ -21,10 +21,11 @@ interface SkillPanelProps {
 }
 
 export function SkillPanel({ skills, onPick, onCancel }: SkillPanelProps): ReactElement {
-  // 分组：项目级 → 用户级（发现优先级序；其余来源归"其他"——M6 只有 user/project）
+  // 分组：项目级 → 用户级 → 内置 → 其他（发现优先级序；builtin 为随包手册，用户可同名覆盖）
   const groups: { label: string; source: SkillInfo['source'][] }[] = [
     { label: '项目级（.ecode/skills/）', source: ['project'] },
     { label: '用户级（~/.ecode/skills/）', source: ['user'] },
+    { label: '内置', source: ['builtin'] },
     { label: '其他', source: ['plugin'] },
   ]
   const rows: PanelRow<SkillInfo>[] = []

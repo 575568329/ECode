@@ -173,10 +173,11 @@ describe('SkillRegistry.load', () => {
     expect(fb?.disableModelInvocation).toBe(false)
   })
 
-  it('目录不存在 → 静默空清单', async () => {
+  it('目录不存在 → 静默空清单（仅剩内置 skill，M6.5）', async () => {
     const { reg } = makeRegistry()
     await reg.load()
-    expect(reg.list()).toHaveLength(0)
+    // builtin（ecode-config 手册）常驻注入；文件源扫描为空不报错
+    expect(reg.list().map((s) => s.source)).toEqual(['builtin'])
   })
 
   it('项目级同名覆盖用户级（首个胜出 + warn）', async () => {
@@ -205,9 +206,10 @@ describe('SkillRegistry.load', () => {
     writeSkill(userDir, 'manualonly', '---\nname: manualonly\ndescription: d\ndisable-model-invocation: true\n---\nb')
     writeSkill(userDir, 'llmonly', '---\nname: llmonly\ndescription: d\nuser-invocable: false\n---\nb')
     await reg.load()
-    expect(reg.listForPrompt().map((s) => s.name).sort()).toEqual(['llmonly', 'normal'])
-    expect(reg.listForCompletion().map((s) => s.name).sort()).toEqual(['manualonly', 'normal'])
-    expect(reg.list()).toHaveLength(3)
+    // builtin（ecode-config，双面可用）常驻在两个清单里
+    expect(reg.listForPrompt().map((s) => s.name).sort()).toEqual(['ecode-config', 'llmonly', 'normal'])
+    expect(reg.listForCompletion().map((s) => s.name).sort()).toEqual(['ecode-config', 'manualonly', 'normal'])
+    expect(reg.list()).toHaveLength(4)
   })
 
   it('与内置命令撞名 → shadowedByCommand 标记', async () => {
@@ -368,5 +370,29 @@ describe('install 存储层级（用户拍板补设计）', () => {
     const r2 = await reg.install({ name: 'p1', description: 'd2', body: 'b' })
     expect(r2.mode).toBe('upgraded')
     expect(r2.path).toContain('proj')
+  })
+})
+
+describe('内置 skill（builtin 源，M6.5）', () => {
+  it('load() 自动注册 ecode-config 手册（source=builtin，双触发面可用，内容完整）', async () => {
+    const { reg } = makeRegistry()
+    await reg.load()
+    const info = reg.get('ecode-config')
+    expect(info).toBeDefined()
+    expect(info!.source).toBe('builtin')
+    expect(reg.listForPrompt().some((s) => s.name === 'ecode-config')).toBe(true)
+    expect(reg.listForCompletion().some((s) => s.name === 'ecode-config')).toBe(true)
+    // 手册内容完整性（关键节都在）
+    expect(info!.body).toContain('mcpServers')
+    expect(info!.body).toContain('thinking')
+    expect(info!.body).toContain('.mcp.json')
+  })
+
+  it('同名用户 skill 覆盖 builtin（用户可自定义手册）', async () => {
+    const { reg, userDir } = makeRegistry()
+    writeSkill(userDir, 'ecode-config', VALID('ecode-config', '我的自定义手册'))
+    await reg.load()
+    expect(reg.get('ecode-config')?.source).toBe('user')
+    expect(reg.get('ecode-config')?.description).toBe('我的自定义手册')
   })
 })

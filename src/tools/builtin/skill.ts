@@ -39,14 +39,12 @@ export const skillTool: Tool = {
         is_error: true,
       }
     }
-    return {
-      content: [
-        `<skill_content name="${info.name}">`,
-        info.body.trim(),
-        '',
-        `该 Skill 附属文件目录：${info.baseDir}（相对路径基于此目录，需要时用 read_file 读取）。`,
-        '</skill_content>',
-      ].join('\n'),
+    const lines = [`<skill_content name="${info.name}">`, info.body.trim()]
+    // builtin skill（baseDir=''）无附属文件，不输出目录行
+    if (info.baseDir !== '') {
+      lines.push('', `该 Skill 附属文件目录：${info.baseDir}（相对路径基于此目录，需要时用 read_file 读取）。`)
     }
+    lines.push('</skill_content>')
+    return { content: lines.join('\n') }
   },
 }

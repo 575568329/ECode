@@ -15,6 +15,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import AjvImport from 'ajv'
 import type { ValidateFunction } from 'ajv'
+import { builtinSkillInfos } from './skill/builtin.js'
 
 /** ajv 实例的鸭子类型（NodeNext default interop，同 tools/registry.ts）。 */
 type AjvInstance = { compile: (schema: object) => ValidateFunction }
@@ -38,9 +39,9 @@ export interface SkillInfo {
   whenToUse?: string
   /** markdown 正文（去 frontmatter） */
   body: string
-  /** skill 目录绝对路径（附属文件相对它，SkillTool 注入给 LLM） */
+  /** skill 目录绝对路径（附属文件相对它，SkillTool 注入给 LLM）；builtin 为 ''（无附属文件） */
   baseDir: string
-  source: 'user' | 'project' | 'plugin'
+  source: 'user' | 'project' | 'plugin' | 'builtin'
   /** 默认 true；false 不进 / 补全（仅 LLM 可调） */
   userInvocable: boolean
   /** 默认 false；true 不进 LLM 清单（仅手动） */
@@ -210,6 +211,10 @@ export class SkillRegistry {
     }
     for (const src of this.sourceDirs) {
       await this.scanDir(src.dir, src.source)
+    }
+    // 内置 skill 注入（M6.5）：随包发布不经文件系统；优先级最低——同名用户/项目/插件 skill 覆盖
+    for (const b of builtinSkillInfos()) {
+      if (!this.skills.has(b.name)) this.skills.set(b.name, b)
     }
     // 撞名检测（v6）：skill 名与内置命令同名 → 内置优先分流（S4.4），此处只 warn + 标记
     for (const name of this.skills.keys()) {

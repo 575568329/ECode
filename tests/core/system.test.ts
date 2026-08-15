@@ -32,4 +32,14 @@ describe('buildSystemPrompt（M6 S-P4）', () => {
     expect(p.indexOf('<available_skills>')).toBeGreaterThan(0) // 追加在 base 之后
     expect(p).toContain('回复用中文。') // base 部分完整保留
   })
+
+  it('含 ecode-config → 注入内置手册路由行（M6.5）', () => {
+    const p = buildSystemPrompt([skill('ecode-config', 'ECode 配置手册')], 200_000)
+    expect(p).toContain('先调用 Skill 工具加载 ecode-config 手册')
+  })
+
+  it('无 ecode-config → 不注入路由行', () => {
+    const p = buildSystemPrompt([skill('commit', '按约定提交')], 200_000)
+    expect(p).not.toContain('先调用 Skill 工具加载 ecode-config 手册')
+  })
 })

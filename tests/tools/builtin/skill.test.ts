@@ -87,3 +87,13 @@ describe('expandSkill', () => {
     expect(out).not.toContain('$ARGUMENTS')
   })
 })
+
+describe('builtin skill（baseDir 空）', () => {
+  it('builtin（baseDir=""）→ 不输出附属文件目录行', async () => {
+    reg({ name: 'ecode-config', baseDir: '', source: 'builtin' })
+    const r = await skillTool.execute({ skill: 'ecode-config' }, ctx)
+    expect(r.is_error).toBeFalsy()
+    expect(r.content).toContain('<skill_content name="ecode-config">')
+    expect(r.content).not.toContain('附属文件目录')
+  })
+})

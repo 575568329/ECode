@@ -9,6 +9,7 @@
 
 import type { Tool } from '../interface.js'
 import { skillRegistry } from '../../services/skill.js'
+import { registerSkillHooks } from '../../services/hooks/global.js'
 
 export const skillTool: Tool = {
   name: 'Skill',
@@ -43,6 +44,12 @@ export const skillTool: Tool = {
     // builtin skill（baseDir=''）无附属文件，不输出目录行
     if (info.baseDir !== '') {
       lines.push('', `该 Skill 附属文件目录：${info.baseDir}（相对路径基于此目录，需要时用 read_file 读取）。`)
+    }
+    // M7 H-P5：skill 附带 hooks → 会话级注册（skill 使用即启用；/clear 或会话结束注销）
+    if (info.hooks !== undefined && info.hooks.length > 0) {
+      registerSkillHooks(info.name, info.hooks)
+      const summary = info.hooks.map((h) => `${h.event}${h.matcher !== undefined ? `(${h.matcher})` : ''}`).join('、')
+      lines.push('', `该 Skill 已启用 ${info.hooks.length} 个 hooks（本会话）：${summary}`)
     }
     lines.push('</skill_content>')
     return { content: lines.join('\n') }

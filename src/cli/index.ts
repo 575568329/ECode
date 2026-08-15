@@ -47,6 +47,11 @@ import { skillTool } from '../tools/builtin/skill.js'
 import { skillRegistry, createSkillRegistry } from '../services/skill.js'
 import { setupMcp } from '../services/mcp/setup.js'
 import type { McpManager } from '../services/mcp/manager.js'
+import { globalExtensionHooks } from '../services/hooks/global.js'
+import { HookRunner } from '../services/hooks/runner.js'
+import { parseUserHooks } from '../services/hooks/validate.js'
+import { runCommandHook } from '../services/hooks/exec.js'
+import { HookedToolRegistry } from '../tools/hooked.js'
 import type { HistoryLine } from '../core/types.js'
 
 interface Deps {
@@ -61,6 +66,7 @@ interface Deps {
   mcpManager: McpManager | null
   mcpPendingApproval?: { file: string; approve: () => Promise<void> }
   mcpWarnings: string[]
+  hookRunner: HookRunner | null
 }
 
 function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
@@ -85,9 +91,22 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   const mcp = setupMcp(config, toolReg, {
     warn: (m) => logger.warn('mcp', 'setup', { message: m }),
   })
+  // M7 H-P1/H-P3：hooks 双源分发器 + 工具装饰（loop 拿代理零感知；runner 经 getter 可替换——H4 v3.1）
+  // 扩展源用全局注册表（skill/plugin 的注册入口分散在 Tool/TuiApp，全局单例免依赖穿透）
+  const { hooks: userHooks, warnings: hookWarnings } = parseUserHooks(config.hooks)
+  for (const w of hookWarnings) logger.warn('hooks', 'user_config', { message: w })
+  const hookRunner = new HookRunner({
+    extensions: globalExtensionHooks,
+    execute: runCommandHook,
+    getUserHooks: () => userHooks,
+    getSessionId: () => sessionId,
+    warn: (m) => logger.warn('hooks', 'exec', { message: m }),
+  })
+  let hookRunnerRef: HookRunner | null = hookRunner
+  const hookedTools = new HookedToolRegistry(toolReg, () => hookRunnerRef)
   return {
     providerRegistry: providerReg,
-    tools: toolReg,
+    tools: hookedTools,
     logger,
     history: new FileHistoryStore({ sessionId, model: config.current.model }),
     config,
@@ -96,6 +115,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
     skillRegistry,
     mcpManager: mcp.manager,
     mcpWarnings: mcp.warnings,
+    hookRunner,
     ...(mcp.pendingApproval !== undefined ? { mcpPendingApproval: mcp.pendingApproval } : {}),
   }
 }
@@ -158,7 +178,11 @@ async function main(): Promise<void> {
   })
   // M6：MCP 子进程清理（best-effort——exit 内不能 await；SDK close 发 SIGTERM）
   let mcpManagerRef: McpManager | null = null
+  // M7 H-P4：SessionEnd hook（best-effort——exit 内不能 await，fire 后事件循环将停；
+  // 长耗时的 SessionEnd hook（如清理脚本）可能被截断，属已知限制，可靠清理走 Stop/工具层）
+  let sessionEndHook: HookRunner | null = null
   process.on('exit', () => {
+    void sessionEndHook?.dispatch('SessionEnd', { event: 'SessionEnd', session_id: '' }).catch(() => {})
     void mcpManagerRef?.stop()
   })
   process.on('uncaughtException', (e) => {
@@ -199,6 +223,7 @@ async function main(): Promise<void> {
 
   const deps = makeDeps(config, logger, sessionId)
   mcpManagerRef = deps.mcpManager
+  sessionEndHook = deps.hookRunner
 
   // M6 S-P8：skill 发现（项目级+用户级扫描；失败静默——skill 缺失不阻塞启动）
   await skillRegistry.load({ builtinCommandNames: commandRegistry.list().map((c) => c.name) }).catch(() => {})

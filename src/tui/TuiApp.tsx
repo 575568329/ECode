@@ -22,6 +22,8 @@ import { createActive, type CommittedItem, type ActiveState } from './types.js'
 import { messagesToCommitted, findUse } from './commit.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { expandSkill, type SkillRegistry } from '../services/skill.js'
+import { registerSkillHooks, unregisterAllSkillHooks } from '../services/hooks/global.js'
+import type { HookRunner } from '../services/hooks/runner.js'
 import {
   callLLM,
   DRAFT_SYSTEM,
@@ -67,6 +69,8 @@ export interface TuiAppDeps {
   mcpPendingApproval?: { file: string; approve: () => Promise<void> }
   /** M6：MCP 启动警告（解析失败/env 缺失跳过/项目级覆盖——不透传用户无感知，审阅 P1） */
   mcpWarnings?: string[]
+  /** M7：hooks 分发器（null = 未启用；SessionStart/UserPromptSubmit/Stop 在此触发） */
+  hookRunner?: HookRunner | null
 }
 
 function isAbortError(e: unknown): boolean {
@@ -138,6 +142,24 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       setCommitted(messagesToCommitted(messagesRef.current))
     }
     runningRef.current = true
+    // UserPromptSubmit hook（H-P4：分流后、runLoop 前）：block 拦截本轮输入；additionalContext 拼接进消息
+    if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
+      const verdict = await deps.hookRunner.dispatch('UserPromptSubmit', {
+        event: 'UserPromptSubmit',
+        session_id: '',
+        prompt: input,
+      })
+      if (verdict.block) {
+        runningRef.current = false
+        setSystemMsgs([`✋ 输入被 hook 拦截${verdict.reason !== undefined && verdict.reason !== '' ? `：${verdict.reason}` : ''}`])
+        setActivity({ state: 'idle' })
+        return
+      }
+      if (verdict.additionalContext.length > 0) {
+        input = `${input}\n\n[hook context]\n${verdict.additionalContext.join('\n')}`
+      }
+      if (verdict.systemMessages.length > 0) setSystemMsgs(verdict.systemMessages)
+    }
     // 新轮：userInput 乐观显示 + streaming=true（流式灰字）。
     // display（S4.4 最小 display/content 分离）：手动 skill 触发时输入框/转录显示原始
     // `/name args`，消息本体是展开全文（runLoop 的 userInput 必须传全文，防 alreadyUser 双推）
@@ -271,6 +293,15 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       }
     } finally {
       runningRef.current = false
+      // Stop hook（H-P4）：一轮结束即触发，fire（async hook 本就不等；systemMessage 到达后展示）
+      if (deps.hookRunner != null && deps.hookRunner.hasHandlers('Stop')) {
+        void deps.hookRunner
+          .dispatch('Stop', { event: 'Stop', session_id: '', stop_reason: 'turn-complete' })
+          .then((v) => {
+            if (v.systemMessages.length > 0) setSystemMsgs(v.systemMessages)
+          })
+          .catch(() => {})
+      }
     }
   }
 
@@ -282,6 +313,8 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
 
   // 清动态/瞬态状态（onClear 和 restoreSession 共用；committed 由调用方设，§9.2 P2-6 别重写一套）
   const resetTransient = () => {
+    // M7 H-P5：skill hooks 是会话级——起新会话（/clear、恢复历史）即注销全部
+    unregisterAllSkillHooks()
     // 兜底：若有挂起的 confirm（inactive 本应挡住命令触发，此处 defense-in-depth），取消避免 Promise 永挂
     if (active.confirm) {
       active.confirm.resolve(false)
@@ -482,6 +515,13 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     // 续写进新文件（起新 sessionId）；model 用当前 config（用户可能已 /model 切过）
     const newId = new Date().toISOString().replace(/[:.]/g, '-')
     deps.history.setSessionId(newId, config.current.model)
+    // SessionStart hook（H-P4）：恢复会话 = resume
+    void deps.hookRunner
+      ?.dispatch('SessionStart', { event: 'SessionStart', session_id: '', source: 'resume' })
+      .then((v) => {
+        if (v.systemMessages.length > 0) setSystemMsgs(v.systemMessages)
+      })
+      .catch(() => {})
   }
   const { warning } = useInterrupt({
     onInterrupt: () => abortRef.current.abort(),
@@ -494,6 +534,13 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     void resolveContextWindow(config.current.model, config.providers[config.current.name]?.contextWindow)
       .then((w) => {
         ctxWindowRef.current = w
+      })
+      .catch(() => {})
+    // SessionStart hook（H-P4）：挂载即 startup
+    void deps.hookRunner
+      ?.dispatch('SessionStart', { event: 'SessionStart', session_id: '', source: 'startup' })
+      .then((v) => {
+        if (v.systemMessages.length > 0) setSystemMsgs(v.systemMessages)
       })
       .catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅启动一次
@@ -729,6 +776,11 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
           // S4.4 手动触发：展开全文作 userInput，原始 `/name args` 作 display
           const info = deps.skillRegistry.get(name)
           if (info === undefined) return
+          // M7 H-P5：skill 附带 hooks → 会话级注册 + 底部告知（与 LLM 面同语义）
+          if (info.hooks !== undefined && info.hooks.length > 0) {
+            registerSkillHooks(info.name, info.hooks)
+            setSystemMsgs([`skill「${name}」已启用 ${info.hooks.length} 个 hooks（本会话）`])
+          }
           void submit(
             expandSkill(info, args),
             `/${name}${args !== undefined && args !== '' ? ` ${args}` : ''}`,

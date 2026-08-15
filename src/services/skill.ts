@@ -16,6 +16,8 @@ import * as path from 'node:path'
 import AjvImport from 'ajv'
 import type { ValidateFunction } from 'ajv'
 import { builtinSkillInfos } from './skill/builtin.js'
+import { parseHookSpecs } from './hooks/validate.js'
+import type { HookSpec } from './hooks/types.js'
 
 /** ajv 实例的鸭子类型（NodeNext default interop，同 tools/registry.ts）。 */
 type AjvInstance = { compile: (schema: object) => ValidateFunction }
@@ -46,6 +48,8 @@ export interface SkillInfo {
   userInvocable: boolean
   /** 默认 false；true 不进 LLM 清单（仅手动） */
   disableModelInvocation: boolean
+  /** M7 H-P5：skill 目录 hooks.json（触发时会话级注册进扩展注册表；格式与 plugin hooks.json 同构） */
+  hooks?: HookSpec[]
 }
 
 /** 起草/升级的产物契约（distill 命令层产出，install 消费）。 */
@@ -225,6 +229,27 @@ export class SkillRegistry {
     }
   }
 
+  /** 读 skill 目录的 hooks.json（缺省/非法 → undefined + warning，不阻塞 skill 本体）。 */
+  private async loadHooksJson(baseDir: string, name: string): Promise<HookSpec[] | undefined> {
+    const file = path.join(baseDir, 'hooks.json')
+    let text: string
+    try {
+      text = await fs.promises.readFile(file, 'utf8')
+    } catch {
+      return undefined // 无 hooks.json 是常态
+    }
+    let raw: unknown
+    try {
+      raw = JSON.parse(text)
+    } catch (e) {
+      this.loadWarnings.push(`skill「${name}」hooks.json 解析失败（${e instanceof Error ? e.message : String(e)}），已忽略`)
+      return undefined
+    }
+    const { hooks, warnings } = parseHookSpecs(raw, `skill:${name} hooks.json`)
+    for (const w of warnings) this.loadWarnings.push(w)
+    return hooks.length > 0 ? hooks : undefined
+  }
+
   private async scanDir(dir: string, source: SkillInfo['source']): Promise<void> {
     let entries: fs.Dirent[]
     try {
@@ -244,6 +269,9 @@ export class SkillRegistry {
       }
       const info = this.parse(baseDir, entry.name, text, source)
       if (info === undefined) continue
+      // M7 H-P5：同目录 hooks.json（独立文件——升级/蒸馏不丢；frontmatter 是极简扁平 YAML 装不下结构）
+      const hooksJson = await this.loadHooksJson(baseDir, info.name)
+      if (hooksJson !== undefined) info.hooks = hooksJson
       const existing = this.skills.get(info.name)
       // 首个胜出（优先级由 sourceDirs 顺序保证）；例外：builtin 占位可被任何来源覆盖
       // （load() 先注册 builtin 最低优先级；addSource 在 load 后追加 plugin 源，不能被 first-wins 挡住——审阅 P1）

@@ -38,6 +38,8 @@ export interface Config {
   logLevel: 'debug' | 'info' | 'warn' | 'error'
   /** MCP servers（M6；用户级配置，项目级 .mcp.json 在 mcp/config.ts 单独合并） */
   mcpServers?: Record<string, import('./mcp/config.js').McpServerConfig>
+  /** hooks 原始声明（M7 H1 源 1；AJV 过滤在 hooks/validate.ts，非法项跳过 + warn 不炸启动） */
+  hooks?: unknown
 }
 
 /** 默认值（P2-1：集中常量，免多处裸魔法值散落；CONFIG_TEMPLATE/writeWizardConfig 是生成给用户的 config.json 字面量） */
@@ -53,6 +55,8 @@ interface ConfigFile {
   bashMaxOutputBytes?: number
   logLevel?: string
   mcpServers?: Record<string, import('./mcp/config.js').McpServerConfig>
+  /** hooks 原始数组（jsonc 透传；过滤在 hooks/validate.ts） */
+  hooks?: unknown
 }
 
 export interface LoadConfigOpts {
@@ -220,6 +224,7 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     bashMaxOutputBytes: file.bashMaxOutputBytes ?? DEFAULT_BASH_MAX_BYTES,
     logLevel: (file.logLevel as Config['logLevel']) ?? DEFAULT_LOG_LEVEL,
     ...(file.mcpServers !== undefined ? { mcpServers: file.mcpServers } : {}),
+  ...(file.hooks !== undefined ? { hooks: file.hooks } : {}),
   }
 }
 

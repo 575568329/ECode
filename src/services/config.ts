@@ -96,6 +96,23 @@ const CONFIG_TEMPLATE = `{
     // }
   },
 
+  // MCP 外部工具（可选）：加进来自动注册工具，/mcp 查看。项目级配置放项目根 .mcp.json（团队共享，首用弹批准）。
+  // "mcpServers": {
+  //   "filesystem": {                      // 名字自定义（工具名 = mcp__名字__工具名）
+  //     "type": "stdio",                   // stdio（拉起本地子进程）| http（连远程）
+  //     "command": "npx",                  // stdio 必填
+  //     "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+  //     "lifecycle": "lazy",               // 默认 lazy（首次调用才连接）；空闲 idleTimeout 分钟（默认 10）自动断开
+  //     "timeout": 30000,                  // 单次调用超时 ms（默认 30s）
+  //     "env": { "TOKEN": "\${MY_TOKEN}" }  // secret 用环境变量占位符，不落明文（缺失则跳过该 server）
+  //   },
+  //   "my-http": {
+  //     "type": "http",                    // http 必填 url；headers 同样支持 \${ENV_VAR}
+  //     "url": "https://mcp.example.com/mcp",
+  //     "headers": { "Authorization": "Bearer \${MY_KEY}" }
+  //   }
+  // },
+
   "maxIterations": 50,        // Agent 循环最大轮数
   "bashMaxOutputBytes": 30720 // bash 输出截断阈值（30KB 头尾中截）
   // "logLevel": "info"       // 日志级别：debug | info | warn | error

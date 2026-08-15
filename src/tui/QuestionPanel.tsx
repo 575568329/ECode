@@ -62,10 +62,12 @@ export function QuestionPanel({ questions, resolve, onCancel }: QuestionPanelPro
           setOtherText(null)
           return
         }
-        const a = answers[qIdx]
         if (multi) {
-          const list = Array.isArray(a) ? [...a] : []
-          advance([...list, text])
+          // 审阅 P1-5：合并本次 toggle 的勾选集（旧实现只读已保存 answers，先勾选再走 Other 会丢勾选项）
+          const picked = [...selected].sort((x, y) => x - y).map((i) => options[i] as string)
+          const saved = answers[qIdx]
+          const list = Array.isArray(saved) ? [...saved] : []
+          advance([...picked, ...list.filter((l) => !picked.includes(l)), text])
         } else advance(text)
         setOtherText(null)
       } else if (key.escape) {

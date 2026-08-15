@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createWebFetchTool, isPrivateIp, htmlToText, truncateMiddle, type FetchLike } from '../../../src/tools/builtin/web_fetch.js'
+import { createWebFetchTool, isPrivateIp, htmlToText, truncateMiddle, normalizeHostname, type FetchLike } from '../../../src/tools/builtin/web_fetch.js'
 
 // DNS 模块级 mock（ESM 导出只读，赋值法不可用；*.example.com 公网 IP，其余私网——SSRF 用例复用）
 vi.mock('node:dns/promises', () => ({
@@ -91,7 +91,7 @@ describe('web_fetch execute（mock fetch + mock DNS）', () => {
       res(200, '<html><body><h1>Docs</h1><p>API usage</p></body></html>', { 'content-type': 'text/html' })) as unknown as FetchLike)
     const r = await tool.execute({ url: 'https://example.com/docs' }, ctx)
     expect(r.is_error).toBeUndefined()
-    expect(r.content).toContain('URL: https://example.com/docs')
+    expect(r.content).toContain('<fetched_web_content source="https://example.com/docs">')
     expect(r.content).toContain('Docs')
     expect(r.content).toContain('API usage')
   })
@@ -129,5 +129,22 @@ describe('web_fetch execute（mock fetch + mock DNS）', () => {
     const tool = createWebFetchTool((async () => res(200, '')) as unknown as FetchLike)
     expect((await tool.execute({ url: 'ftp://x' }, ctx)).is_error).toBe(true)
     expect((await tool.execute({ url: 'not a url' }, ctx)).is_error).toBe(true)
+  })
+})
+
+describe('审阅修复：IPv6 归一化（P1-1/P1-3）', () => {
+  it('mapped 十六进制形态私网拒绝（含 IMDS 169.254.169.254）', () => {
+    expect(isPrivateIp('::ffff:ac10:101')).toBe(true) // 172.16.1.1
+    expect(isPrivateIp('::ffff:a9fe:a9fe')).toBe(true) // 169.254.169.254（云元数据端点）
+    expect(isPrivateIp('::ffff:7f00:1')).toBe(true) // 127.0.0.1
+    expect(isPrivateIp('64:ff9b::7f00:1')).toBe(true) // NAT64 内嵌回环
+  })
+  it('mapped 公网地址放行', () => {
+    expect(isPrivateIp('::ffff:808:808')).toBe(false) // 8.8.8.8
+    expect(isPrivateIp('2606:4700::1')).toBe(false)
+  })
+  it('normalizeHostname 剥 IPv6 方括号', () => {
+    expect(normalizeHostname('[::ffff:ac10:101]')).toBe('::ffff:ac10:101')
+    expect(normalizeHostname('example.com')).toBe('example.com')
   })
 })

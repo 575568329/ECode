@@ -363,13 +363,28 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   useEffect(() => {
     setAskUserHandler((questions) => {
       return new Promise<AskUserResult>((resolve) => {
+        // 审阅 P2-2：中断当前轮（Ctrl+C abort）时取消挂起的提问——防 overlay 残留挡输入
+        const signal = abortRef.current.signal
+        const cleanup = (): void => {
+          signal.removeEventListener('abort', onAbort)
+          pickerRef.current = false
+          setOverlay(null)
+        }
+        const onAbort = (): void => {
+          cleanup()
+          resolve({ kind: 'cancel' })
+        }
+        if (signal.aborted) {
+          resolve({ kind: 'cancel' })
+          return
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
         pickerRef.current = true
         setOverlay({
           kind: 'question-panel',
           questions,
           resolve: (r) => {
-            pickerRef.current = false
-            setOverlay(null)
+            cleanup()
             resolve(r)
           },
         })

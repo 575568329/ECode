@@ -121,6 +121,7 @@ export async function loadModelsDb(): Promise<ModelsDb | null> {
   const disk = await readDiskCache()
   if (disk && Date.now() - disk.ts < CACHE_TTL_MS) {
     memoryCache = disk
+    syncPricingFromModelsDb(disk.db) // M8 债 #6：磁盘缓存命中同样同步（主路径——二次启动必走此分支）
     return disk.db
   }
 
@@ -134,7 +135,11 @@ export async function loadModelsDb(): Promise<ModelsDb | null> {
   }
 
   // 联网失败：过期的磁盘缓存兜底（总比没有强）
-  if (disk) { memoryCache = disk; return disk.db }
+  if (disk) {
+    memoryCache = disk
+    syncPricingFromModelsDb(disk.db)
+    return disk.db
+  }
   // 构建期快照（离线 + 首次无缓存）
   if (typeof ECODE_MODELS_SNAPSHOT !== 'undefined') return ECODE_MODELS_SNAPSHOT
   return null

@@ -141,3 +141,22 @@ describe('QuestionPanel 多问 + 多选 + Review', () => {
     expect(onCancel).toHaveBeenCalled()
   })
 })
+
+describe('审阅修复：多选 + Other 组合不丢勾选（P1-5）', () => {
+  it('space 勾选两项后经 Other 输入 → 答案含勾选项与自定义文本', async () => {
+    const multi: AskUserQuestion[] = [
+      { question: '选哪些？', header: '框架', options: [{ label: 'react' }, { label: 'vue' }], multiSelect: true },
+    ]
+    const { onResolve, stdin } = renderPanel(multi)
+    await flush()
+    stdin.write(' '); await flush()          // toggle react
+    stdin.write('\u001b[B'); await flush()  // ↓ vue
+    stdin.write(' '); await flush()          // toggle vue
+    stdin.write('\u001b[B'); await flush()  // ↓ Other（两选项+Other，下标 2）
+    stdin.write('\r'); await flush()         // 进 Other 输入
+    stdin.write('svelte'); await flush()
+    stdin.write('\r'); await flush()         // 提交（单问多选 → Review）
+    stdin.write('\r'); await flush()         // Review 确认
+    expect(onResolve).toHaveBeenCalledWith({ kind: 'answers', answers: [['react', 'vue', 'svelte']] })
+  })
+})

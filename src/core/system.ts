@@ -9,6 +9,7 @@
 
 import type { SkillInfo } from '../services/skill.js'
 import { renderSkillListing, listingBudget } from '../services/skill/listing.js'
+import { ECODE_CONFIG_SKILL_NAME } from '../services/skill/builtin.js'
 
 export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number): string {
   let base = `你是 ECode，一个终端 Agent CLI。你能通过工具读文件、执行命令、搜索代码，帮用户完成编程任务。
@@ -31,8 +32,8 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number): str
       base += '\n\n' + listing
       // 内置手册路由（M6.5，opencode 同式）：用户问 ECode 自身配置时指名加载，防凭记忆猜格式
       // （若用户覆盖的 ecode-config 设了 disable-model-invocation，SkillTool 会拒——不注入路由免误导）
-      if (skills.some((s) => s.name === 'ecode-config' && !s.disableModelInvocation)) {
-        base += '\n用户询问 ECode 自身的配置或用法（config、MCP、provider、命令等）时，先调用 Skill 工具加载 ecode-config 手册，不要凭记忆猜测配置格式。'
+      if (skills.some((s) => s.name === ECODE_CONFIG_SKILL_NAME && !s.disableModelInvocation)) {
+        base += `\n用户询问 ECode 自身的配置或用法（config、MCP、provider、命令等）时，先调用 Skill 工具加载 ${ECODE_CONFIG_SKILL_NAME} 手册，不要凭记忆猜测配置格式。`
       }
     }
   }

@@ -9,6 +9,9 @@
 
 import type { SkillInfo } from '../skill.js'
 
+/** 内置手册 skill 名（system.ts 路由行同用——单一事实源防改名漂移，审阅 P2-3）。 */
+export const ECODE_CONFIG_SKILL_NAME = 'ecode-config'
+
 /** 手册正文。⚠ 模板字符串内：围栏用 ~~~（避开反引号）、\${} 转义（避开插值）。 */
 const ECODE_CONFIG_BODY = `# ECode 配置手册
 
@@ -100,7 +103,7 @@ providers 下新增 key（type/baseURL/apiKey/models）→ 重启 → /model 切
 export function builtinSkillInfos(): SkillInfo[] {
   return [
     {
-      name: 'ecode-config',
+      name: ECODE_CONFIG_SKILL_NAME,
       description:
         'ECode 自身配置权威手册：config.json 字段速览、MCP server 配置（stdio/http）、provider/thinking/采样参数、常见任务配方与运维事实。用户想修改或询问 ECode 的配置与用法时加载，不要凭记忆猜配置格式。',
       whenToUse:

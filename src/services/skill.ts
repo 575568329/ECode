@@ -408,7 +408,7 @@ export class SkillRegistry {
     return destDir.split(path.sep).join('/')
   }
 
-  /** 测试隔离（对齐 CommandRegistry.clear 先例）。 */
+  /** 测试隔离专用（对齐 CommandRegistry.clear 先例）——会连同 builtin 一并清空（load() 可恢复），生产勿用（审阅 P2-10）。 */
   clear(): void {
     this.skills.clear()
     this.sourceDirs = []

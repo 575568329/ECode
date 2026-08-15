@@ -8,7 +8,9 @@ dist/
 .env
 .env.*
 !.env.example
-.ecode/
+# .ecode/ 项目级运行目录整体忽略，但 skills/ 负向豁免（团队共享入库，M6 S4.1）
+.ecode/*
+!.ecode/skills/
 *.session.json
 
 # 日志

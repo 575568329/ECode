@@ -65,6 +65,8 @@ export interface TuiAppDeps {
   mcpManager: McpManager | null
   /** M6：项目级 .mcp.json 待批准（启动检测，TuiApp 弹批准 overlay） */
   mcpPendingApproval?: { file: string; approve: () => Promise<void> }
+  /** M6：MCP 启动警告（解析失败/env 缺失跳过/项目级覆盖——不透传用户无感知，审阅 P1） */
+  mcpWarnings?: string[]
 }
 
 function isAbortError(e: unknown): boolean {
@@ -88,6 +90,8 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
   const pickerRef = useRef(false)
   // ctxWindow 缓存（S-P4：submit 热路径同步用，启动解析一次 + 切模型刷新；默认 200k 兜底）
   const ctxWindowRef = useRef(200_000)
+  // MCP 确认「本会话记住」前缀表（mcp__server；v3 P1-3，会话级不落盘）
+  const confirmAlwaysRef = useRef(new Set<string>())
 
   const [committed, setCommitted] = useState<CommittedItem[]>([])
   const [active, setActive] = useState<ActiveState>(() => createActive())
@@ -230,13 +234,26 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
         onBeforeRequest,
         onCompacted,
         confirm: async (use) => {
+          // MCP「本会话记住」（M6 v3 P1-3）：server 级前缀放行（mcp__server__*），本会话不再逐次弹窗
+          const mcpPrefix = use.name.startsWith('mcp__') ? use.name.split('__').slice(0, 2).join('__') : null
+          if (mcpPrefix !== null && confirmAlwaysRef.current.has(mcpPrefix)) return true
           // D5：callback 内部算预览（不污染 Tool 接口）；P1#3：catch 异常不杀 Loop
           const preview = await buildPreview(use, process.cwd()).catch(
             (e) => `⚠ 无法生成预览：${e instanceof Error ? e.message : String(e)}`,
           )
           confirmRef.current = true
           return new Promise<boolean>((resolve) => {
-            setActive((a) => ({ ...a, confirm: { use, preview, resolve } }))
+            setActive((a) => ({
+              ...a,
+              confirm: {
+                use,
+                preview,
+                resolve: (ok, always) => {
+                  if (ok && always === true && mcpPrefix !== null) confirmAlwaysRef.current.add(mcpPrefix)
+                  resolve(ok)
+                },
+              },
+            }))
           })
         },
       })
@@ -315,12 +332,17 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       return
     }
     setSystemMsgs([`正在重连${name !== undefined && name !== '' ? ` ${name}` : '全部'} MCP server...`])
-    const r = await deps.mcpManager.reconnect(name).catch(() => ({ ok: [] as string[], failed: [] as { name: string; error: string }[] }))
-    setSystemMsgs([
-      r.failed.length === 0
-        ? `✓ MCP 重连完成（${r.ok.length} 个成功）`
-        : `MCP 重连：成功 ${r.ok.length} 个 / 失败 ${r.failed.length} 个（${r.failed.map((f) => `${f.name}: ${f.error}`).join('；')}）`,
-    ])
+    try {
+      const r = await deps.mcpManager.reconnect(name)
+      setSystemMsgs([
+        r.failed.length === 0
+          ? `✓ MCP 重连完成（${r.ok.length} 个成功）`
+          : `MCP 重连：成功 ${r.ok.length} 个 / 失败 ${r.failed.length} 个（${r.failed.map((f) => `${f.name}: ${f.error}`).join('；')}）`,
+      ])
+    } catch (e) {
+      // 未知 server 名/内部错误透传（审阅 P2：吞错会渲染成「0 个成功」的假成功）
+      setSystemMsgs(['MCP 重连失败：' + (e instanceof Error ? e.message : String(e))])
+    }
   }
 
   /** M6 S-P7：/skill-create——读会话 → LLM 起草 → 预览 → 创建/升级（人审卡点两处） */
@@ -380,7 +402,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
         }
         const r = await deps.skillRegistry.install(
           { ...candidate, body: patchBodyFromVerdicts(candidate.body, verdicts, resolution) },
-          decisionsFromVerdicts(candidate.body, verdicts, resolution),
+          decisionsFromVerdicts(verdicts, resolution),
         )
         setSystemMsgs([
           r.mode === 'upgraded'
@@ -423,7 +445,11 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
 
   /** M5：切换 model 后检测 context 是否超新窗口（只提示风险，不自动压缩；用户主动 /compact） */
   const checkModelWindow = async (model: string, providerName: string): Promise<void> => {
-    const ctxTokens = estimateContextTokens(buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindowRef.current), buildContextMessages(messagesRef.current))
+    const ctxTokens = estimateContextTokens(
+      buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindowRef.current),
+      buildContextMessages(messagesRef.current),
+      deps.tools.specs(), // MCP 工具 schema 同样计入（v6 修复记录「两个调用点」的第二处，审阅补漏）
+    )
     const newWindow = await resolveContextWindow(model, config.providers[providerName]?.contextWindow)
     ctxWindowRef.current = newWindow // S-P4：切模型刷新缓存（后续 submit 的 skill 清单预算随之适配）
     const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(0)}k`)
@@ -479,6 +505,18 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     return unsub
     // eslint-disable-next-line react-hooks/exhaustive-deps -- deps 不变（挂载期一次）
   }, [])
+  // MCP 启动警告（无待批准事项时展示；有待批准时批准流的消息优先，警告并入其后）
+  useEffect(() => {
+    if ((deps.mcpWarnings?.length ?? 0) === 0) return
+    const lines = deps.mcpWarnings!
+    if (deps.mcpPendingApproval === undefined) {
+      setSystemMsgs(lines.slice())
+    } else {
+      setSystemMsgs((prev) => [...prev, ...lines])
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
+  }, [])
+
   useEffect(() => {
     const pending = deps.mcpPendingApproval
     if (pending === undefined) return

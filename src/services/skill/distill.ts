@@ -122,11 +122,14 @@ ${candidate.body}
 export function parseMergerVerdicts(raw: string): SectionVerdict[] {
   const obj = extractJson(raw) as { sections?: unknown } | null
   if (obj === null || !Array.isArray(obj.sections)) throw new Error('merger 输出未包含 sections')
-  return obj.sections.map((s) => {
+  return obj.sections.map((s, i) => {
+    if (s === null || typeof s !== 'object') {
+      throw new Error(`merger sections[${i}] 非对象（null/畸形 JSON）`) // 逐项 guard，防 TypeError 无上下文
+    }
     const sec = s as Record<string, unknown>
     const verdict = String(sec['verdict'])
     if (verdict !== 'add' && verdict !== 'equal' && verdict !== 'conflict') {
-      throw new Error(`merger verdict 非法：${verdict}`)
+      throw new Error(`merger verdict 非法：${verdict}（section ${String(sec['title'] ?? i)}）`)
     }
     return { title: String(sec['title'] ?? ''), verdict, body: sec['body'] !== undefined ? String(sec['body']) : undefined }
   })
@@ -145,7 +148,6 @@ export function conflictTitles(verdicts: SectionVerdict[]): string[] {
  * conflict 节按裁决 keep/adopt。
  */
 export function decisionsFromVerdicts(
-  candidateBody: string,
   verdicts: SectionVerdict[],
   conflictResolution: 'keep' | 'adopt',
 ): SectionDecision[] {
@@ -155,7 +157,6 @@ export function decisionsFromVerdicts(
     if (v.verdict === 'conflict') decisions.push({ title: v.title, verdict: conflictResolution })
   }
   // merger 没判到的候选节（LLM 漏判）默认 adopt（install 默认行为），无需生成决策
-  void candidateBody
   return decisions
 }
 

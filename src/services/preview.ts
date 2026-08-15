@@ -38,8 +38,27 @@ export async function buildPreview(use: ToolUseBlock, cwd: string): Promise<stri
       return input.command
     }
     default:
-      return `(无预览：${use.name})`
+      // MCP 等外部工具（M6 v3 P1-3：盲确认修复——default 分支 pretty-print input，截 40 行）
+      return prettyInputPreview(use)
   }
+}
+
+/** 外部工具入参预览：pretty JSON，超 40 行截断（用户确认前看得见参数）。 */
+function prettyInputPreview(use: ToolUseBlock): string {
+  let text: string
+  try {
+    text = JSON.stringify(use.input ?? {}, null, 2)
+  } catch {
+    text = String(use.input)
+  }
+  const lines = text.split('\n')
+  if (lines.length > WRITE_PREVIEW_MAX_LINES) {
+    return (
+      lines.slice(0, WRITE_PREVIEW_MAX_LINES).join('\n') +
+      `\n…（共 ${lines.length} 行，已截断到 ${WRITE_PREVIEW_MAX_LINES}）`
+    )
+  }
+  return text === '' ? `(无参数：${use.name})` : `${use.name} 参数：\n${text}`
 }
 
 /** edit_file 预览：读原文件 + CRLF 归一化 + unified diff（P1#5 Windows 必踩）。 */

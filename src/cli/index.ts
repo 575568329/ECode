@@ -60,6 +60,7 @@ interface Deps {
   skillRegistry: ReturnType<typeof createSkillRegistry>
   mcpManager: McpManager | null
   mcpPendingApproval?: { file: string; approve: () => Promise<void> }
+  mcpWarnings: string[]
 }
 
 function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
@@ -94,6 +95,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
     lastUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
     skillRegistry,
     mcpManager: mcp.manager,
+    mcpWarnings: mcp.warnings,
     ...(mcp.pendingApproval !== undefined ? { mcpPendingApproval: mcp.pendingApproval } : {}),
   }
 }

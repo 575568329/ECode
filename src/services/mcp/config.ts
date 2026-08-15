@@ -31,7 +31,10 @@ export interface McpServerConfig {
 
 export interface McpServerEntry {
   name: string
+  /** ENV_VAR 展开后的配置（连接用） */
   cfg: McpServerConfig
+  /** 展开前的原始配置（configHash 用——展开后 headers 可能含 secret，哈希落盘=留离线校验器，审阅 P2） */
+  rawCfg?: McpServerConfig
   source: 'user' | 'project'
 }
 
@@ -79,15 +82,35 @@ export function validateServerConfig(name: string, cfg: McpServerConfig): string
   return undefined
 }
 
-/** 读项目级 .mcp.json（cwd 向上到 home 找最近的；找不到返回 null）。 */
+/**
+ * 读项目级 .mcp.json（审阅修复边界）：
+ * - home 前停（~/.mcp.json 不是任何项目的项目级配置）
+ * - cwd 不在 home 子树（Windows 跨盘）：上界收在最近 git 根（含）——防盘根 .mcp.json 批准一次全盘生效
+ *   （盘根文件能 spawn 子进程，波及面不可接受）；非 git 目录只查 start 本身
+ */
 export function findProjectMcpJson(start: string): string | null {
+  const found = findUpFile(start, '.mcp.json')
+  return found ?? null
+}
+
+/** 有界向上找文件（边界策略与 skill.ts findUpDir 一致，避免两套漂移）。 */
+function findUpFile(start: string, fileName: string): string | undefined {
   const home = os.homedir()
+  const inHomeTree = (() => {
+    const norm = (p: string): string => path.resolve(p).toLowerCase() + path.sep
+    return norm(start).startsWith(norm(home))
+  })()
   let dir = path.resolve(start)
   for (;;) {
-    const candidate = path.join(dir, '.mcp.json')
+    // home 边界先于命中检查（~/.mcp.json 不是任何项目的项目级配置）
+    if (dir === home || path.dirname(dir) === dir) return undefined
+    const candidate = path.join(dir, fileName)
     if (fs.existsSync(candidate)) return candidate
-    if (dir === home || path.dirname(dir) === dir) return null
-    dir = path.dirname(dir)
+    const parent = path.dirname(dir)
+    if (!inHomeTree) {
+      if (parent !== home && !fs.existsSync(path.join(parent, '.git'))) return undefined
+    }
+    dir = parent
   }
 }
 
@@ -104,7 +127,13 @@ export function loadProjectMcpJson(file: string): Record<string, McpServerConfig
 
 // —— 首用批准（v3 P1-4 / v6 二段启动）：hash 持久化，批准后不再问 —— //
 
-const APPROVED_FILE = path.join(os.homedir(), '.ecode', 'approved-mcp.json')
+const DEFAULT_APPROVED_FILE = path.join(os.homedir(), '.ecode', 'approved-mcp.json')
+/** 批准注册表路径（测试注入隔离 home，生产用默认）。 */
+let approvedFile: string = DEFAULT_APPROVED_FILE
+
+export function setApprovedFilePath(file: string): void {
+  approvedFile = file
+}
 
 export function mcpFileHash(file: string): string {
   try {
@@ -116,7 +145,7 @@ export function mcpFileHash(file: string): string {
 
 export function isMcpApproved(file: string): boolean {
   try {
-    const approved = JSON.parse(fs.readFileSync(APPROVED_FILE, 'utf8')) as { files?: string[] }
+    const approved = JSON.parse(fs.readFileSync(approvedFile, 'utf8')) as { files?: string[] }
     return (approved.files ?? []).includes(mcpFileHash(file))
   } catch {
     return false
@@ -126,14 +155,14 @@ export function isMcpApproved(file: string): boolean {
 export function approveMcpFile(file: string): void {
   let approved: { files?: string[] } = {}
   try {
-    approved = JSON.parse(fs.readFileSync(APPROVED_FILE, 'utf8')) as { files?: string[] }
+    approved = JSON.parse(fs.readFileSync(approvedFile, 'utf8')) as { files?: string[] }
   } catch {
     approved = {}
   }
   const files = new Set(approved.files ?? [])
   files.add(mcpFileHash(file))
-  fs.mkdirSync(path.dirname(APPROVED_FILE), { recursive: true })
-  fs.writeFileSync(APPROVED_FILE, JSON.stringify({ files: [...files] }, null, 2), 'utf8')
+  fs.mkdirSync(path.dirname(approvedFile), { recursive: true })
+  fs.writeFileSync(approvedFile, JSON.stringify({ files: [...files] }, null, 2), 'utf8')
 }
 
 /**
@@ -166,7 +195,7 @@ export function mergeMcpServers(
       warnings.push(`MCP server「${name}」环境变量缺失：${missing.join(', ')}，已跳过`)
       continue
     }
-    entries.push({ name, cfg, source: e.source })
+    entries.push({ name, cfg, ...(e.cfg !== cfg ? { rawCfg: e.cfg } : {}), source: e.source })
   }
   return { entries, warnings }
 }

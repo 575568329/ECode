@@ -120,3 +120,24 @@ describe('/config 平台判断', () => {
     expect(r.get('config')).toBeUndefined()
   })
 })
+
+describe('M6 命令（/skill /skill-create /mcp）', () => {
+  beforeEach(() => {
+    commandRegistry.clear()
+    registerBuiltinCommands()
+  })
+
+  it('/mcp 无参 → open-mcp-panel', () => {
+    expect(commandRegistry.get('mcp')!.run()).toEqual({ action: 'open-mcp-panel' })
+  })
+
+  it('/mcp reconnect → mcp-reconnect；带 server 名 → payload', () => {
+    expect(commandRegistry.get('mcp')!.run('reconnect')).toEqual({ action: 'mcp-reconnect' })
+    expect(commandRegistry.get('mcp')!.run('reconnect db')).toEqual({ action: 'mcp-reconnect', payload: 'db' })
+  })
+
+  it('/skill 与 /skill-create 注册', () => {
+    expect(commandRegistry.get('skill')!.run()).toEqual({ action: 'skill-panel' })
+    expect(commandRegistry.get('skill-create')!.run()).toEqual({ action: 'skill-create' })
+  })
+})

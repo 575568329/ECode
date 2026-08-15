@@ -18,6 +18,7 @@ import {
   loadProjectMcpJson,
   isMcpApproved,
   approveMcpFile,
+  mcpFileHash,
   mergeMcpServers,
 } from './config.js'
 
@@ -34,9 +35,14 @@ export interface McpSetupResult {
   }
 }
 
-export function setupMcp(config: Config, toolReg: ToolRegistry, logger?: { warn: (m: string) => void }): McpSetupResult {
+export function setupMcp(
+  config: Config,
+  toolReg: ToolRegistry,
+  logger?: { warn: (m: string) => void },
+  opts: { cwd?: string } = {},
+): McpSetupResult {
   const warnings: string[] = []
-  const projectFile = findProjectMcpJson(process.cwd())
+  const projectFile = findProjectMcpJson(opts.cwd ?? process.cwd())
   const projectRaw = projectFile !== null ? loadProjectMcpJson(projectFile) : null
   if (projectFile !== null && projectRaw === null) {
     warnings.push(`项目级 ${projectFile} 解析失败，已忽略`)
@@ -79,13 +85,21 @@ export function setupMcp(config: Config, toolReg: ToolRegistry, logger?: { warn:
 
   const result: McpSetupResult = { manager, warnings }
   if (projectFile !== null && projectRaw !== null && !isMcpApproved(projectFile)) {
+    // 展示时指纹：approve 时重算比对（TOCTOU 防护，审阅 P1——批准间隙文件被换则拒绝并要求重启确认）
+    const displayHash = mcpFileHash(projectFile)
     result.pendingApproval = {
       file: projectFile,
       approve: async () => {
+        const currentHash = mcpFileHash(projectFile)
+        if (currentHash !== displayHash) {
+          throw new Error(`${projectFile} 内容在批准前已变化（展示与批准时不一致），已拒绝接入——请重启 ECode 重新确认`)
+        }
         approveMcpFile(projectFile)
-        const { entries: full, warnings: w2 } = mergeMcpServers(config.mcpServers, projectRaw ?? undefined)
+        // 重读接入（不用启动时快照——approve 与读取间再变也以批准时内容为准）
+        const fresh = loadProjectMcpJson(projectFile)
+        const { entries: full, warnings: w2 } = mergeMcpServers(config.mcpServers, fresh ?? undefined)
         warnings.push(...w2)
-        await manager.start(full) // 二段：追加项目级 entries（含注册）
+        await manager.start(full) // 二段：追加 entries（start 按 name diff，已有用户级连接不重建）
       },
     }
   }

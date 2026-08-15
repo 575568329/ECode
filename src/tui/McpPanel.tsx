@@ -8,7 +8,7 @@
  * Esc 逐级回退（先清搜索词 → 退级 → 退出面板）。
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { PanelShell, type PanelRow } from './PanelShell.js'
@@ -85,6 +85,13 @@ export function McpPanel({ snapshots, onReconnect, onDisconnect, onCancel, tools
   const [cursorName, setCursorName] = useState<string | undefined>(undefined)
   const [busy, setBusy] = useState<string | undefined>(undefined) // 操作中标记（行内反馈）
 
+  // 详情视图的目标快照（hooks 必须先于条件 return——列表视图提前返回会漏挂）
+  const detailSnap = view.view === 'list' ? undefined : snapshots.find((s) => s.name === view.server)
+  // 配置被移除等边界：回列表（render 期 setState 是反模式，React 19 并发下易踩踏）
+  useEffect(() => {
+    if (view.view !== 'list' && detailSnap === undefined) setView({ view: 'list' })
+  }, [view.view, detailSnap])
+
   if (view.view === 'list') {
     const rows: PanelRow<McpServerSnapshot>[] = snapshots.map((s) => ({
       type: 'item',
@@ -140,12 +147,8 @@ export function McpPanel({ snapshots, onReconnect, onDisconnect, onCancel, tools
     )
   }
 
-  const snap = snapshots.find((s) => s.name === view.server)
-  if (snap === undefined) {
-    // 配置被移除等边界：回列表
-    setView({ view: 'list' })
-    return <Box />
-  }
+  const snap = detailSnap
+  if (snap === undefined) return <Box />
 
   if (view.view === 'tools') {
     const defs = toolsOf?.(snap.name) ?? []
@@ -186,9 +189,14 @@ export function McpPanel({ snapshots, onReconnect, onDisconnect, onCancel, tools
       },
     },
     {
+      // 按状态分派（审阅 P1：cached/failed/not-connected 下「连接」必须是真连不是 close）
       label: snap.status === 'connected' ? '断开' : '连接',
       run: () => {
-        void onDisconnect(snap.name)
+        if (snap.status === 'connected') void onDisconnect(snap.name)
+        else {
+          setBusy(snap.name)
+          void onReconnect(snap.name).finally(() => setBusy(undefined))
+        }
       },
     },
     { label: '返回列表', run: () => setView({ view: 'list' }) },

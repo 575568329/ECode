@@ -4,7 +4,7 @@ import {
   normalizeSchema,
   renderContent,
   sanitizeToolName,
-  resolveCommand,
+  spawnSpec,
 } from '../../../src/services/mcp/adapt.js'
 import type { McpManager, McpContentItem } from '../../../src/services/mcp/manager.js'
 import type { McpServerConfig } from '../../../src/services/mcp/config.js'
@@ -33,11 +33,16 @@ describe('sanitizeToolName', () => {
   })
 })
 
-describe('resolveCommand', () => {
-  it('win32 npx 保持（spawnSpec 层包 cmd）', () => {
-    // 只验证纯函数不炸 + 幂等
-    expect(typeof resolveCommand('node')).toBe('string')
-    expect(resolveCommand('npx')).toBe('npx')
+describe('spawnSpec（win32 npx 包 cmd /c，审阅补测）', () => {
+  it('npx 类命令 → cmd /c 包裹；普通命令原样', () => {
+    const npx = spawnSpec({ type: 'stdio', command: 'npx', args: ['-y', 'srv'] })
+    expect(npx.command).toBe('cmd')
+    expect(npx.args).toEqual(['/c', 'npx', '-y', 'srv'])
+    const npm = spawnSpec({ type: 'stdio', command: 'npm.cmd', args: ['x'] })
+    expect(npm.args[0]).toBe('/c')
+    const node = spawnSpec({ type: 'stdio', command: 'node', args: ['s.js'] })
+    expect(node.command).toBe('node')
+    expect(node.args).toEqual(['s.js'])
   })
 })
 

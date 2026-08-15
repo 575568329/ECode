@@ -93,11 +93,13 @@ export function PanelShell<T>({
   const cursor = clamp(idx)
   const currentItem = items[cursor]
 
-  // 光标项回调（导航/过滤变化时通知；MCP 面板 failed 行随光标展开错误用）
+  // 光标项回调（依赖收敛到当前值：items 是每次 render 的 filter 新引用，进依赖会让
+  // 每次渲染都触发——幂等回调时恰好收敛，非幂等（如 setBusy(对象)）立即死循环，审阅 P2）
+  const currentVal = currentItem?.value
   useEffect(() => {
-    onCursor?.(currentItem?.value)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 光标/列表变化时通知
-  }, [cursor, items])
+    onCursor?.(currentVal)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 值相等即语义相等
+  }, [currentVal])
 
   // 窗口化滚动：光标为中心（对齐调研实现），窗口 [start, start+MAX_VISIBLE)
   const windowStart = items.length <= MAX_VISIBLE ? 0 : Math.max(0, Math.min(items.length - MAX_VISIBLE, cursor - Math.floor(MAX_VISIBLE / 2)))

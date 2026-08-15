@@ -67,11 +67,11 @@ describe('merger 协议', () => {
 
   it('decisionsFromVerdicts：equal→keep；conflict 按裁决（按 verdict 原序）', () => {
     const v = parseMergerVerdicts(raw)
-    expect(decisionsFromVerdicts('body', v, 'adopt')).toEqual([
+    expect(decisionsFromVerdicts(v, 'adopt')).toEqual([
       { title: '步骤', verdict: 'adopt' },
       { title: '简介', verdict: 'keep' },
     ])
-    expect(decisionsFromVerdicts('body', v, 'keep')).toEqual([
+    expect(decisionsFromVerdicts(v, 'keep')).toEqual([
       { title: '步骤', verdict: 'keep' },
       { title: '简介', verdict: 'keep' },
     ])

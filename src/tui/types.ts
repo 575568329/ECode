@@ -40,8 +40,9 @@ export interface ConfirmState {
   use: ToolUseBlock
   /** 预览内容（edit_file=unified diff 文本；write_file=新增片段；bash=命令字符串；着色由 ConfirmPrompt 负责） */
   preview: string
-  /** resolve（onConfirm→true / onCancel→false，loop 收到后继续或转 is_error） */
-  resolve: (ok: boolean) => void
+  /** resolve（onConfirm→true / onCancel→false，loop 收到后继续或转 is_error）；
+   *  always=true 表示用户选了「本会话记住」（MCP server 级放行，M6 v3 P1-3——loop 不感知，TuiApp 侧记前缀） */
+  resolve: (ok: boolean, always?: boolean) => void
 }
 
 /** Static 区已固化的工具调用（必有 result） */

@@ -223,3 +223,73 @@ describe('McpManager（M-P2）', () => {
     expect(close).toHaveBeenCalled()
   })
 })
+
+describe('McpManager 审阅修复回归', () => {
+  it('P0：二段 start（追加）不重建已有 state——已连接 client 保留、eager 不二次连接', async () => {
+    const close = vi.fn(async () => {})
+    const clients = [
+      { listTools: async () => ({ tools: TOOLS }), callTool: async () => ({ content: [] }), close },
+      { listTools: async () => ({ tools: TOOLS }), callTool: async () => ({ content: [] }), close },
+    ]
+    let i = 0
+    const connectFn = vi.fn(async () => clients[i++ % clients.length]!)
+    const cacheLike = { get: () => undefined, set: async () => {} }
+    const mgr = new McpManager({ connectFn, cache: cacheLike as unknown as McpCache, healthIntervalMs: 0 })
+    // 第一段：eager 启动即连
+    const r1 = await mgr.start([entry('u-eager', { lifecycle: 'eager' })])
+    expect(r1.connected).toBe(1)
+    expect(connectFn).toHaveBeenCalledTimes(1)
+    // 第二段：批准后传全量（含已注册的用户级 + 新项目级）——不得覆盖/重连已有
+    await mgr.start([entry('u-eager', { lifecycle: 'eager' }), entry('p-new', { lifecycle: 'eager', enabled: true })])
+    expect(connectFn).toHaveBeenCalledTimes(2) // 只连了 p-new，u-eager 未重连
+    expect(mgr.status().find((s) => s.name === 'u-eager')?.status).toBe('connected') // 未回退
+    await mgr.stop()
+    expect(close).toHaveBeenCalledTimes(2) // 两个 client 都被管理（不孤儿）
+  })
+
+  it('P1：显式 lifecycle:"lazy" + 无缓存 → bootstrap 正常拿清单（不死锁）', async () => {
+    const onTools = vi.fn()
+    const connectFn = vi.fn(async () => fakeClient())
+    const cacheLike = { get: () => undefined, set: async () => {} }
+    const mgr = new McpManager({ connectFn, cache: cacheLike as unknown as McpCache, onTools, healthIntervalMs: 0 })
+    await mgr.start([entry('explicit', { lifecycle: 'lazy' })])
+    await new Promise((r) => setTimeout(r, 20))
+    expect(connectFn).toHaveBeenCalledTimes(1)
+    expect(onTools).toHaveBeenCalled()
+  })
+
+  it('P1：abort 归属共享——B 加入在飞连接后 A 中断可终止握手；B 单独中断也可', async () => {
+    const acA = new AbortController()
+    const acB = new AbortController()
+    const connectFn = vi.fn(
+      (_n: string, _c: unknown, signal?: AbortSignal) =>
+        new Promise<McpClientLike>((_res, rej) => {
+          signal?.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+        }),
+    )
+    const cacheLike = { get: () => ({ configHash: 'x', tools: TOOLS, cachedAt: 0 }), set: async () => {} }
+    const mgr = new McpManager({ connectFn, cache: cacheLike as unknown as McpCache, healthIntervalMs: 0 })
+    await mgr.start([entry('shared')])
+    const pA = mgr.lazyConnect('shared', acA.signal)
+    const pB = mgr.lazyConnect('shared', acB.signal) // B 共享在飞连接
+    acA.abort() // 任意等待者中断都应终止
+    await expect(pA).rejects.toThrow()
+    await expect(pB).rejects.toThrow()
+  })
+
+  it('P1：refreshMetadata 失败（半连接）→ client 被 close（不泄漏）', async () => {
+    const close = vi.fn(async () => {})
+    const connectFn = vi.fn(async () => ({
+      listTools: async () => {
+        throw new Error('listTools 炸了')
+      },
+      callTool: async () => ({ content: [] }),
+      close,
+    }))
+    const mgr = new McpManager({ connectFn, healthIntervalMs: 0 })
+    await mgr.start([entry('half')]) // cache miss → bootstrap → listTools 失败
+    await new Promise((r) => setTimeout(r, 20))
+    expect(close).toHaveBeenCalledTimes(1) // 半连接被清理
+    expect(mgr.status()[0]).toMatchObject({ status: 'failed' })
+  })
+})

@@ -76,10 +76,11 @@ export class McpCache {
   /** 回写（串行队列防并发覆盖；失败静默——缓存丢失只影响下次启动需 bootstrap 连一次）。 */
   set(serverName: string, entry: McpCacheEntry): Promise<void> {
     this.data.servers[serverName] = entry
+    // 异步写（审阅 P2：set 在 lazyConnect 回调即工具调用热路径上，AGENTS 2.2 禁同步阻塞）
     this.writeQueue = this.writeQueue
-      .then(() => {
-        fs.mkdirSync(path.dirname(this.file), { recursive: true })
-        fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2), 'utf8')
+      .then(async () => {
+        await fs.promises.mkdir(path.dirname(this.file), { recursive: true })
+        await fs.promises.writeFile(this.file, JSON.stringify(this.data, null, 2), 'utf8')
       })
       .catch(() => {})
     return this.writeQueue

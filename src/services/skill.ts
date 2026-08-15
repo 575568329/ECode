@@ -304,6 +304,13 @@ export class SkillRegistry {
    * 创建/升级唯一落盘入口（S8.3）：同名已存在 → 升级模式
    * （versions 备份 → frontmatter 整体采用新值 → body section 级合并）。
    * 只做确定性落盘；merger 判定与预览/裁决交互在命令层。
+   *
+   * 审阅修复（数据一致性）：
+   * - 升级判定不能只看内存 Map——磁盘已有同名但未加载（load 未跑/解析失败跳过/外置修改）
+   *   时按「创建」直写会无备份覆盖。磁盘探测到 → 强制走升级路径（读盘内容合并）。
+   * - 升级写回 existing.baseDir（原层级）而非写死 userDir——项目级 skill 升级写用户级
+   *   会被项目级原文件永久遮蔽（双副本 + 升级不可见）。用户级/项目级都回写原目录；
+   *   plugin 源（M7）只读，拒绝升级。
    */
   async install(c: SkillCandidate, decisions: SectionDecision[] = []): Promise<InstallResult> {
     if (!SKILL_NAME_RE.test(c.name) || c.name.length > MAX_NAME_LEN) {
@@ -312,17 +319,34 @@ export class SkillRegistry {
     if (c.description.trim() === '' || c.description.length > MAX_DESC_LEN) {
       throw new Error(`description 不能为空且 ≤${MAX_DESC_LEN} 字符`)
     }
-    const targetDir = path.join(this.dirs.userDir, c.name)
-    const targetFile = path.join(targetDir, SKILL_FILE)
-    await fs.promises.mkdir(targetDir, { recursive: true })
-    const existing = this.skills.get(c.name)
+    // 内存已有 → 用内存态；没有 → 探测磁盘（userDir 下同名 SKILL.md）防无备份覆盖
+    let existing = this.skills.get(c.name)
     if (existing === undefined) {
+      const diskDir = path.join(this.dirs.userDir, c.name)
+      const diskFile = path.join(diskDir, SKILL_FILE)
+      try {
+        const text = await fs.promises.readFile(diskFile, 'utf8')
+        existing = this.parse(diskDir, c.name, text, 'user') ?? undefined
+      } catch {
+        existing = undefined // 磁盘也无 → 真·创建
+      }
+    }
+    if (existing === undefined) {
+      const targetDir = path.join(this.dirs.userDir, c.name)
+      const targetFile = path.join(targetDir, SKILL_FILE)
+      await fs.promises.mkdir(targetDir, { recursive: true })
       await fs.promises.writeFile(targetFile, serializeSkillMd(c), 'utf8')
       const info = this.parse(targetDir, c.name, serializeSkillMd(c), 'user')
       if (info !== undefined) this.skills.set(c.name, info)
       return { mode: 'created', path: targetFile.split(path.sep).join('/') }
     }
-    // —— 升级模式 ——
+    // —— 升级模式（写回原层级）——
+    if (existing.source === 'plugin') {
+      throw new Error(`skill「${c.name}」来自 plugin（只读），升级请在 plugin 内进行或先改名`)
+    }
+    const targetDir = path.resolve(existing.baseDir)
+    const targetFile = path.join(targetDir, SKILL_FILE)
+    await fs.promises.mkdir(targetDir, { recursive: true })
     const backedUpTo = await this.backupVersion(existing)
     const oldBody = existing.body
     const newBody = mergeBody(oldBody, c.body, decisions)
@@ -384,16 +408,39 @@ function firstParagraph(body: string): string {
   return t.split(/\r?\n/).find((l) => l.trim() !== '')?.trim() ?? ''
 }
 
-/** 从 start 向上找最近的 `<dir>/.ecode/skills`（到 home 停；项目级源探测）。 */
+/**
+ * 从 start 向上找最近的 `<dir>/.ecode/skills`（审阅修复边界）：
+ * - 到 home 前停（home 本身不是项目——否则 ~/.ecode/skills 被错标项目级，用户级 skill 全部错 source）
+ * - cwd 不在 home 子树（如 Windows 跨盘）时，上界收在最近的 git 根（含）；
+ *   非 git 目录只查 start 本身——防盘根目录命中波及全盘
+ */
 export function findProjectSkillsDir(start: string): string | undefined {
+  const dir = findUpDir(start, (d) => fs.existsSync(path.join(d, '.ecode', 'skills')))
+  return dir !== undefined ? path.join(dir, '.ecode', 'skills') : undefined
+}
+
+/** 通用有界向上查找：命中 predicate 即返回；边界见 findProjectSkillsDir 注释。 */
+export function findUpDir(start: string, predicate: (dir: string) => boolean): string | undefined {
   const home = os.homedir()
+  const inHomeTree = isUnderHome(start, home)
   let dir = path.resolve(start)
   for (;;) {
-    const candidate = path.join(dir, '.ecode', 'skills')
-    if (fs.existsSync(candidate)) return candidate
+    // home 边界先于 predicate（home 下常驻 ~/.ecode/skills——不先判会把用户级当项目级命中）
     if (dir === home || path.dirname(dir) === dir) return undefined
-    dir = path.dirname(dir)
+    if (predicate(dir)) return dir
+    const parent = path.dirname(dir)
+    if (!inHomeTree) {
+      // 跨盘（不在 home 子树）：git 根是工作区上界；无 git 根只查 start 本身
+      if (parent !== home && !fs.existsSync(path.join(parent, '.git'))) return undefined
+    }
+    dir = parent
   }
+}
+
+/** start 是否位于 home 子树（Windows 大小写不敏感比较）。 */
+function isUnderHome(start: string, home: string): boolean {
+  const norm = (p: string): string => path.resolve(p).toLowerCase() + path.sep
+  return norm(start).startsWith(norm(home))
 }
 
 /** 默认工厂（真实路径；cli makeDeps 用）。 */

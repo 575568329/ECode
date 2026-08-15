@@ -35,6 +35,8 @@ export function SkillPanel({ skills, onPick, onCancel }: SkillPanelProps): React
     for (const s of list) {
       rows.push({
         type: 'item',
+        // 被内置命令遮蔽的 skill 回填后会命中同名命令（面板自造陷阱）——禁选，只展示
+        disabled: skillRegistry.shadowedByCommand.has(s.name),
         value: s,
         label: (
           <>

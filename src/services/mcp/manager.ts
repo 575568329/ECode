@@ -15,6 +15,7 @@
 
 import type { McpServerConfig, McpServerEntry } from './config.js'
 import { configHashOf, McpCache, type McpToolDef, type McpCacheEntry } from './cache.js'
+import { redact } from '../redact.js'
 
 /** 六态（M3.2）。 */
 export type McpServerStatus =
@@ -90,6 +91,8 @@ const DEFAULT_HEALTH_INTERVAL = 30_000
 interface ServerState {
   name: string
   cfg: McpServerConfig
+  /** 展开前原始配置（configHash 用，防 secret 进哈希落盘） */
+  rawCfg?: McpServerConfig
   source: 'user' | 'project'
   status: McpServerStatus
   client?: McpClientLike
@@ -100,6 +103,10 @@ interface ServerState {
   lastUsedAt: number
   inFlight: number
   connectPromise?: Promise<McpClientLike>
+  /** 握手期内部聚合中断（任一等待者 abort 即终止；落地后清除） */
+  connectAbort?: AbortController
+  /** 桥接到 connectAbort 的外部 signal 解绑器 */
+  connectAbortCleanups: (() => void)[]
   pendingDisconnect?: boolean
 }
 
@@ -132,34 +139,44 @@ export class McpManager {
   async start(entries: McpServerEntry[]): Promise<{ connected: number; failed: string[] }> {
     const failed: string[] = []
     let connected = 0
+    // 待启动即连的（eager/keep-alive）收集后并行连（P2 审阅：逐个 await 会让多 server 启动时间叠加）
+    const eagerNames: string[] = []
     for (const e of entries) {
+      // P0 审阅修复：二段启动（.mcp.json 批准后 approve 再 start）不能重建已有 state——
+      // 无条件 set 会丢已连接的 client 句柄（旧连接成孤儿）且 eager 被二次连接。已存在 = 跳过。
+      if (this.servers.has(e.name)) continue
       const cache = this.opts.cache
-      const hash = configHashOf(e.cfg)
+      const hash = configHashOf(e.rawCfg ?? e.cfg)
       const hit = cache?.get(e.name, hash)
       const st: ServerState = {
         name: e.name,
         cfg: e.cfg,
+        ...(e.rawCfg !== undefined ? { rawCfg: e.rawCfg } : {}),
         source: e.source,
         status: e.cfg.enabled === false ? 'disabled' : hit !== undefined ? 'cached' : 'not-connected',
         tools: hit?.tools ?? [],
         hasCache: hit !== undefined,
         lastUsedAt: this.now(),
         inFlight: 0,
+        connectAbortCleanups: [],
       }
       this.servers.set(e.name, st)
       if (st.status === 'cached') this.opts.onTools?.(e.name, st.tools, e.cfg)
-      // 启动即连：eager / keep-alive（lazy 系零连接——cache miss 的 lazy 走 bootstrap 连一次拿清单）
       if (st.status !== 'disabled' && (e.cfg.lifecycle === 'eager' || e.cfg.lifecycle === 'keep-alive')) {
-        try {
-          await this.lazyConnect(e.name)
-          connected++
-        } catch {
-          failed.push(e.name) // 启动失败不阻塞（容错），标 failed 走退避
-        }
-      } else if (st.status === 'not-connected' && e.cfg.lifecycle == null) {
-        // lazy + 无缓存：bootstrap 连一次拿清单（连上即注册，随后按空闲策略）
+        eagerNames.push(e.name)
+      } else if (st.status === 'not-connected' && (e.cfg.lifecycle == null || e.cfg.lifecycle === 'lazy')) {
+        // lazy（含显式 "lazy"，P1 审阅修复：显式配置时 == null 不命中 → 工具永不注册的死锁）+ 无缓存：
+        // bootstrap 连一次拿清单（连上即注册，随后按空闲策略断开）
         void this.lazyConnect(e.name).catch(() => {})
       }
+    }
+    if (eagerNames.length > 0) {
+      // 并行、容错：单个失败标 failed 走退避，不阻塞其他 server（M4.2）
+      const results = await Promise.allSettled(eagerNames.map((n) => this.lazyConnect(n)))
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') connected++
+        else failed.push(eagerNames[i]!)
+      })
     }
     this.startTimer()
     return { connected, failed }
@@ -229,16 +246,26 @@ export class McpManager {
     if (st === undefined) throw new Error(`MCP server「${name}」未配置`)
     if (st.status === 'disabled') throw new Error(`MCP server「${name}」已禁用`)
     if (st.status === 'connected' && st.client !== undefined) return st.client
-    if (st.connectPromise !== undefined) return st.connectPromise
+    if (st.connectPromise !== undefined) {
+      // 共享在飞连接：该调用者的中断也要能终止握手（abort 归属不只第一个调用者，P1 审阅修复）
+      if (signal !== undefined) this.attachConnectAbort(st, signal)
+      return st.connectPromise
+    }
     if (this.inBackoff(st)) {
       const ago = Math.round((this.now() - (st.failedAt ?? this.now())) / 1000)
       throw new Error(`MCP server「${name}」连接失败（${ago} 秒前），可 /mcp reconnect ${name}`)
     }
     st.status = 'connecting'
     this.emit(st)
+    // 内部聚合 AbortController：任一等待者（或首个发起者）中断 → 握手终止
+    st.connectAbort = new AbortController()
+    const abortSignal = st.connectAbort.signal
+    if (signal !== undefined) this.attachConnectAbort(st, signal)
     st.connectPromise = (async () => {
+      // client 提升到外层：refreshMetadata 失败（半连接）时也要能 close（P1 审阅修复）
+      let client: McpClientLike | undefined
       try {
-        const client = await this.connectFn(name, st.cfg, signal)
+        client = await this.connectFn(name, st.cfg, abortSignal)
         await this.refreshMetadata(st, client)
         st.client = client
         st.status = 'connected'
@@ -252,22 +279,39 @@ export class McpManager {
         }
         return client
       } catch (e) {
-        if (signal?.aborted) {
-          // 用户中断 ≠ 故障：状态回退、不记退避（v6 审阅）
+        // 半连接清理：握手成功但 tools/list 失败 → client 未入 st，必须显式关（防孤儿）
+        if (client !== undefined && st.client === undefined) {
+          await client.close().catch(() => {})
+        }
+        if (abortSignal.aborted) {
+          // 中断 ≠ 故障：状态回退、不记退避（v6 审阅；bootstrap 无外部 signal 也能被等待者触发）
           st.status = st.hasCache ? 'cached' : 'not-connected'
           this.emit(st)
           throw e
         }
         st.failedAt = this.now()
         st.status = 'failed'
-        st.error = e instanceof Error ? e.message : String(e)
+        // redact：SDK 错误信息可能含展开后的 URL/认证头明文（进面板/systemMsgs 前拦一道）
+        st.error = redact(e instanceof Error ? e.message : String(e)) as string
+        this.opts.logger?.warn(`MCP server「${name}」连接失败：${st.error}`)
         this.emit(st)
         throw e
       } finally {
         st.connectPromise = undefined
+        st.connectAbort = undefined
+        for (const off of st.connectAbortCleanups) off()
+        st.connectAbortCleanups.length = 0
       }
     })()
     return st.connectPromise
+  }
+
+  /** 把外部 signal 桥接到内部 connectAbort（任一等待者中断即终止握手；落地后统一解绑）。 */
+  private attachConnectAbort(st: ServerState, signal: AbortSignal): void {
+    if (st.connectAbort === undefined) return
+    const onAbort = (): void => st.connectAbort?.abort()
+    signal.addEventListener('abort', onAbort, { once: true })
+    st.connectAbortCleanups.push(() => signal.removeEventListener('abort', onAbort))
   }
 
   /** tools/list → 更新 defs + 注册回调 + 回写 cache（串行队列）。MVP 只增注册不减注销。 */
@@ -276,7 +320,7 @@ export class McpManager {
     st.tools = tools
     st.hasCache = true
     this.opts.onTools?.(st.name, tools, st.cfg)
-    const entry: McpCacheEntry = { configHash: configHashOf(st.cfg), tools, cachedAt: this.now() }
+    const entry: McpCacheEntry = { configHash: configHashOf(st.rawCfg ?? st.cfg), tools, cachedAt: this.now() }
     await this.opts.cache?.set(st.name, entry)
   }
 
@@ -299,7 +343,7 @@ export class McpManager {
     if (st === undefined || st.status !== 'connected') return
     st.client = undefined
     st.status = 'failed'
-    st.error = error
+    st.error = redact(error) as string
     st.failedAt = this.now()
     this.emit(st)
   }

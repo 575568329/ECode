@@ -17,21 +17,12 @@ import type { McpToolDef } from './cache.js'
 
 const ECODE_VERSION = '0.1.0'
 const DEFAULT_TIMEOUT_MS = 30_000
-/** 传输层错误特征（markBroken 判定；连接重置/管道断裂/未初始化会话失效）。 */
-const TRANSPORT_ERROR_RE = /ECONNRESET|EPIPE|pipe|disconnected|not connected|not initialized|closed|EOS/i
+/** 传输层错误特征（markBroken 判定；收紧——closed/pipe 等泛词会误匹配业务错误触发 60s 退避）。 */
+const TRANSPORT_ERROR_RE = /ECONNRESET|EPIPE|EDISCONNECTED|ERR_STREAM|socket hang up|not initialized|session expired|transport closed/i
 
-/**
- * win32 下 npx/npm/cmd 是 .cmd 批处理，Node spawn 直启 ENOENT（已知坑）——包 cmd /c；
- * 其他命令原样（node/python 等是 .exe 不需要）。非 win32 原样返回。
- */
-export function resolveCommand(command: string): string {
-  if (process.platform !== 'win32') return command
-  if (/^(npx|npm|pnpm|yarn|cmd|bunx)(\.cmd)?$/i.test(command)) return command
-  return command
-}
-
-/** npx 类命令在 win32 需要 shell 包裹（.cmd 文件 Node 不能直接 spawn）。 */
-function spawnSpec(cfg: McpServerConfig): { command: string; args: string[]; shell?: boolean } {
+/** npx 类命令在 win32 需要 shell 包裹（.cmd 文件 Node 不能直接 spawn）；其余命令原样。
+ *  导出供单测（全项目最易错的平台代码，审阅 P1：不可测=改不了）。 */
+export function spawnSpec(cfg: McpServerConfig): { command: string; args: string[]; shell?: boolean } {
   const args = cfg.args ?? []
   if (process.platform === 'win32' && /^(npx|npm|pnpm|yarn|bunx)(\.cmd)?$/i.test(cfg.command ?? '')) {
     return { command: 'cmd', args: ['/c', cfg.command ?? '', ...args] }
@@ -70,7 +61,7 @@ export function createSdkConnectFn(): (name: string, cfg: McpServerConfig, signa
     if (cfg.type === 'stdio') {
       const spec = spawnSpec(cfg)
       transport = new StdioClientTransport({
-        command: resolveCommand(spec.command),
+        command: spec.command,
         args: spec.args,
         ...(cfg.cwd !== undefined ? { cwd: cfg.cwd } : {}),
         env: { ...process.env, ...(cfg.env ?? {}) } as Record<string, string>,
@@ -84,10 +75,22 @@ export function createSdkConnectFn(): (name: string, cfg: McpServerConfig, signa
       })
     }
     const client = new Client({ name: 'ecode', version: ECODE_VERSION })
-    await Promise.race([
-      client.connect(transport),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`MCP 连接超时（${timeoutMs}ms）`)), timeoutMs)),
-    ])
+    // 超时 race 双泄漏修复（审阅 P1）：定时器必须清理（否则拖延进程退出）；
+    // 超时路径要显式 close（connect 可能仍在后台成功 → transport/stdio 子进程成孤儿）
+    let raceTimer: NodeJS.Timeout | undefined
+    try {
+      await Promise.race([
+        client.connect(transport),
+        new Promise<never>((_, rej) => {
+          raceTimer = setTimeout(() => rej(new Error(`MCP 连接超时（${timeoutMs}ms）`)), timeoutMs)
+        }),
+      ])
+    } catch (e) {
+      await client.close().catch(() => {})
+      throw e
+    } finally {
+      if (raceTimer !== undefined) clearTimeout(raceTimer)
+    }
     return wrapSdkClient(client, timeoutMs)
   }
 }

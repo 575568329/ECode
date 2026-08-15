@@ -314,3 +314,38 @@ describe('findProjectSkillsDir', () => {
     expect(findProjectSkillsDir(tmpRoot)).toBeUndefined()
   })
 })
+
+describe('SkillRegistry.install 数据一致性（审阅修复）', () => {
+  it('磁盘已有同名但 Map 未载 → 强制升级路径（有备份，不无备份覆盖）', async () => {
+    const { reg, userDir } = makeRegistry()
+    // 不 load（Map 空），直接手写磁盘同名 skill
+    writeSkill(userDir, 'doc', VALID('doc', '磁盘版'))
+    const r = await reg.install({ name: 'doc', description: '新版', body: '## S\n\n新\n' })
+    expect(r.mode).toBe('upgraded') // 不是 created（磁盘探测命中）
+    const versionsDir = path.join(userDir, 'doc', 'versions')
+    expect(fs.readdirSync(versionsDir).length).toBe(1) // 旧版已备份
+    expect(reg.get('doc')?.description).toBe('新版')
+  })
+
+  it('项目级 skill 升级写回项目目录（不写用户级、不留双副本）', async () => {
+    const { reg, userDir, projectDir } = makeRegistry()
+    writeSkill(projectDir, 'doc', VALID('doc', '项目版'))
+    await reg.load()
+    const r = await reg.install({ name: 'doc', description: '升级版', body: '## S\n\n新\n' })
+    expect(r.mode).toBe('upgraded')
+    expect(r.path).toContain('proj') // 写回项目目录
+    expect(fs.existsSync(path.join(userDir, 'doc'))).toBe(false) // 不产生用户级副本
+    expect(reg.get('doc')?.source).toBe('project')
+    expect(reg.get('doc')?.description).toBe('升级版')
+  })
+
+  it('plugin 源升级 → 拒绝', async () => {
+    const { reg, userDir } = makeRegistry()
+    writeSkill(userDir, 'a', VALID('a'))
+    await reg.load()
+    const pluginDir = path.join(tmpRoot, 'plug')
+    writeSkill(pluginDir, 'p', VALID('p'))
+    await reg.addSource(pluginDir)
+    await expect(reg.install({ name: 'p', description: 'd', body: 'x' })).rejects.toThrow('plugin')
+  })
+})

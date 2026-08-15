@@ -35,7 +35,7 @@ export interface McpServerEntry {
   cfg: McpServerConfig
   /** 展开前的原始配置（configHash 用——展开后 headers 可能含 secret，哈希落盘=留离线校验器，审阅 P2） */
   rawCfg?: McpServerConfig
-  source: 'user' | 'project'
+  source: 'user' | 'project' | 'plugin'
 }
 
 /** 项目级 .mcp.json 原始格式（业界 de-facto：{ "mcpServers": { name: cfg } }）。 */

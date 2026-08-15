@@ -52,7 +52,7 @@ export interface McpContentItem {
 export interface McpServerSnapshot {
   name: string
   status: McpServerStatus
-  source: 'user' | 'project'
+  source: 'user' | 'project' | 'plugin'
   type: 'stdio' | 'http'
   toolCount: number
   /** failed 时的错误与发生时间（面板错误展开用） */
@@ -95,7 +95,7 @@ interface ServerState {
   cfg: McpServerConfig
   /** 展开前原始配置（configHash 用，防 secret 进哈希落盘） */
   rawCfg?: McpServerConfig
-  source: 'user' | 'project'
+  source: 'user' | 'project' | 'plugin'
   status: McpServerStatus
   client?: McpClientLike
   tools: McpToolDef[]
@@ -364,6 +364,15 @@ export class McpManager {
     }
     st.status = st.hasCache ? 'cached' : 'not-connected'
     this.emit(st)
+  }
+
+  /**
+   * M7 plugin disable/uninstall：从配置表彻底移除 server（close 杀子进程 + 删 state）。
+   * 与 close 的区别：close 保留条目（可重连），removeServer 是注销——重新接入需重新 start。
+   */
+  async removeServer(name: string): Promise<void> {
+    await this.close(name)
+    this.servers.delete(name)
   }
 
   /**

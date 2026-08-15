@@ -317,6 +317,16 @@ export class SkillRegistry {
     await this.scanDir(dir, 'plugin')
   }
 
+  /** M7 plugin disable/uninstall 反注入口：按源目录移除其贡献的 skill 条目与源记录。 */
+  removeSource(dir: string): void {
+    this.sourceDirs = this.sourceDirs.filter((s) => s.dir !== dir)
+    const prefix = dir.split(path.sep).join('/').replace(/\/$/, '') + '/'
+    for (const [name, info] of this.skills) {
+      // baseDir 是 skill 子目录（源目录/name），源目录前缀匹配
+      if (info.source === 'plugin' && info.baseDir.startsWith(prefix)) this.skills.delete(name)
+    }
+  }
+
   get(name: string): SkillInfo | undefined {
     return this.skills.get(name)
   }

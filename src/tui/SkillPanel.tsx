@@ -56,10 +56,10 @@ export function SkillPanel({ skills, onPick, onCancel }: SkillPanelProps): React
       rows.push({
         type: 'item',
         disabled: true,
-        value: { name: sh.name, description: '', body: '', baseDir: sh.loserPath, source: 'plugin', userInvocable: false, disableModelInvocation: true },
+        value: { name: sh.name, description: '', body: '', baseDir: sh.loserPath, source: sh.loserSource, userInvocable: false, disableModelInvocation: true },
         label: (
           <Text dimColor>
-            {sh.name.padEnd(16)} 被 {sh.winnerSource} 级遮蔽（{sh.loserPath}）
+            {sh.name.padEnd(16)} {sh.loserSource} 级被 {sh.winnerSource} 级遮蔽（{sh.loserPath}）
           </Text>
         ),
       })

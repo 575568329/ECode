@@ -15,6 +15,9 @@ import { TextInput } from './TextInput.js'
 import { createCursor, type CursorState } from './cursor.js'
 import { theme } from './theme.js'
 import type { InstalledPlugin, PluginLoader } from '../services/plugin/loader.js'
+import type { SkillRegistry } from '../services/skill.js'
+import type { McpManager } from '../services/mcp/manager.js'
+import type { ToolRegistry } from '../tools/interface.js'
 
 interface BrowseItem {
   name: string
@@ -26,6 +29,10 @@ interface BrowseItem {
 
 interface PluginPanelProps {
   loader: PluginLoader
+  /** 卸载链/即时接入的 Registry 引用（P0-2/P1-9：disable/uninstall 走 teardown，install/enable 即时 loadOne） */
+  skillRegistry: SkillRegistry
+  tools: ToolRegistry | null
+  mcp: McpManager | null
   /** 操作后刷新（browse/list 重查 + TuiApp 重渲染） */
   refresh: () => void
   /** systemMsgs 底部提示通道 */
@@ -42,13 +49,34 @@ type View =
 
 const TABS = ['浏览市场', '已安装', '添加市场']
 
-export function PluginPanel({ loader, refresh, notify, onCancel }: PluginPanelProps): ReactElement {
+/** P1-7：贡献资源清单行（disabled——只读状态展示）。 */
+function resourceStatusRows(p: InstalledPlugin): PanelRow<string>[] {
+  const rows: PanelRow<string>[] = []
+  const m = p.manifest
+  const skillCount = m.skills?.length ?? undefined
+  const mcpCount = Object.keys(m.mcpServers ?? {}).length
+  const hookCount = (m.hooks?.length ?? 0) > 0 ? m.hooks?.length : undefined
+  if (skillCount === undefined && mcpCount === 0 && hookCount === undefined) {
+    rows.push({ type: 'item', value: '_ro_none', disabled: true, label: ' （清单未声明资源——组件靠目录约定发现）' })
+    return rows
+  }
+  const line = (label: string): void => {
+    rows.push({ type: 'item', value: `_ro_${rows.length}`, disabled: true, label: ` ${label}` })
+  }
+  if (skillCount !== undefined) line(`skills：${skillCount} 个源${p.enabled ? '' : '（已移除）'}`)
+  if (mcpCount > 0) line(`mcpServers：${mcpCount} 个${p.enabled ? '' : '（已断开）'}`)
+  if (hookCount !== undefined) line(`hooks：${hookCount} 条${p.enabled ? '' : '（已注销）'}`)
+  return rows
+}
+
+export function PluginPanel({ loader, skillRegistry, tools, mcp, refresh, notify, onCancel }: PluginPanelProps): ReactElement {
   const [view, setView] = useState<View>({ view: 'main', tab: 0 })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  const browseData = view.view === 'main' ? loader.browse() : []
-  const installed = view.view === 'main' ? loader.list() : []
+  // P1-6：数据 lazy 初始化一次（组件有 key={pluginPanelKey}，操作后 refresh remount 重查；
+  // 原实现每次 render 都全量扫盘——装大市场后每个 setState 都是秒级同步 IO）
+  const [browseData] = useState(() => loader.browse())
+  const [installed] = useState(() => loader.list())
   const browseItems: BrowseItem[] = browseData.flatMap((m) =>
     m.plugins.map((p) => ({ ...p, marketplace: m.marketplace })),
   )
@@ -81,8 +109,11 @@ export function PluginPanel({ loader, refresh, notify, onCancel }: PluginPanelPr
         rows={rows}
         onPick={(v) => {
           if (v === 'install') {
-            void runAction(`已安装 ${item.name}@${item.marketplace}`, async () => {
+            void runAction(`已安装 ${item.name}@${item.marketplace}（资源即时接入）`, async () => {
               await loader.install(item.name, item.marketplace)
+              // P1-9：install 后即时接入（loadAll 循环体的单插件版）
+              const installed = loader.list().find((p) => p.name === item.name && p.marketplace === item.marketplace)
+              if (installed !== undefined) await loader.loadOne(installed, skillRegistry, mcp)
             }).then(() => setView({ view: 'main', tab: 0 }))
           } else setView({ view: 'main', tab: 0 })
         }}
@@ -95,10 +126,12 @@ export function PluginPanel({ loader, refresh, notify, onCancel }: PluginPanelPr
 
   if (view.view === 'installed-detail') {
     const { plugin } = view
-    // 贡献资源生效状态（P4.5 排障闭环：skills 接入了几个/版本信息）
+    // P1-7：贡献资源清单 + 生效状态（排障闭环——"装了没效果"在此可见）
+    const resourceRows = resourceStatusRows(plugin)
     const rows: PanelRow<string>[] = [
       { type: 'header', label: `${plugin.name}@${plugin.marketplace} · v${plugin.version} · ${plugin.enabled ? '已启用' : '已禁用'}` },
-      { type: 'item', value: plugin.enabled ? 'disable' : 'enable', label: plugin.enabled ? '禁用（卸载组件，保留缓存）' : '启用', disabled: busy },
+      ...resourceRows,
+      { type: 'item', value: plugin.enabled ? 'disable' : 'enable', label: plugin.enabled ? '禁用（组件立即移除，保留缓存）' : '启用（组件即时接入）', disabled: busy },
       { type: 'item', value: 'uninstall', label: '卸载（删除缓存）', disabled: busy },
       { type: 'item', value: 'back', label: '返回' },
     ]
@@ -108,12 +141,15 @@ export function PluginPanel({ loader, refresh, notify, onCancel }: PluginPanelPr
         rows={rows}
         onPick={(v) => {
           if (v === 'disable') {
-            void runAction(`已禁用 ${plugin.name}`, async () => {
+            void runAction(`已禁用 ${plugin.name}（组件已移除）`, async () => {
               loader.setEnabled(plugin.name, plugin.marketplace, false)
-            })
+              // P0-2：卸载链——hooks 注销 / MCP 杀进程+移除 / 工具反注册 / skill 移除
+              await loader.teardown(plugin, skillRegistry, tools, mcp)
+            }).then(() => setView({ view: 'main', tab: 1 }))
           } else if (v === 'enable') {
-            void runAction(`已启用 ${plugin.name}（重启后完全生效）`, async () => {
+            void runAction(`已启用 ${plugin.name}`, async () => {
               loader.setEnabled(plugin.name, plugin.marketplace, true)
+              await loader.loadOne(plugin, skillRegistry, mcp)
             })
           } else if (v === 'uninstall') {
             setView({ view: 'uninstall-confirm', plugin })
@@ -139,6 +175,8 @@ export function PluginPanel({ loader, refresh, notify, onCancel }: PluginPanelPr
         onPick={(v) => {
           if (v === 'yes') {
             void runAction(`已卸载 ${plugin.name}`, async () => {
+              // P0-2：先走卸载链（hooks/MCP 子进程/工具/skill 立即清理）再删 cache
+              if (plugin.enabled) await loader.teardown(plugin, skillRegistry, tools, mcp)
               await loader.uninstall(plugin.name, plugin.marketplace)
             }).then(() => setView({ view: 'main', tab: 1 }))
           } else setView({ view: 'installed-detail', plugin })

@@ -31,6 +31,7 @@ import { FileHistoryStore } from '../services/history.js'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { join } from 'node:path'
+import { spawn } from 'node:child_process'
 import { render } from 'ink'
 import React from 'react'
 import { TuiApp } from '../tui/TuiApp.js'
@@ -175,21 +176,24 @@ async function main(): Promise<void> {
   const logPath = join(process.cwd(), '.ecode', 'logs', `${sessionId}.jsonl`)
   const logStore = new LogStore(logPath, sessionId)
   const logger = new JsonlLogger(logStore)
-  process.on('exit', () => {
-    logger.info('system', 'shutdown', { exitCode: process.exitCode })
-    logStore.close()
-  })
   // M6：MCP 子进程清理（best-effort——exit 内不能 await；SDK close 发 SIGTERM）
   let mcpManagerRef: McpManager | null = null
   // M7 H-P4：SessionEnd hook（best-effort——exit 内不能 await，fire 后事件循环将停；
   // 长耗时的 SessionEnd hook（如清理脚本）可能被截断，属已知限制，可靠清理走 Stop/工具层）
   let sessionEndHook: HookRunner | null = null
+  // P1-8：exit handler 注册序 = 执行序（先杀子进程再 flush 日志——子进程 stderr 尾巴也能进日志）
   process.on('exit', () => {
     void sessionEndHook?.dispatch('SessionEnd', { event: 'SessionEnd', session_id: '' }).catch(() => {})
     void mcpManagerRef?.stop()
   })
+  process.on('exit', () => {
+    logger.info('system', 'shutdown', { exitCode: process.exitCode })
+    logStore.close()
+  })
+  // P1-8：异常路径同杀子进程（stopNow 同步 SIGKILL——异步 stop 在这里跑不完）再 flush 日志
   process.on('uncaughtException', (e) => {
     logger.error('system', 'uncaught', { message: e.message, stack: e.stack })
+    mcpManagerRef?.stopNow()
     logStore.close()
     process.exit(1)
   })
@@ -197,6 +201,7 @@ async function main(): Promise<void> {
     const msg = r instanceof Error ? r.message : String(r)
     const stack = r instanceof Error ? r.stack : undefined
     logger.error('system', 'unhandled_rejection', { message: msg, stack })
+    mcpManagerRef?.stopNow()
     logStore.close()
     process.exit(1)
   })
@@ -256,7 +261,33 @@ async function main(): Promise<void> {
   }
 
   // REPL 模式：Ink TUI（exitOnCtrlC:false，由 TuiApp 的 useInterrupt 自处理双击退出）
-  render(React.createElement(TuiApp, { deps, banner }), { exitOnCtrlC: false })
+  const instance = render(
+    React.createElement(TuiApp, { deps, banner, onRestart: () => restartProcess(instance) }),
+    { exitOnCtrlC: false },
+  )
+}
+
+/**
+ * /restart（拍板 ②）：unmount 恢复终端态 → spawn 新实例（argv 原样重放，detached 新进程组
+ * 不随旧进程死）→ 延迟 exit 给新旧进程交接终端（短暂闪屏可接受）。会话历史已由
+ * HistoryStore 持久化，新实例 /history 可恢复。
+ */
+function restartProcess(instance: { unmount(): void }): void {
+  try {
+    instance.unmount()
+  } catch {
+    // unmount 竞态不阻塞重启
+  }
+  const child = spawn(process.execPath, process.argv.slice(1), {
+    cwd: process.cwd(),
+    detached: true,
+    stdio: 'inherit',
+  })
+  child.unref()
+  child.on('error', (e) => {
+    process.stderr.write(`✗ 重启失败：${e.message}（请手动重新运行）\n`)
+  })
+  setTimeout(() => process.exit(0), 200)
 }
 
 main().catch((e) => {

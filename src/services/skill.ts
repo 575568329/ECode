@@ -192,7 +192,7 @@ export class SkillRegistry {
   /** 加载期警告（解析失败跳过/撞名；makeDeps 转发 LogStore） */
   readonly loadWarnings: string[] = []
   /** M7 P4.5：被同名遮蔽的 skill（不进注册表但保留可见性——SkillPanel 灰显用）。 */
-  readonly shadowedEntries: { name: string; loserPath: string; winnerSource: SkillInfo['source'] }[] = []
+  readonly shadowedEntries: { name: string; loserPath: string; loserSource: SkillInfo['source']; winnerSource: SkillInfo['source'] }[] = []
   private readonly validateFm: ValidateFunction
 
   constructor(private readonly dirs: SkillRegistryDirs) {
@@ -280,8 +280,8 @@ export class SkillRegistry {
       // （load() 先注册 builtin 最低优先级；addSource 在 load 后追加 plugin 源，不能被 first-wins 挡住——审阅 P1）
       if (existing !== undefined && existing.source !== 'builtin') {
         this.loadWarnings.push(`skill「${info.name}」重复（${baseDir} 被已有来源遮蔽）`)
-        // M7 P4.5：被遮蔽项保留记录（SkillPanel 灰显——数据不消失，状态标清楚）
-        this.shadowedEntries.push({ name: info.name, loserPath: baseDir.split(path.sep).join('/'), winnerSource: existing.source })
+        // M7 P4.5：被遮蔽项保留记录（SkillPanel 灰显——数据不消失，状态标清楚；loser 真实 source 一并记录）
+        this.shadowedEntries.push({ name: info.name, loserPath: baseDir.split(path.sep).join('/'), loserSource: source, winnerSource: existing.source })
         continue
       }
       this.skills.set(info.name, info)

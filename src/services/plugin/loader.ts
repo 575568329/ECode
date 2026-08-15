@@ -20,7 +20,9 @@ import AdmZip from 'adm-zip'
 import type { SkillRegistry } from '../skill.js'
 import type { McpManager } from '../mcp/manager.js'
 import type { McpServerConfig, McpServerEntry } from '../mcp/config.js'
+import { expandEnvVars, validateServerConfig } from '../mcp/config.js'
 import { sanitizeToolName } from '../mcp/adapt.js'
+import { commandRegistry } from '../../commands/registry.js'
 import type { ToolRegistry } from '../../tools/interface.js'
 import { defaultConfigPath } from '../config.js'
 import { globalExtensionHooks } from '../hooks/global.js'
@@ -28,6 +30,7 @@ import {
   discoverComponents,
   findManifestFile,
   parsePluginManifest,
+  sanitizeRelPath,
   sanitizeVersion,
   type PluginComponents,
   type PluginManifest,
@@ -69,19 +72,22 @@ export interface InstalledPlugin {
 interface ChildLike {
   on(event: 'error', cb: (e: Error) => void): void
   on(event: 'close', cb: (code: number | null) => void): void
+  onStdout?(cb: (d: Buffer) => void): void
+  onStderr(cb: (d: Buffer) => void): void
   kill(signal?: string): void
 }
 
-/** 单个 spawn 命令（P6.1 规范：异步 + 超时 + 取消 + stderr 捕获）。 */
+/** 单个 spawn 命令（P6.1 规范：异步 + 超时 + 取消 + stdout/stderr 捕获）。退出码由调用方检查。 */
 async function runCommand(
   cmd: string,
   args: string[],
   opts: { cwd?: string; timeoutMs?: number; signal?: AbortSignal; spawnImpl?: PluginLoaderDeps['spawnImpl'] },
-): Promise<{ code: number; stderr: string }> {
+): Promise<{ code: number; stderr: string; stdoutTrim: string }> {
   const timeoutMs = opts.timeoutMs ?? GIT_TIMEOUT_MS
   return await new Promise((resolve, reject) => {
     const child = (opts.spawnImpl ?? defaultSpawn)(cmd, args, { cwd: opts.cwd, signal: opts.signal })
     let stderr = ''
+    let stdout = ''
     let settled = false
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
@@ -99,8 +105,14 @@ async function runCommand(
       opts.signal?.removeEventListener('abort', onAbort)
       settle()
     }
+    child.onStderr?.((d) => {
+      stderr += d.toString('utf8')
+    })
+    child.onStdout?.((d) => {
+      stdout += d.toString('utf8')
+    })
     child.on('error', (e) => finish(() => reject(e)))
-    child.on('close', (code) => finish(() => resolve({ code: code ?? -1, stderr })))
+    child.on('close', (code) => finish(() => resolve({ code: code ?? -1, stderr, stdoutTrim: stdout.trim() })))
   })
 }
 
@@ -110,6 +122,12 @@ function defaultSpawn(cmd: string, args: string[], opts: { cwd?: string; signal?
     on(event, cb) {
       if (event === 'error') child.on('error', cb)
       else child.on('close', cb)
+    },
+    onStdout(cb) {
+      child.stdout?.on('data', cb)
+    },
+    onStderr(cb) {
+      child.stderr?.on('data', cb)
     },
     kill(signal) {
       child.kill(signal as NodeJS.Signals | undefined)
@@ -163,13 +181,18 @@ export class PluginLoader {
       if (parsed.kind === 'local') {
         await fs.promises.cp(parsed.path, staging, { recursive: true })
       } else {
-        await runCommand(this.deps.gitCommand ?? 'git', ['clone', '--depth', '1', parsed.url, staging], {
+        const cloneR = await runCommand(this.deps.gitCommand ?? 'git', ['clone', '--depth', '1', parsed.url, staging], {
           signal: opts.signal,
           spawnImpl: this.deps.spawnImpl,
         })
+        if (cloneR.code !== 0) {
+          throw new Error(`市场 clone 失败（exit ${cloneR.code}）${cloneR.stderr !== '' ? `：${cloneR.stderr.slice(-400).trim()}` : ''}`)
+        }
       }
       const manifest = this.readMarketplace(staging)
       const target = path.join(this.marketplacesDir(), manifest.name)
+      // P0-1 双保险：schema pattern 之外再断言目标必须落在市场目录内（防任何漏网的名字构造穿越）
+      assertInsideDir(target, this.marketplacesDir())
       await rmIfExists(target)
       await fs.promises.rename(staging, target)
       const srcLabel = source.trim()
@@ -221,13 +244,15 @@ export class PluginLoader {
     for (const mkt of this.listMarketplaces()) {
       try {
         const manifest = this.readMarketplace(path.join(this.marketplacesDir(), mkt))
+        // P1-6：一次 list() 结果建索引（原 findLatest 每条目全量重扫，285 插件市场 = O(N²) 同步 IO）
+        const installedSet = new Set(this.list().filter((p) => p.marketplace === mkt).map((p) => p.name))
         out.push({
           marketplace: mkt,
           plugins: manifest.plugins.map((p) => ({
             name: p.name,
             description: p.description,
             version: p.version,
-            installed: this.findLatest(mkt, p.name) !== undefined,
+            installed: installedSet.has(p.name),
           })),
         })
       } catch (e) {
@@ -249,8 +274,11 @@ export class PluginLoader {
     const entry = mktManifest.plugins.find((p) => p.name === name)
     if (entry === undefined) throw new Error(`市场 ${marketplace} 中没有插件 ${name}`)
     if (entry.source.source === 'local') {
-      // 市场内相对路径：直接复制
-      const src = path.resolve(path.join(this.marketplacesDir(), marketplace), entry.source.path)
+      // 市场内相对路径：直接复制（P1-2：sanitizeRelPath 防市场内穿越——恶意 path 可把任意本地目录变 plugin）
+      const clean = sanitizeRelPath(entry.source.path)
+      if (clean === null) throw new Error(`市场 ${marketplace} 条目 ${name} 的 source.path 非法（疑似路径穿越）：${entry.source.path}`)
+      const src = path.resolve(path.join(this.marketplacesDir(), marketplace), clean)
+      assertInsideDir(src, this.marketplacesDir())
       return this.installFromDir(src, marketplace, name, opts.signal)
     }
     const staging = path.join(this.cacheDir(), `.staging-${Date.now()}-${name}`)
@@ -260,10 +288,24 @@ export class PluginLoader {
         const args = ['clone', '--depth', '1']
         if (entry.source.ref !== undefined) args.push('--branch', entry.source.ref)
         args.push(`https://github.com/${entry.source.repo}.git`, staging)
-        await runCommand(this.deps.gitCommand ?? 'git', args, {
+        const r = await runCommand(this.deps.gitCommand ?? 'git', args, {
           signal: opts.signal,
           spawnImpl: this.deps.spawnImpl,
         })
+        if (r.code !== 0) {
+          throw new Error(`git clone 失败（exit ${r.code}）${r.stderr !== '' ? `：${r.stderr.slice(-400).trim()}` : ''}`)
+        }
+        // P1-1：sha 校验（供应链完整性——市场声明与实际 commit 比对）
+        if (entry.source.sha !== undefined) {
+          const head = await runCommand(this.deps.gitCommand ?? 'git', ['rev-parse', 'HEAD'], {
+            cwd: staging,
+            spawnImpl: this.deps.spawnImpl,
+          })
+          const actual = head.stdoutTrim
+          if (actual === '' || actual !== entry.source.sha) {
+            throw new Error(`sha 校验失败：市场期望 ${entry.source.sha}，实际 ${actual !== '' ? actual : '（未知）'}`)
+          }
+        }
         await rmIfExists(path.join(staging, '.git'))
       } else {
         // url source：fetch zip + sha256 校验 + 解压
@@ -409,11 +451,6 @@ export class PluginLoader {
     }
   }
 
-  /** 最新版本目录（无 → undefined）。 */
-  private findLatest(marketplace: string, name: string): string | undefined {
-    return this.list().find((p) => p.marketplace === marketplace && p.name === name)?.path
-  }
-
   /** 卸载：直接删 cache 目录 + config 状态移除（资源反注册由调用方先走卸载链）。 */
   async uninstall(name: string, marketplace: string): Promise<void> {
     const installed = this.list().find((p) => p.name === name && p.marketplace === marketplace)
@@ -453,6 +490,15 @@ export class PluginLoader {
       // 目录可能已被删（uninstall 场景先 teardown 再删目录，此处防御）
     }
     for (const dir of comps?.skillsDirs ?? []) skillReg.removeSource(dir)
+    for (const dir of comps?.commandsDirs ?? []) {
+      try {
+        for (const f of fs.readdirSync(dir)) {
+          if (f.endsWith('.md')) commandRegistry.unregister(`${p.name}:${f.replace(/\.md$/, '')}`)
+        }
+      } catch {
+        // 目录已不存在：无命令可反注册
+      }
+    }
     globalExtensionHooks.unregister(`plugin:${p.name}@${p.marketplace}`)
   }
 
@@ -470,41 +516,101 @@ export class PluginLoader {
 
   // —— P4.3 资源接入 ——
 
-  /**
-   * 扫描 enabled 插件 → 组件分发到各 Registry（plugin 优先级最低，M7-D4）。
-   * mcpServers 的 server 命名空间 `plugin:<plugin>/<server>`（P6.2，防与用户级撞名）；
-   * `${ECODE_PLUGIN_ROOT}` 在加载时展开为 cache 绝对路径（绝不存展开后的路径——版本升级 cache 会变）。
-   */
+  /** 扫描 enabled 插件 → 组件分发到各 Registry（启动期与 install/enable 后共用 loadOne）。 */
   async loadAll(skillReg: SkillRegistry, mcp: McpManager | null): Promise<string[]> {
     const warnings: string[] = []
     for (const p of this.list().filter((x) => x.enabled)) {
-      let comps: PluginComponents
-      try {
-        comps = discoverComponents(p.path, p.manifest)
-      } catch (e) {
-        warnings.push(`plugin ${p.name}@${p.marketplace} 组件发现失败：${e instanceof Error ? e.message : String(e)}`)
-        continue
-      }
-      warnings.push(...comps.warnings)
-      for (const dir of comps.skillsDirs) {
-        await skillReg.addSource(dir)
-      }
-      if (mcp !== null) {
-        const entries: McpServerEntry[] = Object.entries(comps.mcpServers).map(([server, rawCfg]) => ({
-          name: `plugin:${p.name}/${server}`,
-          cfg: expandPluginRoot(rawCfg, p.path) as McpServerConfig,
-          rawCfg,
-          source: 'plugin' as const,
-        }))
-        if (entries.length > 0) await mcp.start(entries)
-      }
-      // hooks：注册进全局扩展注册表（owner=plugin:name@mkt——disable/uninstall 时 unregister，H1 分层）
-      if (comps.hooks.length > 0) {
-        globalExtensionHooks.register(`plugin:${p.name}@${p.marketplace}`, comps.hooks)
-      }
+      warnings.push(...(await this.loadOne(p, skillReg, mcp)))
     }
     return warnings
   }
+
+  /**
+   * 单插件资源接入（loadAll 的循环体抽出——install 后/enable 后即时生效用，P1-9）。
+   * mcpServers 的 server 命名空间 `plugin:<plugin>/<server>`（P6.2，防与用户级撞名）；
+   * `${ECODE_PLUGIN_ROOT}` 在加载时展开为 cache 绝对路径（绝不存展开后的路径——版本升级 cache 会变）；
+   * `${ENV_VAR}` 走 M6 同款 expandEnvVars + validateServerConfig（缺失/非法 skip + warn，P1-3）。
+   */
+  async loadOne(p: InstalledPlugin, skillReg: SkillRegistry, mcp: McpManager | null): Promise<string[]> {
+    const warnings: string[] = []
+    let comps: PluginComponents
+    try {
+      comps = discoverComponents(p.path, p.manifest)
+    } catch (e) {
+      warnings.push(`plugin ${p.name}@${p.marketplace} 组件发现失败：${e instanceof Error ? e.message : String(e)}`)
+      return warnings
+    }
+    warnings.push(...comps.warnings)
+    for (const dir of comps.skillsDirs) {
+      await skillReg.addSource(dir)
+    }
+    // commands（P1-5）：commands/*.md → `/plugin-name:cmd`（output 型命令；$ARGUMENTS 占位同 skill 展开语义）
+    for (const dir of comps.commandsDirs) {
+      warnings.push(...loadPluginCommands(dir, p.name))
+    }
+    if (mcp !== null) {
+      const entries: McpServerEntry[] = []
+      for (const [server, rawCfg] of Object.entries(comps.mcpServers)) {
+        const name = `plugin:${p.name}/${server}`
+        const expanded = expandEnvVars(expandPluginRoot(rawCfg, p.path) as McpServerConfig)
+        for (const miss of expanded.missing) {
+          warnings.push(`MCP server「${name}」缺环境变量 ${miss}，已跳过`)
+        }
+        if (expanded.missing.length > 0) continue
+        const invalid = validateServerConfig(name, expanded.cfg)
+        if (invalid !== undefined) {
+          warnings.push(`${invalid}，已跳过`)
+          continue
+        }
+        entries.push({ name, cfg: expanded.cfg, rawCfg, source: 'plugin' })
+      }
+      if (entries.length > 0) await mcp.start(entries)
+    }
+    // hooks：注册进全局扩展注册表（owner=plugin:name@mkt——disable/uninstall 时 unregister，H1 分层）
+    if (comps.hooks.length > 0) {
+      globalExtensionHooks.register(`plugin:${p.name}@${p.marketplace}`, comps.hooks)
+    }
+    return warnings
+  }
+}
+
+/** commands/*.md → CommandRegistry（命名空间 `/plugin-name:cmd`；P1-5）。 */
+function loadPluginCommands(dir: string, pluginName: string): string[] {
+  const warnings: string[] = []
+  let files: string[]
+  try {
+    files = fs.readdirSync(dir)
+  } catch {
+    return warnings
+  }
+  for (const f of files) {
+    if (!f.endsWith('.md')) continue
+    const cmdName = `${pluginName}:${f.replace(/\.md$/, '')}`
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(cmdName)) {
+      warnings.push(`命令名非法，已跳过：${cmdName}（${f}）`)
+      continue
+    }
+    let content: string
+    try {
+      content = fs.readFileSync(path.join(dir, f), 'utf8')
+    } catch (e) {
+      warnings.push(`命令文件读取失败，已跳过：${f}（${e instanceof Error ? e.message : String(e)}）`)
+      continue
+    }
+    const firstLine = content.split(/\r?\n/).find((l) => l.trim() !== '') ?? ''
+    commandRegistry.register({
+      name: cmdName,
+      description: `plugin ${pluginName}：${firstLine.slice(0, 50).replace(/^#*\s*/, '')}`,
+      run: (args?: string) => ({
+        output: args !== undefined && args !== ''
+          ? content.replaceAll('$ARGUMENTS', args)
+          : content.includes('$ARGUMENTS')
+            ? content.replaceAll('$ARGUMENTS', '')
+            : content,
+      }),
+    })
+  }
+  return warnings
 }
 
 /** ${ECODE_PLUGIN_ROOT} 占位符展开（深遍历 cfg 的字符串值；白名单仅此一个——P8）。 */
@@ -527,6 +633,15 @@ function expandPluginRoot<T>(value: T, pluginRoot: string): T {
 
 async function rmIfExists(p: string): Promise<void> {
   await fs.promises.rm(p, { recursive: true, force: true }).catch(() => {})
+}
+
+/** 断言 target 位于 base 目录内（防路径穿越——P0-1：schema 之外的运行时防线）。 */
+function assertInsideDir(target: string, base: string): void {
+  const t = path.resolve(target)
+  const b = path.resolve(base) + path.sep
+  if (!(t + path.sep).startsWith(b)) {
+    throw new Error(`路径越界（疑似穿越）：${target} 不在 ${base} 内`)
+  }
 }
 
 /** GitHub zip 剥根目录解压（顶层唯一目录时下移一层）。 */

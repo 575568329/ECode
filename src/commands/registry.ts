@@ -29,6 +29,7 @@ export interface CommandResult {
     | 'open-mcp-panel'
     | 'mcp-reconnect'
     | 'open-plugin-panel'
+    | 'restart'
 }
 
 export interface Command {
@@ -48,6 +49,11 @@ export class CommandRegistry {
 
   get(name: string): Command | undefined {
     return this.commands.get(name)
+  }
+
+  /** 注销（M7 plugin disable/uninstall 反注册其贡献的命令；不存在时静默——与 ToolRegistry 语义一致）。 */
+  unregister(name: string): void {
+    this.commands.delete(name)
   }
 
   list(): Command[] {
@@ -139,6 +145,11 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     name: 'plugin',
     description: '插件管理（浏览市场/安装/启停/卸载，面板）',
     run: () => ({ action: 'open-plugin-panel' as const }),
+  })
+  registry.register({
+    name: 'restart',
+    description: '重启 ECode（改 config/hooks 后生效用；会话历史保留，/history 可恢复）',
+    run: () => ({ action: 'restart' as const }),
   })
   // /config：仅桌面平台注册（win32=explorer / darwin=open；linux·WSL 无可靠 opener → 用 /setup）
   if (process.platform === 'win32' || process.platform === 'darwin') {

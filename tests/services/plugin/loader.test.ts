@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import AdmZip from 'adm-zip'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PluginLoader, type PluginLoaderDeps } from '../../../src/services/plugin/loader.js'
+import { parseMarketplaceManifest } from '../../../src/services/plugin/marketplace.js'
 import { findManifestFile } from '../../../src/services/plugin/manifest.js'
 import { SkillRegistry } from '../../../src/services/skill.js'
 import { globalExtensionHooks } from '../../../src/services/hooks/global.js'
@@ -250,6 +251,61 @@ describe('PluginLoader：teardown 卸载链（P6.2）', () => {
   })
 })
 
+describe('PluginLoader：安全修复（P0-1/P1-1/P1-2/P1-4）', () => {
+  it('marketplace 恶意 name（路径穿越/绝对路径）→ 解析拒绝', () => {
+    for (const badName of ['../../..', 'C:/x', '/abs', 'a/b', '.']) {
+      expect(() =>
+        parseMarketplaceManifest(JSON.stringify({ name: badName, plugins: [] }), 't'),
+      ).toThrow()
+    }
+  })
+
+  it('install local source path 穿越（./../../..）→ 拒绝', async () => {
+    const mktDir = path.join(tmpRoot, 'evil-market')
+    await mkdir(path.join(mktDir, '.ecode-plugin'), { recursive: true })
+    await writeFile(
+      path.join(mktDir, '.ecode-plugin', 'marketplace.json'),
+      JSON.stringify({ name: 'evil', plugins: [{ name: 'x', source: { source: 'local', path: './../../..' } }] }),
+      'utf8',
+    )
+    const loader = makeLoader()
+    await loader.addMarketplace(mktDir)
+    await expect(loader.install('x', 'evil')).rejects.toThrow('非法')
+  })
+
+  it('git clone 失败（非零退出码）→ throw，不再合成空壳插件', async () => {
+    await makeLocalMarket('badclone', [{ name: 'ghost' }])
+    const loader0 = makeLoader()
+    await loader0.addMarketplace(path.join(tmpRoot, 'src-market', 'badclone'))
+    const mktFile = path.join(baseDir, 'marketplaces', 'badclone', '.ecode-plugin', 'marketplace.json')
+    const mkt = JSON.parse(await readFile(mktFile, 'utf8')) as { plugins: Array<{ name: string; source: unknown }> }
+    mkt.plugins[0]!.source = { source: 'github', repo: 'acme/ghost' }
+    await writeFile(mktFile, JSON.stringify(mkt), 'utf8')
+    const spawnImpl = (() => fakeChild(128)) as unknown as PluginLoaderDeps['spawnImpl']
+    const loader = makeLoader({ spawnImpl })
+    await expect(loader.install('ghost', 'badclone')).rejects.toThrow('git clone 失败')
+  })
+
+  it('github sha 校验：期望与实际不符 → 拒绝安装', async () => {
+    await makeLocalMarket('shamkt', [{ name: 'sha-p' }])
+    const loader0 = makeLoader()
+    await loader0.addMarketplace(path.join(tmpRoot, 'src-market', 'shamkt'))
+    const mktFile = path.join(baseDir, 'marketplaces', 'shamkt', '.ecode-plugin', 'marketplace.json')
+    const mkt = JSON.parse(await readFile(mktFile, 'utf8')) as { plugins: Array<{ name: string; source: unknown }> }
+    mkt.plugins[0]!.source = { source: 'github', repo: 'acme/sha-p', sha: 'deadbeef' }
+    await writeFile(mktFile, JSON.stringify(mkt), 'utf8')
+    const spawnImpl = ((cmd: string, args: string[]) => {
+      if (args.includes('rev-parse')) return fakeChildWithStdout(0, 'abc123')
+      const target = args[args.length - 1] ?? ''
+      fsSync.mkdirSync(path.join(target, '.ecode-plugin'), { recursive: true })
+      fsSync.writeFileSync(path.join(target, '.ecode-plugin', 'plugin.json'), JSON.stringify({ name: 'sha-p', version: '1.0.0' }), 'utf8')
+      return fakeChild(0)
+    }) as unknown as PluginLoaderDeps['spawnImpl']
+    const loader = makeLoader({ spawnImpl })
+    await expect(loader.install('sha-p', 'shamkt')).rejects.toThrow('sha 校验失败')
+  })
+})
+
 describe('PluginLoader：loadAll 资源接入', () => {
   it('skills→addSource / mcp→plugin: 命名空间+占位符展开 / hooks→全局注册表', async () => {
     await makeLocalMarket('team', [{
@@ -309,6 +365,23 @@ function fakeChild(code: number): {
   return {
     on(event, cb) {
       if (event === 'close') queueMicrotask(() => cb(code as never))
+    },
+    kill() {},
+  }
+}
+
+/** fake ChildLike + stdout（rev-parse 等需要输出的命令）。 */
+function fakeChildWithStdout(code: number, stdout: string): {
+  on(event: string, cb: (a: never) => void): void
+  onStdout(cb: (d: Buffer) => void): void
+  kill(): void
+} {
+  return {
+    on(event, cb) {
+      if (event === 'close') queueMicrotask(() => cb(code as never))
+    },
+    onStdout(cb) {
+      cb(Buffer.from(stdout))
     },
     kill() {},
   }

@@ -74,6 +74,8 @@ export interface TuiAppDeps {
   hookRunner?: HookRunner | null
   /** M7：plugin 装载器（null = 未启用；/plugin 面板操作） */
   pluginLoader?: import('../services/plugin/loader.js').PluginLoader | null
+  /** /restart 的执行句柄（cli 注入：unmount + spawn 新实例 + exit；缺省时提示不可用） */
+  onRestart?: () => void
 }
 
 function isAbortError(e: unknown): boolean {
@@ -87,7 +89,7 @@ function isAbortError(e: unknown): boolean {
  * - active：当前轮活跃状态（分区累积：userInput / tools / streamingText）
  * - 一轮一 commit：runLoop 结束 → messagesToCommitted → setCommitted；active 清空
  */
-export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; banner?: string }): ReactElement {
+export function TuiApp({ deps, banner: initialBanner, onRestart }: { deps: TuiAppDeps; banner?: string; onRestart?: () => void }): ReactElement {
   const messagesRef = useRef<HistoryLine[]>([])
   const abortRef = useRef<AbortController>(new AbortController())
   const runningRef = useRef(false)
@@ -134,6 +136,8 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
   const [banner, setBanner] = useState<string | undefined>(initialBanner)
   // /plugin 面板刷新 key（安装/启停操作后重查 browse/list——数据是 loader 现查的，靠 remount 重建）
   const [pluginPanelKey, setPluginPanelKey] = useState(0)
+  // /restart 句柄经 ref（deps 闭包稳定，setTimeout 回调取最新）
+  const onRestartRef = useRef(onRestart)
 
   const submit = async (input: string, display?: string): Promise<void> => {
     if (runningRef.current) return
@@ -576,13 +580,13 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
   }, [])
 
-  // M7 P4.5：skill 同名冲突底部汇总（非阻断——引导 "/skill 查看；可直接让我改名或删除其一"）
+  // M7 P4.5：skill 同名冲突底部汇总（非阻断——计数只认 skill 间遮蔽，命令遮蔽不算；引导自然语言消解）
   useEffect(() => {
-    const shadowed = deps.skillRegistry.loadWarnings.filter((w) => w.includes('遮蔽'))
-    if (shadowed.length === 0) return
+    const count = deps.skillRegistry.shadowedEntries.length
+    if (count === 0) return
     setSystemMsgs((prev) => [
       ...prev,
-      `${shadowed.length} 个 skill 同名冲突（/skill 查看详情；可直接让我改名或删除其一）`,
+      `${count} 个 skill 同名冲突（/skill 查看详情；可直接让我改名或删除其一）`,
     ])
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
   }, [])
@@ -766,6 +770,9 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
         <PluginPanel
           key={pluginPanelKey}
           loader={deps.pluginLoader}
+          skillRegistry={deps.skillRegistry}
+          tools={deps.tools}
+          mcp={deps.mcpManager}
           refresh={() => setPluginPanelKey((k) => k + 1)}
           notify={(m) => setSystemMsgs([m])}
           onCancel={() => {
@@ -866,6 +873,16 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
             pickerRef.current = true
             setPluginPanelKey((k) => k + 1)
             setOverlay({ kind: 'plugin-panel' })
+            return
+          }
+          if (result.action === 'restart') {
+            if (onRestartRef.current === undefined) {
+              setSystemMsgs(['当前模式不支持重启（请手动重新运行 ecode）'])
+              return
+            }
+            setSystemMsgs(['正在重启 ECode…（会话历史已保存，/history 可恢复）'])
+            // 短暂展示提示后执行（cli 注入的重启句柄：unmount + spawn 新实例 + exit）
+            setTimeout(() => onRestartRef.current?.(), 400)
             return
           }
           if (result.action === 'cost') {

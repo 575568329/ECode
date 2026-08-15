@@ -77,7 +77,8 @@ const marketplaceSchema = {
   type: 'object',
   required: ['name', 'plugins'],
   properties: {
-    name: { type: 'string', minLength: 1 },
+    // name 会拼进市场目录路径——模式约束防穿越（P0-1：恶意 name 可让 rmIfExists 删任意目录）
+    name: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' },
     owner: { type: 'object', properties: { name: { type: 'string' } } },
     plugins: { type: 'array', items: entrySchema },
   },

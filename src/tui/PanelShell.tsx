@@ -140,6 +140,14 @@ export function PanelShell<T>({
   }
 
   useInput((input, key) => {
+    // 页签切换（M7 P7）：优先于一切分支——空页签（如未安装任何插件的「已安装」页）
+    // 也要能切走，否则用户被困在空页（真机复现：空列表守卫吞掉左右键）。
+    // 搜索态让位（左右留给后续文本编辑）。
+    if (tabs !== undefined && onTabChange !== undefined && query === '' && (key.leftArrow || key.rightArrow)) {
+      const delta = key.rightArrow ? 1 : -1
+      onTabChange((activeTabIndex === undefined ? 0 : activeTabIndex + delta + tabs.length) % tabs.length)
+      return
+    }
     // 空列表也要能退出/清词（搜索无匹配时 backspace 必须可用，否则锁死在无匹配态）
     if (items.length === 0) {
       if (key.backspace || key.delete) setQuery((q) => q.slice(0, -1))
@@ -167,10 +175,6 @@ export function PanelShell<T>({
       onCancel() // T4：面板期间 Ctrl+C = 退出面板（不中断 loop）
     } else if (key.backspace || key.delete) {
       setQuery((q) => q.slice(0, -1))
-    } else if (tabs !== undefined && onTabChange !== undefined && query === '' && (key.leftArrow || key.rightArrow)) {
-      // 页签切换（M7 P7）：搜索激活时让位（左右留给后续文本编辑）
-      const delta = key.rightArrow ? 1 : -1
-      onTabChange((activeTabIndex === undefined ? 0 : activeTabIndex + delta + tabs.length) % tabs.length)
     } else if (input !== '' && !key.ctrl && !key.meta && !key.return && !key.escape && !key.tab) {
       setQuery((q) => q + input) // 即时搜索（可打印字符）
     }

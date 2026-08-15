@@ -83,3 +83,70 @@ describe('PluginPanel 空态直达（无市场时回车即添加）', () => {
     expect(onCancel).toHaveBeenCalled()
   })
 })
+
+describe('PluginPanel 页签切换（←→）', () => {
+  it('浏览页 → → 切「已安装」页签', async () => {
+    const { stdin, lastFrame } = render(makePanel())
+    await flush()
+    stdin.write('\u001b[C')
+    await flush()
+    await flush()
+    const f = lastFrame() ?? ''
+    expect(f).toContain('已安装')
+    expect(f).toContain('尚未安装插件')
+  })
+
+  it('已安装页 → → 再切「添加市场」页', async () => {
+    const { stdin, lastFrame } = render(makePanel())
+    await flush()
+    stdin.write('\u001b[C')
+    await flush()
+    stdin.write('\u001b[C')
+    await flush()
+    await flush()
+    expect(lastFrame() ?? '').toContain('添加市场')
+  })
+
+  it('浏览页 → ← 环绕到「添加市场」页', async () => {
+    const { stdin, lastFrame } = render(makePanel())
+    await flush()
+    stdin.write('\u001b[D')
+    await flush()
+    await flush()
+    expect(lastFrame() ?? '').toContain('添加市场')
+  })
+
+  it('SS3 变体（ESC O C，终端应用模式）同样切页', async () => {
+    const { stdin, lastFrame } = render(makePanel())
+    await flush()
+    stdin.write('\u001bOC')
+    await flush()
+    await flush()
+    expect(lastFrame() ?? '').toContain('已安装')
+  })
+})
+
+describe('空列表页的页签切换（真机 bug 回归：已安装 0 项时 ← 被空列表守卫吞掉）', () => {
+  it('已安装页（空列表）→ ← 切回浏览页', async () => {
+    const { stdin, lastFrame } = render(makePanel())
+    await flush()
+    stdin.write('\u001b[C') // → 已安装（0 安装，空列表）
+    await flush()
+    expect(lastFrame() ?? '').toContain('尚未安装插件')
+    stdin.write('\u001b[D') // ← 应回浏览页（修复前被吞）
+    await flush()
+    await flush()
+    expect(lastFrame() ?? '').toContain('浏览市场 · 0 个市场')
+  })
+
+  it('空列表页 → → 可继续切到添加市场页（不被困）', async () => {
+    const { stdin, lastFrame } = render(makePanel())
+    await flush()
+    stdin.write('\u001b[C') // → 已安装（空）
+    await flush()
+    stdin.write('\u001b[C') // → 添加市场页
+    await flush()
+    await flush()
+    expect(lastFrame() ?? '').toContain('添加市场（owner/repo')
+  })
+})

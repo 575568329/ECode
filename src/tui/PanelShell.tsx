@@ -34,6 +34,10 @@ export interface PanelShellProps<T> {
   emptyHint?: string
   /** 光标移动回调（MCP 面板：failed 行随光标展开错误用） */
   onCursor?: (value: T | undefined) => void
+  /** 页签（M7 P7 扩展）：提供时 ←→ 切换（搜索态左右仍留给后续编辑，不抢占） */
+  tabs?: string[]
+  activeTabIndex?: number
+  onTabChange?: (index: number) => void
 }
 
 /** 从 rows 提取 label 的纯文本（默认搜索匹配用；ReactNode 取字符串叶子）。 */
@@ -57,6 +61,9 @@ export function PanelShell<T>({
   filter,
   emptyHint,
   onCursor,
+  tabs,
+  activeTabIndex,
+  onTabChange,
 }: PanelShellProps<T>): ReactElement {
   const [query, setQuery] = useState('')
   const [idx, setIdx] = useState(0)
@@ -160,6 +167,10 @@ export function PanelShell<T>({
       onCancel() // T4：面板期间 Ctrl+C = 退出面板（不中断 loop）
     } else if (key.backspace || key.delete) {
       setQuery((q) => q.slice(0, -1))
+    } else if (tabs !== undefined && onTabChange !== undefined && query === '' && (key.leftArrow || key.rightArrow)) {
+      // 页签切换（M7 P7）：搜索激活时让位（左右留给后续文本编辑）
+      const delta = key.rightArrow ? 1 : -1
+      onTabChange((activeTabIndex === undefined ? 0 : activeTabIndex + delta + tabs.length) % tabs.length)
     } else if (input !== '' && !key.ctrl && !key.meta && !key.return && !key.escape && !key.tab) {
       setQuery((q) => q + input) // 即时搜索（可打印字符）
     }
@@ -176,6 +187,16 @@ export function PanelShell<T>({
         {title}
         {subtitle !== undefined ? <Text dimColor>  {subtitle}</Text> : null}
       </Text>
+      {tabs !== undefined && tabs.length > 0 && (
+        <Box>
+          {tabs.map((t, i) => (
+            <Text key={`tab${i}`} inverse={i === (activeTabIndex ?? 0)} bold={i === (activeTabIndex ?? 0)} color={i === (activeTabIndex ?? 0) ? undefined : theme.border}>
+              {i === 0 ? ' ' : '  '}
+              {t}
+            </Text>
+          ))}
+        </Box>
+      )}
       <Box flexDirection="column" marginTop={1}>
         {query !== '' && (
           <Text dimColor>

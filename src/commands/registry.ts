@@ -28,6 +28,7 @@ export interface CommandResult {
     | 'skill-create'
     | 'open-mcp-panel'
     | 'mcp-reconnect'
+    | 'open-plugin-panel'
 }
 
 export interface Command {
@@ -133,6 +134,11 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
       }
       return { action: 'open-mcp-panel' as const }
     },
+  })
+  registry.register({
+    name: 'plugin',
+    description: '插件管理（浏览市场/安装/启停/卸载，面板）',
+    run: () => ({ action: 'open-plugin-panel' as const }),
   })
   // /config：仅桌面平台注册（win32=explorer / darwin=open；linux·WSL 无可靠 opener → 用 /setup）
   if (process.platform === 'win32' || process.platform === 'darwin') {

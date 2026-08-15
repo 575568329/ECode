@@ -46,6 +46,7 @@ import { HistoryPicker } from './HistoryPicker.js'
 import { Wizard } from './Wizard.js'
 import { SkillPanel } from './SkillPanel.js'
 import { McpPanel } from './McpPanel.js'
+import { PluginPanel } from './PluginPanel.js'
 import { Select } from './Select.js'
 import type { McpManager, McpServerSnapshot } from '../services/mcp/manager.js'
 import type { SessionMeta } from '../services/history.js'
@@ -71,6 +72,8 @@ export interface TuiAppDeps {
   mcpWarnings?: string[]
   /** M7：hooks 分发器（null = 未启用；SessionStart/UserPromptSubmit/Stop 在此触发） */
   hookRunner?: HookRunner | null
+  /** M7：plugin 装载器（null = 未启用；/plugin 面板操作） */
+  pluginLoader?: import('../services/plugin/loader.js').PluginLoader | null
 }
 
 function isAbortError(e: unknown): boolean {
@@ -119,6 +122,7 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     | { kind: 'setup-wizard' }
     | { kind: 'skill-panel' }
     | { kind: 'mcp-panel' }
+    | { kind: 'plugin-panel' }
     | { kind: 'select'; title: string; options: string[]; resolve: (v: string | undefined) => void }
     | null
   >(null)
@@ -128,6 +132,8 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
   const [historyMetas, setHistoryMetas] = useState<SessionMeta[]>([])
   // banner（配置无效提示；初始从 cli 传入，/setup 成功后清，submit 配置无效时设）
   const [banner, setBanner] = useState<string | undefined>(initialBanner)
+  // /plugin 面板刷新 key（安装/启停操作后重查 browse/list——数据是 loader 现查的，靠 remount 重建）
+  const [pluginPanelKey, setPluginPanelKey] = useState(0)
 
   const submit = async (input: string, display?: string): Promise<void> => {
     if (runningRef.current) return
@@ -570,6 +576,17 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
   }, [])
 
+  // M7 P4.5：skill 同名冲突底部汇总（非阻断——引导 "/skill 查看；可直接让我改名或删除其一"）
+  useEffect(() => {
+    const shadowed = deps.skillRegistry.loadWarnings.filter((w) => w.includes('遮蔽'))
+    if (shadowed.length === 0) return
+    setSystemMsgs((prev) => [
+      ...prev,
+      `${shadowed.length} 个 skill 同名冲突（/skill 查看详情；可直接让我改名或删除其一）`,
+    ])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
+  }, [])
+
   useEffect(() => {
     const pending = deps.mcpPendingApproval
     if (pending === undefined) return
@@ -745,6 +762,18 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
           toolsOf={(n) => deps.mcpManager?.toolsOf(n) ?? []}
         />
       )}
+      {overlay?.kind === 'plugin-panel' && deps.pluginLoader != null && (
+        <PluginPanel
+          key={pluginPanelKey}
+          loader={deps.pluginLoader}
+          refresh={() => setPluginPanelKey((k) => k + 1)}
+          notify={(m) => setSystemMsgs([m])}
+          onCancel={() => {
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+        />
+      )}
       {overlay?.kind === 'select' && (
         <Select
           title={overlay.title}
@@ -827,6 +856,16 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
           }
           if (result.action === 'mcp-reconnect') {
             void mcpReconnect(result.payload)
+            return
+          }
+          if (result.action === 'open-plugin-panel') {
+            if (deps.pluginLoader == null) {
+              setSystemMsgs(['plugin 系统未启用'])
+              return
+            }
+            pickerRef.current = true
+            setPluginPanelKey((k) => k + 1)
+            setOverlay({ kind: 'plugin-panel' })
             return
           }
           if (result.action === 'cost') {

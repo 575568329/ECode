@@ -52,6 +52,7 @@ import { HookRunner } from '../services/hooks/runner.js'
 import { parseUserHooks } from '../services/hooks/validate.js'
 import { runCommandHook } from '../services/hooks/exec.js'
 import { HookedToolRegistry } from '../tools/hooked.js'
+import { PluginLoader } from '../services/plugin/loader.js'
 import type { HistoryLine } from '../core/types.js'
 
 interface Deps {
@@ -67,6 +68,7 @@ interface Deps {
   mcpPendingApproval?: { file: string; approve: () => Promise<void> }
   mcpWarnings: string[]
   hookRunner: HookRunner | null
+  pluginLoader: PluginLoader | null
 }
 
 function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
@@ -116,6 +118,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
     mcpManager: mcp.manager,
     mcpWarnings: mcp.warnings,
     hookRunner,
+    pluginLoader: new PluginLoader({ warn: (m) => logger.warn('plugin', 'load', { message: m }) }),
     ...(mcp.pendingApproval !== undefined ? { mcpPendingApproval: mcp.pendingApproval } : {}),
   }
 }
@@ -229,6 +232,15 @@ async function main(): Promise<void> {
   await skillRegistry.load({ builtinCommandNames: commandRegistry.list().map((c) => c.name) }).catch(() => {})
   for (const w of skillRegistry.loadWarnings) logger.warn('skill', 'load_warning', { message: w })
   logger.info('skill', 'loaded', { count: skillRegistry.list().length })
+
+  // M7 P-P6：plugin 资源接入（skills→addSource / mcp→命名空间 server / hooks→扩展注册表）
+  const pluginWarnings = await deps.pluginLoader
+    ?.loadAll(skillRegistry, deps.mcpManager)
+    .catch((e: unknown) => [`plugin loadAll 失败：${e instanceof Error ? e.message : String(e)}`]) ?? []
+  for (const w of pluginWarnings) logger.warn('plugin', 'load_warning', { message: w })
+  if (deps.pluginLoader !== null) {
+    logger.info('plugin', 'loaded', { count: deps.pluginLoader.list().length })
+  }
 
   // argv 单次模式：M1 stdout 输出 → 跑一次退出
   const initialInput = process.argv.slice(2).join(' ').trim()

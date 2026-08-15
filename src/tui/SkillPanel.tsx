@@ -49,6 +49,22 @@ export function SkillPanel({ skills, onPick, onCancel }: SkillPanelProps): React
       })
     }
   }
+  // M7 P4.5：被同名遮蔽的 skill 灰显列出（数据不消失，状态标清楚；禁选——不在注册表，回填无效）
+  if (skillRegistry.shadowedEntries.length > 0) {
+    rows.push({ type: 'header', label: '同名冲突（被遮蔽，不生效）' })
+    for (const sh of skillRegistry.shadowedEntries) {
+      rows.push({
+        type: 'item',
+        disabled: true,
+        value: { name: sh.name, description: '', body: '', baseDir: sh.loserPath, source: 'plugin', userInvocable: false, disableModelInvocation: true },
+        label: (
+          <Text dimColor>
+            {sh.name.padEnd(16)} 被 {sh.winnerSource} 级遮蔽（{sh.loserPath}）
+          </Text>
+        ),
+      })
+    }
+  }
   return (
     <PanelShell
       title="Skill"

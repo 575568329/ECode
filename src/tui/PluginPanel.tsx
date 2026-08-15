@@ -250,12 +250,17 @@ export function PluginPanel({ loader, skillRegistry, tools, mcp, refresh, notify
     )
   }
 
-  // tab 0：浏览市场（默认）
-  const rows: PanelRow<BrowseItem>[] = browseItems.map((p) => ({
-    type: 'item',
-    value: p,
-    label: ` ${p.name.padEnd(18)}${p.marketplace.padEnd(10)}${(p.description ?? '').slice(0, 28)}${p.installed ? '  已装' : ''}`,
-  }))
+  // tab 0：浏览市场（默认）。零插件时给「添加市场」直达项（回车进添加页——
+  // 不依赖用户发现 ←→ 页签；空态只留文案会让"添加市场"页变成隐形功能）
+  const addDirectItem: BrowseItem = { name: '__add__', marketplace: '', installed: false }
+  const rows: PanelRow<BrowseItem>[] =
+    browseItems.length === 0
+      ? [{ type: 'item', value: addDirectItem, label: ' ＋ 添加市场（owner/repo | git URL | 本地路径）——回车进入' }]
+      : browseItems.map((p) => ({
+          type: 'item',
+          value: p,
+          label: ` ${p.name.padEnd(18)}${p.marketplace.padEnd(10)}${(p.description ?? '').slice(0, 28)}${p.installed ? '  已装' : ''}`,
+        }))
   return (
     <Box flexDirection="column">
       <PanelShell
@@ -265,10 +270,13 @@ export function PluginPanel({ loader, skillRegistry, tools, mcp, refresh, notify
         activeTabIndex={0}
         onTabChange={(i) => setView({ view: 'main', tab: i })}
         rows={rows}
-        onPick={(p) => setView({ view: 'detail', item: p })}
+        onPick={(p) => {
+          if (p.name === '__add__') setView({ view: 'add-market' })
+          else setView({ view: 'detail', item: p })
+        }}
         onCancel={onCancel}
-        emptyHint="（无插件——先去「添加市场」页添加一个市场）"
-        keyHints="↑↓ 选择 · 回车 详情 · 输入即搜索 · ←→ 切页 · Esc 退出"
+        emptyHint="（无市场——回车添加第一个市场）"
+        keyHints="↑↓ 选择 · 回车 详情/确认 · 输入即搜索 · ←→ 切页 · Esc 退出"
       />
       {error !== null && (
         <Text color={theme.error}> ⚠ {error.slice(0, 120)}</Text>

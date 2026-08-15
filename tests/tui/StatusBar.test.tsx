@@ -41,8 +41,14 @@ describe('StatusBar', () => {
     expect(lastFrame()).toContain('¥0.003')
   })
 
-  it('显示 warning', () => {
-    const { lastFrame } = render(React.createElement(StatusBar, { model: 'M', warning: '上下文将满' }))
-    expect(lastFrame()).toContain('上下文将满')
+  it('显示 MCP 段', () => {
+    const { lastFrame } = render(React.createElement(StatusBar, { model: 'M', mcp: 'MCP 2/3' }))
+    expect(lastFrame()).toContain('MCP 2/3')
+  })
+
+  it('不含 warning（运行时告警由 App 层渲染为独立第二行）', () => {
+    // warning prop 已从 StatusBar 移除——长告警（429 JSON）曾把本行与快捷键提示挤碎
+    const { lastFrame } = render(React.createElement(StatusBar, { model: 'M', tokens: 800 }))
+    expect((lastFrame() ?? '').split('\n')).toHaveLength(1)
   })
 })

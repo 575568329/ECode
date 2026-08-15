@@ -85,6 +85,8 @@ describe('TuiApp /model', () => {
     await flush()
     stdin.write('\r')
     await flush()
+    stdin.write('\r') // 第二个回车=执行（统一两段式）
+    await flush()
     const f = lastFrame() ?? ''
     expect(f).toContain('切换供应商/模型')
     expect(f).toContain('glm-5.2')
@@ -96,6 +98,8 @@ describe('TuiApp /model', () => {
     stdin.write('/model')
     await flush()
     stdin.write('\r')
+    await flush()
+    stdin.write('\r') // 第二个回车=执行（统一两段式）
     await flush()
     // ↓ 选中第二项（deepseek-v4）
     stdin.write('\u001b[B')
@@ -113,6 +117,8 @@ describe('TuiApp /model', () => {
     stdin.write('/model')
     await flush()
     stdin.write('\r')
+    await flush()
+    stdin.write('\r') // 第二个回车=执行（统一两段式）
     await flush()
     stdin.write('\u001b') // Esc
     await flush()
@@ -138,6 +144,8 @@ describe('TuiApp /model', () => {
     stdin.write('/model')
     await flush()
     stdin.write('\r')
+    await flush()
+    stdin.write('\r') // 第二个回车=执行（统一两段式）
     await flush()
     stdin.write('\u001b[B')
     await flush()
@@ -169,6 +177,8 @@ describe('TuiApp /model', () => {
     await flush()
     stdin.write('\r')
     await flush()
+    stdin.write('\r') // 第二个回车=执行（统一两段式）
+    await flush()
     const f = lastFrame() ?? ''
     expect(f).toContain('恢复历史会话')
     expect(f).toContain('帮我写函数')
@@ -198,6 +208,8 @@ describe('TuiApp /model', () => {
     await flush()
     stdin.write('\r')
     await flush()
+    stdin.write('\r') // 第二个回车=执行（统一两段式）
+    await flush()
     stdin.write('\r') // 选中第一项恢复
     await flush()
     expect(restoreFull).toHaveBeenCalledWith('s1')
@@ -215,6 +227,8 @@ describe('TuiApp /model', () => {
     stdin.write('/history')
     await flush()
     stdin.write('\r')
+    await flush()
+    stdin.write('\r') // 第二个回车=执行（统一两段式）
     await flush()
     expect(lastFrame() ?? '').toContain('无历史会话')
   })
@@ -253,6 +267,8 @@ describe('TuiApp /model', () => {
     await flush()
     stdin.write('\r')
     await flush()
+    stdin.write('\r') // 第二个回车=执行（统一两段式）
+    await flush()
     expect(lastFrame() ?? '').toContain('协议类型')
     expect(lastFrame() ?? '').toContain('1/5')
   })
@@ -271,6 +287,8 @@ describe('TuiApp /cost + 命令补全（M5）', () => {
     await flush()
     stdin.write('\r')
     await flush()
+    stdin.write('\r') // 第二个回车=执行（统一两段式）
+    await flush()
     const f = lastFrame() ?? ''
     expect(f).toContain('本轮 token')
     expect(f).toContain('input 0')
@@ -283,6 +301,8 @@ describe('TuiApp /cost + 命令补全（M5）', () => {
     stdin.write('/com')
     await flush()
     stdin.write('\r')
+    await flush()
+    stdin.write('\r') // 第二个回车=执行（统一两段式）
     await flush()
     const f = lastFrame() ?? ''
     // /com 补全为 /compact（problem 2 修复）；新会话 messages 空 → compactManual 反馈「无可压缩」(problem 3)

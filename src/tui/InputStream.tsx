@@ -56,6 +56,7 @@ export function SlashSuggest({
           {c.shadowed ? <Text color="yellow"> (被命令遮蔽)</Text> : null}
         </Text>
       ))}
+      <Text dimColor> ↑↓ 选择 · 回车 填入 · Tab 补全（填入后再回车执行）</Text>
     </Box>
   )
 }
@@ -74,10 +75,10 @@ interface InputStreamProps {
 }
 
 /**
- * 输入流：TextInput + 历史（↑↓）+ / 补全（↑↓ 选中 + Enter 执行选中 + Tab 补全）。
- * - slash 模式 + 选中 + Enter → 直接执行选中命令/skill（不需先 Tab 补全）
- * - slash 模式 + 未选中 + Enter → submit 当前文本（如 /xyz → 未知命令）
- * - `/name args...` → 命令带参 run(args)；无命令命中查 skill（userInvocable）→ onSkillInvoke
+ * 输入流：TextInput + 历史（↑↓）+ / 补全（↑↓ 选中 + 回车回填 + Tab 补全）。
+ * - 统一两段式（与 SkillPanel 一致，用户拍板）：回车 = 回填 `/选中名 `（尾随空格留参数位），
+ *   不直接执行；用户看到回填内容后再回车才执行（所见即所发，也防 /com 误发未补全文本）
+ * - `/name args...`（含空格，回填态或手输参数）→ 回车提交：命令带参 run(args)；无命令查 skill
  */
 export function InputStream({
   onSubmit,
@@ -142,14 +143,15 @@ export function InputStream({
     setHistIdx(-1)
   }
 
-  // Enter：slash 模式无参数 + 有匹配 → 执行选中（↑↓）或默认第一个；
-  // 有参数（含空格）→ submit 全文走分流（命令带参 / skill 传参）
+  // Enter：统一两段式（与 SkillPanel 回填一致，用户拍板）——
+  // 命令名无空格 + 有匹配 → 回填 `/选中名 `（带尾随空格留参数位），不执行；
+  // 再回车（此时文本含空格）或已带参数 → submit 全文走分流（命令带参 / skill 传参）
   const handleTextSubmit = (text: string): void => {
-    if (text.startsWith('/') && !/\s/.test(text.trim())) {
+    if (text.startsWith('/') && !/\s/.test(text)) {
       const matches = matchSlashEntries(text.slice(1))
       if (matches.length > 0) {
         const idx = slashIdx >= 0 && slashIdx < matches.length ? slashIdx : 0
-        submit(`/${matches[idx].name}`)
+        setCur(createCursor(`/${matches[idx].name} `))
         return
       }
     }

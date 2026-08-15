@@ -69,6 +69,8 @@ describe('InputStream：skill 分流（S-P5）', () => {
     await flush()
     stdin.write('\r')
     await flush()
+    stdin.write('\r') // 回填后再回车执行
+    await flush()
     expect(onSkillInvoke).toHaveBeenCalledWith('commit', '修复登录')
   })
 
@@ -79,6 +81,8 @@ describe('InputStream：skill 分流（S-P5）', () => {
     stdin.write('/commit')
     await flush()
     stdin.write('\r')
+    await flush()
+    stdin.write('\r') // 回填后再回车执行
     await flush()
     expect(onSkillInvoke).toHaveBeenCalledWith('commit', undefined)
   })
@@ -94,6 +98,8 @@ describe('InputStream：skill 分流（S-P5）', () => {
     await flush()
     stdin.write('\r')
     await flush()
+    stdin.write('\r') // 回填后再回车执行
+    await flush()
     expect(onCommand).toHaveBeenCalled()
     expect(onSkillInvoke).not.toHaveBeenCalled()
   })
@@ -108,6 +114,8 @@ describe('InputStream：skill 分流（S-P5）', () => {
     stdin.write('/llmonly')
     await flush()
     stdin.write('\r')
+    await flush()
+    stdin.write('\r') // 回填后再回车执行
     await flush()
     expect(onSkillInvoke).not.toHaveBeenCalled()
     expect(onCommand).toHaveBeenCalled()
@@ -126,6 +134,8 @@ describe('InputStream：skill 分流（S-P5）', () => {
     stdin.write('/echo a b')
     await flush()
     stdin.write('\r')
+    await flush()
+    stdin.write('\r') // 回填后再回车执行
     await flush()
     const result = onCommand.mock.calls[0]?.[1] as { output?: string }
     expect(result?.output).toBe('got:a b')
@@ -162,5 +172,57 @@ describe('InputStream：insert 回填通道（S-P6）', () => {
     await flush()
     expect(lastFrame() ?? '').toContain('x')
     expect(lastFrame() ?? '').not.toContain('other')
+  })
+})
+
+describe('统一两段式（用户拍板：回车=回填，再回车=执行）', () => {
+  it('命令：第一个回车只回填（尾随空格+补全消失），不执行；第二个回车执行', async () => {
+    commandRegistry.register({ name: 'zz-run', description: '', run: () => ({ output: 'RAN' }) })
+    const onCommand = vi.fn()
+    const { stdin, lastFrame } = render(React.createElement(InputStream, { onSubmit: () => {}, onCommand }))
+    await flush()
+    stdin.write('/zz-ru')
+    await flush()
+    stdin.write('\r') // 第一个回车 = 回填
+    await flush()
+    expect(onCommand).not.toHaveBeenCalled() // 不执行
+    const f = lastFrame() ?? ''
+    expect(f).toContain('zz-run')
+    expect(f).not.toContain('(skill)') // 补全列表消失（空格停匹配）
+    stdin.write('\r') // 第二个回车 = 执行
+    await flush()
+    expect(onCommand).toHaveBeenCalledTimes(1)
+  })
+
+  it('skill：第一个回车回填 `/name `，第二个回车触发 onSkillInvoke', async () => {
+    reg('commit')
+    const onSkillInvoke = vi.fn()
+    const { stdin } = render(React.createElement(InputStream, { onSubmit: () => {}, onSkillInvoke }))
+    await flush()
+    stdin.write('/commi')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    expect(onSkillInvoke).not.toHaveBeenCalled()
+    stdin.write('\r')
+    await flush()
+    expect(onSkillInvoke).toHaveBeenCalledWith('commit', undefined)
+  })
+
+  it('↑↓ 选中后回车回填选中项（非第一个）', async () => {
+    reg('zz-sa')
+    reg('zz-sb')
+    const onSkillInvoke = vi.fn()
+    const { stdin } = render(React.createElement(InputStream, { onSubmit: () => {}, onSkillInvoke }))
+    await flush()
+    stdin.write('/zz-s') // 只有两个 skill 匹配，无命令干扰
+    await flush()
+    stdin.write('\u001b[B') // ↓ 选中第二项 zz-sb
+    await flush()
+    stdin.write('\r')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    expect(onSkillInvoke).toHaveBeenCalledWith('zz-sb', undefined)
   })
 })

@@ -31,7 +31,7 @@ export function spawnSpec(cfg: McpServerConfig): { command: string; args: string
 }
 
 /** SDK Client → ClientLike（callTool 的 signal/timeout 透传 + resetTimeoutOnProgress）。 */
-function wrapSdkClient(client: Client, defaultTimeoutMs: number): McpClientLike {
+function wrapSdkClient(client: Client, transport: StdioClientTransport | StreamableHTTPClientTransport, defaultTimeoutMs: number): McpClientLike {
   return {
     listTools: async () => {
       const r = await client.listTools()
@@ -50,6 +50,13 @@ function wrapSdkClient(client: Client, defaultTimeoutMs: number): McpClientLike 
       return r as unknown as { content: McpContentItem[]; isError?: boolean }
     },
     close: () => client.close(),
+    // 同步杀（进程退出兜底）：SDK close() 是异步链（stdin.end → 2s → SIGTERM → 2s → SIGKILL），
+    // exit 回调里事件循环即将停止只跑得到第一段——stdio 子进程不响应 stdin 关闭即孤儿。
+    // 直接同步 kill transport 的子进程（_process 是 SDK 内部字段，^1.30 内稳定；SDK 公开后再换）。
+    killNow: () => {
+      const proc = (transport as unknown as { _process?: { kill(signal?: string): void } })._process
+      proc?.kill('SIGKILL')
+    },
   }
 }
 
@@ -91,7 +98,7 @@ export function createSdkConnectFn(): (name: string, cfg: McpServerConfig, signa
     } finally {
       if (raceTimer !== undefined) clearTimeout(raceTimer)
     }
-    return wrapSdkClient(client, timeoutMs)
+    return wrapSdkClient(client, transport, timeoutMs)
   }
 }
 

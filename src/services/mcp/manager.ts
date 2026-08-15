@@ -34,6 +34,8 @@ export interface McpClientLike {
     opts?: { signal?: AbortSignal; timeout?: number },
   ): Promise<{ content: McpContentItem[]; isError?: boolean }>
   close(): Promise<void>
+  /** 同步杀（进程退出兜底；非 stdio 可为空实现）。exit 回调跑不完异步 close 链——见 adapt.ts */
+  killNow?(): void
 }
 
 /** tools/call 返回的 content 项（渲染分派在 adapt.ts renderContent）。 */
@@ -426,7 +428,24 @@ export class McpManager {
     if (st !== undefined) st.inFlight = Math.max(0, st.inFlight - 1)
   }
 
-  /** 退出清理（exit handler 调；全部 close，不留孤儿）。 */
+  /**
+   * 同步兜底清理（exit/信号回调专用）：清定时器 + 同步杀全部子进程。
+   * 与 stop() 的分工：stop 是优雅异步（协议关闭→超时升级信号），stopNow 不等协议直接 SIGKILL——
+   * exit 回调里事件循环即将停止，只有同步段能保证执行。
+   */
+  stopNow(): void {
+    if (this.timer !== undefined) {
+      clearInterval(this.timer)
+      this.timer = undefined
+    }
+    for (const st of this.servers.values()) {
+      st.client?.killNow?.()
+      st.client = undefined
+      if (st.status === 'connected') st.status = st.hasCache ? 'cached' : 'not-connected'
+    }
+  }
+
+  /** 退出清理（正常路径优先用：协议优雅关闭→超时升级信号）。 */
   async stop(): Promise<void> {
     this.stopped = true
     if (this.timer !== undefined) {

@@ -293,3 +293,21 @@ describe('McpManager 审阅修复回归', () => {
     expect(mgr.status()[0]).toMatchObject({ status: 'failed' })
   })
 })
+
+describe('stopNow（退出同步兜底）', () => {
+  it('同步 killNow 全部 client + 清定时器，不等协议', async () => {
+    const killNow = vi.fn()
+    const connectFn = vi.fn(async () => ({
+      listTools: async () => ({ tools: TOOLS }),
+      callTool: async () => ({ content: [] }),
+      close: async () => {},
+      killNow,
+    }))
+    const mgr = new McpManager({ connectFn, healthIntervalMs: 0 })
+    await mgr.start([entry('a'), entry('b', { enabled: false })])
+    await mgr.lazyConnect('a')
+    mgr.stopNow() // 同步：无 await 也应已杀
+    expect(killNow).toHaveBeenCalledTimes(1) // 只杀已连接的（disabled 无 client）
+    expect(mgr.status().find((s) => s.name === 'a')?.status).toBe('cached')
+  })
+})

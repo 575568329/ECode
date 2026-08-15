@@ -365,14 +365,20 @@ export function TuiApp({ deps, banner: initialBanner }: { deps: TuiAppDeps; bann
       const candidate = parseCandidate(raw)
       const existing = deps.skillRegistry.get(candidate.name)
       if (existing === undefined) {
-        // 创建路径：预览（采用/放弃）
+        // 创建路径：选存储层级（用户级=个人 ~/.ecode/skills；项目级=团队共享 .ecode/skills 入库）
+        const where = await askSelect('存储位置', ['用户级（个人，~/.ecode/skills）', '项目级（团队共享，.ecode/skills 入库）'])
+        if (where === undefined) {
+          setSystemMsgs(['（已放弃起草）'])
+          return
+        }
+        const level = where.startsWith('项目级') ? ('project' as const) : ('user' as const)
         const ok = await askPreviewConfirm(renderCreatePreview(candidate), 'skill-create')
         if (!ok) {
           setSystemMsgs(['（已放弃起草；可调整会话后再跑 /skill-create）'])
           return
         }
-        const r = await deps.skillRegistry.install(candidate)
-        setSystemMsgs([`✓ 已创建 skill「${candidate.name}」（${r.path}）`])
+        const r = await deps.skillRegistry.install(candidate, [], level)
+        setSystemMsgs([`✓ 已创建 skill「${candidate.name}」（${level === 'project' ? '项目级' : '用户级'}：${r.path}）`])
       } else {
         // 升级路径：merger 三态 → 冲突裁决 → diff 预览 → install
         const mRaw = await callLLM(

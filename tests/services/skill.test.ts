@@ -349,3 +349,24 @@ describe('SkillRegistry.install 数据一致性（审阅修复）', () => {
     await expect(reg.install({ name: 'p', description: 'd', body: 'x' })).rejects.toThrow('plugin')
   })
 })
+
+describe('install 存储层级（用户拍板补设计）', () => {
+  it("target:'project' → 落盘项目级目录 + level 标注", async () => {
+    const { reg, projectDir } = makeRegistry()
+    const r = await reg.install({ name: 'team-flow', description: 'd', body: 'b' }, [], 'project')
+    expect(r.mode).toBe('created')
+    if (r.mode === 'created') expect(r.level).toBe('project')
+    expect(r.path).toContain('proj')
+    expect(fs.existsSync(path.join(projectDir, 'team-flow', 'SKILL.md'))).toBe(true)
+    expect(reg.get('team-flow')?.source).toBe('project')
+  })
+
+  it("默认 target='user'；磁盘探测也按目标目录", async () => {
+    const { reg, projectDir } = makeRegistry()
+    await reg.install({ name: 'p1', description: 'd', body: 'b' }, [], 'project')
+    // Map 已有 p1（project），再 install 默认 user → 走升级（同名已存在），写回原层级
+    const r2 = await reg.install({ name: 'p1', description: 'd2', body: 'b' })
+    expect(r2.mode).toBe('upgraded')
+    expect(r2.path).toContain('proj')
+  })
+})

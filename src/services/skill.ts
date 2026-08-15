@@ -64,7 +64,7 @@ export interface SectionDecision {
 }
 
 export type InstallResult =
-  | { mode: 'created'; path: string }
+  | { mode: 'created'; path: string; level: 'user' | 'project' }
   /** conflicts = 被替换的同名 section 标题（供命令层/UI 展示） */
   | { mode: 'upgraded'; path: string; backedUpTo: string; conflicts: string[] }
 
@@ -312,33 +312,38 @@ export class SkillRegistry {
    *   会被项目级原文件永久遮蔽（双副本 + 升级不可见）。用户级/项目级都回写原目录；
    *   plugin 源（M7）只读，拒绝升级。
    */
-  async install(c: SkillCandidate, decisions: SectionDecision[] = []): Promise<InstallResult> {
+  async install(
+    c: SkillCandidate,
+    decisions: SectionDecision[] = [],
+    target: 'user' | 'project' = 'user',
+  ): Promise<InstallResult> {
     if (!SKILL_NAME_RE.test(c.name) || c.name.length > MAX_NAME_LEN) {
       throw new Error(`skill 名非法：${c.name}（须匹配 ${SKILL_NAME_RE.source}，≤${MAX_NAME_LEN} 字符）`)
     }
     if (c.description.trim() === '' || c.description.length > MAX_DESC_LEN) {
       throw new Error(`description 不能为空且 ≤${MAX_DESC_LEN} 字符`)
     }
-    // 内存已有 → 用内存态；没有 → 探测磁盘（userDir 下同名 SKILL.md）防无备份覆盖
+    const baseDir = target === 'project' ? this.projectInstallDir() : this.dirs.userDir
+    // 内存已有 → 用内存态；没有 → 探测磁盘（目标目录下同名 SKILL.md）防无备份覆盖
     let existing = this.skills.get(c.name)
     if (existing === undefined) {
-      const diskDir = path.join(this.dirs.userDir, c.name)
+      const diskDir = path.join(baseDir, c.name)
       const diskFile = path.join(diskDir, SKILL_FILE)
       try {
         const text = await fs.promises.readFile(diskFile, 'utf8')
-        existing = this.parse(diskDir, c.name, text, 'user') ?? undefined
+        existing = this.parse(diskDir, c.name, text, target) ?? undefined
       } catch {
         existing = undefined // 磁盘也无 → 真·创建
       }
     }
     if (existing === undefined) {
-      const targetDir = path.join(this.dirs.userDir, c.name)
+      const targetDir = path.join(baseDir, c.name)
       const targetFile = path.join(targetDir, SKILL_FILE)
       await fs.promises.mkdir(targetDir, { recursive: true })
       await fs.promises.writeFile(targetFile, serializeSkillMd(c), 'utf8')
-      const info = this.parse(targetDir, c.name, serializeSkillMd(c), 'user')
+      const info = this.parse(targetDir, c.name, serializeSkillMd(c), target)
       if (info !== undefined) this.skills.set(c.name, info)
-      return { mode: 'created', path: targetFile.split(path.sep).join('/') }
+      return { mode: 'created', path: targetFile.split(path.sep).join('/'), level: target }
     }
     // —— 升级模式（写回原层级）——
     if (existing.source === 'plugin') {
@@ -356,6 +361,17 @@ export class SkillRegistry {
     const info = this.parse(targetDir, c.name, serializeSkillMd(merged), existing.source)
     if (info !== undefined) this.skills.set(c.name, info)
     return { mode: 'upgraded', path: targetFile.split(path.sep).join('/'), backedUpTo, conflicts }
+  }
+
+  /**
+   * 项目级安装目录（target:'project' 用）：显式注入优先；否则探测到的已存在项目级目录；
+   * 都没有则在 <cwd>/.ecode/skills 新建（团队共享入库，.gitignore 已豁免）。
+   */
+  private projectInstallDir(): string {
+    if (this.dirs.projectDir !== undefined) return this.dirs.projectDir
+    const found = findProjectSkillsDir(process.cwd())
+    if (found !== undefined) return found
+    return path.join(process.cwd(), '.ecode', 'skills')
   }
 
   /** 当前 SKILL.md 存档到 versions/vN/（上限 MAX_VERSIONS，超出挤掉最旧）。 */

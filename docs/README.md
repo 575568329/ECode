@@ -44,6 +44,7 @@
 | ECode 自测方法 | [规范/2026-08-14_ECode自测方法_已完成.md](./规范/2026-08-14_ECode自测方法_已完成.md) | Agent 完全自测体系（5 层）：单测 / ink-testing 渲染 / node 脚本真模块 / argv / **node-pty 真 TUI**（pty 提供 TTY 让 Ink raw mode 工作，管道 stdin 不行；★ 分开写输入+回车避 TextInput 时序坑）|
 | M5 真机测试单 | [诊断/2026-08-14_M5真机测试单_已完成.md](./诊断/2026-08-14_M5真机测试单_已完成.md) | T1-T9 case（压缩触发/命令/数据完整性），含 P0 修复验证重点 + 失败速查表 |
 | ADR-026 AppContext 与 Plugin 装配骨架 | [决策/2026-08-14_ADR-026-引入AppContext与Plugin装配骨架_已完成.md](./决策/2026-08-14_ADR-026-引入AppContext与Plugin装配骨架_已完成.md) | 借鉴 deepseek-harness（Cordis Plugin 形状 + capability seam 三角色）统一装配；**暂缓采纳**——M5 后 makeDeps 未膨胀（22 行）、M6 PluginLoader 需求未验证；M6 实施到装配环节若确需再开新 ADR supersedes；源码引用已验证准确 |
+| M7 Hooks 与 Plugin 执行链解析 | [解析/2026-08-15_后续-M7-Hooks与Plugin执行链解析_待审核.md](./解析/2026-08-15_后续-M7-Hooks与Plugin执行链解析_待审核.md) | 一轮连续代码走读整理：三分离模型（声明分散/触发分散/执行集中）/ 三源注册与 specsFor 归一（拉模型）/ makeDeps 只插线 / 七案发现场+装饰器 / dispatch→runOne→runCommandHook 逐跳 / handler 五字段消费点 / verdict 对账表 / fail-open 落点 / 黑名单 / mcp_tool 占位≠MCP 不可用 / plugin 安装链+loadOne 四类分发 / 高频误区速查 + 接线缺口（→M9 附录D.5） |
 
 > 其余文档按需在各目录补充，命名见下方约定。
 

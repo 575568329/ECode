@@ -10,37 +10,36 @@
 
 ECode 的 hooks 不是"事件总线"，是一套**声明、触发、执行三处分工**的机制：
 
-```mermaid
-flowchart TD
-    subgraph DECL["声明（存）— 分散三处"]
-        U["用户源<br/>~/.ecode/config.json 的 hooks 键"]
-        P["插件源<br/>plugin.json + hooks/hooks.json"]
-        S["skill 源<br/>skill 目录 hooks.json"]
-    end
+```
+① 声明（存）—— 用户在三个地方写 hook，各存各的，互不相交
+────────────────────────────────────────────────────────
+  用户源    ~/.ecode/config.json 的 hooks 键
+            └─ 启动时解析成快照（闭包变量，运行中不变）
+  插件源    plugin.json + hooks/hooks.json
+            └─ 安装/启用时 register 进内存注册表
+  skill 源  skill 目录下的 hooks.json
+            └─ skill 被触发时 register（会话级，/clear 全清）
 
-    subgraph TRIG["触发（报案）— 分散七处"]
-        T1["TuiApp 挂载/恢复<br/>SessionStart ×2"]
-        T2["submit 提交输入<br/>UserPromptSubmit"]
-        T3["submit finally<br/>Stop"]
-        T4["工具装饰层<br/>PreToolUse / PostToolUse"]
-        T5["优雅关闭链<br/>SessionEnd"]
-    end
+  内存注册表 globalExtensionHooks = Map（owner → hooks）
+  ★ 用户源不进注册表——两条存储永不相交，只在查询时合并
 
-    subgraph EXEC["执行（办案）— 集中一处"]
-        R["HookRunner.dispatch<br/>（runner.ts:62）<br/>唯一的汇合点"]
-        E["runCommandHook<br/>（exec.ts:20）<br/>唯一的子进程执行器"]
-    end
+② 触发（报案）—— 分散七处，每处只喊一声"某事件发生了"
+────────────────────────────────────────────────────────
+  TuiApp 挂载/恢复 → SessionStart ×2
+  submit 提交输入   → UserPromptSubmit（block 则本轮不进 loop）
+  submit 收尾      → Stop
+  工具执行前后     → Pre/PostToolUse（装饰层包裹，loop 无感知）
+  退出链           → SessionEnd（优雅关闭里 await）
+  （hasHandlers 守卫：没配 hook 的用户零开销跳过）
 
-    U --> R
-    P --> G["globalExtensionHooks<br/>内存注册表"] --> R
-    S --> G
-    T1 -->|"只报事件名，不懂 hook"| R
-    T2 --> R
-    T3 --> R
-    T4 --> R
-    T5 --> R
-    R --> E
-    E --> V["HookVerdict 裁决<br/>回到案发现场消费"]
+③ 归一 + 执行（办案）—— 集中一处
+────────────────────────────────────────────────────────
+  七个触发点全部拨给同一个方法：
+    HookRunner.dispatch（runner.ts:62，唯一的汇合点）
+      └─► specsFor：[...用户快照, ...扩展展平] 按 event+matcher 过滤
+            └─► 逐条执行，全部交给同一个执行器：
+                  runCommandHook（exec.ts:20，唯一子进程执行器）
+                        └─► HookVerdict 裁决 ──► 回到案发现场消费
 ```
 
 **为什么这么分**：事件本来就发生在不同代码位置（提交输入在 TuiApp、工具调用在 loop、退出在 cli），触发只能现场埋；但执行必须集中——三源的 hook 若各跑各的，聚合裁决（谁 block 了、参数被谁改了）就没有统一答案。所以设计成：**七处触发点只负责喊"某事件发生了"，全部拨给同一个 `dispatch`；三源声明在 `specsFor` 拼成一张表，同一个 for 循环逐条执行，同一个执行器 spawn**。
@@ -53,16 +52,31 @@ flowchart TD
 
 ### 1.1 流程图
 
-```mermaid
-flowchart LR
-    A1["config.json hooks 键"] -->|":99 启动解析一次"| V["parseHookSpecs<br/>AJV 校验"]
-    A2["插件 plugin.json + hooks/hooks.json"] -->|":199-207 两处合并"| V
-    A3["skill 目录 hooks.json"] -->|":235-253 扫描期读好"| V
-    V -->|":72 合法项放行"| B1["闭包变量 userHooks<br/>（快照，启动后不变）"]
-    V -->|":130/:203 同一个校验器"| B2["globalExtensionHooks<br/>Map owner→HookSpec[]"]
-    B2 -->|":569 loadOne 时<br/>plugin:名@市场"| R["specsFor 查询面"]
-    B2 -->|":50/:820 skill 触发时<br/>skill:名（会话级）"| R
-    B1 -->|":104 getUserHooks 回调"| R
+```
+三个源：声明 → 解析 → 入队（行号为代码锚点）
+
+  ① 用户源  config.json 的 hooks 键
+       │ cli/index.ts:99   启动时解析一次
+       ▼
+     闭包变量 userHooks（快照，运行中不变）
+       │ 以 getUserHooks 回调喂给 HookRunner（cli/index.ts:104）
+       ▼
+     specsFor 查询面（runner.ts:47）
+
+  ② 插件源  plugin.json 的 hooks 字段 + hooks/hooks.json（两处合并）
+       │ manifest.ts:199-207  discoverComponents 解析
+       │ loader.ts:569        loadOne 时 register('plugin:名@市场')
+       ▼
+     globalExtensionHooks ──(specs() 展平，runner.ts:49)──► specsFor 查询面
+
+  ③ skill 源  skill 目录下的 hooks.json（不是 frontmatter，独立文件）
+       │ skill.ts:235-253   扫描期读好，存进 SkillInfo.hooks
+       │ 触发时注册：skill.ts:50（LLM 面）/ TuiApp.tsx:820（手动面）
+       ▼
+     globalExtensionHooks（owner='skill:名'，会话级）
+
+三源共用同一个校验器 parseHookSpecs（validate.ts:49，AJV）——
+非法项跳过 + warn，不炸启动
 ```
 
 ### 1.2 详解
@@ -164,40 +178,29 @@ if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) 
 
 ### 4.1 时序图（以"bash 工具被 hook 拦截"为例）
 
-```mermaid
-sequenceDiagram
-    participant U as 用户
-    participant T as TuiApp.tsx
-    participant L as core/loop.ts
-    participant H as tools/hooked.ts
-    participant R as hooks/runner.ts
-    participant E as hooks/exec.ts
-    participant P as hook 子进程
+```
+（以「bash 工具被 hook 拦截」为例；缩进表示调用深度，行号为代码锚点）
 
-    U->>T: 回车提交
-    T->>R: :157 dispatch UserPromptSubmit（await）
-    R-->>T: verdict（block 则此处已 return）
-    T->>L: runLoop
-    L->>H: tools.get("bash").execute(args)
-    Note over L,H: loop 不知道 hooks 存在<br/>拿到的是代理
-    H->>R: :61 dispatch PreToolUse
-    R->>R: :65 specsFor 三源合并 + matcher 过滤
-    R->>E: runOne → runCommandHook
-    E->>E: 黑名单 / 超时取小 / 平台选命令
-    E->>P: spawn（Git Bash）+ stdin 事件 JSON
-    P-->>E: exit 0 + stdout {"continue":false,...}
-    E-->>R: HookOutput（五字段白名单过滤后）
-    R-->>H: HookVerdict（聚合）
-    alt block
-        H-->>L: is_error tool_result（LLM 自纠）
-    else 放行/改参
-        H->>H: inner.execute（可能已改参）
-        H->>R: :81 dispatch PostToolUse
-        R-->>H: additionalContext 追加进结果
-        H-->>L: ToolResult
-    end
-    L-->>T: 一轮结束
-    T->>R: :308 finally → dispatch Stop（void 不等）
+ 用户 ── 回车 ──────────────────────────────────────► TuiApp.submit
+ TuiApp ── dispatch('UserPromptSubmit')，await ────► runner
+   └─ 被 block？→ 本轮直接 return，不进 loop
+ TuiApp ── runLoop ─────────────────────────────────► loop（心脏开始干活）
+ loop ── tools.get('bash').execute ────────────────► hooked
+   ★ loop 不知道 hooks 存在——它拿到的是 HookedToolRegistry 代理
+ hooked ── dispatch('PreToolUse') ─────────────────► runner
+   runner ── specsFor：三源合并 + matcher 过滤（:65）
+   runner ── runOne ──► runCommandHook（exec.ts）
+     exec ── 黑名单检查 / 超时取小 / 平台选命令（:24-34）
+     exec ── spawn（Git Bash）+ stdin 喂事件 JSON ──► hook 子进程
+     hook 子进程 ── exit 0 + stdout JSON ──► exec（:70）
+     exec ── stdout 白名单过滤（:97）──► runner：HookOutput
+   runner ── 聚合（:78-89）──► hooked：HookVerdict
+   ├─ block ──► hooked 返回 is_error tool_result ──► loop（LLM 自纠）
+   └─ 放行/改参 ──► hooked 调 inner.execute（args 可能已被替换）
+        hooked ── dispatch('PostToolUse') ──► runner（:81）
+        runner ── additionalContext 追加进结果 ──► hooked ──► loop：ToolResult
+ loop ── 一轮结束 ───────────────────────────────────► TuiApp 的 finally
+ TuiApp ── dispatch('Stop')，void 不等 ─────────────► runner（:308）
 ```
 
 ### 4.2 specsFor：三源归一（一行拼接）
@@ -304,23 +307,25 @@ ECode 对 command 字符串**不做任何理解**（黑名单除外）——它�
 
 ### 6.2 安装链（含全部安全闸）
 
-```mermaid
-flowchart TD
-    A["市场条目 source"] --> B{"来源类型"}
-    B -- github --> C["git clone --depth 1"]
-    C --> D{"声明了 sha？"}
-    D -- 是 --> E["rev-parse HEAD 比对<br/>不一致=供应链被换，失败"]
-    E -- 一致 --> F["删 .git"]
-    D -- 否 --> F
-    B -- url --> G["fetch zip → sha256 校验<br/>五道闸安全解压"]
-    B -- local/市场内相对路径 --> H["sanitizeRelPath 净化<br/>防市场内路径穿越"]
-    F --> I["staging 临时目录"]
-    G --> I
-    H --> I
-    I --> J["清单校验（缺失合成 0.0.0）"]
-    J --> K["rename 原子落位<br/>cache/市场/插件/版本/"]
-    K --> L["setEnabled true（jsonc modify 保注释）"]
-    L --> M["loadOne 即时接入（免重启）"]
+```
+市场条目 source（三种来源，走不同安全闸）
+  │
+  ├─ github ──► git clone --depth 1
+  │              ├─ 市场声明了 sha？── 是 ──► rev-parse HEAD 比对
+  │              │                        不一致 = 供应链被换，安装失败
+  │              └─ 通过 ──► 删掉 .git
+  │
+  ├─ url ──► fetch 下载 zip ──► sha256 校验 ──► 五道闸安全解压
+  │          （体积/总量/单文件/条目数/压缩比——防 zip bomb 和 zip-slip）
+  │
+  └─ local / 市场内相对路径 ──► sanitizeRelPath 净化（防市场内路径穿越）
+  │
+  ▼ （三条路殊途同归）
+staging 临时目录
+  └─► 清单校验（缺失则合成 0.0.0 最小清单）
+        └─► rename 原子落位：cache/<市场>/<插件>/<版本>/
+              └─► setEnabled true（jsonc modify 写 config，保住用户注释）
+                    └─► loadOne 即时接入（装完立刻能用，免重启）
 ```
 
 - **目录布局**：市场 `~/.ecode/plugins/marketplaces/<名>/`；插件本体 `cache/<市场>/<插件>/<版本>/`（版本化 = 升级装新目录、旧版可回退）；启用状态是 config.json 里一行 `plugins["名@市场"]: bool`（jsonc modify 写入，保用户注释）。

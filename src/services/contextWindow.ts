@@ -10,6 +10,7 @@
  */
 
 import { promises as fs } from 'node:fs'
+import { syncPricingFromModelsDb } from './pricing.js'
 import path from 'node:path'
 import os from 'node:os'
 
@@ -34,7 +35,11 @@ const FALLBACK_TABLE: Record<string, number> = {
 /** models.dev 数据形状（宽松解析：只取需要的 limit.context）。 */
 export interface ModelsDb {
   [providerId: string]: {
-    models?: Record<string, { limit?: { context?: number } }>
+    models?: Record<string, {
+      limit?: { context?: number }
+      /** 定价（$/Mtok；M8 债 #6 同步进 pricing 动态层） */
+      cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number }
+    }>
   }
 }
 
@@ -124,6 +129,7 @@ export async function loadModelsDb(): Promise<ModelsDb | null> {
   if (fresh) {
     memoryCache = { db: fresh, ts: Date.now() }
     await writeDiskCache(fresh)
+    syncPricingFromModelsDb(fresh) // M8 债 #6：cost 字段同步进定价动态层
     return fresh
   }
 

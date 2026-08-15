@@ -36,18 +36,55 @@ const PRICING_TABLE: Record<string, ModelPricing> = {
   'glm-5.2': { input: 6, output: 24 }, // MVP 近似（同 5.1），待 models.dev 同步准确值
 }
 
-/** 查模型定价。精确匹配优先，其次变体后缀匹配（glm-4.6-air → glm-4.6）。未命中返回 null。 */
-export function lookupPricing(model: string): ModelPricing | null {
+/** 动态层（M8 债 #6）：models.dev 刷新 cache 时同步的 cost（$→¥ 换算近似）。
+ *  优先级：config 覆盖 > 动态层（models.dev 真值，覆盖本地近似）> 本地表（人工确认）。 */
+const syncedPricing = new Map<string, ModelPricing>()
+const USD_TO_CNY = 7.2 // 近似汇率（动态层是换算值；本地表人民币价为人工确认）
+
+/** 从 models.db 同步 cost 进动态层（contextWindow 刷新 cache 后调用；空 cost 跳过）。 */
+export function syncPricingFromModelsDb(db: {
+  [providerId: string]: { models?: Record<string, { cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number } }> }
+}): void {
+  syncedPricing.clear()
+  for (const provider of Object.values(db)) {
+    for (const [modelId, m] of Object.entries(provider.models ?? {})) {
+      const c = m.cost
+      if (c === undefined || typeof c.input !== 'number' || typeof c.output !== 'number') continue
+      const p: ModelPricing = { input: c.input * USD_TO_CNY, output: c.output * USD_TO_CNY }
+      if (typeof c.cache_read === 'number') p.cacheRead = c.cache_read * USD_TO_CNY
+      if (typeof c.cache_write === 'number') p.cacheWrite = c.cache_write * USD_TO_CNY
+      syncedPricing.set(modelId.toLowerCase(), p)
+    }
+  }
+}
+
+/** 测试隔离：清空动态层。 */
+export function _resetSyncedPricingForTest(): void {
+  syncedPricing.clear()
+}
+
+function matchIn(table: Record<string, ModelPricing> | Map<string, ModelPricing>, model: string): ModelPricing | null {
   const key = model.toLowerCase()
-  if (PRICING_TABLE[key]) return PRICING_TABLE[key]
-  // 变体匹配：model = key + '-' + 后缀（如 glm-4.6-air / glm-4.6-0520 → glm-4.6）。
-  // 用 startsWith(key + '-') 而非 includes，避免版本号误匹配（glm-5.2 ≠ glm-5，因 'glm-5.2' 不 startsWith 'glm-5-'）。
-  // longest-key-first：长 id 优先，避免短 id 抢匹配。
-  const sorted = Object.keys(PRICING_TABLE).sort((a, b) => b.length - a.length)
+  const exact = table instanceof Map ? table.get(key) : table[key]
+  if (exact !== undefined) return exact
+  // 变体匹配：model = key + '-' + 后缀（glm-4.6-air → glm-4.6）；longest-key-first 防短 id 抢匹配
+  const keys = table instanceof Map ? [...table.keys()] : Object.keys(table)
+  const sorted = keys.sort((a, b) => b.length - a.length)
   for (const k of sorted) {
-    if (key.startsWith(k + '-')) return PRICING_TABLE[k]
+    if (key.startsWith(k + '-')) return table instanceof Map ? (table.get(k) as ModelPricing) : table[k]
   }
   return null
+}
+
+/** 查模型定价：configOverride（providers.<name>.pricing）> 动态层 > 本地表。未命中 null。 */
+export function lookupPricing(model: string, configOverride?: Record<string, ModelPricing>): ModelPricing | null {
+  if (configOverride !== undefined) {
+    const hit = matchIn(configOverride, model)
+    if (hit !== null) return hit
+  }
+  const synced = matchIn(syncedPricing, model)
+  if (synced !== null) return synced
+  return matchIn(PRICING_TABLE, model)
 }
 
 /**
@@ -61,8 +98,9 @@ export function lookupPricing(model: string): ModelPricing | null {
 export function tokensToCost(
   model: string,
   usage: { input: number; output: number; cacheRead: number; cacheCreation: number },
+  configOverride?: Record<string, ModelPricing>,
 ): number | null {
-  const p = lookupPricing(model)
+  const p = lookupPricing(model, configOverride)
   if (!p) return null
   const cacheReadPrice = p.cacheRead ?? p.input * CACHE_READ_RATIO
   const cacheWritePrice = p.cacheWrite ?? p.input * CACHE_WRITE_RATIO

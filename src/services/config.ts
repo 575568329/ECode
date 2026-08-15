@@ -27,7 +27,9 @@ export interface ProviderCfg {
   maxTokens?: number
   thinking?: ThinkingLevel
   /** 上下文窗口覆盖（escape hatch；不配则 models.dev 自动探测，M5 §5） */
-  contextWindow?: number
+  contextWindow?: number  /** 定价覆盖（M8 债 #6）：{ "<model>": { input, output, cacheRead?, cacheWrite? } }，¥/Mtok——优先于内置表与 models.dev 同步值 */
+  pricing?: Record<string, import('./pricing.js').ModelPricing>
+
 }
 
 export interface Config {

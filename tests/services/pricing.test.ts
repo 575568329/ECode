@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tokensToCost, lookupPricing } from '../../src/services/pricing.js'
+import { tokensToCost, lookupPricing, syncPricingFromModelsDb, _resetSyncedPricingForTest } from '../../src/services/pricing.js'
 
 describe('tokensToCost', () => {
   it('四维拆分算对（input + output + cacheRead + cacheCreation）', () => {
@@ -61,5 +61,46 @@ describe('lookupPricing', () => {
 
   it('未命中 → null', () => {
     expect(lookupPricing('gpt-4o')).toBeNull()
+  })
+})
+
+describe('M8 债 #6：动态层同步与 config 覆盖', () => {
+  it('syncPricingFromModelsDb：cost 换算 ¥ 写入动态层并覆盖本地近似', () => {
+    syncPricingFromModelsDb({
+      zhipuai: { models: { 'glm-5.2': { cost: { input: 1, output: 3, cache_read: 0.1, cache_write: 1.25 } } } },
+    })
+    const p = lookupPricing('glm-5.2')
+    expect(p?.input).toBeCloseTo(7.2, 5) // $1 × 7.2
+    expect(p?.output).toBeCloseTo(21.6, 5)
+    expect(p?.cacheRead).toBeCloseTo(0.72, 5)
+    _resetSyncedPricingForTest()
+    // 重置后回落本地表
+    expect(lookupPricing('glm-5.2')?.input).toBe(6)
+  })
+
+  it('动态层未命中的模型回落本地表', () => {
+    syncPricingFromModelsDb({ zhipuai: { models: { 'glm-9': { cost: { input: 2, output: 2 } } } } })
+    expect(lookupPricing('glm-4.6')?.input).toBe(5) // 本地表
+    expect(lookupPricing('glm-9')?.input).toBeCloseTo(14.4, 5) // 动态层
+    _resetSyncedPricingForTest()
+  })
+
+  it('config 覆盖优先于动态层与本地表', () => {
+    syncPricingFromModelsDb({ zhipuai: { models: { 'glm-5.2': { cost: { input: 1, output: 3 } } } } })
+    const p = lookupPricing('glm-5.2', { 'glm-5.2': { input: 99, output: 99 } })
+    expect(p?.input).toBe(99)
+    _resetSyncedPricingForTest()
+  })
+
+  it('无 cost 字段的条目跳过（不写脏动态层）', () => {
+    syncPricingFromModelsDb({ zhipuai: { models: { 'glm-5.2': {}, 'glm-x': { cost: { output: 3 } } } } })
+    expect(lookupPricing('glm-5.2')?.input).toBe(6) // 回落本地表
+    expect(lookupPricing('glm-x')).toBeNull() // cost 不完整整体跳过
+    _resetSyncedPricingForTest()
+  })
+
+  it('tokensToCost 透传 configOverride', () => {
+    const cost = tokensToCost('glm-5.2', { input: 1e6, output: 1e6, cacheRead: 0, cacheCreation: 0 }, { 'glm-5.2': { input: 10, output: 20 } })
+    expect(cost).toBe(30)
   })
 })

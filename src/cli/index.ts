@@ -45,6 +45,8 @@ import { resolveContextWindow } from '../services/contextWindow.js'
 import { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../services/compaction/summarize.js'
 import { skillTool } from '../tools/builtin/skill.js'
+import { askUserTool } from '../tools/builtin/ask_user.js'
+import { webFetchTool } from '../tools/builtin/web_fetch.js'
 import { skillRegistry, createSkillRegistry } from '../services/skill.js'
 import { setupMcp } from '../services/mcp/setup.js'
 import type { McpManager } from '../services/mcp/manager.js'
@@ -86,6 +88,8 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   toolReg.register(writeFileTool)
   toolReg.register(editFileTool)
   toolReg.register(skillTool)
+  toolReg.register(askUserTool) // M8：信息收集选项框（argv 模式走非交互守卫）
+  toolReg.register(webFetchTool) // M8：网页转文本（SSRF 拦截/30KB 截断）
   const orchestrator = new CompactionOrchestrator()
   orchestrator.register(new SummarizeStrategy())
   // models.dev 预热（fire-and-forget）：进程首次无缓存时 resolveContextWindow 联网拉取（10s timeout），

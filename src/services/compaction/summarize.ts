@@ -298,12 +298,14 @@ export function splitMessages(messages: Message[], budget: number): number {
  *  若 tail 起点消息含孤立 tool_result（配对 use 在 head），往前扩到纳入配对 use。 */
 export function preserveToolPairs(messages: Message[], tailStart: number): number {
   let idx = tailStart
+  // M8 债 #2：tail use-id 集合一次聚合，前扩时增量并入（原每轮 slice 重扫 = O(n²)）
+  const tailUseIds = collectToolUseIds(messages.slice(idx))
   while (idx > 0) {
     const resultIds = collectToolResultIds(messages[idx])
     if (resultIds.length === 0) break // tail 起点不是 tool_result 消息，无需扩
-    const tailUseIds = collectToolUseIds(messages.slice(idx))
     if (resultIds.every((id) => tailUseIds.has(id))) break // 全配对在 tail，OK
     idx-- // 有孤立 tool_result，往前扩（纳入前一条，可能含配对 use）
+    for (const id of collectToolUseIds([messages[idx]])) tailUseIds.add(id)
   }
   return idx
 }

@@ -47,6 +47,9 @@ import { Wizard } from './Wizard.js'
 import { SkillPanel } from './SkillPanel.js'
 import { McpPanel } from './McpPanel.js'
 import { PluginPanel } from './PluginPanel.js'
+import { QuestionPanel } from './QuestionPanel.js'
+import { setAskUserHandler } from '../tools/builtin/askUserBridge.js'
+import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
 import { Select } from './Select.js'
 import type { McpManager, McpServerSnapshot } from '../services/mcp/manager.js'
 import type { SessionMeta } from '../services/history.js'
@@ -126,6 +129,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     | { kind: 'mcp-panel' }
     | { kind: 'plugin-panel' }
     | { kind: 'select'; title: string; options: string[]; resolve: (v: string | undefined) => void }
+    // M8 ask_user：工具发起的提问面板（Promise 桥——resolve 回工具 execute）
+    | { kind: 'question-panel'; questions: AskUserQuestion[]; resolve: (r: AskUserResult) => void }
     | null
   >(null)
   // 面板回填通道（S-P6 D32：SkillPanel Enter → `/name ` 写入输入框，不直接执行）
@@ -248,7 +253,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
             const c = tokensToCost(config.current.model, {
               input: inp, output: out,
               cacheRead: cache?.read ?? 0, cacheCreation: cache?.creation ?? 0,
-            })
+            }, config.providers[config.current.name]?.pricing)
             if (c != null) setSessionCost((s) => s + c)
           },
           onIter: (i, m) => {
@@ -352,6 +357,27 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       setOverlay({ kind: 'select', title, options, resolve })
     })
   }
+
+  // M8 ask_user UI 桥注入：工具 execute → Promise → overlay 面板 → resolve 回工具
+  // （排队锁在 bridge 层——同轮多个 ask_user 串行弹，不抢 overlay）
+  useEffect(() => {
+    setAskUserHandler((questions) => {
+      return new Promise<AskUserResult>((resolve) => {
+        pickerRef.current = true
+        setOverlay({
+          kind: 'question-panel',
+          questions,
+          resolve: (r) => {
+            pickerRef.current = false
+            setOverlay(null)
+            resolve(r)
+          },
+        })
+      })
+    })
+    return () => setAskUserHandler(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
+  }, [])
 
   /** 蒸馏预览确认（复用 active.confirm 通道；合成 use 走 ConfirmPrompt 默认渲染分支） */
   const askPreviewConfirm = (preview: string, what: string): Promise<boolean> => {
@@ -800,6 +826,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           }}
         />
       )}
+      {overlay?.kind === 'question-panel' && (
+        <QuestionPanel
+          questions={overlay.questions}
+          resolve={overlay.resolve}
+          onCancel={() => overlay.resolve({ kind: 'cancel' })}
+        />
+      )}
       {systemMsgs.length > 0 && (
         <Box flexDirection="column">
           {systemMsgs.map((m, i) => (
@@ -892,7 +925,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
             const u = deps.lastUsage
             const lineCost = tokensToCost(config.current.model, {
               input: u.input, output: u.output, cacheRead: u.cacheRead, cacheCreation: u.cacheCreation,
-            })
+            }, config.providers[config.current.name]?.pricing)
             setSystemMsgs(
               lineCost == null
                 ? [

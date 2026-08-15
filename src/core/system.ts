@@ -1,18 +1,21 @@
 /**
  * 系统提示（TuiApp REPL + cli argv 单次模式共用）。
  *
- * 含工具职责区分（详设 §2.3 行 231），避免 LLM 在 ls/glob/grep/read_file 间选错。
- * M3 新增 write_file/edit_file 后，职责指引更关键。
- * M6 S-P4：可选注入 skill 清单（<available_skills>，受 token 预算约束）——
- * 调用方传 listForPrompt() 结果与 ctxWindow（TuiApp 缓存值），不传则零 skill 开销。
+ * M8 §5 分段化：静态前缀（身份/平台/工具指引——永不变）+ 动态后缀（指令注入/
+ * memory 索引/skill 清单/路由行——会话间可变），join 后对外仍是单字符串
+ * （Provider 协议不动，调用点零改动）。收益：动态内容变化不击穿前缀的 prompt cache。
+ * M8 §1/§3：动态段含两级 ECODE.md/CLAUDE.md 指令与 MEMORY.md 索引注入。
  */
 
 import type { SkillInfo } from '../services/skill.js'
 import { renderSkillListing, listingBudget } from '../services/skill/listing.js'
 import { ECODE_CONFIG_SKILL_NAME } from '../services/skill/builtin.js'
+import { loadInstructions, renderInstructions } from '../services/instructions.js'
+import { loadMemoryIndexes, renderMemory } from '../services/memory.js'
 
 export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number): string {
-  let base = `你是 ECode，一个终端 Agent CLI。你能通过工具读文件、执行命令、搜索代码，帮用户完成编程任务。
+  // —— 静态前缀（永不变，cache 友好）——
+  const prefix = `你是 ECode，一个终端 Agent CLI。你能通过工具读文件、执行命令、搜索代码，帮用户完成编程任务。
 当前工作目录：${process.cwd()}
 当前平台：${process.platform}
 
@@ -26,16 +29,23 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number): str
 - bash <command>：执行 shell 命令
 
 回复用中文。`
+
+  // —— 动态后缀（会话间可变；空段过滤——两级都无文件零开销）——
+  const dynamic: string[] = []
+  dynamic.push(renderInstructions(loadInstructions())) // 指令：用户级先、项目级后
+  dynamic.push(renderMemory(loadMemoryIndexes())) // 记忆索引
   if (skills !== undefined && skills.length > 0) {
     const listing = renderSkillListing(skills, listingBudget(ctxWindow ?? 200_000))
     if (listing !== '') {
-      base += '\n\n' + listing
+      dynamic.push(listing)
       // 内置手册路由（M6.5，opencode 同式）：用户问 ECode 自身配置时指名加载，防凭记忆猜格式
       // （若用户覆盖的 ecode-config 设了 disable-model-invocation，SkillTool 会拒——不注入路由免误导）
       if (skills.some((s) => s.name === ECODE_CONFIG_SKILL_NAME && !s.disableModelInvocation)) {
-        base += `\n用户询问 ECode 自身的配置或用法（config、MCP、provider、命令等）时，先调用 Skill 工具加载 ${ECODE_CONFIG_SKILL_NAME} 手册，不要凭记忆猜测配置格式。`
+        dynamic.push(
+          `用户询问 ECode 自身的配置或用法（config、MCP、provider、命令等）时，先调用 Skill 工具加载 ${ECODE_CONFIG_SKILL_NAME} 手册，不要凭记忆猜测配置格式。`,
+        )
       }
     }
   }
-  return base
+  return [prefix, ...dynamic.filter((seg) => seg !== '')].join('\n\n')
 }

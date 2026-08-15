@@ -209,7 +209,14 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
       opts.logger.error(
         'loop',
         'stream_error',
-        { code: streamError.code, message: streamError.message, recoverable: streamError.recoverable, isAborted },
+        {
+          code: streamError.code,
+          message: streamError.message,
+          recoverable: streamError.recoverable,
+          isAborted,
+          // 完整原始错误（HTTP 分类的 message 已提炼为人话一行，原文在 context.raw）
+          ...(streamError.context !== undefined ? { context: streamError.context } : {}),
+        },
         iter,
       )
       // abort 不走 recoverable 重试（避免 abort → retry → abort 死循环）

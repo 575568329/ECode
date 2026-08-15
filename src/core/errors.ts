@@ -94,34 +94,36 @@ function extractStatus(e: unknown): number | undefined {
   return typeof s === 'number' ? s : undefined
 }
 
-/** HTTP 状态码 → AppError 分类（详设 §6.2）。 */
+/** HTTP 状态码 → AppError 分类（详设 §6.2）。message 用提炼后的人话一行（briefHttpMessage）；
+ *  原始全文（含 JSON body）进 context.raw——日志/排障可查，UI 不被几百字符撑碎。 */
 function fromHttpStatus(status: number, e: unknown): AppError {
-  const msg = e instanceof Error ? e.message : `HTTP ${status}`
+  const raw = e instanceof Error ? e.message : `HTTP ${status}`
+  const brief = briefHttpMessage(e, raw)
 
   if (status === 401 || status === 403) {
-    return { code: 'AUTH_ERROR', message: `认证失败: ${msg}`, recoverable: false, context: { status } }
+    return { code: 'AUTH_ERROR', message: `认证失败（${status}）：${brief}`, recoverable: false, context: { status, raw } }
   }
   if (status === 404) {
-    return { code: 'MODEL_NOT_FOUND', message: `模型/资源不存在: ${msg}`, recoverable: false, context: { status } }
+    return { code: 'MODEL_NOT_FOUND', message: `模型/资源不存在（404）：${brief}`, recoverable: false, context: { status, raw } }
   }
   if (status === 429) {
-    return { code: 'RATE_LIMIT', message: `限流: ${msg}`, recoverable: true, retryable: true, context: { status } }
+    return { code: 'RATE_LIMIT', message: `限流（429）：${brief}`, recoverable: true, retryable: true, context: { status, raw } }
   }
   if (status === 408 || status === 599) {
-    return { code: 'TIMEOUT', message: `请求超时: ${msg}`, recoverable: true, retryable: true, context: { status } }
+    return { code: 'TIMEOUT', message: `请求超时（${status}）：${brief}`, recoverable: true, retryable: true, context: { status, raw } }
   }
   if (status >= 500) {
-    return { code: 'UPSTREAM_ERROR', message: `上游错误: ${msg}`, recoverable: true, retryable: true, context: { status } }
+    return { code: 'UPSTREAM_ERROR', message: `上游错误（${status}）：${brief}`, recoverable: true, retryable: true, context: { status, raw } }
   }
   // 400：区分上下文超限（压缩兜底，recoverable:false 跳过退避走 M5 §6.3）vs 其它参数错误（交 LLM 自纠）
   if (status === 400) {
     const bodyMsg = extractErrorMessage(e)
     if (bodyMsg && CONTEXT_TOO_LONG_RE.test(bodyMsg)) {
-      return { code: 'CONTEXT_TOO_LONG', message: `上下文超限: ${bodyMsg}`, recoverable: false, context: { status } }
+      return { code: 'CONTEXT_TOO_LONG', message: `上下文超限: ${bodyMsg}`, recoverable: false, context: { status, raw } }
     }
   }
   // 其它 4xx 等：默认 recoverable
-  return { code: 'HTTP_ERROR', message: msg, recoverable: true, context: { status } }
+  return { code: 'HTTP_ERROR', message: brief, recoverable: true, context: { status, raw } }
 }
 
 /** 上下文超限正则：各家端点表述不一，宽匹配但要求 context/token/length 语义（避免「某字段 too long」误判）。 */
@@ -144,4 +146,63 @@ function extractErrorMessage(e: unknown): string | undefined {
   }
   if (e instanceof Error) return e.message
   return undefined
+}
+
+/** 嵌套提取 body 的错误码（error.error.code > error.code；如智谱 1308）。 */
+function extractErrorCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined
+  const obj = e as Record<string, unknown>
+  const err1 = obj.error
+  if (err1 !== null && typeof err1 === 'object') {
+    const err2 = (err1 as Record<string, unknown>).error
+    if (err2 !== null && typeof err2 === 'object') {
+      const c2 = (err2 as Record<string, unknown>).code
+      if (typeof c2 === 'string' && c2 !== '') return c2
+    }
+    const c1 = (err1 as Record<string, unknown>).code
+    if (typeof c1 === 'string' && c1 !== '') return c1
+  }
+  return undefined
+}
+
+/** 提炼文案长度上限（人话一行够用；原始全文在 context.raw）。 */
+const BRIEF_MSG_MAX = 160
+
+/** 首行 + 截断（SDK message 可能多行/超长）。 */
+function firstLineClamp(s: string): string {
+  const line = (s.split(/\r?\n/)[0] ?? s).trim()
+  return line.length > BRIEF_MSG_MAX ? `${line.slice(0, BRIEF_MSG_MAX - 1)}…` : line
+}
+
+/**
+ * SDK 错误 → 人话一行：SDK 的 message 常拼完整 JSON body（如 `429 {"error":{...}}`），
+ * 直接透传 UI 会被几百字符撑碎。提炼优先级：
+ * ① 错误对象嵌套 error.message（extractErrorMessage，Anthropic/OpenAI 结构化）带 code；
+ * ② message 里的 JSON 块解析（部分端点只给拼接字符串）；
+ * ③ 回退原文首行截断。
+ */
+function briefHttpMessage(e: unknown, raw: string): string {
+  const bodyMsg = extractErrorMessage(e)
+  if (bodyMsg !== undefined && bodyMsg !== raw) {
+    const code = extractErrorCode(e)
+    return firstLineClamp(code !== undefined ? `[${code}] ${bodyMsg}` : bodyMsg)
+  }
+  const jsonStart = raw.indexOf('{')
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart)) as Record<string, unknown>
+      const err =
+        typeof parsed.error === 'object' && parsed.error !== null
+          ? (parsed.error as Record<string, unknown>)
+          : parsed
+      const code = err.code
+      const msg = err.message
+      if (typeof msg === 'string' && msg !== '') {
+        return firstLineClamp(typeof code === 'string' && code !== '' ? `[${code}] ${msg}` : msg)
+      }
+    } catch {
+      // 非 JSON（`{` 只是普通字符）——走回退
+    }
+  }
+  return firstLineClamp(raw)
 }

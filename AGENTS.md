@@ -1,7 +1,7 @@
 # AGENTS.md — ECode 工作区指令
 
 > **ECode**：终端 Agent CLI，AgentLoop 为心脏，其余能力（工具/模型接入/TUI/斜杠命令/历史/配置/日志）作为分支接入心脏。技术栈 TypeScript 严格模式 / Node.js，TUI 用 Ink，LLM 走 `@anthropic-ai/sdk` 接 Astron 兼容端点（跑 GLM）。
-> **当前状态**：M1（心脏）+ M2（TUI 最小 Static）+ M3（工具集 ls/glob/grep/write_file/edit_file + ConfirmPrompt + bash 安全 + .ecodeignore）+ M4（HistoryStore 持久化 / `/history` `/model` `/setup` 向导 / `/config` / OpenaiProvider / 配置完整）+ **M5（上下文压缩：投影分离 + 插件化 summarize 策略（含超大 head 并行分批 map-reduce，真机 800k→200k 58s）+ models.dev contextWindow + cache 四维成本 + `/compact` `/cost` + 切换 model 检测）全部完成并经用户确认**（测试 511/511 + tsc 零；审阅修复 3P0+4P1+4P2 + 遗留债修复 #1 去重/#5 熔断/#4 预热）。后续 **M6 = Skill + MCP 两子系统**（方案 v6：Skill 双触发面=LLM SkillTool+`/skill args` 手动 `$ARGUMENTS` 传参+`/skill` 面板；MCP 按需加载=lazy 默认+metadata cache+六态状态机+空闲卸载+`/mcp` 三级面板（列表→详情→重连/断开）；PanelShell 面板基础设施复用 overlay；蒸馏升级合并协议）+ M7 = Plugin（**独立方案** `2026-08-14_后续-M7-Plugin实施方案_待启动.md`，从 M6 拆出避免噪音；ADR-026 AppContext 暂缓中）。
+> **当前状态**：M1（心脏）+ M2（TUI 最小 Static）+ M3（工具集+ConfirmPrompt+bash 安全+.ecodeignore）+ M4（HistoryStore/向导/双协议 Provider）+ M5（上下文压缩：投影分离+分批 map-reduce 800k→200k 58s+cache 四维成本）+ M6（Skill 双触发面+MCP 按需加载+面板+内置 ecode-config 手册）+ M7（HookRunner 六事件+Plugin 安装链+PluginPanel）**全部完成**。后续 **M8 = 交互与上下文智能**（AGENTS.md 注入/ask_user 选项框/auto-memory/WebFetch/流式 markdown+OSC8/分段化，`2026-08-15_后续-M8实施方案_待启动.md`）→ **M9 = 安全网与质量闭环**（checkpoint+/rewind/lint-test 回喂/git 轻量/沙箱三档，`2026-08-15_后续-M9实施方案_待启动.md`）。
 > **永远使用中文与我对话。**
 >
 > 改代码/文档前先读这份。权威设计见 `docs/详设/2026-08-11_ECode-MVP详设_待审核.md`，文档体系以 `docs/README.md` 为权威。

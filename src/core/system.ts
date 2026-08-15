@@ -30,7 +30,8 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number): str
     if (listing !== '') {
       base += '\n\n' + listing
       // 内置手册路由（M6.5，opencode 同式）：用户问 ECode 自身配置时指名加载，防凭记忆猜格式
-      if (skills.some((s) => s.name === 'ecode-config')) {
+      // （若用户覆盖的 ecode-config 设了 disable-model-invocation，SkillTool 会拒——不注入路由免误导）
+      if (skills.some((s) => s.name === 'ecode-config' && !s.disableModelInvocation)) {
         base += '\n用户询问 ECode 自身的配置或用法（config、MCP、provider、命令等）时，先调用 Skill 工具加载 ecode-config 手册，不要凭记忆猜测配置格式。'
       }
     }

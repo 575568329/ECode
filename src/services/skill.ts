@@ -244,9 +244,12 @@ export class SkillRegistry {
       }
       const info = this.parse(baseDir, entry.name, text, source)
       if (info === undefined) continue
-      if (this.skills.has(info.name)) {
+      const existing = this.skills.get(info.name)
+      // 首个胜出（优先级由 sourceDirs 顺序保证）；例外：builtin 占位可被任何来源覆盖
+      // （load() 先注册 builtin 最低优先级；addSource 在 load 后追加 plugin 源，不能被 first-wins 挡住——审阅 P1）
+      if (existing !== undefined && existing.source !== 'builtin') {
         this.loadWarnings.push(`skill「${info.name}」重复（${baseDir} 被已有来源遮蔽）`)
-        continue // 首个胜出（优先级由 sourceDirs 顺序保证）
+        continue
       }
       this.skills.set(info.name, info)
     }

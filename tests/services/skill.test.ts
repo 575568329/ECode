@@ -395,4 +395,14 @@ describe('内置 skill（builtin 源，M6.5）', () => {
     expect(reg.get('ecode-config')?.source).toBe('user')
     expect(reg.get('ecode-config')?.description).toBe('我的自定义手册')
   })
+
+  it('addSource（plugin）同名可覆盖 builtin——load 后追加不被 first-wins 遮蔽（审阅 P1）', async () => {
+    const { reg } = makeRegistry()
+    const pluginDir = path.join(tmpRoot, 'plugin-skills')
+    writeSkill(pluginDir, 'ecode-config', VALID('ecode-config', '插件版手册'))
+    await reg.load() // builtin 先注册（最低优先级占位）
+    await reg.addSource(pluginDir) // plugin 源 load 后追加
+    expect(reg.get('ecode-config')?.source).toBe('plugin')
+    expect(reg.get('ecode-config')?.description).toBe('插件版手册')
+  })
 })

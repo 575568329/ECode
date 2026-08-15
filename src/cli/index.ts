@@ -48,6 +48,7 @@ import { skillTool } from '../tools/builtin/skill.js'
 import { skillRegistry, createSkillRegistry } from '../services/skill.js'
 import { setupMcp } from '../services/mcp/setup.js'
 import type { McpManager } from '../services/mcp/manager.js'
+import { makeGracefulShutdown } from '../services/gracefulShutdown.js'
 import { globalExtensionHooks } from '../services/hooks/global.js'
 import { HookRunner } from '../services/hooks/runner.js'
 import { parseUserHooks } from '../services/hooks/validate.js'
@@ -178,18 +179,36 @@ async function main(): Promise<void> {
   const logger = new JsonlLogger(logStore)
   // M6：MCP 子进程清理（best-effort——exit 内不能 await；SDK close 发 SIGTERM）
   let mcpManagerRef: McpManager | null = null
-  // M7 H-P4：SessionEnd hook（best-effort——exit 内不能 await，fire 后事件循环将停；
-  // 长耗时的 SessionEnd hook（如清理脚本）可能被截断，属已知限制，可靠清理走 Stop/工具层）
   let sessionEndHook: HookRunner | null = null
-  // P1-8：exit handler 注册序 = 执行序（先杀子进程再 flush 日志——子进程 stderr 尾巴也能进日志）
+  let inkApp: { unmount(): void } | undefined
+  // 优雅关闭（M7 调研后采用：信号 handler / 双击退出 / argv 收尾共用——先同步恢复终端，
+  // 再预算内 await SessionEnd hooks 与 MCP stop，failsafe 定时器兜底强退）
+  const gracefulShutdown = makeGracefulShutdown({
+    restoreTerminal: () => {
+      try {
+        inkApp?.unmount()
+      } catch {
+        // 已卸载（TUI 关闭路径竞态）——恢复终端幂等
+      }
+    },
+    runSessionEndHooks: () =>
+      sessionEndHook?.dispatch('SessionEnd', { event: 'SessionEnd', session_id: '' }) ?? Promise.resolve(),
+    stopMcp: () => mcpManagerRef?.stop() ?? Promise.resolve(),
+  })
+  // exit handler = 兜底层（graceful 路径已完成异步清理；此处覆盖 uncaught/restart 等
+  // 未走 graceful 的退出：stopNow 同步杀 + 日志 flush。注册序 = 执行序，先杀再 flush）
   process.on('exit', () => {
-    void sessionEndHook?.dispatch('SessionEnd', { event: 'SessionEnd', session_id: '' }).catch(() => {})
-    void mcpManagerRef?.stop()
+    mcpManagerRef?.stopNow()
   })
   process.on('exit', () => {
     logger.info('system', 'shutdown', { exitCode: process.exitCode })
     logStore.close()
   })
+  // 信号 → 优雅关闭（TUI 的 Ctrl+C 被 Ink 捕获不产生 SIGINT，走 useInterrupt 的 onExit；
+  // 此处覆盖 argv 模式与渲染前的 Ctrl+C、外部 kill、Windows 的 taskkill/SIGBREAK）
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as const) {
+    process.once(sig, () => gracefulShutdown(0))
+  }
   // P1-8：异常路径同杀子进程（stopNow 同步 SIGKILL——异步 stop 在这里跑不完）再 flush 日志
   process.on('uncaughtException', (e) => {
     logger.error('system', 'uncaught', { message: e.message, stack: e.stack })
@@ -247,7 +266,7 @@ async function main(): Promise<void> {
     logger.info('plugin', 'loaded', { count: deps.pluginLoader.list().length })
   }
 
-  // argv 单次模式：M1 stdout 输出 → 跑一次退出
+  // argv 单次模式：M1 stdout 输出 → 跑一次退出（graceful：SessionEnd/MCP 清理走预算窗口）
   const initialInput = process.argv.slice(2).join(' ').trim()
   if (initialInput) {
     const messages: HistoryLine[] = []
@@ -255,16 +274,25 @@ async function main(): Promise<void> {
       await runOnce(messages, initialInput, deps)
     } catch (e) {
       process.stderr.write(`✗ ${e instanceof Error ? e.message : String(e)}\n`)
-      process.exit(1)
+      gracefulShutdown(1)
+      return
     }
-    process.exit(0)
+    gracefulShutdown(0)
+    return
   }
 
-  // REPL 模式：Ink TUI（exitOnCtrlC:false，由 TuiApp 的 useInterrupt 自处理双击退出）
+  // REPL 模式：Ink TUI（exitOnCtrlC:false，由 TuiApp 的 useInterrupt 自处理双击退出——
+  // 双击走 gracefulShutdown：恢复终端 → SessionEnd hooks → MCP stop → exit）
   const instance = render(
-    React.createElement(TuiApp, { deps, banner, onRestart: () => restartProcess(instance) }),
+    React.createElement(TuiApp, {
+      deps,
+      banner,
+      onRestart: () => restartProcess(instance),
+      onExit: () => gracefulShutdown(0),
+    }),
     { exitOnCtrlC: false },
   )
+  inkApp = instance
 }
 
 /**

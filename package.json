@@ -23,13 +23,13 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "adm-zip": "^0.5.18",
     "ajv": "^8.17.1",
     "cli-highlight": "^2.1.11",
     "cli-table3": "^0.6.5",
     "diff": "^9.0.0",
     "dotenv": "^16.4.5",
     "fast-glob": "^3.3.3",
+    "fflate": "^0.8.3",
     "ignore": "^7.0.6",
     "ink": "^7.1.1",
     "jsonc-parser": "^3.3.1",
@@ -40,7 +40,6 @@
     "wrap-ansi": "^10.0.0"
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.7.0",
     "@types/react": "^19.2.18",
     "cross-env": "^7.0.3",

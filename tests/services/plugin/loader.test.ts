@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import AdmZip from 'adm-zip'
+import { zipSync, strToU8 } from 'fflate'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PluginLoader, type PluginLoaderDeps } from '../../../src/services/plugin/loader.js'
 import { parseMarketplaceManifest } from '../../../src/services/plugin/marketplace.js'
@@ -144,11 +144,11 @@ describe('PluginLoader：安装（local source 主路径）', () => {
     const mktFile = path.join(baseDir, 'marketplaces', 'team3', '.ecode-plugin', 'marketplace.json')
     const mkt = JSON.parse(await readFile(mktFile, 'utf8')) as { plugins: Array<{ name: string; source: unknown }> }
 
-    // 构造带根目录的 zip
-    const zip = new AdmZip()
-    zip.addFile('zipped-main/.ecode-plugin/plugin.json', Buffer.from(JSON.stringify({ name: 'zipped', version: '3.0.0' })))
-    zip.addFile('zipped-main/skills/z/SKILL.md', Buffer.from('---\nname: z\ndescription: d\n---\nbody'))
-    const zipBuf = zip.toBuffer()
+    // 构造带根目录的 zip（fflate zipSync）
+    const zipBuf = Buffer.from(zipSync({
+      'zipped-main/.ecode-plugin/plugin.json': strToU8(JSON.stringify({ name: 'zipped', version: '3.0.0' })),
+      'zipped-main/skills/z/SKILL.md': strToU8('---\nname: z\ndescription: d\n---\nbody'),
+    }))
     const { createHash } = await import('node:crypto')
     const sha = createHash('sha256').update(zipBuf).digest('hex')
     mkt.plugins[0]!.source = { source: 'url', url: 'https://example.com/zipped.zip', sha256: sha }
@@ -165,6 +165,41 @@ describe('PluginLoader：安装（local source 主路径）', () => {
     mkt.plugins[0]!.source = { source: 'url', url: 'https://example.com/zipped.zip', sha256: 'deadbeef' }
     await writeFile(mktFile, JSON.stringify(mkt), 'utf8')
     await expect(loader.install('zipped', 'team3')).rejects.toThrow('sha256')
+  })
+
+  it('zip 硬化：zip-slip 条目（../ 上跳）→ 拒绝且零写入', async () => {
+    await makeLocalMarket('team4', [{ name: 'slip' }])
+    const loader0 = makeLoader()
+    await loader0.addMarketplace(path.join(tmpRoot, 'src-market', 'team4'))
+    const mktFile = path.join(baseDir, 'marketplaces', 'team4', '.ecode-plugin', 'marketplace.json')
+    const mkt = JSON.parse(await readFile(mktFile, 'utf8')) as { plugins: Array<{ name: string; source: unknown }> }
+    const evilBuf = Buffer.from(zipSync({
+      '.ecode-plugin/plugin.json': strToU8(JSON.stringify({ name: 'slip', version: '1.0.0' })),
+      '../escape.txt': strToU8('pwned'),
+    }))
+    mkt.plugins[0]!.source = { source: 'url', url: 'https://example.com/slip.zip' }
+    await writeFile(mktFile, JSON.stringify(mkt), 'utf8')
+    const fetchImpl = (async () => ({ ok: true, status: 200, arrayBuffer: async () => evilBuf.slice().buffer.slice(evilBuf.byteOffset, evilBuf.byteOffset + evilBuf.byteLength) })) as unknown as PluginLoaderDeps['fetchImpl']
+    const loader = makeLoader({ fetchImpl })
+    await expect(loader.install('slip', 'team4')).rejects.toThrow('zip-slip')
+    // 逃逸文件不存在（staging 被清，target 外零写入）
+    expect(fsSync.existsSync(path.join(tmpRoot, 'escape.txt'))).toBe(false)
+  })
+
+  it('zip 硬化：压缩比异常（bomb 特征）→ 拒绝', async () => {
+    await makeLocalMarket('team5', [{ name: 'bomb' }])
+    const loader0 = makeLoader()
+    await loader0.addMarketplace(path.join(tmpRoot, 'src-market', 'team5'))
+    const mktFile = path.join(baseDir, 'marketplaces', 'team5', '.ecode-plugin', 'marketplace.json')
+    const mkt = JSON.parse(await readFile(mktFile, 'utf8')) as { plugins: Array<{ name: string; source: unknown }> }
+    // 4MB 全零：压缩后 ~4KB，比率 ~1000:1（正常包 < 20:1）
+    const bombBuf = Buffer.from(zipSync({ '.ecode-plugin/plugin.json': strToU8(JSON.stringify({ name: 'bomb' })), 'zeros.bin': strToU8('0'.repeat(4 * 1024 * 1024)) }))
+    expect(bombBuf.length).toBeLessThan(64 * 1024) // 本体很小——正是 bomb 特征
+    mkt.plugins[0]!.source = { source: 'url', url: 'https://example.com/bomb.zip' }
+    await writeFile(mktFile, JSON.stringify(mkt), 'utf8')
+    const fetchImpl = (async () => ({ ok: true, status: 200, arrayBuffer: async () => bombBuf.slice().buffer.slice(bombBuf.byteOffset, bombBuf.byteOffset + bombBuf.byteLength) })) as unknown as PluginLoaderDeps['fetchImpl']
+    const loader = makeLoader({ fetchImpl })
+    await expect(loader.install('bomb', 'team5')).rejects.toThrow('压缩比异常')
   })
 
   it('清单缺失 → 合成最小 manifest 安装仍成功', async () => {

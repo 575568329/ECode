@@ -16,7 +16,7 @@ import * as path from 'node:path'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { parse as parseJsonc, modify, applyEdits, type FormattingOptions } from 'jsonc-parser'
-import AdmZip from 'adm-zip'
+import { unzipSync } from 'fflate'
 import type { SkillRegistry } from '../skill.js'
 import type { McpManager } from '../mcp/manager.js'
 import type { McpServerConfig, McpServerEntry } from '../mcp/config.js'
@@ -308,12 +308,10 @@ export class PluginLoader {
         }
         await rmIfExists(path.join(staging, '.git'))
       } else {
-        // url source：fetch zip + sha256 校验 + 解压
+        // url source：fetch zip + sha256 校验 + 解压（fflate + 硬化：zip-slip/大小/条目/压缩比）
         const { source: _s, url, sha256 } = entry.source
         const buf = await this.fetchZip(url, sha256, opts.signal)
-        const zip = new AdmZip(Buffer.from(buf))
-        // GitHub zip 含一层 <repo>-<ref>/ 根目录——剥掉（取唯一顶层目录）
-        extractStripRoot(zip, staging)
+        extractZipSafe(Buffer.from(buf), staging)
       }
       return await this.finalizeInstall(staging, marketplace, name, opts.signal)
     } finally {
@@ -644,19 +642,68 @@ function assertInsideDir(target: string, base: string): void {
   }
 }
 
-/** GitHub zip 剥根目录解压（顶层唯一目录时下移一层）。 */
-function extractStripRoot(zip: AdmZip, dest: string): void {
-  const entries = zip.getEntries()
-  const topDirs = new Set(entries.map((e) => e.entryName.split('/')[0]).filter((s) => s !== ''))
-  const strip = topDirs.size === 1
-  zip.extractAllTo(dest, true)
-  if (strip) {
-    const only = [...topDirs][0] as string
-    const inner = path.join(dest, only)
-    // 把内层内容上移（rename 到临时再合并——文件系统无原子"提升"，逐项移）
-    const tmp = `${dest}__inner`
-    fs.renameSync(inner, tmp)
-    fs.rmSync(dest, { recursive: true, force: true })
-    fs.renameSync(tmp, dest)
+/** zip 解压硬上限（对齐同类 CLI 的安全硬化：下载体积/总量/单文件/条目数/压缩比）。 */
+const ZIP_LIMITS = {
+  /** 下载的 zip 本身体积（超出直接拒绝——防解压膨胀的第一道闸） */
+  maxArchiveBytes: 64 * 1024 * 1024,
+  /** 解压后总字节（zip bomb 闸） */
+  maxTotalBytes: 512 * 1024 * 1024,
+  /** 单文件字节 */
+  maxFileBytes: 256 * 1024 * 1024,
+  /** 条目数 */
+  maxEntries: 100_000,
+  /** 总压缩比上限（解压总量 / zip 体积；正常文本包 < 20:1，bomb 是千倍级） */
+  maxRatio: 100,
+} as const
+
+/** zip 条目路径安全（zip-slip）：绝对路径 / .. 上跳 / 反斜杠 / 盘符全拒绝。 */
+function isZipPathSafe(rel: string): boolean {
+  if (rel === '' || rel.startsWith('/') || rel.includes('\\')) return false
+  if (/^[a-zA-Z]:/.test(rel)) return false
+  return !rel.split('/').some((p) => p === '..')
+}
+
+/**
+ * fflate 解压（剥根 + 硬化）：先全量校验（路径/大小/条目/压缩比——校验失败零写入），
+ * 再落盘。GitHub zip 含一层 `<repo>-<ref>/` 根目录——全部条目共享唯一顶层目录时剥掉。
+ * 已知限制：不恢复 Unix exec 位（Windows 首要环境无影响；跨平台分发需补，见 M7 实施记录）。
+ */
+function extractZipSafe(zipBuf: Buffer, dest: string): void {
+  if (zipBuf.length > ZIP_LIMITS.maxArchiveBytes) {
+    throw new Error(`zip 体积超限（${zipBuf.length} > ${ZIP_LIMITS.maxArchiveBytes} 字节）`)
+  }
+  const files = unzipSync(new Uint8Array(zipBuf))
+  const names = Object.keys(files)
+  if (names.length > ZIP_LIMITS.maxEntries) {
+    throw new Error(`zip 条目数超限（${names.length} > ${ZIP_LIMITS.maxEntries}）`)
+  }
+  // 剥根判定：所有条目共享唯一顶层目录（纯根目录条目不算）
+  const tops = new Set(names.map((n) => n.split('/')[0]).filter((s) => s !== ''))
+  const stripPrefix = tops.size === 1 ? `${[...tops][0] as string}/` : ''
+
+  let total = 0
+  const plan: { rel: string; data: Uint8Array; isDir: boolean }[] = []
+  for (const name of names) {
+    const rel = stripPrefix !== '' && name.startsWith(stripPrefix) ? name.slice(stripPrefix.length) : name
+    if (rel === '') continue
+    if (!isZipPathSafe(rel)) throw new Error(`zip 条目路径非法（疑似 zip-slip）：${name}`)
+    const data = files[name]
+    total += data.length
+    if (data.length > ZIP_LIMITS.maxFileBytes) throw new Error(`zip 单文件超限：${name}（${data.length} 字节）`)
+    if (total > ZIP_LIMITS.maxTotalBytes) throw new Error(`zip 解压总量超限（> ${ZIP_LIMITS.maxTotalBytes} 字节）`)
+    plan.push({ rel, data, isDir: name.endsWith('/') })
+  }
+  if (zipBuf.length > 0 && total > zipBuf.length * ZIP_LIMITS.maxRatio) {
+    throw new Error(`zip 压缩比异常（${total}/${zipBuf.length} > ${ZIP_LIMITS.maxRatio}:1，疑似 zip bomb）`)
+  }
+
+  for (const { rel, data, isDir } of plan) {
+    const target = path.join(dest, rel)
+    if (isDir) {
+      fs.mkdirSync(target, { recursive: true })
+      continue
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, data)
   }
 }

@@ -89,7 +89,7 @@ function isAbortError(e: unknown): boolean {
  * - active：当前轮活跃状态（分区累积：userInput / tools / streamingText）
  * - 一轮一 commit：runLoop 结束 → messagesToCommitted → setCommitted；active 清空
  */
-export function TuiApp({ deps, banner: initialBanner, onRestart }: { deps: TuiAppDeps; banner?: string; onRestart?: () => void }): ReactElement {
+export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { deps: TuiAppDeps; banner?: string; onRestart?: () => void; onExit?: () => void }): ReactElement {
   const messagesRef = useRef<HistoryLine[]>([])
   const abortRef = useRef<AbortController>(new AbortController())
   const runningRef = useRef(false)
@@ -537,6 +537,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart }: { deps: TuiAp
     onInterrupt: () => abortRef.current.abort(),
     // P0#1：confirm/picker 覆盖期间不 abort（由覆盖组件独占 Ctrl+C）
     isActive: () => confirmRef.current || pickerRef.current,
+    // 双击退出走 cli 的优雅关闭（SessionEnd hooks / MCP stop 预算内完成后才退）；
+    // 未注入（测试/独立渲染）保持 process.exit(0) 直退
+    ...(onExit !== undefined ? { onExit } : {}),
   })
 
   // ctxWindow 缓存初始化（S-P4）：启动解析一次（models.dev 预热已由 M5 #4 修复），失败保持默认

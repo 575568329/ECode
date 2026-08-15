@@ -81,17 +81,21 @@ export function PluginPanel({ loader, skillRegistry, tools, mcp, refresh, notify
     m.plugins.map((p) => ({ ...p, marketplace: m.marketplace })),
   )
 
-  const runAction = async (label: string, fn: () => Promise<void>): Promise<void> => {
-    if (busy) return
+  /** 成功返回 null；失败返回错误文案（AddMarketView 等行内展示用）。 */
+  const runAction = async (label: string, fn: () => Promise<void>): Promise<string | null> => {
+    if (busy) return '操作进行中'
     setBusy(true)
     setError(null)
     try {
       await fn()
       notify(label)
       refresh()
+      return null
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      setError(msg)
       refresh() // 失败也可能有部分状态变化（如 cache 半成品清理）
+      return msg
     } finally {
       setBusy(false)
     }
@@ -191,11 +195,12 @@ export function PluginPanel({ loader, skillRegistry, tools, mcp, refresh, notify
     return (
       <AddMarketView
         busy={busy}
-        onSubmit={(source) =>
-          void runAction(`已添加市场 ${source}`, async () => {
+        onSubmit={async (source) =>
+          runAction(`已添加市场 ${source}`, async () => {
             await loader.addMarketplace(source)
-          }).then(() => setView({ view: 'main', tab: 0 }))
+          })
         }
+        onDone={() => setView({ view: 'main', tab: 0 })}
         onCancel={() => setView({ view: 'main', tab: 2 })}
         notify={notify}
       />
@@ -285,38 +290,48 @@ export function PluginPanel({ loader, skillRegistry, tools, mcp, refresh, notify
   )
 }
 
-/** 添加市场页：文本输入 → 提交 clone/复制（失败行内错误）。 */
+/** 添加市场页：文本输入 → 提交 clone/复制（失败行内错误——P7；成功回浏览页）。 */
 function AddMarketView({
   busy,
   onSubmit,
+  onDone,
   onCancel,
   notify,
 }: {
   busy: boolean
-  onSubmit: (source: string) => void
+  /** 执行添加；成功返回 null，失败返回错误文案 */
+  onSubmit: (source: string) => Promise<string | null>
+  onDone: () => void
   onCancel: () => void
   notify: (msg: string) => void
 }): ReactElement {
   const [cur, setCur] = useState<CursorState>(() => createCursor(''))
-  const [error] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
   useInput((_input, key) => {
-    if (key.escape) onCancel()
+    if (key.escape && !busy && !submitting) onCancel()
   })
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor={theme.border} paddingX={1}>
-      <Text color={theme.info} bold> 添加市场{busy ? '（处理中…）' : ''}</Text>
+      <Text color={theme.info} bold> 添加市场{busy || submitting ? '（处理中…）' : ''}</Text>
       <Box marginTop={1}>
         <Text dimColor> 来源（owner/repo | git URL | 本地路径）：</Text>
       </Box>
       <TextInput
         value={cur.text}
         caret={cur.caret}
+        inactive={busy || submitting}
         onInput={setCur}
-        onSubmit={(v) => {
+        onSubmit={async (v) => {
           const source = v.trim()
-          if (source === '') return
+          if (source === '' || busy || submitting) return
+          setSubmitting(true)
+          setError(null)
           notify(`正在添加市场 ${source}…`)
-          onSubmit(source)
+          const err = await onSubmit(source)
+          setSubmitting(false)
+          if (err === null) onDone()
+          else setError(err) // 行内错误：用户在本页看到失败原因（P7"失败行内错误"）
         }}
         placeholder="owner/repo"
       />

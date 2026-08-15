@@ -150,3 +150,47 @@ describe('空列表页的页签切换（真机 bug 回归：已安装 0 项时 �
     expect(lastFrame() ?? '').toContain('添加市场（owner/repo')
   })
 })
+
+describe('搜索态的页签切换与添加失败行内错误', () => {
+  it('搜索态按 → 仍切页并清搜索词（搜索无光标编辑，左右不是死键）', async () => {
+    const { stdin, lastFrame } = render(makePanel())
+    await flush()
+    stdin.write('x') // 进搜索态（无匹配）
+    await flush()
+    expect(lastFrame() ?? '').toContain('搜索：x')
+    stdin.write('\u001b[C') // → 搜索态也切页
+    await flush()
+    await flush()
+    const f = lastFrame() ?? ''
+    expect(f).toContain('已安装')
+    expect(f).not.toContain('搜索：x') // 搜索词已清（防残留过滤错乱）
+  })
+
+  it('添加市场失败 → 行内错误显示在本页（不再静默）', async () => {
+    // 造一个必失败的市场目录（缺 marketplace.json）
+    const badDir = path.join(tmpRoot, 'bad-market')
+    const { mkdir } = await import('node:fs/promises')
+    await mkdir(badDir, { recursive: true })
+    const panel = React.createElement(PluginPanel, {
+      loader,
+      skillRegistry: new SkillRegistry({ userDir: path.join(tmpRoot, 'skills') }),
+      tools: null,
+      mcp: null,
+      refresh: () => {},
+      notify: () => {},
+      onCancel: () => {},
+    })
+    const { stdin, lastFrame } = render(panel)
+    await flush()
+    stdin.write('\r') // 直达项 → 添加市场视图
+    await flush()
+    stdin.write(badDir.split(path.sep).join('/'))
+    await flush()
+    stdin.write('\r') // 提交（目录缺 marketplace.json → addMarketplace throw）
+    await new Promise((r) => setTimeout(r, 150))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('⚠')
+    expect(f).toContain('marketplace.json')
+    expect(f).toContain('回车 提交') // 仍在添加页（可修改重试）
+  })
+})

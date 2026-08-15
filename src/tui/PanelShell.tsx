@@ -142,9 +142,10 @@ export function PanelShell<T>({
   useInput((input, key) => {
     // 页签切换（M7 P7）：优先于一切分支——空页签（如未安装任何插件的「已安装」页）
     // 也要能切走，否则用户被困在空页（真机复现：空列表守卫吞掉左右键）。
-    // 搜索态让位（左右留给后续文本编辑）。
-    if (tabs !== undefined && onTabChange !== undefined && query === '' && (key.leftArrow || key.rightArrow)) {
+    // 搜索态同样切换并清词（搜索无光标编辑，左右无第二用途；残留搜索词到新页签会错乱过滤）。
+    if (tabs !== undefined && onTabChange !== undefined && (key.leftArrow || key.rightArrow)) {
       const delta = key.rightArrow ? 1 : -1
+      if (query !== '') setQuery('')
       onTabChange((activeTabIndex === undefined ? 0 : activeTabIndex + delta + tabs.length) % tabs.length)
       return
     }

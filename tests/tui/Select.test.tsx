@@ -135,8 +135,8 @@ describe('Select', () => {
   })
 
   // 窗口化：动态区 outputHeight ≥ 视口行数触发 Ink fullscreen（视角顶到顶部、scrollback 被清），
-  // 长列表（/history 会话多）必须封顶可见窗口
-  it('超长列表窗口化：仅渲染 12 项窗口 + 溢出计数', () => {
+  // 长列表（/history 会话多）必须封顶可见窗口。ink-testing rows 未知 → 兜底 24 → 窗口 min(12, 24-14)=10
+  it('超长列表窗口化：仅渲染可见窗口 + 溢出计数', () => {
     const many: SelectItem<number>[] = Array.from({ length: 20 }, (_, i) => ({
       label: `s${String(i).padStart(2, '0')}`,
       value: i,
@@ -146,9 +146,9 @@ describe('Select', () => {
     )
     const f = lastFrame() ?? ''
     expect(f).toContain('s00')
-    expect(f).toContain('s11') // 第 12 项（窗口 0-11）
-    expect(f).not.toContain('s12') // 第 13 项不渲染
-    expect(f).toContain('↓ 还有 8 项')
+    expect(f).toContain('s09') // 窗口 0-9（高度感知 10 项）
+    expect(f).not.toContain('s10') // 第 11 项不渲染
+    expect(f).toContain('↓ 还有 10 项')
     expect(f).not.toContain('↑ 还有')
   })
 
@@ -163,11 +163,47 @@ describe('Select', () => {
     for (let i = 0; i < 7; i++) {
       stdin.write(DOWN)
       await flush()
-    } // idx=7 → 窗口起点 1（光标居中）
+    } // idx=7 → 窗口起点 2（光标居中）
     const f = lastFrame() ?? ''
-    expect(f).toContain('s01') // 滚入窗口首行
-    expect(f).not.toContain('s00') // 滚出窗口
-    expect(f).toContain('↑ 还有 1 项')
-    expect(f).toContain('↓ 还有 7 项')
+    expect(f).toContain('s02') // 滚入窗口首行
+    expect(f).not.toContain('s01') // 滚出窗口
+    expect(f).toContain('↑ 还有 2 项')
+    expect(f).toContain('↓ 还有 8 项')
+  })
+
+  it('active 项初始定位在深列表尾 → 首渲染窗口即跳到底部', () => {
+    const many: SelectItem<number>[] = Array.from({ length: 20 }, (_, i) => ({
+      label: `s${String(i).padStart(2, '0')}`,
+      value: i,
+      active: i === 18,
+    }))
+    const { lastFrame } = render(
+      React.createElement(Select, { items: many, onSelect: () => {}, onCancel: () => {} }),
+    )
+    const f = lastFrame() ?? ''
+    expect(f).toContain('s10') // 窗口起点 10（idx18 居中）
+    expect(f).toContain('s19')
+    expect(f).not.toContain('s09')
+    expect(f).toContain('↑ 还有 10 项')
+    expect(f).not.toContain('↓ 还有')
+  })
+
+  it('PageDown 翻页：光标跳一窗口，窗口跟随', async () => {
+    const many: SelectItem<number>[] = Array.from({ length: 20 }, (_, i) => ({
+      label: `s${String(i).padStart(2, '0')}`,
+      value: i,
+    }))
+    const onSelect = vi.fn()
+    const { stdin, lastFrame } = render(
+      React.createElement(Select, { items: many, onSelect, onCancel: () => {} }),
+    )
+    stdin.write('\u001b[6~') // PageDown → idx=10
+    await flush()
+    const f = lastFrame() ?? ''
+    expect(f).toContain('s05') // 窗口起点 5（idx10 居中）
+    expect(f).not.toContain('s04')
+    // 翻页后回车选中第 11 项（防"跳页后仍选旧项"回归）
+    stdin.write('\r')
+    expect(onSelect).toHaveBeenCalledWith(10)
   })
 })

@@ -1,25 +1,31 @@
 import { useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
-import { Box, Text, useInput } from 'ink'
+import { Box, Text, useInput, useStdout } from 'ink'
 import { theme } from './theme.js'
 
 /**
  * 通用列表选择器（D5 自建，P1-3 从 ModelPicker 提炼）。
  *
- * 只管交互（↑↓ 环绕导航 / 回车确认 / Esc·Ctrl+C 取消 / inverse 高亮），
+ * 只管交互（↑↓ 环绕导航 / PageUp·PageDown 翻页 / 回车确认 / Esc·Ctrl+C 取消 / inverse 高亮），
  * 不懂任何业务——调用方传 `{label, value, active}` items。
  *
  * 复用范式：ModelPicker（provider×model）/ HistoryPicker（会话）/ 未来 skill·mcp 选择。
  * 选中靠 inverse 反色（不用箭头字符，规避 ambiguous 字符宽度问题）。
  * 空列表：显示 emptyHint + 仅响应 Esc（不崩，通用空态）。
  *
- * 窗口化（对齐 PanelShell）：列表超 MAX_VISIBLE 项只渲染光标居中的可见窗口——
- * 动态区 outputHeight ≥ 视口行数会触发 Ink fullscreen（视角顶到顶部、scrollback
- * 被清），/history 会话多的场景全量渲染必炸屏；窗口外以上/下溢出计数提示。
+ * 窗口化（对齐 PanelShell）+ 高度感知（M9 审阅 P1-2）：可见行数 = min(12, 视口-14)——
+ * Ink 是 >= 判定（恰好占满即触发 fullscreen 清 scrollback），中段双指示态 Select 总高 ≈ 窗口+11
+ * （骨架 9 + ActivityBar/状态/输入 3 中取保守和），80×24 最小终端下窗口 10 才留得出余量。
  */
 
-/** 可见窗口行数（与 PanelShell MAX_VISIBLE 同值） */
+/** 可见窗口行数上限（与 PanelShell MAX_VISIBLE 同值；实际取 min(此值, 视口感知)） */
 const MAX_VISIBLE = 12
+/** 高度感知预留：中段态骨架（marginTop1+边框2+title1+列表margin1+双指示2+底提示2+margin1）+ 底部三行 + 余量 */
+const VISIBLE_RESERVE = 14
+/** 极矮终端保命线 */
+const MIN_VISIBLE = 3
+/** 非 TTY 环境 rows 未知时的兜底视口行数 */
+const ROWS_FALLBACK = 24
 
 export interface SelectItem<T> {
   /** 渲染文本（调用方组装，如 'glm-5.2 / astron' 或 '首条消息 · 时间'） */
@@ -43,6 +49,9 @@ export function Select<T>({ title, items, onSelect, onCancel, emptyHint }: Selec
   // 初始光标定位到 active 项；无 active 回退第一项（findIndex 找不到返回 -1 → Math.max 兜底 0）
   const initialIdx = Math.max(0, items.findIndex((it) => it.active))
   const [idx, setIdx] = useState(initialIdx)
+  const { stdout } = useStdout()
+  const maxVisible = Math.min(MAX_VISIBLE, Math.max(MIN_VISIBLE, (stdout?.rows ?? ROWS_FALLBACK) - VISIBLE_RESERVE))
+  const clamp = (v: number): number => Math.max(0, Math.min(items.length - 1, v))
 
   useInput((input, key) => {
     if (items.length === 0) {
@@ -54,21 +63,25 @@ export function Select<T>({ title, items, onSelect, onCancel, emptyHint }: Selec
       setIdx((i) => (i <= 0 ? items.length - 1 : i - 1))
     } else if (key.downArrow) {
       setIdx((i) => (i >= items.length - 1 ? 0 : i + 1))
+    } else if (key.pageUp) {
+      setIdx((i) => clamp(i - maxVisible))
+    } else if (key.pageDown) {
+      setIdx((i) => clamp(i + maxVisible))
     } else if (key.return) {
       const item = items[idx]
-      if (item) onSelect(item.value) // P2-5：guard 越界（items 变化时 idx 可能超出长度）
+      if (item !== undefined) onSelect(item.value) // P2-5：guard 越界（items 变化时 idx 可能超出长度）
     } else if (key.escape || (key.ctrl && input === 'c')) {
       onCancel()
     }
   })
 
   const empty = items.length === 0
-  // 窗口化滚动：光标为中心，窗口 [start, start+MAX_VISIBLE)——渲染行数封顶，防动态区超视口
+  // 窗口化滚动：光标为中心，窗口 [start, start+maxVisible)——渲染行数封顶，防动态区超视口
   const windowStart =
-    items.length <= MAX_VISIBLE ? 0 : Math.max(0, Math.min(items.length - MAX_VISIBLE, idx - Math.floor(MAX_VISIBLE / 2)))
+    items.length <= maxVisible ? 0 : Math.max(0, Math.min(items.length - maxVisible, idx - Math.floor(maxVisible / 2)))
   const hiddenAbove = windowStart
-  const hiddenBelow = Math.max(0, items.length - (windowStart + MAX_VISIBLE))
-  const shown = items.slice(windowStart, windowStart + MAX_VISIBLE)
+  const hiddenBelow = Math.max(0, items.length - (windowStart + maxVisible))
+  const shown = items.slice(windowStart, windowStart + maxVisible)
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor={theme.border} paddingX={1}>
       {title !== undefined && (

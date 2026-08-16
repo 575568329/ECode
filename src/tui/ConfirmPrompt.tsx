@@ -27,8 +27,10 @@ import { DiffLine } from './DiffLine.js'
  * y/n/回车后组件由父卸载（active.confirm=null），不残留动态区。
  */
 
-/** 预留给弹窗骨架（框 2 + 标题 1 + 选项 1 + margin/padding ~4）与动态区其余（输入行/提示/状态栏 ~4） */
-const PREVIEW_RESERVE = 12
+/** 预留 = 弹窗骨架 7（marginTop×3+边框 2+标题 1+选项 1）+ 弹窗时动态区共存 9（折叠用户输入 3 +
+ * 折叠工具组 4 + ActivityBar/状态行/输入行 3）+ 余量 1。审阅实测推导——Ink 是 >= 判定，
+ * 恰好占满也触发 fullscreen，低估 1 行就破防。 */
+const PREVIEW_RESERVE = 17
 /** 极矮终端保命线：preview 至少留 5 行（头 3 + 省略 1 + 尾 1） */
 const PREVIEW_MIN_LINES = 5
 /** 非 TTY 环境 rows 未知时的兜底视口行数 */

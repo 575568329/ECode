@@ -8,6 +8,7 @@ import { theme } from './theme.js'
  * - `@@`：蓝（hunk header）
  * - `-`：红（删除行）
  * - `+`：绿（新增行）
+ * - `⋯`：暗色（截断省略提示，M9 审阅——与面板溢出行风格一致）
  * - 其他：默认（context 行 / 摘要）
  */
 export function DiffLine({ line }: { line: string }): ReactElement {
@@ -22,6 +23,9 @@ export function DiffLine({ line }: { line: string }): ReactElement {
   }
   if (line.startsWith('+')) {
     return <Text backgroundColor={theme.successBg}>{line}</Text>
+  }
+  if (line.startsWith('⋯')) {
+    return <Text dimColor>{line}</Text>
   }
   return <Text>{line}</Text>
 }

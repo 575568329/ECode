@@ -83,7 +83,7 @@ describe('ConfirmPrompt', () => {
   })
 
   // 高度感知截断：动态区 outputHeight ≥ 视口行数触发 Ink fullscreen（视角顶到顶部、scrollback 被清），
-  // 弹窗 preview 必须封顶。测试 pipe 环境 rows 未知 → 兜底 24 行 → 上限 24-12=12 行
+  // 弹窗 preview 必须封顶。测试 pipe 环境 rows 未知 → 兜底 24 行 → 上限 24-17=7 行
   it('超高 diff：保头尾截断 + 省略计数，弹窗不超视口', () => {
     const lines = Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? `-old${i}` : `+new${i}`))
     const diff = `--- foo.ts\n+++ foo.ts\n@@ -1,30 +1,30 @@\n${lines.join('\n')}` // 共 33 行
@@ -115,13 +115,13 @@ describe('ConfirmPrompt', () => {
   })
 
   it('previewMaxLines：视口感知 + 非 TTY 兜底 + 极矮保命线', () => {
-    expect(previewMaxLines(undefined)).toBe(12) // 非 TTY（测试 pipe）兜底 24-12
-    expect(previewMaxLines(20)).toBe(8)
-    expect(previewMaxLines(50)).toBe(38)
-    expect(previewMaxLines(10)).toBe(5) // 极矮终端保命线
+    expect(previewMaxLines(undefined)).toBe(7) // 非 TTY（测试 pipe）兜底 24-17（审阅 P1-1 实测预留）
+    expect(previewMaxLines(20)).toBe(5) // 20-17=3 → 保命线
+    expect(previewMaxLines(50)).toBe(33)
+    expect(previewMaxLines(10)).toBe(5)
   })
 
-  it('clampPreviewLines：头 2/3 + 省略 + 尾 1/3；≤上限原样', () => {
+  it('clampPreviewLines：头 2/3 + 省略 + 尾 1/3；≤上限原样；极矮 max=5 拆分（头3+省略+尾1）', () => {
     const lines = Array.from({ length: 33 }, (_, i) => `L${i}`)
     const out = clampPreviewLines(lines, 8)
     expect(out).toHaveLength(8)
@@ -131,5 +131,16 @@ describe('ConfirmPrompt', () => {
     expect(out[6]).toBe('L31') // 尾 2 行
     expect(out[7]).toBe('L32')
     expect(clampPreviewLines(['a', 'b'], 8)).toEqual(['a', 'b']) // 不超原样
+    const tiny = clampPreviewLines(lines, 5)
+    expect(tiny).toEqual(['L0', 'L1', 'L2', expect.stringContaining('省略 29 行'), 'L32'])
+  })
+
+  it('超大 preview 渲染：帧总行数 < 兜底视口 24（防 fullscreen 属性级断言）', () => {
+    const huge = Array.from({ length: 500 }, (_, i) => `-line${i}`).join('\n')
+    const s = makeState('edit_file', { path: 'big.ts' }, huge)
+    const { lastFrame } = render(React.createElement(ConfirmPrompt, { state: s }))
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('省略')
+    expect(frame.split('\n').length).toBeLessThan(24)
   })
 })

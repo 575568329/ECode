@@ -61,6 +61,12 @@ export const editFileTool: Tool = {
     }
 
     const abs = path.isAbsolute(rel) ? rel : path.resolve(ctx.cwd, rel)
+    // M9-P1：写前快照（失败不阻断——安全网自身的问题不挡主流程）
+    try {
+      await ctx.onBeforeWrite?.([abs], 'edit_file')
+    } catch {
+      /* 快照失败静默继续（装配方 warn 已记） */
+    }
     try {
       const oldContent = await fs.readFile(abs, 'utf8')
 

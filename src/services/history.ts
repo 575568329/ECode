@@ -40,6 +40,8 @@ export interface HistoryStore {
   appendCompactBoundary(boundary: BoundaryLine): void
   /** 切换 sessionId（/history 恢复后续写新文件；旧文件只读不破坏，D2） */
   setSessionId(id: string, model?: string): void
+  /** 当前 sessionId（M9-P1：checkpoint 快照目录键控用；restore 后为新 id） */
+  currentSessionId(): string
 }
 
 /** 首行 meta 标记（loadAll 只读首行，restore 过滤 meta 行） */
@@ -121,6 +123,11 @@ export class FileHistoryStore implements HistoryStore {
     this.metaWritten = false
     this.firstUser = '(空)'
     this.ensureDir()
+  }
+
+  /** 当前 sessionId（M9-P1：checkpoint 快照目录键控） */
+  currentSessionId(): string {
+    return this.sessionId
   }
 
   /** 只读文件首行（P1-13：loadAll 避免全量读大 session 文件，读前 2048 字节取首行足够 meta） */
@@ -213,4 +220,7 @@ export class NoopHistoryStore implements HistoryStore {
     return []
   }
   setSessionId(_id: string, _model?: string): void {}
+  currentSessionId(): string {
+    return ''
+  }
 }

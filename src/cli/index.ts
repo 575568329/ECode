@@ -21,6 +21,7 @@ import { ToolRegistryImpl } from '../tools/registry.js'
 import { JsonlLogger } from '../services/logger.js'
 import { LogStore } from '../services/logstore.js'
 import { FileHistoryStore } from '../services/history.js'
+import { CheckpointStore } from '../services/checkpoint.js'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { join } from 'node:path'
@@ -69,6 +70,8 @@ interface Deps {
   instructionWarnings: string[]
   hookRunner: HookRunner | null
   pluginLoader: PluginLoader | null
+  /** M9-P1：快照存储（onBeforeWrite 装配进 toolCtx） */
+  checkpoint?: CheckpointStore | null
 }
 
 function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
@@ -114,6 +117,9 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
     tools: hookedTools,
     logger,
     history: new FileHistoryStore({ sessionId, model: config.current.model }),
+    checkpoint: new CheckpointStore(process.cwd(), {
+      warn: (m) => logger.warn('checkpoint', 'snapshot', { message: m }),
+    }),
     config,
     orchestrator,
     lastUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
@@ -171,7 +177,14 @@ async function runOnce(messages: HistoryLine[], input: string, deps: Deps): Prom
     providerReq,
     system,
     maxIterations: deps.config.maxIterations,
-    toolCtx: { cwd: process.cwd(), signal: new AbortController().signal },
+    toolCtx: {
+      cwd: process.cwd(),
+      signal: new AbortController().signal,
+      // M9-P1：写前快照装配（argv 单次模式同款；快照失败工具侧已 catch）
+      onBeforeWrite: async (paths, tool) => {
+        await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool })
+      },
+    },
     onBeforeRequest,
     onCompacted,
   })

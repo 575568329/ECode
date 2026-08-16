@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -87,5 +87,39 @@ describe('editFileTool', () => {
     )
     expect(r.is_error).toBeFalsy()
     expect(readFileSync(join(tmpDir, 'a.ts'), 'utf8')).toBe('const x = new\r\nconst y = 2\r\n')
+  })
+})
+
+// —— M9-P1：写前快照回调（onBeforeWrite）——副作用工具 execute 开头调用（loop 层确认已通过）
+
+describe('onBeforeWrite（M9-P1 checkpoint 触发）', () => {
+  it('write_file：执行前以绝对路径调用（先于写入）', async () => {
+    const calls: Array<[string[], string]> = []
+    const ctx2: ToolContext = { ...ctx, onBeforeWrite: async (paths, tool) => { calls.push([paths, tool]) } }
+    await writeFileTool.execute({ path: 'a.txt', content: 'x' }, ctx2)
+    expect(calls).toEqual([[ [join(tmpDir, 'a.txt')], 'write_file' ]])
+    // 覆盖场景：文件已存在也会先快照再写
+    const calls2: Array<[string[], string]> = []
+    await writeFileTool.execute({ path: 'a.txt', content: 'y' }, { ...ctx, onBeforeWrite: async (p, t) => { calls2.push([p, t]) } })
+    expect(calls2).toHaveLength(1)
+  })
+
+  it('edit_file：执行前以绝对路径调用', async () => {
+    writeFileSync(join(tmpDir, 'e.ts'), 'old')
+    const calls: Array<[string[], string]> = []
+    await editFileTool.execute(
+      { path: 'e.ts', oldString: 'old', newString: 'new' },
+      { ...ctx, onBeforeWrite: async (paths, tool) => { calls.push([paths, tool]) } },
+    )
+    expect(calls).toEqual([[ [join(tmpDir, 'e.ts')], 'edit_file' ]])
+  })
+
+  it('回调抛错不阻断写入（快照失败是安全网问题，不该挡主流程）', async () => {
+    const r = await writeFileTool.execute(
+      { path: 'b.txt', content: 'z' },
+      { ...ctx, onBeforeWrite: async () => { throw new Error('snapshot io error') } },
+    )
+    expect(r.is_error).toBeFalsy()
+    expect(readFileSync(join(tmpDir, 'b.txt'), 'utf8')).toBe('z')
   })
 })

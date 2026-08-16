@@ -25,6 +25,12 @@ export const writeFileTool: Tool = {
   async execute(args, ctx) {
     const { path: rel, content } = args as { path: string; content: string }
     const abs = path.isAbsolute(rel) ? rel : path.resolve(ctx.cwd, rel)
+    // M9-P1：写前快照（失败不阻断——安全网自身的问题不挡主流程）
+    try {
+      await ctx.onBeforeWrite?.([abs], 'write_file')
+    } catch {
+      /* 快照失败静默继续（装配方 warn 已记） */
+    }
     try {
       // 原子写：写 .tmp → rename（中断不留半截）
       const tmp = abs + '.ecode-tmp'

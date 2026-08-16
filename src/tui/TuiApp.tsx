@@ -79,6 +79,8 @@ export interface TuiAppDeps {
   instructionWarnings?: string[]
   /** M7：hooks 分发器（null = 未启用；SessionStart/UserPromptSubmit/Stop 在此触发） */
   hookRunner?: HookRunner | null
+  /** M9-P1：快照存储（null/undefined = 未启用，如测试；onBeforeWrite 装配进 toolCtx） */
+  checkpoint?: import('../services/checkpoint.js').CheckpointStore | null
   /** M7：plugin 装载器（null = 未启用；/plugin 面板操作） */
   pluginLoader?: import('../services/plugin/loader.js').PluginLoader | null
   /** /restart 的执行句柄（cli 注入：unmount + spawn 新实例 + exit；缺省时提示不可用） */
@@ -298,7 +300,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         providerReq,
         system,
         maxIterations: config.maxIterations,
-        toolCtx: { cwd: process.cwd(), signal: abortRef.current.signal },
+        toolCtx: {
+          cwd: process.cwd(),
+          signal: abortRef.current.signal,
+          // M9-P1：写前快照装配（心脏零改动——loop 只透传 toolCtx；快照失败工具侧已 catch）
+          onBeforeWrite: async (paths, tool) => {
+            await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool })
+          },
+        },
         signal: abortRef.current.signal,
         onBeforeRequest,
         onCompacted,

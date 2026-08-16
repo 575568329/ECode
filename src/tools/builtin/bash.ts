@@ -62,6 +62,12 @@ export const bashTool: Tool = {
     if (isDangerous(command)) {
       return { content: `危险命令已拦截：${command}`, is_error: true }
     }
+    // M9-P1：写前快照——bash 不可解析目标，传空数组由服务端 git status 近修改集兜底（无 git 跳过+warn）
+    try {
+      await ctx.onBeforeWrite?.([], 'bash')
+    } catch {
+      /* 快照失败静默继续（装配方 warn 已记） */
+    }
     const timeout = this.timeout_ms ?? DEFAULT_TIMEOUT_MS
 
     return new Promise<ExecResult>((resolve) => {

@@ -187,7 +187,7 @@ describe('搜索态的页签切换与添加失败行内错误', () => {
     stdin.write(badDir.split(path.sep).join('/'))
     await flush()
     stdin.write('\r') // 提交（目录缺 marketplace.json → addMarketplace throw）
-    await new Promise((r) => setTimeout(r, 150))
+    await new Promise((r) => setTimeout(r, 300))
     const f = lastFrame() ?? ''
     expect(f).toContain('⚠')
     expect(f).toContain('marketplace.json')

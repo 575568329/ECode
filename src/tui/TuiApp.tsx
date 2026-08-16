@@ -49,7 +49,7 @@ import { McpPanel } from './McpPanel.js'
 import { PluginPanel } from './PluginPanel.js'
 import { QuestionPanel } from './QuestionPanel.js'
 import { WarningsPanel } from './WarningsPanel.js'
-import { pushNotice, deriveNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
+import { pushNotice, deriveNoticeLine, renderNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
 import { setAskUserHandler } from '../tools/builtin/askUserBridge.js'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
 import { Select } from './Select.js'
@@ -739,12 +739,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         return l === null || warning !== undefined ? undefined : l.level
       })()}
       warning={
-        warning ??
-        (() => {
+        warning ?? (() => {
           const line = deriveNoticeLine(notices)
-          if (line === null) return undefined
-          const icon = line.level === 'error' ? '✖' : line.level === 'warn' ? '⚠' : 'ℹ'
-          return `${icon} ${line.text}${line.rest > 0 ? ` · 还有 ${line.rest} 条（/warnings 查看）` : ''}`
+          return line === null ? undefined : renderNoticeLine(line, process.stdout.columns ?? 100)
         })()
       }
     >

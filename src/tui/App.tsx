@@ -40,19 +40,6 @@ interface AppProps {
   children?: ReactNode
 }
 
-/** 告警行宽上限兜底（终端宽度未知/超宽时也截） */
-const WARN_FALLBACK_COLS = 100
-
-/**
- * 告警单行化 + 截断：折叠换行/制表为空格（多行消息会破坏底部布局），
- * 超终端宽（stdout.columns，未知用 100 兜底）截断加省略号。导出供测试。
- */
-export function flattenWarnLine(s: string, cols: number = process.stdout.columns ?? WARN_FALLBACK_COLS): string {
-  const flat = s.replace(/[\r\n\t]+/g, ' ').trim()
-  const max = Math.max(20, cols - 4)
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
-}
-
 export function App({
   model,
   committed,
@@ -109,7 +96,7 @@ export function App({
           </Box>
           {warning !== undefined && (
             <Text color={warningLevel === 'error' ? theme.error : warningLevel === 'info' ? theme.info : theme.warn}>
-              {warningLevel === 'error' ? '✖' : warningLevel === 'info' ? 'ℹ' : '⚠'} {flattenWarnLine(warning)}
+              {warning}
             </Text>
           )}
         </Box>

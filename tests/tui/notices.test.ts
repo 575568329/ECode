@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { deriveNoticeLine, groupNotices, pushNotice, NOTICE_LIMIT, type NoticeItem } from '../../src/tui/notices.js'
+import { deriveNoticeLine, groupNotices, pushNotice, renderNoticeLine, NOTICE_LIMIT, type NoticeItem } from '../../src/tui/notices.js'
+import stringWidth from 'string-width'
 
 function mk(level: NoticeItem['level'], text: string, id: number): NoticeItem {
   return { id, level, text }
@@ -52,5 +53,40 @@ describe('groupNotices（面板分组）', () => {
     const groups = groupNotices([mk('info', 'i', 1), mk('error', 'e', 2), mk('warn', 'w', 3)])
     expect(groups.map((g) => g.level)).toEqual(['error', 'warn', 'info'])
     expect(groupNotices([mk('warn', 'w', 1)]).map((g) => g.level)).toEqual(['warn'])
+  })
+})
+
+describe('renderNoticeLine（单行渲染：宽度感知 + 角标保底）', () => {
+  it('短消息原样 + 角标完整（中文按 2 列）', () => {
+    const out = renderNoticeLine({ level: 'warn', text: '限流重试中', rest: 3 }, 100)
+    expect(out).toBe('⚠ 限流重试中 · 还有 3 条（/warnings 查看）')
+  })
+
+  it('超长中文消息截断但角标完整保留（不被挤掉）', () => {
+    const long = '限流'.repeat(200) // 800 列宽
+    const out = renderNoticeLine({ level: 'error', text: long, rest: 7 }, 80)
+    expect(out).toContain('还有 7 条（/warnings 查看）') // 角标完整
+    expect(out.endsWith('…')).toBe(false)
+    expect(out.includes('… · 还有 7 条')).toBe(true) // 截断点在消息本体
+    // 总显示宽度不超终端（单行不换行的硬保证）
+    const w = stringWidth(out)
+    expect(w).toBeLessThanOrEqual(80)
+  })
+
+  it('rest=0 无角标，全额给消息', () => {
+    const out = renderNoticeLine({ level: 'info', text: '已压缩对话', rest: 0 }, 100)
+    expect(out).toBe('ℹ 已压缩对话')
+  })
+
+  it('三级 icon 区分', () => {
+    expect(renderNoticeLine({ level: 'error', text: 'x', rest: 0 }, 50).startsWith('✖')).toBe(true)
+    expect(renderNoticeLine({ level: 'warn', text: 'x', rest: 0 }, 50).startsWith('⚠')).toBe(true)
+    expect(renderNoticeLine({ level: 'info', text: 'x', rest: 0 }, 50).startsWith('ℹ')).toBe(true)
+  })
+
+  it('多行/制表消息折叠为单行', () => {
+    const out = renderNoticeLine({ level: 'warn', text: 'a\nb\tc', rest: 0 }, 100)
+    expect(out).toBe('⚠ a b c')
+    expect(out.split('\n')).toHaveLength(1)
   })
 })

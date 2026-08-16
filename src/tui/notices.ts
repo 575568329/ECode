@@ -7,6 +7,8 @@
  * 队列封顶 50（超限丢最旧 info→warn 优先保留高级）。
  */
 
+import stringWidth from 'string-width'
+
 export type NoticeLevel = 'error' | 'warn' | 'info'
 
 export interface NoticeItem {
@@ -46,4 +48,34 @@ export function groupNotices(list: NoticeItem[]): Array<{ level: NoticeLevel; it
   return levels
     .map((level) => ({ level, items: list.filter((n) => n.level === level) }))
     .filter((g) => g.items.length > 0)
+}
+
+const NOTICE_ICON: Record<NoticeLevel, string> = { error: '✖', warn: '⚠', info: 'ℹ' }
+
+/**
+ * 底部告警行渲染（M8 补充②终版）：**保证单行不换行**——
+ * 图标 + 消息（宽度感知截断，string-width 计中文 2 列）+ 计数角标（**完整保留**，
+ * 截断只吃消息本体——角标是用户看全部问题的入口，不能被挤掉）。
+ * 详细内容不塞这行，用 /warnings 看。
+ */
+export function renderNoticeLine(line: { level: NoticeLevel; text: string; rest: number }, cols: number): string {
+  const icon = NOTICE_ICON[line.level]
+  const badge = line.rest > 0 ? ` · 还有 ${line.rest} 条（/warnings 查看）` : ''
+  const budget = cols - stringWidth(icon) - 1 - stringWidth(badge) - 1 // -1 空格 -1 余量
+  return `${icon} ${clampByWidth(line.text, Math.max(10, budget))}${badge}`
+}
+
+/** 显示宽度截断（中文按 2 列计——js 字符数截断会超宽导致 Ink 换行）。 */
+function clampByWidth(text: string, maxCols: number): string {
+  const flat = text.replace(/[\r\n\t]+/g, ' ').trim()
+  if (stringWidth(flat) <= maxCols) return flat
+  let out = ''
+  let w = 0
+  for (const ch of flat) {
+    const cw = stringWidth(ch)
+    if (w + cw > maxCols - 1) return `${out}…`
+    out += ch
+    w += cw
+  }
+  return out
 }

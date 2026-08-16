@@ -118,6 +118,21 @@ describe('buildContextMessages：rewind 截断（M9-P2）', () => {
     expect(buildContextMessages(lines)).toEqual([msg('a')])
   })
 
+  it('撤销回退（选 rewind-auto 点，RewindLine 无锚）：最后一条缺锚 → 全量恢复，前次被截区间复活', () => {
+    // 终审 P1-4 声称「自动快照带范围内最新点的锚」——那会让复活不完整（最新锚那轮仍被切，
+    // 文件已还原回改后状态、模型却只记得一半=半截状态）。缺锚→全量恰是「撤销回退」的正确
+    // 语义：文件与上下文一起完整回到回退前。锁定此行为，防止后人好心补锚。
+    const lines: HistoryLine[] = [
+      msg('a'),
+      toolMsg('t1'), // 被回退的那轮（第一次回退时文件已还原）
+      { rewind: true, seq: 2, toolUseId: 't1', time: 't' }, // 第一次回退：截 [t1..rewind]
+      msg('after-rewind'), // 回退后的新对话
+      { rewind: true, seq: 4, time: 't' }, // 撤销回退（rewind-auto 点还原了文件，RewindLine 无锚）
+      msg('after-undo'),
+    ]
+    expect(buildContextMessages(lines)).toEqual([msg('a'), toolMsg('t1'), msg('after-rewind'), msg('after-undo')])
+  })
+
   it('boundary 在 rewind 行之后（先回退再压缩）→ 拼接子集上 boundary 照常生效，rewind 后新对话保留', () => {
     const lines: HistoryLine[] = [
       msg('a'),

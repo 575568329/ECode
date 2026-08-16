@@ -169,6 +169,25 @@ describe('CheckpointStore：还原', () => {
     expect(await readFile(a, 'utf8')).toBe('v3')
   })
 
+  it('点数满时 revert：自动快照不触发治理——最旧点基线不被 GC，还原完整（终审 P1-3）', async () => {
+    const store = makeStore({ maxPerSession: 3 })
+    const a = await write('a.ts', 'v1')
+    await store.snapshot('s1', [a], { tool: 'edit_file' }) // 点1 基线 v1
+    await writeFile(a, 'v2')
+    await store.snapshot('s1', [a], { tool: 'edit_file' }) // 点2 基线 v2
+    await writeFile(a, 'v3')
+    await store.snapshot('s1', [a], { tool: 'edit_file' }) // 点3 基线 v3（已达上限）
+    await writeFile(a, 'v4') // 当前 v4
+    // 竞态（修复前）：自动快照成点4 → 治理淘汰点1 → GC 回收 v1 对象 → 写回点1失败，a 停在 v2
+    const r = await store.revert('s1', 1)
+    expect(await readFile(a, 'utf8')).toBe('v1')
+    expect(r.restored).toEqual([a])
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('对象缺失'))
+    // 治理延迟到下次正常快照：点4（rewind-auto）仍在，可撤销撤销
+    const auto = (await store.list('s1')).find((m) => m.tool === 'rewind-auto')
+    expect(auto?.seq).toBe(4)
+  })
+
   it('外部改动检测：快照后手改 → 报告；未改 → 空', async () => {
     const store = makeStore()
     const a = await write('a.ts', 'v1')

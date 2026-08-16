@@ -25,7 +25,9 @@ export function rewindSubset(lines: HistoryLine[]): HistoryLine[] {
     const line = lines[i]
     if (!isRewind(line)) continue
     const toolId = line.toolUseId
-    if (toolId === undefined) break // 旧点缺锚：忽略截断（防御）
+    // 缺锚 rewind = 撤销回退（rewind-auto 点还原文件，RewindLine 无锚）或旧点缺 meta。
+    // 全量返回恰是撤销回退的正确语义：上下文与文件一起完整回到回退前（context.test 已锁定）。
+    if (toolId === undefined) break
     const anchorIdx = lines.findIndex(
       (l) => isMessageLine(l) && l.role === 'assistant' && l.content.some((b) => b.type === 'tool_use' && b.id === toolId),
     )

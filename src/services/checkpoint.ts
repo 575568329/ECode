@@ -86,6 +86,17 @@ export class CheckpointStore {
    * 读不到（文件将新建，无基线）/ 超限跳过的文件不入本点；全空返回 null。
    */
   async snapshot(sessionId: string, paths: string[], meta: { tool: string; messageId?: string }): Promise<number | null> {
+    const seq = await this.snapshotCore(sessionId, paths, meta)
+    if (seq !== null) await this.enforceLimits(sessionId)
+    return seq
+  }
+
+  /**
+   * snapshot 主体（不含治理）。revert 的还原前自动快照必须走这里：治理会淘汰最旧点并
+   * GC 其独占对象，而那可能正是本次 revert 即将写回的基线（终审 P1-3 竞态——还原不完整）。
+   * 跳过的治理无害：点数暂时 +1，下次正常快照照常收口。
+   */
+  private async snapshotCore(sessionId: string, paths: string[], meta: { tool: string; messageId?: string }): Promise<number | null> {
     const files = paths.length > 0 ? paths : await this.gitDirtyFiles()
     if (files.length === 0) return null
     const refs: CheckpointFileRef[] = []
@@ -113,7 +124,6 @@ export class CheckpointStore {
     const m: CheckpointMeta = { seq, time: new Date().toISOString(), tool: meta.tool, messageId: meta.messageId, files: refs }
     await mkdir(join(this.sessionDir(sessionId), String(seq)), { recursive: true })
     await writeFile(join(this.sessionDir(sessionId), String(seq), 'meta.json'), JSON.stringify(m, null, 2), 'utf8')
-    await this.enforceLimits(sessionId)
     return seq
   }
 
@@ -164,8 +174,12 @@ export class CheckpointStore {
     const externalChanged = await this.detectExternalChanges(sessionId, seq)
     const fileSet = new Set<string>()
     for (const m of metas) for (const f of m.files) fileSet.add(f.path)
-    // 还原前自动快照当前状态（含外部改动后的现状——回错了可再 revert 回来）
-    await this.snapshot(sessionId, [...fileSet], { tool: 'rewind-auto' })
+    // 还原前自动快照当前状态（含外部改动后的现状——回错了可再 revert 回来）。
+    // 走 snapshotCore：此时治理会淘汰最旧点/GC 对象，可能删掉本次正要写回的基线（终审 P1-3）。
+    // 刻意不带 messageId 锚：选 rewind-auto 点回退 = 撤销回退，投影侧靠「缺锚→全量」防御路径
+    // 完整恢复上下文（与文件还原一致）；带「范围内最新点的锚」会让复活不完整——最新锚那轮仍被
+    // 截掉，文件已还原回改后状态而模型只记得一半（终审 P1-4 声称的修法有此缺陷，测试已锁定）。
+    await this.snapshotCore(sessionId, [...fileSet], { tool: 'rewind-auto' })
     const restored: string[] = []
     for (const m of [...metas].reverse()) {
       for (const f of m.files) {

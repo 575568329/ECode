@@ -32,12 +32,19 @@ function reg(name: string, overrides: Partial<SkillInfo> = {}): void {
 
 describe('SlashSuggest：skill 合并（S-P5）', () => {
   it('skill 出现在补全列表 + (skill) 标记，命令在前', () => {
-    reg('commit')
+    reg('aa-skill') // 前缀 aa 只匹配 skill——窗口化（6 行）后用精确前缀避免窗口外断言
+    const { lastFrame } = render(React.createElement(SlashSuggest, { text: '/aa-s' }))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('/aa-skill')
+    expect(f).toContain('(skill)')
+  })
+
+  it('窗口化：超 6 条显示计数提示，命令顺序不变（窗口内）', () => {
     const { lastFrame } = render(React.createElement(SlashSuggest, { text: '/' }))
     const f = lastFrame() ?? ''
-    expect(f).toContain('/commit')
-    expect(f).toContain('(skill)')
-    expect(f.indexOf('/help')).toBeLessThan(f.indexOf('/commit')) // 命令在前（内置优先分流）
+    expect(f).toContain('↓ 还有') // 命令 17 条 > 窗口 6
+    expect(f).toContain('共 ')
+    expect(f.indexOf('/help')).toBeLessThan(f.indexOf('/clear')) // 窗口内保持注册序
   })
 
   it('user-invocable:false 不出现在补全', () => {

@@ -33,6 +33,8 @@ interface AppProps {
   mcp?: string
   /** 运行时告警（重试/限流/压缩等）——底部独立第二行渲染并截断（防长消息挤碎状态行） */
   warning?: string
+  /** 告警分级着色（M8②：error 红 / warn 黄 / info 蓝；缺省 warn） */
+  warningLevel?: 'error' | 'warn' | 'info'
   /** 配置无效/不完整提示（顶部醒目，启动态；区别于 warning 进 StatusBar） */
   banner?: string
   children?: ReactNode
@@ -66,6 +68,7 @@ export function App({
   cost,
   mcp,
   warning,
+  warningLevel,
   banner,
   children,
 }: AppProps): ReactElement {
@@ -105,7 +108,9 @@ export function App({
             <ShortcutHint context={busy ? 'busy' : 'default'} />
           </Box>
           {warning !== undefined && (
-            <Text color={theme.warn}>⚠ {flattenWarnLine(warning)}</Text>
+            <Text color={warningLevel === 'error' ? theme.error : warningLevel === 'info' ? theme.info : theme.warn}>
+              {warningLevel === 'error' ? '✖' : warningLevel === 'info' ? 'ℹ' : '⚠'} {flattenWarnLine(warning)}
+            </Text>
           )}
         </Box>
       </Conversation>

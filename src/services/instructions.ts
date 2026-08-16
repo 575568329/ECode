@@ -67,17 +67,32 @@ export function findProjectInstructionFile(cwd: string): string | undefined {
   return fs.existsSync(ecode) ? ecode : path.join(dir, 'CLAUDE.md')
 }
 
-/** 读文件 + 上限截断（截断时尾注原文路径与提示，防静默丢指令）。缺文件返回 undefined。 */
+/** 读文件 + 上限截断（截断时尾注原文路径与提示，防静默丢指令）。
+ *  stat 先行（M8 补充交付③）：超上限只定位读上限字节——超大误写文件不整读进内存。 */
 function readClamped(file: string, maxBytes: number): { text: string; truncated?: boolean } | undefined {
-  let text: string
+  let stat: fs.Stats
   try {
-    text = fs.readFileSync(file, 'utf8')
+    stat = fs.statSync(file)
   } catch {
     return undefined
   }
-  const bytes = Buffer.byteLength(text, 'utf8')
-  if (bytes <= maxBytes) return { text }
-  const head = Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8')
+  const bytes = stat.size
+  if (bytes <= maxBytes) {
+    try {
+      return { text: fs.readFileSync(file, 'utf8') }
+    } catch {
+      return undefined
+    }
+  }
+  const fd = fs.openSync(file, 'r')
+  let head: string
+  try {
+    const buf = Buffer.alloc(maxBytes)
+    const read = fs.readSync(fd, buf, 0, maxBytes, 0)
+    head = buf.subarray(0, read).toString('utf8')
+  } finally {
+    fs.closeSync(fd)
+  }
   return {
     truncated: true,
     text: `${head}\n\n[已截断：原文 ${bytes} 字节超出 ${maxBytes} 上限，完整内容用 read_file 读取 ${file.split(path.sep).join('/')}]`,

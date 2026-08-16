@@ -10,6 +10,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { findUpDir } from './skill.js'
 
 const MAX_MEMORY_BYTES = 32 * 1024
 
@@ -28,27 +29,26 @@ export function loadMemoryIndexes(opts: LoadMemoryOpts = {}): { level: 'user' | 
   const out: { level: 'user' | 'project'; content: string; truncated?: boolean }[] = []
   const cwd = opts.cwd ?? process.cwd()
   const maxBytes = opts.maxBytes ?? MAX_MEMORY_BYTES
+  // 项目级 findUp 首个命中（与指令注入同语义——用户自建多级目录时取最近的，
+  // 不叠加不做多级全读；边界同 findUpDir：home 停、非 home 树收 git 根）
+  const projectDir = findUpDir(cwd, (d) => fs.existsSync(path.join(d, '.ecode', 'memory', 'MEMORY.md')))
   const files: { level: 'user' | 'project'; file: string }[] = [
     { level: 'user', file: opts.userFile ?? path.join(os.homedir(), '.ecode', 'memory', 'MEMORY.md') },
-    { level: 'project', file: path.join(cwd, '.ecode', 'memory', 'MEMORY.md') },
+    ...(projectDir !== undefined ? [{ level: 'project' as const, file: path.join(projectDir, '.ecode', 'memory', 'MEMORY.md') }] : []),
   ]
   for (const { level, file } of files) {
-    let text: string
-    try {
-      text = fs.readFileSync(file, 'utf8')
-    } catch {
-      continue
-    }
-    const trimmed = text.trim()
+    const r = readClampedFast(file, maxBytes)
+    if (r === undefined) continue
+    const trimmed = r.text.trim()
     if (trimmed === '') continue
     const bytes = Buffer.byteLength(trimmed, 'utf8')
+    const truncated = r.truncated === true || bytes > maxBytes
     out.push({
       level,
-      ...(bytes > maxBytes ? { truncated: true } : {}),
-      content:
-        bytes <= maxBytes
-          ? trimmed
-          : `${Buffer.from(trimmed, 'utf8').subarray(0, maxBytes).toString('utf8')}\n[已截断：${bytes} 字节超上限]`,
+      ...(truncated ? { truncated: true } : {}),
+      content: truncated
+        ? `${trimmed.slice(0, maxBytes)}\n[已截断：原文超出 ${maxBytes} 上限]`
+        : trimmed,
     })
   }
   return out
@@ -63,4 +63,35 @@ export function renderMemory(indexes: { level: 'user' | 'project'; content: stri
     '以下是长期记忆的索引（主题文件在同目录，需要细节时用 read_file 读取对应文件；发现值得长期记住的用户偏好/项目约定时，按同格式追加进对应 MEMORY.md 并把细节写入主题文件）。',
     ...parts,
   ].join('\n')
+}
+
+/**
+ * stat 先行读取（M8 补充交付③）：先 stat 判大小——超上限只读上限字节（超大误写文件
+ * 不整读进内存，总字节数从 stat 取，供截断提示与 truncated 判定）。
+ * 注入场景必须有总大小（截断提示"原文 N 字节"），流式逐块反而拿不到；上限字节读取
+ * 用定位读（open + read），正常几 KB 文件与 readFileSync 等价。
+ */
+function readClampedFast(file: string, maxBytes: number): { text: string; truncated?: boolean } | undefined {
+  let stat: fs.Stats
+  try {
+    stat = fs.statSync(file)
+  } catch {
+    return undefined
+  }
+  if (stat.size <= maxBytes) {
+    try {
+      return { text: fs.readFileSync(file, 'utf8') }
+    } catch {
+      return undefined
+    }
+  }
+  // 超限：只定位读上限字节（总大小语义由 stat 提供——不整读超大误写文件进内存）
+  const fd = fs.openSync(file, 'r')
+  try {
+    const buf = Buffer.alloc(maxBytes)
+    const read = fs.readSync(fd, buf, 0, maxBytes, 0)
+    return { truncated: true, text: buf.subarray(0, read).toString('utf8') }
+  } finally {
+    fs.closeSync(fd)
+  }
 }

@@ -48,6 +48,8 @@ import { SkillPanel } from './SkillPanel.js'
 import { McpPanel } from './McpPanel.js'
 import { PluginPanel } from './PluginPanel.js'
 import { QuestionPanel } from './QuestionPanel.js'
+import { WarningsPanel } from './WarningsPanel.js'
+import { pushNotice, deriveNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
 import { setAskUserHandler } from '../tools/builtin/askUserBridge.js'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
 import { Select } from './Select.js'
@@ -113,7 +115,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     state: 'idle',
   })
   const [error, setError] = useState<AppError | null>(null)
-  const [warn, setWarn] = useState<string | null>(null)
+  // M8 告警中心：运行时提示统一队列（onWarn/启动警告/截断提示都进这里；底部单行派生+/warnings 面板）
+  const [notices, setNotices] = useState<NoticeItem[]>([])
+  const noticeIdRef = useRef(0)
+  const pushNoticeFn = (level: NoticeLevel, text: string): void => {
+    noticeIdRef.current += 1
+    setNotices((prev) => pushNotice(prev, noticeIdRef.current, level, text))
+  }
   const [tokens, setTokens] = useState(0)
   const [sessionCost, setSessionCost] = useState(0)
   const [systemMsgs, setSystemMsgs] = useState<string[]>([])
@@ -130,6 +138,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     | { kind: 'skill-panel' }
     | { kind: 'mcp-panel' }
     | { kind: 'plugin-panel' }
+    | { kind: 'warnings-panel' }
     | { kind: 'select'; title: string; options: string[]; resolve: (v: string | undefined) => void }
     // M8 ask_user：工具发起的提问面板（Promise 桥——resolve 回工具 execute）
     | { kind: 'question-panel'; questions: AskUserQuestion[]; resolve: (r: AskUserResult) => void }
@@ -182,7 +191,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     // `/name args`，消息本体是展开全文（runLoop 的 userInput 必须传全文，防 alreadyUser 双推）
     setActive({ ...createActive(), userInput: display ?? input, streaming: true })
     setError(null)
-    setWarn(null)
     setActivity({ state: 'thinking' })
     abortRef.current = new AbortController()
     const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
@@ -267,7 +275,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
             setMaxIter(m)
           },
           onActivity: (state, text) => setActivity({ state, text }),
-          onWarn: (m) => setWarn(m),
+          onWarn: (m) => pushNoticeFn('warn', m),
         },
         providerReq,
         system,
@@ -347,7 +355,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     setSessionCost(0)
     setIter(undefined)
     setMaxIter(undefined)
-    setWarn(null)
     setError(null)
     // 清可见区 + scrollback（清 Static 残留）+ 光标归位
     process.stdout.write(CLEAR_TERMINAL)
@@ -618,15 +625,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     return unsub
     // eslint-disable-next-line react-hooks/exhaustive-deps -- deps 不变（挂载期一次）
   }, [])
-  // MCP 启动警告 + M8 指令/记忆截断提示（无待批准事项时展示；有待批准时批准流的消息优先，警告并入其后）
+  // MCP 启动警告 + M8 指令/记忆截断提示 → 告警中心（M8②：统一队列，底部行+/warnings 可见）
   useEffect(() => {
-    const startupWarnings = [...(deps.mcpWarnings ?? []), ...(deps.instructionWarnings ?? [])]
-    if (startupWarnings.length === 0) return
-    const lines = startupWarnings
-    if (deps.mcpPendingApproval === undefined) {
-      setSystemMsgs(lines.slice())
-    } else {
-      setSystemMsgs((prev) => [...prev, ...lines])
+    for (const w of [...(deps.mcpWarnings ?? []), ...(deps.instructionWarnings ?? [])]) {
+      pushNoticeFn('warn', w)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
   }, [])
@@ -732,7 +734,19 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       tokens={tokens}
       iter={iter}
       maxIter={maxIter}
-      warning={warning ?? warn ?? undefined}
+      warningLevel={(() => {
+        const l = deriveNoticeLine(notices)
+        return l === null || warning !== undefined ? undefined : l.level
+      })()}
+      warning={
+        warning ??
+        (() => {
+          const line = deriveNoticeLine(notices)
+          if (line === null) return undefined
+          const icon = line.level === 'error' ? '✖' : line.level === 'warn' ? '⚠' : 'ℹ'
+          return `${icon} ${line.text}${line.rest > 0 ? ` · 还有 ${line.rest} 条（/warnings 查看）` : ''}`
+        })()
+      }
     >
       {error ? <ErrorBanner error={error} /> : null}
       {overlay?.kind === 'model-picker' && (
@@ -848,6 +862,20 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           }}
         />
       )}
+      {overlay?.kind === 'warnings-panel' && (
+        <WarningsPanel
+          notices={notices}
+          onClear={() => {
+            setNotices([])
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+          onCancel={() => {
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+        />
+      )}
       {overlay?.kind === 'question-panel' && (
         <QuestionPanel
           questions={overlay.questions}
@@ -921,6 +949,16 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           }
           if (result.action === 'mcp-reconnect') {
             void mcpReconnect(result.payload)
+            return
+          }
+          if (result.action === 'inject-prompt') {
+            // /doctor 等：预填检查指令直接提交（用户看到指令全文再由 LLM 执行）
+            if (result.payload !== undefined && result.payload !== '') void submit(result.payload)
+            return
+          }
+          if (result.action === 'open-warnings-panel') {
+            pickerRef.current = true
+            setOverlay({ kind: 'warnings-panel' })
             return
           }
           if (result.action === 'open-plugin-panel') {

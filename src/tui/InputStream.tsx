@@ -37,6 +37,9 @@ export function matchSlashEntries(prefix: string): SlashEntry[] {
 }
 
 /** / 斜杠补全：列表展示 + 上下选中高亮（selectedIdx）；skill 条目标来源。 */
+/** 补全列表窗口高度（M8：防长清单顶飞输入区——窗口化 + 总数提示让用户知道还有更多） */
+const SUGGEST_MAX_ROWS = 6
+
 export function SlashSuggest({
   text,
   selectedIdx = -1,
@@ -47,15 +50,24 @@ export function SlashSuggest({
   if (!text.startsWith('/')) return null
   const matches = matchSlashEntries(text.slice(1))
   if (matches.length === 0) return null
+  // 窗口化：选中项保持在窗口内（跟随滚动）；未选中态显示前 6 条
+  const start = selectedIdx >= SUGGEST_MAX_ROWS ? Math.min(selectedIdx - SUGGEST_MAX_ROWS + 1, matches.length - SUGGEST_MAX_ROWS) : 0
+  const visible = matches.slice(start, start + SUGGEST_MAX_ROWS)
+  const hidden = matches.length - visible.length
   return (
     <Box flexDirection="column" paddingLeft={2}>
-      {matches.map((c, i) => (
-        <Text key={c.kind + c.name} inverse={i === selectedIdx}>
-          /{c.name} <Text dimColor>{c.description}</Text>
-          {c.kind === 'skill' ? <Text color="cyan"> (skill)</Text> : null}
-          {c.shadowed ? <Text color="yellow"> (被命令遮蔽)</Text> : null}
-        </Text>
-      ))}
+      {start > 0 && <Text dimColor> ↑ 还有 {start} 条</Text>}
+      {visible.map((c) => {
+        const i = matches.indexOf(c)
+        return (
+          <Text key={c.kind + c.name} inverse={i === selectedIdx}>
+            /{c.name} <Text dimColor>{c.description}</Text>
+            {c.kind === 'skill' ? <Text color="cyan"> (skill)</Text> : null}
+            {c.shadowed ? <Text color="yellow"> (被命令遮蔽)</Text> : null}
+          </Text>
+        )
+      })}
+      {hidden > 0 && <Text dimColor> ↓ 还有 {hidden} 条（共 {matches.length} 项 · ↑↓ 浏览）</Text>}
       <Text dimColor> ↑↓ 选择 · 回车 填入 · Tab 补全（填入后再回车执行）</Text>
     </Box>
   )

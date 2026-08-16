@@ -29,7 +29,9 @@ export interface CommandResult {
     | 'open-mcp-panel'
     | 'mcp-reconnect'
     | 'open-plugin-panel'
+    | 'open-warnings-panel'
     | 'restart'
+    | 'inject-prompt'
 }
 
 export interface Command {
@@ -147,6 +149,16 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     run: () => ({ action: 'open-plugin-panel' as const }),
   })
   registry.register({
+    name: 'warnings',
+    description: '告警中心（查看全部 提示/警告/严重 问题的队列）',
+    run: () => ({ action: 'open-warnings-panel' as const }),
+  })
+  registry.register({
+    name: 'doctor',
+    description: '自检配置与文档（config/ECODE.md/memory 索引/hooks/MCP——LLM 检查，你决策）',
+    run: () => ({ action: 'inject-prompt' as const, payload: DOCTOR_PROMPT }),
+  })
+  registry.register({
     name: 'restart',
     description: '重启 ECode（改 config/hooks 后生效用；会话历史保留，/history 可恢复）',
     run: () => ({ action: 'restart' as const }),
@@ -174,3 +186,18 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     })
   }
 }
+
+/**
+ * /doctor 自检指令（M8 补充交付④）：注入给 LLM 的检查清单——LLM 逐项读文件核查，
+ * 产出问题报告与建议；明确"只报告不修改"，修复动作由用户决策。
+ */
+export const DOCTOR_PROMPT = `请对 ECode 的配置与文档做一次自检（只读取与报告，不要做任何修改——修复由我决策后另行指示）。逐项检查并汇总：
+
+1. 配置：读 ~/.ecode/config.json——能否解析、default 指向的 provider 是否存在、必填字段（baseURL/apiKey/models）是否齐全、有无被注释掉但看起来想启用的配置。
+2. 指令文件：检查 ~/.ecode/ECODE.md 与项目级（从当前目录向上找 ECODE.md 或 CLAUDE.md）——是否存在、大小是否接近截断上限（32KB）。
+3. 记忆索引：读用户级与项目级 MEMORY.md——索引里每条引用的主题文件是否真实存在（缺文件）；同目录是否有 .md 主题文件未被索引收录（缺索引）。
+4. Hooks：config.json 的 hooks 键各项是否合法（event 名/command 非空）；skill 目录的 hooks.json 是否可解析。
+5. MCP：项目级 .mcp.json 是否可解析、server 必填字段是否齐全（stdio 要 command / http 要 url）。
+6. Skills：各 skill 的 SKILL.md frontmatter 是否含 name 与 description。
+
+输出格式：按 检查项 → 状态（正常/警告/问题）→ 问题描述与建议修复法 列表；全部正常也要明确说"全部正常"。`

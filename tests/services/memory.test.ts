@@ -54,3 +54,21 @@ describe('renderMemory', () => {
     expect(out).toContain('vitest')
   })
 })
+
+describe('项目级 findUp（与指令注入同语义，M8 补充①）', () => {
+  it('子目录启动命中父层 MEMORY.md（首个命中即止）', async () => {
+    const userFile = path.join(tmpRoot, 'none.md')
+    await writeMem('root/.ecode/memory/MEMORY.md', '- [根](r.md) — 根级')
+    const idx = loadMemoryIndexes({ cwd: path.join(tmpRoot, 'root', 'sub'), userFile })
+    expect(idx).toHaveLength(1)
+    expect(idx[0]?.content).toContain('根级')
+  })
+  it('子目录自己的 MEMORY.md 优先（更具体的覆盖）', async () => {
+    const userFile = path.join(tmpRoot, 'none.md')
+    await writeMem('root/.ecode/memory/MEMORY.md', '- [根](r.md) — 根级')
+    await writeMem('root/sub/.ecode/memory/MEMORY.md', '- [子](s.md) — 子级')
+    const idx = loadMemoryIndexes({ cwd: path.join(tmpRoot, 'root', 'sub'), userFile })
+    expect(idx).toHaveLength(1)
+    expect(idx[0]?.content).toContain('子级')
+  })
+})

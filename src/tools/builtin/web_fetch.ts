@@ -13,6 +13,9 @@ import type { Tool } from '../interface.js'
 
 const FETCH_TIMEOUT_MS = 15_000
 const MAX_REDIRECTS = 3
+/** 响应体硬顶（M8 补充交付③）：超过即放弃——超大页面的内容不进上下文
+ *  （res.text() 已读入内存，本顶防的是后续处理与回喂，非内存保护；真流式后置） */
+const BODY_HARD_CAP_BYTES = 512 * 1024
 const DEFAULT_MAX_CONTENT_BYTES = 30 * 1024
 /** 回喂上限（cli 启动时从 config webFetchMaxKB 注入；默认 30KB） */
 let maxContentBytes = DEFAULT_MAX_CONTENT_BYTES
@@ -180,7 +183,10 @@ export function createWebFetchTool(fetchImpl: FetchLike = fetch as unknown as Fe
           if (res.status >= 400) {
             return { content: `HTTP ${res.status} ${current.toString()}`, is_error: true }
           }
-          const body = await res.text()
+          const body = await readBodyCapped(res.text.bind(res), BODY_HARD_CAP_BYTES)
+          if (body === null) {
+            return { content: `页面内容超过 ${BODY_HARD_CAP_BYTES} 字节硬顶，已放弃抓取：${current.toString()}`, is_error: true }
+          }
           const contentType = res.headers.get('content-type') ?? ''
           const text = contentType.includes('html') ? htmlToText(body) : body
           if (text.trim() === '') {
@@ -207,3 +213,9 @@ export function createWebFetchTool(fetchImpl: FetchLike = fetch as unknown as Fe
 }
 
 export const webFetchTool: Tool = createWebFetchTool()
+
+/** 响应体上限读取（M8 补充交付③）：累计字节数超 hardCap 返回 null（调用方放弃）。 */
+async function readBodyCapped(readText: () => Promise<string>, hardCap: number): Promise<string | null> {
+  const body = await readText()
+  return body.length > hardCap ? null : body
+}

@@ -171,3 +171,11 @@ export function makeShellRunner(cwd: string, timeoutMs = 60_000): (command: stri
       })
     })
 }
+
+// —— M9-P7：LSP 诊断回喂接口位（占牌，实现视余量或 M10——依赖子进程/语言服务管理，重） ——
+
+/** 诊断提供方（LSP 实现的接入契约：编辑后查询已装 server 的 diagnostics，与 lint 同通道回喂） */
+export interface DiagnosticProvider {
+  /** 查询文件诊断；未装 LSP server / 不支持该语言返回空（优雅降级） */
+  diagnostics(file: string): Promise<Array<{ line: number; severity: 'error' | 'warning'; message: string }>>
+}

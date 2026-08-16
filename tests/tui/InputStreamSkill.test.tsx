@@ -252,3 +252,22 @@ describe('matchSlashEntries 跨组排序（命令在前 skill 在后——纯函
   })
 })
 
+
+describe('SlashSuggest 窗口滚动计数边界（审阅 P1-1 修复的锁定）', () => {
+  it('↓ 持续到底：下方计数归零（不再骗"还有 N 条"），上方计数出现', async () => {
+    const { stdin, lastFrame } = render(React.createElement(InputStream, { onSubmit: () => {} }))
+    await flush()
+    stdin.write('/')
+    await flush()
+    // 自适应按到底（条目数受本文件其它用例注册的 skill 残留影响，不写死次数）
+    let frame = lastFrame() ?? ''
+    for (let i = 0; i < 30 && frame.includes('↓ 还有'); i++) {
+      stdin.write('\u001b[B')
+      await flush()
+      frame = lastFrame() ?? ''
+    }
+    expect(frame).not.toContain('↓ 还有') // 光标到末项，下方 0 条（修复前滚到底仍显示"还有 N 条"）
+    expect(frame).toContain('↑ 还有') // 头部被滚出，上方计数出现
+    expect(frame).toContain('共 ') // 总数恒可见
+  })
+})

@@ -90,3 +90,29 @@ describe('renderNoticeLine（单行渲染：宽度感知 + 角标保底）', () 
     expect(out.split('\n')).toHaveLength(1)
   })
 })
+
+describe('窄终端降级三档（审阅 P1-2 补测——审阅点名 cols<45 场景）', () => {
+  it('cols=40：全角标放不下 → 缩为 (+N)，仍单行', () => {
+    const out = renderNoticeLine({ level: 'warn', text: '限流重试中', rest: 5 }, 40)
+    expect(out).toBe('⚠ 限流重试中 (+5)') // 全角标 ~32 列 + icon 2 + 消息 10 > 40 → 降级
+    expect(stringWidth(out)).toBeLessThanOrEqual(40)
+  })
+
+  it('cols=30 短消息：(+N) 档放得下（19 列）→ 保留短角标', () => {
+    const out = renderNoticeLine({ level: 'error', text: '上下文超限', rest: 99 }, 30)
+    expect(out).toBe('✖ 上下文超限 (+99)')
+    expect(stringWidth(out)).toBeLessThanOrEqual(30)
+  })
+
+  it('cols=16 极窄：(+N) 档预算触底（<10）→ 彻底去角标，单行硬保证', () => {
+    const out = renderNoticeLine({ level: 'warn', text: '超长告警消息'.repeat(10), rest: 2 }, 16)
+    expect(out).not.toContain('(+2)')
+    expect(out).not.toContain('/warnings')
+    expect(stringWidth(out)).toBeLessThanOrEqual(16)
+  })
+
+  it('cols=60：全角标可容纳（>阈值不降级）', () => {
+    const out = renderNoticeLine({ level: 'warn', text: '限流重试中', rest: 5 }, 60)
+    expect(out).toContain('还有 5 条（/warnings 查看）')
+  })
+})

@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { CommandRegistry, registerBuiltinCommands, commandRegistry } from '../../src/commands/registry.js'
+import { homedir } from 'node:os'
+import { sep } from 'node:path'
+import { existsSync } from 'node:fs'
+import { CommandRegistry, registerBuiltinCommands, commandRegistry, buildDoctorPrompt } from '../../src/commands/registry.js'
 
 describe('CommandRegistry', () => {
   it('register / get / list', () => {
@@ -139,5 +142,23 @@ describe('M6 命令（/skill /skill-create /mcp）', () => {
   it('/skill 与 /skill-create 注册', () => {
     expect(commandRegistry.get('skill')!.run()).toEqual({ action: 'skill-panel' })
     expect(commandRegistry.get('skill-create')!.run()).toEqual({ action: 'skill-create' })
+  })
+})
+
+describe('buildDoctorPrompt（审阅 P1-4 运行时构造）', () => {
+  it('路径按本机 homedir 展开（read_file 可直接读）', () => {
+    const prompt = buildDoctorPrompt()
+    expect(prompt).not.toContain('~/.ecode')
+    expect(prompt).toContain(homedir().split(sep).join('/'))
+    expect(prompt).toContain('/.ecode/config.json')
+  })
+
+  it('ECode 开发仓库内含第 7 项（活文档抽查），普通路径args透传', () => {
+    // 本测试进程 cwd=ECode 仓库 → 第 7 项应在
+    const prompt = buildDoctorPrompt()
+    const hasItem7 = prompt.includes('活文档抽查')
+    expect(hasItem7).toBe(existsSync('src/core/system.ts'))
+    // args 透传附加关注
+    expect(buildDoctorPrompt('重点看 hooks')).toContain('重点看 hooks')
   })
 })

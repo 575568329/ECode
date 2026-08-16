@@ -56,7 +56,7 @@ export function SlashSuggest({
   const hidden = Math.max(0, matches.length - (start + SUGGEST_MAX_ROWS)) // 只数窗口下方（滚到底时 0——审阅 P1-1）
   return (
     <Box flexDirection="column" paddingLeft={2}>
-      {start > 0 && <Text dimColor> ↑ 还有 {start} 条</Text>}
+      {start > 0 && <Text dimColor> ↑ 还有 {start} 条（共 {matches.length} 项 · ↑↓ 浏览）</Text>}
       {visible.map((c) => {
         const i = matches.indexOf(c)
         return (

@@ -161,7 +161,7 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
   })
   registry.register({
     name: 'sandbox',
-    description: '沙箱档位切换（default/read-only/workspace-write/full-access；Tab 快捷循环）',
+    description: '沙箱模式切换（default/read-only/workspace-write/full-access；Tab 快捷循环）',
     run: () => ({ action: 'open-sandbox-panel' as const }),
   })
   registry.register({

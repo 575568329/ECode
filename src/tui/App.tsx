@@ -31,7 +31,7 @@ interface AppProps {
   cost?: string
   /** MCP 段（StatusBar 透传，M6） */
   mcp?: string
-  /** M9-P4：沙箱档位段（StatusBar 透传；default 不显示） */
+  /** M9-P4：沙箱模式段（StatusBar 透传；default 不显示） */
   sandbox?: string
   /** full-access 危险色 */
   sandboxDanger?: boolean

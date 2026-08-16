@@ -53,7 +53,7 @@ export function makeSandbox(mode: SandboxMode, cwd: string, blockedCommands: str
   return {
     mode,
     checkWrite(absPath: string): WriteCheck {
-      if (mode === 'read-only') return { ok: false, reason: '只读模式（read-only）：文件写入被拒绝。可 /sandbox 切回其他档位。' }
+      if (mode === 'read-only') return { ok: false, reason: '只读模式（read-only）：文件写入被拒绝。可 /sandbox 切回其他模式。' }
       // resolve 自洽：.. 逃逸在此消化（不依赖调用方先 resolve 的纪律）
       if (mode === 'workspace-write' && !norm(resolve(absPath)).startsWith(`${cwdNorm}/`)) {
         return { ok: false, reason: `workspace-write 模式：仅允许写入工作目录内（${cwd}），越界路径被拒绝。` }
@@ -64,14 +64,14 @@ export function makeSandbox(mode: SandboxMode, cwd: string, blockedCommands: str
       if (matchesBlocked(command, blockedCommands)) {
         return { action: 'deny', reason: `命令命中 blockedCommands 硬拒清单（full-access 也不放行）：${command.trim()}` }
       }
-      if (mode === 'read-only') return { action: 'deny', reason: '只读模式（read-only）：bash 命令被拒绝。可 /sandbox 切回其他档位。' }
+      if (mode === 'read-only') return { action: 'deny', reason: '只读模式（read-only）：bash 命令被拒绝。可 /sandbox 切回其他模式。' }
       if (mode === 'full-access') return { action: 'allow' }
       return { action: 'confirm' }
     },
   }
 }
 
-/** 档位循环序列的下一档（Tab 专职热键用；环绕） */
+/** 模式循环序列的下一个（Tab 专职热键用；环绕） */
 export function nextSandboxMode(mode: SandboxMode): SandboxMode {
   const idx = SANDBOX_MODES.indexOf(mode)
   return SANDBOX_MODES[(idx + 1) % SANDBOX_MODES.length] ?? 'default'

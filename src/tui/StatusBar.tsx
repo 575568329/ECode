@@ -10,7 +10,7 @@ interface StatusBarProps {
   cost?: string
   /** MCP 段（M6：'MCP 2/3' / 'MCP 连接中…'；undefined 不显示） */
   mcp?: string
-  /** M9-P4：沙箱档位段（default 不显示；read-only/workspace-write 常驻；full-access 危险色常驻） */
+  /** M9-P4：沙箱模式段（default 不显示；read-only/workspace-write 常驻；full-access 危险色常驻） */
   sandbox?: string
   /** full-access 危险色（M9-D12） */
   sandboxDanger?: boolean

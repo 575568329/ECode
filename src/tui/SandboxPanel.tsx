@@ -66,7 +66,7 @@ export function SandboxPanel({ current, onPick }: SandboxPanelProps): ReactEleme
 
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor={theme.border} paddingX={1}>
-      <Text color={theme.info} bold> 沙箱档位（Tab 循环切换，当前会话生效不落盘）</Text>
+      <Text color={theme.info} bold> 沙箱模式（Tab 循环切换，当前会话生效不落盘）</Text>
       <Box flexDirection="column" marginTop={1}>
         {SANDBOX_MODES.map((m, i) => {
           const selected = i === idx

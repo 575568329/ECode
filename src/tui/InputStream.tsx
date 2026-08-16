@@ -84,12 +84,12 @@ interface InputStreamProps {
   inactive?: boolean
   /** 受控插入（面板回填通道，S-P6）：seq 变化时把 text 写入输入框（如 `/skillname `） */
   insert?: { text: string; seq: number }
-  /** M9-P4/D13：Tab 专职沙箱档位循环（主输入空闲态；slash 补全态不拦截） */
+  /** M9-P4/D13：Tab 专职沙箱模式循环（主输入空闲态；slash 补全态不拦截） */
   onTabSandbox?: () => void
 }
 
 /**
- * 输入流：TextInput + 历史（↑↓）+ / 补全（↑↓ 选中 + 回车两段式回填；Tab 已专职沙箱档位）。
+ * 输入流：TextInput + 历史（↑↓）+ / 补全（↑↓ 选中 + 回车两段式回填；Tab 已专职沙箱模式）。
  * - 统一两段式（与 SkillPanel 一致，用户拍板）：回车 = 回填 `/选中名 `（尾随空格留参数位），
  *   不直接执行；用户看到回填内容后再回车才执行（所见即所发，也防 /com 误发未补全文本）
  * - `/name args...`（含空格，回填态或手输参数）→ 回车提交：命令带参 run(args)；无命令查 skill
@@ -175,14 +175,14 @@ export function InputStream({
 
   useInput((_input, key) => {
     const slashMode = cur.text.startsWith('/')
-    // M9-D13：Tab 专职沙箱档位循环——非 slash 补全态的空闲输入才拦截（面板内 Tab 由面板自处理）
+    // M9-D13：Tab 专职沙箱模式循环——非 slash 补全态的空闲输入才拦截（面板内 Tab 由面板自处理）
     if (key.tab && !key.shift && onTabSandbox !== undefined && !slashMode) {
       onTabSandbox()
       return
     }
     if (slashMode) {
       const matches = matchSlashEntries(cur.text.slice(1))
-      // 补全统一走回车两段式（↑↓ 选 + 回车回填）；Tab 不参与——已专职沙箱档位切换（M9-D13）
+      // 补全统一走回车两段式（↑↓ 选 + 回车回填）；Tab 不参与——已专职沙箱模式切换（M9-D13）
       if (key.upArrow && matches.length > 0) {
         setSlashIdx((i) => (i <= 0 ? matches.length - 1 : i - 1))
       } else if (key.downArrow && matches.length > 0) {

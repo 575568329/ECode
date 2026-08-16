@@ -121,7 +121,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   const pendingSessionCtxRef = useRef<string[]>([])
   // M9-P6：本轮编辑文件集（onBeforeWrite 收集；autoCommit 开启时轮末提交+清空）
   const editedFilesRef = useRef<Set<string>>(new Set())
-  // M9-P4：沙箱档位（会话级不落盘；初始取 config.sandbox.defaultMode，default=现状=关）
+  // M9-P4：沙箱模式（会话级不落盘；初始取 config.sandbox.defaultMode，default=现状=关）
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>(
     deps.config.sandbox?.defaultMode ?? 'default',
   )
@@ -990,7 +990,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
             setOverlay(null)
             if (mode === null) return
             applySandboxMode(mode)
-            setSystemMsgs([mode === 'default' ? '沙箱：default（现状，写/bash 每次确认）' : `沙箱：已切换到 ${mode}`])
+            setSystemMsgs([mode === 'default' ? '沙箱模式：default（现状，写/bash 每次确认）' : `沙箱模式：已切换到 ${mode}`])
           }}
         />
       )}
@@ -1052,7 +1052,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
             return
           }
           applySandboxMode(next)
-          setSystemMsgs([`沙箱：${next}${next === 'default' ? '（写/bash 每次确认）' : ''}`])
+          setSystemMsgs([`沙箱模式：${next}${next === 'default' ? '（写/bash 每次确认）' : ''}`])
         }}
         onSkillInvoke={(name, args) => {
           // S4.4 手动触发：展开全文作 userInput，原始 `/name args` 作 display

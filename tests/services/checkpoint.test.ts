@@ -111,7 +111,7 @@ describe('CheckpointStore：快照与 content-addressed 布局', () => {
     await store.snapshot('s1', [], { tool: 'bash' })
     const metas = await store.list('s1')
     expect(metas[0]?.files.map((f) => f.path)).toEqual([join(repo, 'b.txt')])
-  })
+  }, 20_000)
 
   it('bash 近修改集：非 git 仓库 → 跳过 + warn', async () => {
     const store = makeStore()

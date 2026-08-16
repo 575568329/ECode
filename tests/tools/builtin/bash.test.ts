@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spawn } from 'node:child_process'
 import { bashTool, isDangerous, truncateOutput } from '../../../src/tools/builtin/bash.js'
-import type { ToolContext } from '../../../src/tools/interface.js'
+import type { Tool, ToolContext } from '../../../src/tools/interface.js'
 
 const ctx: ToolContext = { cwd: process.cwd(), signal: new AbortController().signal }
 
@@ -64,4 +68,77 @@ describe('bashTool.execute 安全', () => {
     expect(r.is_error).toBeFalsy()
     expect(r.content).toContain('ecode_test_ok')
   })
+})
+
+
+/** 探活：signal 0 不发信号只查存在（Windows 亦支持） */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 清场：防止红跑完留孤儿孙进程（挂 1<<30 interval 会驻留系统） */
+function cleanup(pid: number | undefined): void {
+  if (pid === undefined || !Number.isFinite(pid)) return
+  if (!alive(pid)) return
+  if (process.platform === 'win32') {
+    const k = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+    k.on('error', () => {})
+  } else {
+    try { process.kill(pid, 'SIGKILL') } catch { /* 已退出 */ }
+  }
+}
+
+describe('bashTool.execute 进程树终止（孙进程泄漏修复，M10 v1.3）', () => {
+  it('超时杀整树：孙 node 进程一并终止（修复前仅杀 bash.exe，孙进程存活成孤儿）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ecode-treekill-'))
+    const marker = join(dir, 'grandchild.pid').split(String.fromCharCode(92)).join('/')
+    let grandPid: number | undefined
+    try {
+      // 孙进程：写 pid 后挂起；父命令 sleep 30 保证必超时
+      const cmd = `node -e "require('fs').writeFileSync('${marker}', String(process.pid)); setInterval(()=>{}, 1<<30)" & sleep 30`
+      const tool: Tool = { ...bashTool, timeout_ms: 1200 }
+      const r = await tool.execute({ command: cmd }, ctx)
+      expect(r.is_error).toBe(true)
+      expect(r.content).toContain('超时')
+      await new Promise((res) => setTimeout(res, 800)) // 给 taskkill /T 异步完成留时间
+      expect(existsSync(marker)).toBe(true)
+      grandPid = Number(readFileSync(marker, 'utf8'))
+      expect(Number.isFinite(grandPid)).toBe(true)
+      expect(alive(grandPid)).toBe(false) // 修复前 true —— 孙进程泄漏
+    } finally {
+      cleanup(grandPid)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 20_000)
+
+  it('abort 中断同样杀整树（孙进程一并终止）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ecode-treekill-'))
+    const marker = join(dir, 'grandchild.pid').split(String.fromCharCode(92)).join('/')
+    let grandPid: number | undefined
+    try {
+      const cmd = `node -e "require('fs').writeFileSync('${marker}', String(process.pid)); setInterval(()=>{}, 1<<30)" & sleep 30`
+      const controller = new AbortController()
+      const tool: Tool = { ...bashTool, timeout_ms: 30_000 }
+      const p = tool.execute({ command: cmd }, { cwd: ctx.cwd, signal: controller.signal })
+      // 等 marker 出现（孙进程已起）再中断
+      for (let i = 0; i < 50 && !existsSync(marker); i++) await new Promise((res) => setTimeout(res, 100))
+      // 树稳定期：taskkill /T 的树枚举在进程刚出生窗口有偶发漏杀（三层树 bash→中间 sh→node），
+      // 真实场景命令至少跑数百毫秒才被中断——此处对齐真实时序，出生竞态的正解（Job Object）在 M12+ 观察区
+      await new Promise((res) => setTimeout(res, 300))
+      controller.abort()
+      const r = await p
+      expect(r.content).toContain('中断')
+      await new Promise((res) => setTimeout(res, 800))
+      grandPid = Number(readFileSync(marker, 'utf8'))
+      expect(alive(grandPid)).toBe(false) // 修复前 true
+    } finally {
+      cleanup(grandPid)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 20_000)
 })

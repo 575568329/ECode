@@ -14,7 +14,7 @@
 
 import type { ChildProcess } from 'node:child_process'
 import type { Tool } from '../interface.js'
-import { isDangerousCommand, spawnShellCommand } from '../../services/proc.js'
+import { isDangerousCommand, killTree, spawnShellCommand } from '../../services/proc.js'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
@@ -92,11 +92,8 @@ export const bashTool: Tool = {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        try {
-          child.kill('SIGKILL')
-        } catch {
-          // 已退出
-        }
+        // 杀整树（孙进程一并终止——npm 类命令的子进程不再泄漏；已退出幂等）。不阻塞返回
+        void killTree(child)
         resolve(res)
       }
 

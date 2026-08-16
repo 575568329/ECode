@@ -10,7 +10,7 @@
  * 危险命令黑名单与 bash 工具共用（H5：第三方 hooks = 第三方命令执行）。
  */
 
-import { isDangerousCommand, spawnShellCommand } from '../proc.js'
+import { isDangerousCommand, killTree, spawnShellCommand } from '../proc.js'
 import type { HookExecutor, HookOutput } from './types.js'
 
 export const DEFAULT_HOOK_TIMEOUT_MS = 60_000
@@ -40,12 +40,13 @@ export const runCommandHook: HookExecutor = async (spec, input, opts) => {
     let settled = false
 
     const timer = setTimeout(() => {
-      child.kill('SIGKILL')
+      // 杀整树（孙进程一并终止——与 bash 工具同款，M10 v1.3）；已退出幂等、不阻塞 reject
+      void killTree(child)
       finish(() => reject(new Error(`hook 超时（${timeoutMs}ms）：${command}`)))
     }, timeoutMs)
 
     const onAbort = (): void => {
-      child.kill('SIGKILL')
+      void killTree(child)
       finish(() => reject(new Error(`hook 被中断：${command}`)))
     }
     opts?.signal?.addEventListener('abort', onAbort, { once: true })

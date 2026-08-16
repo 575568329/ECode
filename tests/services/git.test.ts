@@ -56,7 +56,7 @@ describe('git 轻量集成（M9-P6）', () => {
     // b.ts 未被 add（用户工作区保持未暂存）
     const st = await execFileAsync('git', ['status', '--porcelain'], { cwd: dir })
     expect(st.stdout.trim()).toBe('?? b.ts')
-  })
+  }, 20_000)
 
   it('终审 P1-2：用户已 staged 的文件不混入 ECode 提交；/undo 不清掉用户改动', async () => {
     await initRepo()

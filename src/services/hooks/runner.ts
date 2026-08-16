@@ -22,6 +22,11 @@ export interface HookRunnerDeps {
   warn?: (message: string) => void
   /** 会话 id 集中注入（HookInput.session_id 的统一来源，调用方免逐处传递） */
   getSessionId?: () => string
+  /**
+   * M9-P5：扩展源 hook 权限门（spec.owner 存在才查——用户源不问）。false=deny 跳过（warn 告知）。
+   * 装配方负责三态求值与 ask 交互（ConfirmPrompt 桥）；不配则全放行（测试/argv 简化路径）。
+   */
+  checkHookPermission?: (owner: string, event: HookEvent) => Promise<boolean>
 }
 
 const NO_OP_VERDICT: HookVerdict = { block: false, additionalContext: [], systemMessages: [] }
@@ -68,6 +73,14 @@ export class HookRunner {
     const verdict: HookVerdict = { block: false, additionalContext: [], systemMessages: [] }
     let currentInput = filled.tool_input
     for (const spec of specs) {
+      // M9-P5：扩展源 hook 首次执行前权限门（owner 由 registry 注入；用户源无 owner 不问）
+      if (spec.owner !== undefined && this.deps.checkHookPermission !== undefined) {
+        const allowed = await this.deps.checkHookPermission(spec.owner, event)
+        if (!allowed) {
+          this.deps.warn?.(`hook 被权限规则拒绝，跳过：${spec.owner} → ${event}`)
+          continue
+        }
+      }
       if (spec.handler.kind === 'command' && spec.handler.async === true) {
         // fire-and-forget：异步通知类 hook（如"提交后发通知"），失败只告警
         void this.runOne(spec, { ...filled, tool_input: currentInput }, opts).catch(() => {})

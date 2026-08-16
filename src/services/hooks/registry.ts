@@ -18,13 +18,13 @@ export interface OwnedHooks {
 export class ExtensionHooksRegistry {
   private owners = new Map<string, HookSpec[]>()
 
-  /** 注册/覆盖一个 owner 的 hooks（owner = 'skill:xxx' | 'plugin:yyy@mkt'）。 */
+  /** 注册/覆盖一个 owner 的 hooks（owner = 'skill:xxx' | 'plugin:yyy@mkt'；M9-P5 注入到 spec 供权限门用）。 */
   register(owner: string, hooks: HookSpec[]): void {
     if (hooks.length === 0) {
       this.unregister(owner)
       return
     }
-    this.owners.set(owner, [...hooks])
+    this.owners.set(owner, hooks.map((h) => ({ ...h, owner })))
   }
 
   /** 注销（仅删除/注销时调：plugin uninstall/disable、skill 会话结束）。 */
@@ -34,7 +34,7 @@ export class ExtensionHooksRegistry {
 
   /** 原子重建全部（随扩展安装集——先清空再注入，单次赋值无中间态）。 */
   rebuild(entries: OwnedHooks[]): void {
-    this.owners = new Map(entries.map((e) => [e.owner, [...e.hooks]]))
+    this.owners = new Map(entries.map((e) => [e.owner, e.hooks.map((h) => ({ ...h, owner: e.owner }))]))
   }
 
   entries(): OwnedHooks[] {

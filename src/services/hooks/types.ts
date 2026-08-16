@@ -33,6 +33,8 @@ export type HookHandler =
 
 /** 一条 hook 声明（两源同构）。 */
 export interface HookSpec {
+  /** 属主（M9-P5：扩展源注册时由 registry 注入 'skill:xxx'/'plugin:yyy'；用户源无 owner=不问权限） */
+  owner?: string
   event: HookEvent
   /** 工具事件的可选匹配（工具名，支持 | 列表与正则；MCP 工具 mcp__server__tool 同样可匹配） */
   matcher?: string

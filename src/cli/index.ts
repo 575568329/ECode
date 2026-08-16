@@ -24,6 +24,7 @@ import { FileHistoryStore } from '../services/history.js'
 import { CheckpointStore } from '../services/checkpoint.js'
 import { QualityGate, detectQualityCommands, makeShellRunner } from '../services/quality.js'
 import { makeSandbox } from '../services/sandbox.js'
+import { evalPermission, loadPermissionLayers, saveLocalPermission, askPermissionInteractive } from '../services/permissions.js'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { join } from 'node:path'
@@ -97,12 +98,33 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   // 扩展源用全局注册表（skill/plugin 的注册入口分散在 Tool/TuiApp，全局单例免依赖穿透）
   const { hooks: userHooks, warnings: hookWarnings } = parseUserHooks(config.hooks)
   for (const w of hookWarnings) logger.warn('hooks', 'user_config', { message: w })
+  // M9-P5：扩展源 hook 权限门（Hook(owner) 三态；用户源无 owner 不问）。
+  // once 允许后本会话同 owner:event 不再问（session 记忆）；remember 落 local 层 settings.local.json。
+  const permSessionAllowed = new Set<string>()
   const hookRunner = new HookRunner({
     extensions: globalExtensionHooks,
     execute: runCommandHook,
     getUserHooks: () => userHooks,
     getSessionId: () => sessionId,
     warn: (m) => logger.warn('hooks', 'exec', { message: m }),
+    checkHookPermission: async (owner, event) => {
+      const key = `${owner}:${event}`
+      if (permSessionAllowed.has(key)) return true
+      const resource = `Hook(${owner})`
+      const behavior = evalPermission(resource, loadPermissionLayers(process.cwd()))
+      if (behavior === 'allow') return true
+      if (behavior === 'deny') return false
+      const answer = await askPermissionInteractive(owner, event)
+      if (answer === null) {
+        logger.warn('hooks', 'permission', { message: `无交互界面，ask 默认拒绝：${resource} → ${event}` })
+        return false
+      }
+      if (answer.allow) {
+        permSessionAllowed.add(key)
+        if (answer.remember) saveLocalPermission(process.cwd(), 'allow', resource)
+      }
+      return answer.allow
+    },
   })
   let hookRunnerRef: HookRunner | null = hookRunner
   const hookedTools = new HookedToolRegistry(toolReg, () => hookRunnerRef)

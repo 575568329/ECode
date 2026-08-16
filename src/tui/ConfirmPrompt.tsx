@@ -65,8 +65,9 @@ export function ConfirmPrompt({ state, onConfirm, onCancel }: ConfirmPromptProps
   const input = state.use.input as Record<string, unknown>
   const target = String(input.path ?? input.command ?? '')
   const isDiff = state.use.name === 'edit_file'
-  // MCP 工具显示第三项「本会话记住」（v3 P1-3：重 MCP 会话逐次确认不可用——server 级放行）
-  const isMcp = state.use.name.startsWith('mcp__')
+  // 第三键（remember）：MCP=「本会话记住」（v3 P1-3 server 级放行）；M9-P5 权限=「永久记住」（rememberLabel 通用化）
+  const rememberText = state.rememberLabel ?? (state.use.name.startsWith('mcp__') ? '本会话记住' : undefined)
+  const isMcp = rememberText !== undefined
   // 默认选中「执行」（y）—— 直接回车就继续，符合「确认优先」直觉
   const [selected, setSelected] = useState<'y' | 'n' | 'a'>('y')
   const { stdout } = useStdout()
@@ -124,12 +125,12 @@ export function ConfirmPrompt({ state, onConfirm, onCancel }: ConfirmPromptProps
         {isMcp && (
           <>
             <Text>   </Text>
-            <Text inverse={selected === 'a'} bold={selected === 'a'} color="green">
-              {' [a] 本会话记住 '}
+              <Text inverse={selected === 'a'} bold={selected === 'a'} color="green">
+              {` [a] ${rememberText} `}
             </Text>
           </>
         )}
-        <Text dimColor>   ← →选择 · 回车确认 · Ctrl+C 取消{isMcp ? ' · a=记住此类工具' : ''}</Text>
+        <Text dimColor>   ← →选择 · 回车确认 · Ctrl+C 取消{isMcp ? ` · a=${rememberText}` : ''}</Text>
       </Box>
     </Box>
   )

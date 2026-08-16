@@ -52,6 +52,7 @@ import { WarningsPanel } from './WarningsPanel.js'
 import { RewindPanel } from './RewindPanel.js'
 import { SandboxPanel } from './SandboxPanel.js'
 import { makeSandbox, nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
+import { setPermissionAsker } from '../services/permissions.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
 import { setAskUserHandler } from '../tools/builtin/askUserBridge.js'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
@@ -681,6 +682,26 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       })
       .catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅启动一次
+  }, [])
+
+  // M9-P5：权限 ask 桥（扩展源 hook 首次执行前的确认弹窗；卸载置 null——argv/测试 ask 默认拒绝）
+  useEffect(() => {
+    setPermissionAsker((owner, event) =>
+      new Promise((resolveAsk) => {
+        confirmRef.current = true
+        setActive((a) => ({
+          ...a,
+          confirm: {
+            use: { type: 'tool_use', id: `perm-${owner}`, name: `hook:${owner}`, input: {} },
+            preview: `扩展 ${owner} 申请在 ${event} 事件执行 hook（首次）`,
+            rememberLabel: '永久记住（写入 settings.local.json）',
+            resolve: (ok, always) => resolveAsk({ allow: ok, remember: always === true }),
+          },
+        }))
+      }),
+    )
+    return () => setPermissionAsker(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载一次
   }, [])
 
   // M6 M-P7：MCP 状态订阅（onEvent → setState → StatusBar/面板读快照）+ 启动警告

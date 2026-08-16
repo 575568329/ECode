@@ -157,6 +157,50 @@ describe('HookedToolRegistry（装饰接入，loop 零改动）', () => {
     expect(r?.content).toContain('target file is read-only fs')
   })
 
+  // —— M9-P5：扩展源 hook 权限门（owner spec 才查；用户源不问） ——
+
+  it('权限 deny → 跳过该 hook（不执行 + warn），其余 hook 继续', async () => {
+    const execute = vi.fn(async () => null)
+    const ext = new ExtensionHooksRegistry()
+    ext.register('skill:bad', [{ event: 'PreToolUse', handler: { kind: 'command', command: 'x' } }])
+    ext.register('skill:good', [{ event: 'PreToolUse', handler: { kind: 'command', command: 'y' } }])
+    const warn = vi.fn()
+    const runner = new HookRunner({
+      extensions: ext,
+      execute,
+      warn,
+      checkHookPermission: async (owner) => owner !== 'skill:bad',
+    })
+    const r = await runner.dispatch('PreToolUse', { event: 'PreToolUse', session_id: '', tool_name: 't', tool_input: {} })
+    expect(r.block).toBe(false)
+    expect(execute).toHaveBeenCalledTimes(1) // bad 被跳过
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('skill:bad'))
+  })
+
+  it('用户源 hook（无 owner）不问权限', async () => {
+    const execute = vi.fn(async () => null)
+    const check = vi.fn(async () => false)
+    const ext = new ExtensionHooksRegistry()
+    const runner = new HookRunner({
+      extensions: ext,
+      execute,
+      getUserHooks: () => [{ event: 'Stop', handler: { kind: 'command', command: 'u' } }],
+      checkHookPermission: check,
+    })
+    await runner.dispatch('Stop', { event: 'Stop', session_id: '' })
+    expect(check).not.toHaveBeenCalled()
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('checkHookPermission 未装配 → 扩展源直接放行（测试/argv 简化路径）', async () => {
+    const execute = vi.fn(async () => null)
+    const ext = new ExtensionHooksRegistry()
+    ext.register('skill:x', [{ event: 'Stop', handler: { kind: 'command', command: 's' } }])
+    const runner = new HookRunner({ extensions: ext, execute })
+    await runner.dispatch('Stop', { event: 'Stop', session_id: '' })
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
   it('Pre/Post dispatch 透传 ctx.signal（hook 子进程随 Ctrl+C 中断）', async () => {
     const execute = vi.fn(async () => null)
     const { hooked } = makeHookedRegistry(

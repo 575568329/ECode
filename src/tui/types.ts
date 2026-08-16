@@ -43,6 +43,8 @@ export interface ConfirmState {
   /** resolve（onConfirm→true / onCancel→false，loop 收到后继续或转 is_error）；
    *  always=true 表示用户选了「本会话记住」（MCP server 级放行，M6 v3 P1-3——loop 不感知，TuiApp 侧记前缀） */
   resolve: (ok: boolean, always?: boolean) => void
+  /** 第三键文案（M9-P5 通用化：缺省仅 MCP 工具显示"本会话记住"；传入则显示该文案并启用 a 键） */
+  rememberLabel?: string
 }
 
 /** Static 区已固化的工具调用（必有 result） */

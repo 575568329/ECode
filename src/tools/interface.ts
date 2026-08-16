@@ -21,9 +21,10 @@ export interface ToolContext {
    * M9-P1：写前快照回调（checkpoint 装配；心脏侧不认识 checkpoint 概念）。
    * 副作用工具 execute 开头调用（loop 层 readonly:false 确认已通过——execute 被调即已确认）。
    * write/edit 传目标绝对路径；bash 传空数组（命令不可解析，由服务端 git status 近修改集兜底）。
+   * toolUseId 由 loop 在 executeTool 里包装注入（数据透传非逻辑——/rewind 投影锚用）。
    * 工具侧 catch：快照失败不阻断主流程（安全网自身的问题不挡写入）。
    */
-  onBeforeWrite?: (paths: string[], tool: string) => Promise<void>
+  onBeforeWrite?: (paths: string[], tool: string, toolUseId?: string) => Promise<void>
 }
 
 export interface Tool {

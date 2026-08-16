@@ -11,7 +11,7 @@
  * 心脏永不出现 `if provider === 'xxx'`（铁律）—— 只通过 opts.provider.run 调用。
  */
 
-import { isBoundary } from './types.js'
+import { isMessageLine } from './types.js'
 import type {
   AppError,
   ContentBlock,
@@ -98,7 +98,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
   // 调用方可能已乐观 push user（TUI 立即显示）；检测避免重复
   const lastMsg = messages.at(-1)
   const alreadyUser =
-    lastMsg && !isBoundary(lastMsg)
+    lastMsg && isMessageLine(lastMsg)
       ? lastMsg.role === 'user' &&
         lastMsg.content.some((b) => b.type === 'text' && (b as { text?: string }).text === userInput)
       : false
@@ -125,7 +125,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
       // M5 投影派：每轮用 onBeforeRequest 拿投影子集喂 LLM（hook 内可能触发压缩→追加 boundary）
       const ctx: Message[] = opts.onBeforeRequest
         ? await opts.onBeforeRequest(messages)
-        : messages.filter((m): m is Message => !isBoundary(m))
+        : messages.filter(isMessageLine)
       opts.logger.debug('provider', 'request', { messageCount: ctx.length, total: messages.length }, iter)
       for await (const d of opts.provider.run({
         ...opts.providerReq,
@@ -349,7 +349,16 @@ async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<Tool
   }
 
   try {
-    const r = await tool.execute(use.input, opts.toolCtx)
+    // M9-P2：包装透传 use.id 给 onBeforeWrite（快照 meta 的投影锚；纯数据转发，心脏不认识 checkpoint）
+    const ctxForCall = opts.toolCtx.onBeforeWrite
+      ? {
+          ...opts.toolCtx,
+          onBeforeWrite: async (paths: string[], tool: string) => {
+            await opts.toolCtx.onBeforeWrite?.(paths, tool, use.id)
+          },
+        }
+      : opts.toolCtx
+    const r = await tool.execute(use.input, ctxForCall)
     opts.callbacks.onToolResult?.(use.id, use.name, r)
     opts.logger.info('tool', 'result', {
       id: use.id,

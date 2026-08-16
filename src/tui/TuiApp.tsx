@@ -7,7 +7,7 @@ import { useInput, Text, Box } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
 import { runLoop, type ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
-import type { AppError, HistoryLine, Message } from '../core/types.js'
+import type { AppError, HistoryLine, Message, RewindLine } from '../core/types.js'
 import { makeOnBeforeRequest } from '../services/compaction/hook.js'
 import { tokensToCost } from '../services/pricing.js'
 import { buildContextMessages } from '../core/context.js'
@@ -49,6 +49,7 @@ import { McpPanel } from './McpPanel.js'
 import { PluginPanel } from './PluginPanel.js'
 import { QuestionPanel } from './QuestionPanel.js'
 import { WarningsPanel } from './WarningsPanel.js'
+import { RewindPanel } from './RewindPanel.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
 import { setAskUserHandler } from '../tools/builtin/askUserBridge.js'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
@@ -143,6 +144,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     | { kind: 'mcp-panel' }
     | { kind: 'plugin-panel' }
     | { kind: 'warnings-panel' }
+    | { kind: 'rewind-panel' }
     | { kind: 'select'; title: string; options: string[]; resolve: (v: string | undefined) => void }
     // M8 ask_user：工具发起的提问面板（Promise 桥——resolve 回工具 execute）
     | { kind: 'question-panel'; questions: AskUserQuestion[]; resolve: (r: AskUserResult) => void }
@@ -304,8 +306,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           cwd: process.cwd(),
           signal: abortRef.current.signal,
           // M9-P1：写前快照装配（心脏零改动——loop 只透传 toolCtx；快照失败工具侧已 catch）
-          onBeforeWrite: async (paths, tool) => {
-            await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool })
+          onBeforeWrite: async (paths, tool, toolUseId) => {
+            await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
           },
         },
         signal: abortRef.current.signal,
@@ -607,7 +609,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     resetTransient()
     // 续写进新文件（起新 sessionId）；model 用当前 config（用户可能已 /model 切过）
     const newId = new Date().toISOString().replace(/[:.]/g, '-')
+    // M9-P2：快照目录拷贝跟随（起新 id 后旧快照仍可用——否则「跨重启可回退」落空，CC copyFileHistoryForResume 同款）
+    const oldId = deps.history.currentSessionId()
     deps.history.setSessionId(newId, config.current.model)
+    void deps.checkpoint?.copyForResume(oldId, newId).catch(() => {})
     // SessionStart hook（H-P4）：恢复会话 = resume
     void deps.hookRunner
       ?.dispatch('SessionStart', { event: 'SessionStart', session_id: '', source: 'resume' })
@@ -892,6 +897,23 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           }}
         />
       )}
+      {overlay?.kind === 'rewind-panel' && (
+        <RewindPanel
+          store={deps.checkpoint ?? null}
+          sessionId={deps.history.currentSessionId()}
+          disabled={runningRef.current}
+          onDone={(r) => {
+            pickerRef.current = false
+            setOverlay(null)
+            if (r === null) return
+            const line: RewindLine = { rewind: true, seq: r.seq, toolUseId: r.toolUseId, time: new Date().toISOString() }
+            messagesRef.current = [...messagesRef.current, line]
+            deps.history.appendRewind(line)
+            setCommitted(messagesToCommitted(messagesRef.current))
+            setSystemMsgs([`⇺ 已回退至快照点 ${r.seq}（还原 ${r.restoredCount} 个文件；该点之后的对话不再进入上下文，原文仍可回看）`])
+          }}
+        />
+      )}
       {overlay?.kind === 'warnings-panel' && (
         <WarningsPanel
           notices={notices}
@@ -989,6 +1011,15 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           if (result.action === 'open-warnings-panel') {
             pickerRef.current = true
             setOverlay({ kind: 'warnings-panel' })
+            return
+          }
+          if (result.action === 'open-rewind-panel') {
+            if (deps.checkpoint == null) {
+              setSystemMsgs(['快照系统未启用（argv 模式）'])
+              return
+            }
+            pickerRef.current = true
+            setOverlay({ kind: 'rewind-panel' })
             return
           }
           if (result.action === 'open-plugin-panel') {

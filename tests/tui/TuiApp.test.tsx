@@ -47,6 +47,9 @@ const noopHistory = {
     return []
   },
   setSessionId() {},
+  currentSessionId() {
+    return 'test-session'
+  },
 } as unknown as HistoryStore
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
@@ -191,6 +194,7 @@ describe('TuiApp /model', () => {
     ]
     const restoreFull = vi.fn(() => restored)
     const setSessionId = vi.fn()
+    const currentSessionId = vi.fn(() => 'old-session')
     const history = {
       ...noopHistory,
       loadAll: () => [
@@ -198,6 +202,7 @@ describe('TuiApp /model', () => {
       ],
       restoreFull,
       setSessionId,
+      currentSessionId,
     } as unknown as HistoryStore
     const { stdin, lastFrame } = render(
       React.createElement(TuiApp, {

@@ -36,6 +36,17 @@ describe('messagesToCommitted', () => {
     expect(items[3]).toMatchObject({ kind: 'compacted', removedCount: 2 })
   })
 
+  it('rewind 行 → rewind 标记按原序插入（seq 透传，M9-P2）', () => {
+    const lines: HistoryLine[] = [
+      userText('q1'),
+      { rewind: true, seq: 5, toolUseId: 't9', time: '2026-08-16T00:00:00Z' },
+      userText('q2'),
+    ]
+    const items = messagesToCommitted(lines)
+    expect(items.map((i) => i.kind)).toEqual(['user', 'rewind', 'user'])
+    expect(items[1]).toMatchObject({ kind: 'rewind', seq: 5 })
+  })
+
   it('boundary 在末尾（压缩刚发生，tail 已在 boundary 前）→ 标记在最后', () => {
     const b = (tailStartIndex: number): BoundaryLine => ({
       compact_boundary: true,

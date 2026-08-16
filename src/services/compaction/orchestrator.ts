@@ -11,7 +11,7 @@
  * boundary 是投影锚点：buildContextMessages（§7.2）识别最后一个 boundary，返回 summary+tail。
  */
 
-import { isBoundary, type BoundaryLine, type HistoryLine, type Message } from '../../core/types.js'
+import { isBoundary, isMessageLine, type BoundaryLine, type HistoryLine } from '../../core/types.js'
 // re-export：boundary 类型集中在 core/types（避免 core/context → services 依赖），orchestrator 转出方便外部用
 export type { BoundaryLine, HistoryLine } from '../../core/types.js'
 export { isBoundary } from '../../core/types.js'
@@ -68,7 +68,7 @@ export class CompactionOrchestrator {
         // P0-1: 翻译投影相对索引 → 全量 filter Message[] 绝对索引
         // （summarize 在投影 ctx 上算 tailStartIndex，buildContextMessages 在全量 filter 上用，二者参考系不同；
         //   不翻译则第 2 次压缩错位 → 投影泄漏累加 + 可能造 tool 孤儿 400）
-        const allMsgs = opts.allMessages.filter((l): l is Message => !isBoundary(l))
+        const allMsgs = opts.allMessages.filter(isMessageLine)
         const anchor = opts.messages[result.tailStartIndex] // 投影 ctx 的 tail 起点 Message
         let absIdx = allMsgs.length // 默认全摘要（anchor 是 summaryMsg 或越界 → indexOf -1）
         if (anchor) {

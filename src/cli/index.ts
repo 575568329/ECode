@@ -181,8 +181,8 @@ async function runOnce(messages: HistoryLine[], input: string, deps: Deps): Prom
       cwd: process.cwd(),
       signal: new AbortController().signal,
       // M9-P1：写前快照装配（argv 单次模式同款；快照失败工具侧已 catch）
-      onBeforeWrite: async (paths, tool) => {
-        await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool })
+      onBeforeWrite: async (paths, tool, toolUseId) => {
+        await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
       },
     },
     onBeforeRequest,

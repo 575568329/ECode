@@ -58,6 +58,8 @@ export type CommittedItem =
   | { kind: 'tool-group'; id: string; calls: CommittedToolCall[] }
   /** M5 压缩点标记：上方 removedCount 条已摘要进模型上下文（UI 仍显示全量原文） */
   | { kind: 'compacted'; id: string; removedCount: number }
+  /** M9-P2：/rewind 回退点标记（下方消息不再进模型上下文，原文仍显示） */
+  | { kind: 'rewind'; id: string; seq: number }
 
 /** 创建空 ActiveState（初始 / commit 后 / clear 后） */
 export function createActive(): ActiveState {

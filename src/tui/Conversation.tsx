@@ -65,6 +65,13 @@ function renderCommitted(item: CommittedItem): ReactNode {
           ⇕ 已压缩（上方 {item.removedCount} 条已摘要进上下文，原文仍显示）
         </Text>
       )
+    case 'rewind':
+      // M9-P2 回退点标记：下方消息不再进模型上下文（投影截断），原文仍显示
+      return (
+        <Text dimColor>
+          ⇺ 已回退至快照点 {item.seq}（此处之后的对话不再进入上下文，原文仍显示）
+        </Text>
+      )
   }
 }
 

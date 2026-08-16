@@ -18,7 +18,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { isBoundary, type BoundaryLine, type HistoryLine, type Message } from '../core/types.js'
+import { isMessageLine, type BoundaryLine, type HistoryLine, type Message, type RewindLine } from '../core/types.js'
 
 export interface SessionMeta {
   sessionId: string
@@ -38,6 +38,8 @@ export interface HistoryStore {
   restoreFull(sessionId: string): HistoryLine[]
   /** 压缩时追加 boundary 行（append-only，不删旧消息；投影锚点） */
   appendCompactBoundary(boundary: BoundaryLine): void
+  /** /rewind 追加回退行（append-only；M9-P2 投影截断锚，重启恢复后仍生效） */
+  appendRewind(line: RewindLine): void
   /** 切换 sessionId（/history 恢复后续写新文件；旧文件只读不破坏，D2） */
   setSessionId(id: string, model?: string): void
   /** 当前 sessionId（M9-P1：checkpoint 快照目录键控用；restore 后为新 id） */
@@ -200,9 +202,13 @@ export class FileHistoryStore implements HistoryStore {
     return lines
   }
 
+  appendRewind(line: RewindLine): void {
+    this.writeLine(JSON.stringify(line))
+  }
+
   /** 读纯 Message（跳过 meta + boundary 行；M4 兼容） */
   restore(sessionId: string): Message[] {
-    return this.restoreFull(sessionId).filter((l): l is Message => !isBoundary(l))
+    return this.restoreFull(sessionId).filter(isMessageLine)
   }
 }
 
@@ -210,6 +216,7 @@ export class FileHistoryStore implements HistoryStore {
 export class NoopHistoryStore implements HistoryStore {
   append(_msg: Message): void {}
   appendCompactBoundary(_boundary: BoundaryLine): void {}
+  appendRewind(_line: RewindLine): void {}
   loadAll(): SessionMeta[] {
     return []
   }

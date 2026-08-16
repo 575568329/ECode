@@ -91,10 +91,30 @@ export interface BoundaryLine {
   preTokens: number
 }
 
-/** history 存储行：消息 or 边界（联合类型，避免 boundary 破坏 Message 结构，M5 §11）。 */
-export type HistoryLine = Message | BoundaryLine
+/** 回退标记（M9-P2）：/rewind 确认后追加；投影截断到 toolUseId 所在消息之前（当次改动不进上下文）。 */
+export interface RewindLine {
+  rewind: true
+  /** 截断锚：被回退的第一个工具消息的 tool_use id（checkpoint meta.messageId；失联则忽略截断） */
+  toolUseId?: string
+  /** 面板选择的快照点序号（展示/审计用） */
+  seq: number
+  time: string
+}
+
+/** history 存储行：消息 or 边界 or 回退标记（联合类型，避免标记行破坏 Message 结构，M5 §11/M9-P2）。 */
+export type HistoryLine = Message | BoundaryLine | RewindLine
 
 /** boundary 类型守卫。 */
 export function isBoundary(line: HistoryLine): line is BoundaryLine {
   return typeof line === 'object' && line !== null && (line as BoundaryLine).compact_boundary === true
+}
+
+/** rewind 类型守卫（M9-P2）。 */
+export function isRewind(line: HistoryLine): line is RewindLine {
+  return typeof line === 'object' && line !== null && (line as RewindLine).rewind === true
+}
+
+/** Message 行守卫（非标记行）——消费点统一用此过滤，防新标记变体漏进 LLM 上下文（M9-P2 收敛）。 */
+export function isMessageLine(line: HistoryLine): line is Message {
+  return !isBoundary(line) && !isRewind(line)
 }

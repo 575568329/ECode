@@ -33,6 +33,7 @@ export interface CommandResult {
     | 'mcp-reconnect'
     | 'open-plugin-panel'
     | 'open-warnings-panel'
+    | 'open-rewind-panel'
     | 'restart'
     | 'inject-prompt'
 }
@@ -155,6 +156,11 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     name: 'warnings',
     description: '告警中心（查看全部 提示/警告/严重 问题的队列）',
     run: () => ({ action: 'open-warnings-panel' as const }),
+  })
+  registry.register({
+    name: 'rewind',
+    description: '回退到某次改动之前（文件还原 + 对话回退，面板）',
+    run: () => ({ action: 'open-rewind-panel' as const }),
   })
   registry.register({
     name: 'doctor',

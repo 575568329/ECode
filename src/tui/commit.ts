@@ -8,7 +8,7 @@
  *
  * findUse：从 messages 按 id 反查 tool_use（onToolResult 时配对 active.tools 用）。
  */
-import { isBoundary, type HistoryLine, type Message, type TextBlock, type ToolUseBlock, type ToolResultBlock } from '../core/types.js'
+import { isBoundary, isRewind, isMessageLine, type HistoryLine, type Message, type TextBlock, type ToolUseBlock, type ToolResultBlock } from '../core/types.js'
 import type { CommittedItem, CommittedToolCall } from './types.js'
 
 /** committed 层 user 文本截断（S4.4 v6）：手动 skill 展开全文可达数百行，静态区只保 ~10 行。 */
@@ -20,13 +20,16 @@ export function truncateUserText(text: string): string {
 }
 
 export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
-  const messages = lines.filter((l): l is Message => !isBoundary(l))
+  const messages = lines.filter((l): l is Message => !isBoundary(l) && !isRewind(l))
   // boundary → 压缩标记插入点（key=boundary 前的 Message 数；value=被摘要条数 tailStartIndex）。
   // UI 显示全量原文（投影分离），标记按原序插入，告知「此处之上的消息已摘要进模型上下文」。
+  // rewind（M9-P2）同款：⇺ 回退标记按原序插入（新标记变体必须在此消化，否则进 filter 被当 Message 炸 UI）。
   const boundaryMarks = new Map<number, number>()
+  const rewindMarks = new Map<number, number>()
   let msgCount = 0
   for (const line of lines) {
     if (isBoundary(line)) boundaryMarks.set(msgCount, line.tailStartIndex)
+    else if (isRewind(line)) rewindMarks.set(msgCount, line.seq)
     else msgCount++
   }
   const items: CommittedItem[] = []
@@ -55,6 +58,11 @@ export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
     if (mark !== undefined) {
       flush()
       items.push({ kind: 'compacted', id: `c${n++}`, removedCount: mark })
+    }
+    const rw = rewindMarks.get(i)
+    if (rw !== undefined) {
+      flush()
+      items.push({ kind: 'rewind', id: `r${n++}`, seq: rw })
     }
     if (i === messages.length) break
     const m = messages[i]
@@ -102,7 +110,7 @@ export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
 export function findUse(lines: HistoryLine[], id: string): ToolUseBlock | undefined {
   for (let i = lines.length - 1; i >= 0; i--) {
     const m = lines[i]
-    if (!isBoundary(m) && m.role === 'assistant') {
+    if (isMessageLine(m) && m.role === 'assistant') {
       const found = m.content.find(
         (b) => b.type === 'tool_use' && (b as ToolUseBlock).id === id,
       )

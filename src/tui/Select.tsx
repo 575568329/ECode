@@ -12,7 +12,14 @@ import { theme } from './theme.js'
  * 复用范式：ModelPicker（provider×model）/ HistoryPicker（会话）/ 未来 skill·mcp 选择。
  * 选中靠 inverse 反色（不用箭头字符，规避 ambiguous 字符宽度问题）。
  * 空列表：显示 emptyHint + 仅响应 Esc（不崩，通用空态）。
+ *
+ * 窗口化（对齐 PanelShell）：列表超 MAX_VISIBLE 项只渲染光标居中的可见窗口——
+ * 动态区 outputHeight ≥ 视口行数会触发 Ink fullscreen（视角顶到顶部、scrollback
+ * 被清），/history 会话多的场景全量渲染必炸屏；窗口外以上/下溢出计数提示。
  */
+
+/** 可见窗口行数（与 PanelShell MAX_VISIBLE 同值） */
+const MAX_VISIBLE = 12
 
 export interface SelectItem<T> {
   /** 渲染文本（调用方组装，如 'glm-5.2 / astron' 或 '首条消息 · 时间'） */
@@ -56,6 +63,12 @@ export function Select<T>({ title, items, onSelect, onCancel, emptyHint }: Selec
   })
 
   const empty = items.length === 0
+  // 窗口化滚动：光标为中心，窗口 [start, start+MAX_VISIBLE)——渲染行数封顶，防动态区超视口
+  const windowStart =
+    items.length <= MAX_VISIBLE ? 0 : Math.max(0, Math.min(items.length - MAX_VISIBLE, idx - Math.floor(MAX_VISIBLE / 2)))
+  const hiddenAbove = windowStart
+  const hiddenBelow = Math.max(0, items.length - (windowStart + MAX_VISIBLE))
+  const shown = items.slice(windowStart, windowStart + MAX_VISIBLE)
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor={theme.border} paddingX={1}>
       {title !== undefined && (
@@ -69,16 +82,27 @@ export function Select<T>({ title, items, onSelect, onCancel, emptyHint }: Selec
         </Box>
       ) : (
         <Box flexDirection="column" marginTop={1}>
-          {items.map((it, i) => {
-            const selected = i === idx
+          {hiddenAbove > 0 && (
+            <Text dimColor>
+              {' '}↑ 还有 {hiddenAbove} 项
+            </Text>
+          )}
+          {shown.map((it, i) => {
+            const pos = windowStart + i
+            const selected = pos === idx
             return (
-              <Text key={i} inverse={selected} bold={selected}>
+              <Text key={pos} inverse={selected} bold={selected}>
                 {' '}
                 {it.label}
                 {it.active ? '  (当前)' : ''}
               </Text>
             )
           })}
+          {hiddenBelow > 0 && (
+            <Text dimColor>
+              {' '}↓ 还有 {hiddenBelow} 项
+            </Text>
+          )}
         </Box>
       )}
       <Box marginTop={1}>

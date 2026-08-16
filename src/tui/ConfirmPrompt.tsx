@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ReactElement } from 'react'
-import { Box, Text, useInput } from 'ink'
+import { Box, Text, useInput, useStdout } from 'ink'
 import type { ConfirmState } from './types.js'
 import { theme } from './theme.js'
 import { DiffLine } from './DiffLine.js'
@@ -19,8 +19,38 @@ import { DiffLine } from './DiffLine.js'
  * - write_file：content 片段（灰）
  * - bash：完整命令（灰）
  *
+ * 高度感知截断：动态区 outputHeight ≥ 视口行数会触发 Ink fullscreen（视角被顶到
+ * 顶部、scrollback 被清，用户无法下拉）——preview 行数必须按终端行数封顶
+ * （edit_file 大 diff 无数据层上限，此处是唯一防线）。非 TTY（测试 pipe）rows
+ * 未知 → 兜底 24。
+ *
  * y/n/回车后组件由父卸载（active.confirm=null），不残留动态区。
  */
+
+/** 预留给弹窗骨架（框 2 + 标题 1 + 选项 1 + margin/padding ~4）与动态区其余（输入行/提示/状态栏 ~4） */
+const PREVIEW_RESERVE = 12
+/** 极矮终端保命线：preview 至少留 5 行（头 3 + 省略 1 + 尾 1） */
+const PREVIEW_MIN_LINES = 5
+/** 非 TTY 环境 rows 未知时的兜底视口行数 */
+const ROWS_FALLBACK = 24
+
+/** preview 可见行上限 = 视口行数 - 预留（导出供单测锁 rows 路径；渲染组合由 ink-testing 用例覆盖兜底路径） */
+export function previewMaxLines(rows: number | undefined): number {
+  return Math.max(PREVIEW_MIN_LINES, (rows ?? ROWS_FALLBACK) - PREVIEW_RESERVE)
+}
+
+/** 超高 preview 保头尾截断：头 2/3（diff 文件名/hunk 定位）+ 省略计数 + 尾 1/3（最近改动） */
+export function clampPreviewLines(lines: string[], max: number): string[] {
+  if (lines.length <= max) return lines
+  const head = Math.max(2, Math.ceil(((max - 1) * 2) / 3))
+  const tail = max - 1 - head
+  const omitted = lines.length - head - tail
+  return [
+    ...lines.slice(0, head),
+    `⋯ 省略 ${omitted} 行（共 ${lines.length} 行）`,
+    ...lines.slice(lines.length - tail),
+  ]
+}
 
 interface ConfirmPromptProps {
   state: ConfirmState
@@ -37,6 +67,8 @@ export function ConfirmPrompt({ state, onConfirm, onCancel }: ConfirmPromptProps
   const isMcp = state.use.name.startsWith('mcp__')
   // 默认选中「执行」（y）—— 直接回车就继续，符合「确认优先」直觉
   const [selected, setSelected] = useState<'y' | 'n' | 'a'>('y')
+  const { stdout } = useStdout()
+  const previewLines = clampPreviewLines(state.preview.split('\n'), previewMaxLines(stdout?.rows))
 
   const decide = (ok: boolean, always = false) => {
     state.resolve(ok, always)
@@ -72,12 +104,12 @@ export function ConfirmPrompt({ state, onConfirm, onCancel }: ConfirmPromptProps
       </Box>
       <Box flexDirection="column" marginTop={1}>
         {isDiff
-          ? state.preview.split('\n').map((line, i) => (
+          ? previewLines.map((line, i) => (
               <Box key={i}>
                 <DiffLine line={line} />
               </Box>
             ))
-          : <Text dimColor>{state.preview}</Text>}
+          : <Text dimColor>{previewLines.join('\n')}</Text>}
       </Box>
       <Box marginTop={1}>
         <Text inverse={selected === 'y'} bold={selected === 'y'}>

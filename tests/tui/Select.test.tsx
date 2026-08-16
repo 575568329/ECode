@@ -133,4 +133,41 @@ describe('Select', () => {
     await flush()
     expect(onCancel).toHaveBeenCalled()
   })
+
+  // 窗口化：动态区 outputHeight ≥ 视口行数触发 Ink fullscreen（视角顶到顶部、scrollback 被清），
+  // 长列表（/history 会话多）必须封顶可见窗口
+  it('超长列表窗口化：仅渲染 12 项窗口 + 溢出计数', () => {
+    const many: SelectItem<number>[] = Array.from({ length: 20 }, (_, i) => ({
+      label: `s${String(i).padStart(2, '0')}`,
+      value: i,
+    }))
+    const { lastFrame } = render(
+      React.createElement(Select, { items: many, onSelect: () => {}, onCancel: () => {} }),
+    )
+    const f = lastFrame() ?? ''
+    expect(f).toContain('s00')
+    expect(f).toContain('s11') // 第 12 项（窗口 0-11）
+    expect(f).not.toContain('s12') // 第 13 项不渲染
+    expect(f).toContain('↓ 还有 8 项')
+    expect(f).not.toContain('↑ 还有')
+  })
+
+  it('↓ 导航后窗口跟随（光标居中）+ 上方溢出计数', async () => {
+    const many: SelectItem<number>[] = Array.from({ length: 20 }, (_, i) => ({
+      label: `s${String(i).padStart(2, '0')}`,
+      value: i,
+    }))
+    const { stdin, lastFrame } = render(
+      React.createElement(Select, { items: many, onSelect: () => {}, onCancel: () => {} }),
+    )
+    for (let i = 0; i < 7; i++) {
+      stdin.write(DOWN)
+      await flush()
+    } // idx=7 → 窗口起点 1（光标居中）
+    const f = lastFrame() ?? ''
+    expect(f).toContain('s01') // 滚入窗口首行
+    expect(f).not.toContain('s00') // 滚出窗口
+    expect(f).toContain('↑ 还有 1 项')
+    expect(f).toContain('↓ 还有 7 项')
+  })
 })

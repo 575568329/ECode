@@ -38,6 +38,12 @@ ECode 自身的权威配置指南。修改配置前先读本手册；不确定�
 | mcpServers | Record<名, McpServerConfig> | — | MCP 外部工具（见下节） |
 | maxIterations | number | 50 | Agent 循环最大轮数 |
 | bashMaxOutputBytes | number | 30720 | bash 输出截断阈值（头尾中截） |
+| logLevel | string | "info" | 日志级别：debug/info/warn/error |
+| hooks | HookSpec[] | — | 事件 hook（M7）：SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Stop/SessionEnd；command 子进程，stdin 喂事件 JSON，stdout 可回 {continue:false} 阻断 / updatedInput 改参 / additionalContext 附加；exit 2 = 阻断 |
+| maxInstructionsKB | number | 32 | 指令/记忆注入单级上限 KB（ECODE.md/CLAUDE.md/MEMORY.md 各级） |
+| webFetchMaxKB | number | 30 | web_fetch 回喂内容上限 KB |
+| providers.*.pricing | Record<模型, {input,output,cacheRead?,cacheWrite?}> | — | 定价覆盖（¥/Mtok，优先于内置表与 models.dev 同步值） |
+| plugins | Record<"name@market", boolean> | — | 插件启用状态（/plugin 面板维护） |
 | logLevel | string | info | debug / info / warn / error |
 
 providers.<名> 字段：

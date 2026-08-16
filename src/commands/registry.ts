@@ -199,5 +199,6 @@ export const DOCTOR_PROMPT = `请对 ECode 的配置与文档做一次自检（�
 4. Hooks：config.json 的 hooks 键各项是否合法（event 名/command 非空）；skill 目录的 hooks.json 是否可解析。
 5. MCP：项目级 .mcp.json 是否可解析、server 必填字段是否齐全（stdio 要 command / http 要 url）。
 6. Skills：各 skill 的 SKILL.md frontmatter 是否含 name 与 description。
+7. 提示词与文档同步（活文档抽查，依据 docs/规范/2026-08-16_活文档清单与同步守则_已完成.md）：读 src/core/system.ts 的工具选择指引，与实际注册的工具集对照（有无工具在指引里缺席）；读 src/services/config.ts 的 CONFIG_TEMPLATE 注释与 docs/规范 内 TUI 规范的键位表，抽查是否覆盖最新功能（如告警中心/分页键位/新配置键）；发现过时内容只报告位置与差异，不要直接改。
 
 输出格式：按 检查项 → 状态（正常/警告/问题）→ 问题描述与建议修复法 列表；全部正常也要明确说"全部正常"。`

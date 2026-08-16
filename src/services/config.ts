@@ -126,8 +126,14 @@ const CONFIG_TEMPLATE = `{
   // },
 
   "maxIterations": 50,        // Agent 循环最大轮数
-  "bashMaxOutputBytes": 30720 // bash 输出截断阈值（30KB 头尾中截）
-  // "logLevel": "info"       // 日志级别：debug | info | warn | error
+  "bashMaxOutputBytes": 30720, // bash 输出截断阈值（30KB 头尾中截）
+  // "logLevel": "info",       // 日志级别：debug | info | warn | error
+  // "maxInstructionsKB": 32,  // 指令/记忆注入单级上限 KB（ECODE.md/CLAUDE.md/MEMORY.md）
+  // "webFetchMaxKB": 30,      // web_fetch 回喂内容上限 KB（头尾中截）
+  // "hooks": [                // 事件 hook（M7）：command 子进程，stdin 收事件 JSON
+  //   { "event": "PostToolUse", "matcher": "edit_file|write_file",
+  //     "handler": { "kind": "command", "command": "prettier ." } }
+  // ]
 }
 `
 

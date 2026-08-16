@@ -33,6 +33,9 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number, opts
 - write_file <path> <content>：写新文件或覆盖（会请求确认）
 - edit_file <path> <oldString> <newString>：改文件中的某段（会请求确认）
 - bash <command>：执行 shell 命令
+- Skill <skill>：加载工作流手册（available_skills 清单里匹配时调用，返回步骤照做）
+- ask_user：需求模糊且调查后仍无法推断时向用户提问（选项框；能推断就别问）
+- web_fetch <url>：抓公开网页转文本（查最新文档；优先读本地，线上不确定才用）
 
 回复用中文。`
 

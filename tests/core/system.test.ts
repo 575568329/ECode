@@ -43,3 +43,14 @@ describe('buildSystemPrompt（M6 S-P4）', () => {
     expect(p).not.toContain('先调用 Skill 工具加载 ecode-config 手册')
   })
 })
+
+describe('活文档防漂移：工具选择指引覆盖全部注册工具（清单 #1）', () => {
+  // builtin 工具全集（加新工具时在此登记——忘了登记，指引漂移测试也抓不到你，但 /doctor 会）
+  const builtinTools = ['ls', 'glob', 'grep', 'read_file', 'write_file', 'edit_file', 'bash', 'Skill', 'ask_user', 'web_fetch']
+
+  it('每个 builtin 工具名都被 system prompt 提及（新工具注册但指引没写 → 此处红）', () => {
+    const prompt = buildSystemPrompt()
+    const missing = builtinTools.filter((t) => !prompt.includes(t))
+    expect(missing, `system prompt 工具指引缺：${missing.join(', ')}——改 src/core/system.ts 工具选择指引（见 docs/规范/活文档清单 #1）`).toEqual([])
+  })
+})

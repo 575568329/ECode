@@ -1,7 +1,7 @@
 # AGENTS.md — ECode 工作区指令
 
 > **ECode**：终端 Agent CLI，AgentLoop 为心脏，其余能力（工具/模型接入/TUI/斜杠命令/历史/配置/日志）作为分支接入心脏。技术栈 TypeScript 严格模式 / Node.js，TUI 用 Ink，LLM 走 `@anthropic-ai/sdk` 接 Astron 兼容端点（跑 GLM）。
-> **当前状态**：M1（心脏）+ M2（TUI 最小 Static）+ M3（工具集+ConfirmPrompt+bash 安全+.ecodeignore）+ M4（HistoryStore/向导/双协议 Provider）+ M5（上下文压缩：投影分离+分批 map-reduce 800k→200k 58s+cache 四维成本）+ M6（Skill 双触发面+MCP 按需加载+面板+内置 ecode-config 手册）+ M7（HookRunner 六事件+Plugin 安装链+PluginPanel）**全部完成**。后续 **M8 = 交互与上下文智能**（ECODE.md/CLAUDE.md 两级注入/ask_user 选项框/auto-memory/WebFetch/分段化/债清账；流式 markdown+OSC8 已砍——M8-D12，方案归档 M9 附录 D 观察区，`2026-08-15_后续-M8实施方案_待启动.md`）→ **M9 = 安全网与质量闭环**（checkpoint+/rewind/lint-test 回喂/git 轻量/沙箱三档，`2026-08-15_后续-M9实施方案_待启动.md`）。
+> **当前状态**：M1（心脏）+ M2（TUI 最小 Static）+ M3（工具集+ConfirmPrompt+bash 安全+.ecodeignore）+ M4（HistoryStore/向导/双协议 Provider）+ M5（上下文压缩：投影分离+分批 map-reduce 800k→200k 58s+cache 四维成本）+ M6（Skill 双触发面+MCP 按需加载+面板+内置 ecode-config 手册）+ M7（HookRunner 六事件+Plugin 安装链+PluginPanel）**全部完成**。后续 **M8 = 交互与上下文智能**（ECODE.md/CLAUDE.md 两级注入/ask_user 选项框/auto-memory/WebFetch/分段化/债清账；流式 markdown+OSC8 已彻底放弃——M8-D12，`2026-08-15_后续-M8实施方案_待启动.md`）→ **M9 = 安全网与质量闭环**（hooks 接线修复 P0/checkpoint+/rewind/lint-test 回喂/git 轻量/沙箱三档默认关/**权限系统首步 Hook(owner)**/LSP 占位，`2026-08-15_后续-M9实施方案_待启动.md`，未排期裁剪见其附录 D 观察区）→ **M10 = 多模态输入（ImageBlock）+ WebSearch**（调研已定可行路径：智谱 Web Search API 首选，Bing API 已死/Tavily 备选；方案待启动时写）。
 > **永远使用中文与我对话。**
 >
 > 改代码/文档前先读这份。权威设计见 `docs/详设/2026-08-11_ECode-MVP详设_待审核.md`，文档体系以 `docs/README.md` 为权威。

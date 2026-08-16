@@ -12,6 +12,7 @@
  */
 
 import { isBoundary, isMessageLine, type BoundaryLine, type HistoryLine } from '../../core/types.js'
+import { rewindSubset } from '../../core/context.js'
 // re-export：boundary 类型集中在 core/types（避免 core/context → services 依赖），orchestrator 转出方便外部用
 export type { BoundaryLine, HistoryLine } from '../../core/types.js'
 export { isBoundary } from '../../core/types.js'
@@ -68,7 +69,9 @@ export class CompactionOrchestrator {
         // P0-1: 翻译投影相对索引 → 全量 filter Message[] 绝对索引
         // （summarize 在投影 ctx 上算 tailStartIndex，buildContextMessages 在全量 filter 上用，二者参考系不同；
         //   不翻译则第 2 次压缩错位 → 投影泄漏累加 + 可能造 tool 孤儿 400）
-        const allMsgs = opts.allMessages.filter(isMessageLine)
+        // 终审 P0-1：filter 前先 rewindSubset——与 buildContextMessages 使用端同参考系（rewind 丢弃区间
+        // 不计入索引），否则 RewindLine 存在时两参考系分叉，漂移量=丢弃区间消息数 → 孤儿 tool_result 400
+        const allMsgs = rewindSubset(opts.allMessages).filter(isMessageLine)
         const anchor = opts.messages[result.tailStartIndex] // 投影 ctx 的 tail 起点 Message
         let absIdx = allMsgs.length // 默认全摘要（anchor 是 summaryMsg 或越界 → indexOf -1）
         if (anchor) {

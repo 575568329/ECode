@@ -341,7 +341,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
               feedback = fb
             }
           }
-          if (config.autoCommit === true) {
+          // 终审 P1-5：红灯（lint/test 失败）或熔断态不提交——不把 broken code 写进 git 历史
+          if (config.autoCommit === true && feedback === undefined && deps.quality?.lastRoundFailed !== true && !deps.quality?.tripped) {
             const files = [...editedFilesRef.current]
             editedFilesRef.current.clear()
             if (files.length > 0) {
@@ -670,7 +671,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     // M9-P2：快照目录拷贝跟随（起新 id 后旧快照仍可用——否则「跨重启可回退」落空，CC copyFileHistoryForResume 同款）
     const oldId = deps.history.currentSessionId()
     deps.history.setSessionId(newId, config.current.model)
-    void deps.checkpoint?.copyForResume(oldId, newId).catch(() => {})
+    deps.checkpoint
+      ?.copyForResume(oldId, newId)
+      .catch((e: unknown) =>
+        pushNoticeFn('warn', `快照跟随失败（恢复会话后旧快照不可用）：${e instanceof Error ? e.message : String(e)}`),
+      )
     // SessionStart hook（H-P4）：恢复会话 = resume
     void deps.hookRunner
       ?.dispatch('SessionStart', { event: 'SessionStart', session_id: '', source: 'resume' })

@@ -58,6 +58,26 @@ describe('git 轻量集成（M9-P6）', () => {
     expect(st.stdout.trim()).toBe('?? b.ts')
   })
 
+  it('终审 P1-2：用户已 staged 的文件不混入 ECode 提交；/undo 不清掉用户改动', async () => {
+    await initRepo()
+    await configIdentity()
+    writeFileSync(join(dir, 'mine.txt'), 'user work')
+    writeFileSync(join(dir, 'a.ts'), 'A')
+    await execFileAsync('git', ['add', 'mine.txt'], { cwd: dir, env: { ...process.env, ...TEST_GIT_ENV } }) // 用户手动 staged
+    const r = await ecodeCommit(dir, 'sess-1', [join(dir, 'a.ts')], 'ecode: 改 a')
+    expect(r.committed).toBe(true)
+    // ECode 提交只含 a.ts
+    const show = await execFileAsync('git', ['show', '--stat', '--format='], { cwd: dir, env: { ...process.env, ...TEST_GIT_ENV } })
+    expect(show.stdout).toContain('a.ts')
+    expect(show.stdout).not.toContain('mine.txt')
+    // /undo 后用户 staged/工作区改动保留
+    const u = await undoEcodeCommit(dir)
+    expect(u.ok).toBe(true)
+    const st = await execFileAsync('git', ['status', '--porcelain'], { cwd: dir, env: { ...process.env, ...TEST_GIT_ENV } })
+    expect(st.stdout).toContain('mine.txt') // 用户的东西还在
+    expect(readFileSync(join(dir, 'mine.txt'), 'utf8')).toBe('user work')
+  }, 20_000)
+
   it('/undo：ECode 提交可撤销（文件还原到提交前）；用户提交拒绝', async () => {
     await initRepo()
     await configIdentity()

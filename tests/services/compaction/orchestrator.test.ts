@@ -7,6 +7,7 @@ import {
   type HistoryLine,
 } from '../../../src/services/compaction/orchestrator.js'
 import type { CompactionStrategy, CompactionResult } from '../../../src/services/compaction/strategy.js'
+import { buildContextMessages } from '../../../src/core/context.js'
 import type { LLMProvider } from '../../../src/providers/interface.js'
 
 /** 可控行为的 mock 策略。 */
@@ -176,6 +177,48 @@ describe('CompactionOrchestrator', () => {
     expect(all).toHaveLength(2) // 旧消息 + boundary（旧消息不删）
     expect(all[0]).toEqual({ role: 'user', content: [{ type: 'text', text: '旧消息' }] })
     expect(isBoundary(all[1]!)).toBe(true)
+  })
+})
+
+// —— M9 终审 P0-1：rewind × 压缩参考系一致性（生成端 vs 使用端，集成） ——
+
+describe('rewind × 压缩：tailStartIndex 参考系一致（终审 P0-1）', () => {
+  const u = (t: string) => ({ role: 'user' as const, content: [{ type: 'text' as const, text: t }] })
+  const toolMsg = (id: string) => ({
+    role: 'assistant' as const,
+    content: [{ type: 'tool_use' as const, id, name: 'edit_file', input: {} }],
+  })
+  const resultMsg = (id: string) => ({
+    role: 'user' as const,
+    content: [{ type: 'tool_result' as const, tool_use_id: id, content: 'ok' }],
+  })
+
+  it('RewindLine 存在时压缩 → 二次投影 tail 完整且无孤儿 tool_result', async () => {
+    // 全量：u1, a(T1), u2(tool_result T1), rewind(T1), u3 —— T1 区间被 rewind 丢弃
+    const all: HistoryLine[] = [
+      u('u1'),
+      toolMsg('T1'),
+      resultMsg('T1'),
+      { rewind: true, seq: 1, toolUseId: 'T1', time: 't' },
+      u('u3'),
+    ]
+    // 投影（summarize 的 ctx.messages）：[u1, u3]——走真实投影（元素引用与 all 一致，indexOf 才命中）
+    const projection = buildContextMessages(all)
+    const orch = new CompactionOrchestrator()
+    orch.register(
+      mockStrategy({ name: 's', result: { compacted: true, summary: '摘要', tailStartIndex: 1, preTokens: 999 } }),
+    )
+    const ok = await orch.run({ ...baseOpts(all), messages: projection })
+    expect(ok).toBe(true)
+    const boundary = all.find((l) => isBoundary(l)) as BoundaryLine
+    // 修前 bug：全量过滤参考系给 3（T1 区间计入）→ 使用端 slice(3)=[] 只剩 summary（tail 丢失），
+    // 或切在 tool_result 上产生孤儿 400。修后：rewind 子集参考系 → 1
+    expect(boundary.tailStartIndex).toBe(1)
+    // 二次投影：[summary, u3]——tail 完整、无孤儿 tool_result
+    const projected = buildContextMessages(all)
+    expect(projected).toHaveLength(2)
+    expect(JSON.stringify(projected)).toContain('u3')
+    expect(JSON.stringify(projected)).not.toContain('tool_result')
   })
 })
 

@@ -311,8 +311,10 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     // M9-P3：轮末质量回喂——feedback 作为 user 消息追加（模型下一轮看到自纠；协议上 tool_result
     // 必须配对 tool_use，信息性回喂不能造无主 result，走 user 文本）
     if (opts.afterTools) {
+      // 终审 P1-1：executeTools 重排结果（readonlys 先行），按位置配对会错位——按 tool_use_id 配对
+      const resultById = new Map(results.map((r) => [r.tool_use_id, r]))
       const fb = await opts.afterTools({
-        tools: newToolUses.map((u, i) => ({ name: u.name, isError: results[i]?.is_error === true })),
+        tools: newToolUses.map((u) => ({ name: u.name, isError: resultById.get(u.id)?.is_error === true })),
       })
       if (fb?.feedback !== undefined && fb.feedback !== '') {
         const fbMsg: Message = { role: 'user', content: [{ type: 'text', text: fb.feedback }] }

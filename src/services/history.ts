@@ -191,9 +191,12 @@ export class FileHistoryStore implements HistoryStore {
     for (const line of content.split('\n')) {
       if (!line.trim()) continue
       try {
-        const parsed = JSON.parse(line) as { meta?: true; compact_boundary?: true } & HistoryLine
+        const parsed = JSON.parse(line) as { meta?: true; compact_boundary?: true; rewind?: true } & HistoryLine
         if (parsed.meta) continue // 跳过 meta 行
-        lines.push(parsed.compact_boundary ? (parsed as BoundaryLine) : (parsed as Message))
+        // 终审 P2-1：按标记字段三分发——rewind 行伪装成 Message 是类型谎言（下游守卫兜得住，但新消费点会踩）
+        if (parsed.compact_boundary) lines.push(parsed as BoundaryLine)
+        else if (parsed.rewind) lines.push(parsed as RewindLine)
+        else lines.push(parsed as Message)
       } catch (e) {
         // 损坏行跳过但记录（不静默吞）
         process.stderr.write(`[HistoryStore] ${sessionId}.jsonl 跳过损坏行：${e instanceof Error ? e.message : String(e)}\n`)

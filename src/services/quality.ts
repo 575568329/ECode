@@ -82,6 +82,12 @@ export class QualityGate {
     return this._tripped
   }
 
+  /** 本轮聚合是否有失败（终审 P1-5：autoCommit 红灯不提交的判定信号） */
+  private _lastRoundFailed = false
+  get lastRoundFailed(): boolean {
+    return this._lastRoundFailed
+  }
+
   /** 配置全空（关闭态） */
   get disabled(): boolean {
     return this.commands.lint === undefined && this.commands.test === undefined
@@ -92,6 +98,7 @@ export class QualityGate {
    * 熔断语义：第 2 次输出无变化的失败仍回喂（附熔断提示），此后 afterRound 短路。
    */
   async afterRound(tools: Array<{ name: string; isError: boolean }>): Promise<string | undefined> {
+    this._lastRoundFailed = false
     if (this._tripped || this.disabled) return undefined
     const edited = tools.some((t) => EDIT_TOOLS.has(t.name) && !t.isError)
     if (!edited) return undefined
@@ -117,6 +124,7 @@ export class QualityGate {
       this.lastFailureHash = ''
       return undefined
     }
+    this._lastRoundFailed = true
 
     const failureText = failures.join('\n\n')
     const hash = createHash('sha256').update(failureText).digest('hex')

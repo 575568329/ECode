@@ -114,6 +114,19 @@ describe('QualityGate（轮末聚合回喂）', () => {
     expect(fb2).toBeTruthy()
   })
 
+  it('lastRoundFailed（终审 P1-5：autoCommit 红灯判据）——失败 true / 全绿与未编辑轮 false', async () => {
+    const { gate } = makeGate([
+      { command: 'npm run lint', exitCode: 1, output: 'err' },
+      { command: 'npm run lint', exitCode: 0, output: '' },
+    ])
+    await gate.afterRound(EDIT)
+    expect(gate.lastRoundFailed).toBe(true)
+    await gate.afterRound(EDIT) // 全绿
+    expect(gate.lastRoundFailed).toBe(false)
+    await gate.afterRound(READ) // 未编辑轮（不跑）
+    expect(gate.lastRoundFailed).toBe(false)
+  })
+
   it('commands 全空 → disabled 短路', async () => {
     const { gate, run } = makeGate([], {})
     expect(gate.disabled).toBe(true)

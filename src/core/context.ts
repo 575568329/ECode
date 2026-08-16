@@ -14,12 +14,13 @@
 
 import { isBoundary, isRewind, isMessageLine, type HistoryLine, type Message, type BoundaryLine } from './types.js'
 
-/** 从全量 history lines 投影出喂 LLM 的 context（纯函数，无副作用）。 */
-export function buildContextMessages(lines: HistoryLine[]): Message[] {
-  // M9-P2：rewind 截断先行——最后一条 rewind 生效，跳过「锚消息..rewind 行」区间：
-  // 锚之前的行（回退点）+ rewind 行之后的行（回退后继续聊的新对话）保留，被回退的区间不进上下文。
-  // boundary 逻辑在拼接子集上照常跑（区间外的 boundary 原序保留，规则不变）——两标记取最后语义天然共存。
-  let subset = lines
+/**
+ * rewind 区间跳过（M9-P2；终审 P0-1 提炼共享）：最后一条 rewind 生效，跳过「锚消息..rewind 行」
+ * 区间——锚之前的行（回退点）+ rewind 行之后的行（回退后继续聊的新对话）保留。
+ * 导出供压缩翻译侧（orchestrator）共用：boundary.tailStartIndex 的生成参考系与使用参考系
+ * 必须都是「本函数输出过滤 Message 后」——rewind 存在时两参考系若不一致会产生孤儿 tool_result（400）。
+ */
+export function rewindSubset(lines: HistoryLine[]): HistoryLine[] {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]
     if (!isRewind(line)) continue
@@ -28,10 +29,18 @@ export function buildContextMessages(lines: HistoryLine[]): Message[] {
     const anchorIdx = lines.findIndex(
       (l) => isMessageLine(l) && l.role === 'assistant' && l.content.some((b) => b.type === 'tool_use' && b.id === toolId),
     )
-    if (anchorIdx >= 0 && anchorIdx < i) subset = [...lines.slice(0, anchorIdx), ...lines.slice(i + 1)]
+    if (anchorIdx >= 0 && anchorIdx < i) return [...lines.slice(0, anchorIdx), ...lines.slice(i + 1)]
     // 锚失联 → 忽略截断，用全量（防御）
     break
   }
+  return lines
+}
+
+/** 从全量 history lines 投影出喂 LLM 的 context（纯函数，无副作用）。 */
+export function buildContextMessages(lines: HistoryLine[]): Message[] {
+  // M9-P2：rewind 截断先行；boundary 逻辑在拼接子集上照常跑（区间外的 boundary 原序保留）——
+  // 两标记取最后语义天然共存。
+  const subset = rewindSubset(lines)
 
   // 找最后一个 boundary（最新压缩的锚点）
   let lastBoundary: BoundaryLine | null = null

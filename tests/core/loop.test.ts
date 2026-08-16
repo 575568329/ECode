@@ -77,6 +77,48 @@ describe('runLoop：afterTools（M9-P3 轮末质量回喂）', () => {
     expect(messages).toHaveLength(5)
   })
 
+  it('终审 P1-1：工具混排（副作用在前+只读在后）时 isError 按 id 正确配对', async () => {
+    // write_file 失败（is_error）+ 只读工具成功——executeTools 重排 [readonlys..., sideEffects...]，
+    // 按位置配对会把 read 的成功错配给 write_file → QualityGate 误判"编辑成功"
+    const failingWrite: Tool = {
+      name: 'write_file',
+      description: 'w',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: false,
+      async execute() {
+        return { content: '写失败', is_error: true }
+      },
+    }
+    const okRead: Tool = {
+      name: 'read_file',
+      description: 'r',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: true,
+      async execute() {
+        return { content: '内容' }
+      },
+    }
+    const afterTools = vi.fn(async () => undefined)
+    const p = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 'w1', name: 'write_file' },
+        { type: 'tool_use_end', id: 'w1' },
+        { type: 'tool_use_start', id: 'r1', name: 'read_file' },
+        { type: 'tool_use_end', id: 'r1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: 'done' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const opts = { ...makeOpts(p, [failingWrite, okRead]), afterTools }
+    await runLoop([], 'go', opts)
+    expect(afterTools).toHaveBeenCalledWith({
+      tools: [
+        { name: 'write_file', isError: true },
+        { name: 'read_file', isError: false },
+      ],
+    })
+  })
+
   it('无 feedback（全绿/未配置）→ 不追加消息', async () => {
     const afterTools = vi.fn(async () => undefined)
     const p = new MockProvider([

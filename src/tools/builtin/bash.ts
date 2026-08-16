@@ -62,6 +62,11 @@ export const bashTool: Tool = {
     if (isDangerous(command)) {
       return { content: `危险命令已拦截：${command}`, is_error: true }
     }
+    // M9-P4：沙箱校验（read-only 整体拒 / blockedCommands 全档硬拒；confirm/allow 归 loop confirm 层）
+    const bashGate = ctx.sandbox?.checkBash(command)
+    if (bashGate !== undefined && bashGate.action === 'deny') {
+      return { content: bashGate.reason, is_error: true }
+    }
     // M9-P1：写前快照——bash 不可解析目标，传空数组由服务端 git status 近修改集兜底（无 git 跳过+warn）
     try {
       await ctx.onBeforeWrite?.([], 'bash')

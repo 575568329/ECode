@@ -34,6 +34,7 @@ export interface CommandResult {
     | 'open-plugin-panel'
     | 'open-warnings-panel'
     | 'open-rewind-panel'
+    | 'open-sandbox-panel'
     | 'restart'
     | 'inject-prompt'
 }
@@ -156,6 +157,11 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     name: 'warnings',
     description: '告警中心（查看全部 提示/警告/严重 问题的队列）',
     run: () => ({ action: 'open-warnings-panel' as const }),
+  })
+  registry.register({
+    name: 'sandbox',
+    description: '沙箱档位切换（default/read-only/workspace-write/full-access；Tab 快捷循环）',
+    run: () => ({ action: 'open-sandbox-panel' as const }),
   })
   registry.register({
     name: 'rewind',

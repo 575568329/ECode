@@ -9,6 +9,7 @@
  *   （apiKey+baseURL+model 齐）。无效 → cli 进 REPL + banner 提示 /setup。
  */
 
+import { SANDBOX_MODES, type SandboxMode } from './sandbox.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
@@ -40,6 +41,8 @@ export interface Config {
   /** M9-P3：编辑后自动 lint/test（undefined=自动探测 package.json；''=关闭） */
   lintCommand?: string
   testCommand?: string
+  /** M9-P4：沙箱（defaultMode 缺省 default=现状=关；blockedCommands 全档硬拒） */
+  sandbox?: { defaultMode?: SandboxMode; blockedCommands?: string[] }
   /** 指令/记忆注入单级上限 KB（M8：ECODE.md/CLAUDE.md/MEMORY.md 各级截断阈值，默认 32） */
   maxInstructionsKB?: number
   /** web_fetch 回喂内容上限 KB（默认 30，头尾中截） */
@@ -65,6 +68,8 @@ interface ConfigFile {
   /** M9-P3：编辑后自动 lint/test 命令（缺省自动探测 package.json scripts；空串=关闭） */
   lintCommand?: string
   testCommand?: string
+  /** M9-P4：沙箱（defaultMode: default/read-only/workspace-write/full-access；blockedCommands 通配清单） */
+  sandbox?: { defaultMode?: string; blockedCommands?: string[] }
   maxInstructionsKB?: number
   webFetchMaxKB?: number
   logLevel?: string
@@ -133,6 +138,11 @@ const CONFIG_TEMPLATE = `{
 
   "maxIterations": 50,        // Agent 循环最大轮数
   "bashMaxOutputBytes": 30720, // bash 输出截断阈值（30KB 头尾中截）
+  // M9：编辑后自动 lint/test（缺省自动探测 package.json scripts；空串=关闭）
+  "lintCommand": "",
+  "testCommand": "",
+  // M9：沙箱（default=现状=关；blockedCommands 通配全档硬拒，full-access 也不放行）
+  "sandbox": { "defaultMode": "default", "blockedCommands": ["git push --force*", "npm publish*"] },
   // "logLevel": "info",       // 日志级别：debug | info | warn | error
   // "maxInstructionsKB": 32,  // 指令/记忆注入单级上限 KB（ECODE.md/CLAUDE.md/MEMORY.md）
   // "webFetchMaxKB": 30,      // web_fetch 回喂内容上限 KB（头尾中截）
@@ -244,6 +254,14 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     bashMaxOutputBytes: file.bashMaxOutputBytes ?? DEFAULT_BASH_MAX_BYTES,
     lintCommand: file.lintCommand,
     testCommand: file.testCommand,
+    sandbox: file.sandbox !== undefined
+      ? {
+          defaultMode: SANDBOX_MODES.includes(file.sandbox.defaultMode as SandboxMode)
+            ? (file.sandbox.defaultMode as SandboxMode)
+            : 'default',
+          blockedCommands: file.sandbox.blockedCommands,
+        }
+      : undefined,
     ...(file.maxInstructionsKB !== undefined ? { maxInstructionsKB: file.maxInstructionsKB } : {}),
     ...(file.webFetchMaxKB !== undefined ? { webFetchMaxKB: file.webFetchMaxKB } : {}),
     logLevel: (file.logLevel as Config['logLevel']) ?? DEFAULT_LOG_LEVEL,

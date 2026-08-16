@@ -25,6 +25,11 @@ export interface ToolContext {
    * 工具侧 catch：快照失败不阻断主流程（安全网自身的问题不挡写入）。
    */
   onBeforeWrite?: (paths: string[], tool: string, toolUseId?: string) => Promise<void>
+  /**
+   * M9-P4：沙箱（undefined=未装配如测试；工具 execute 前置校验——心脏只透传不认识档位）。
+   * write/edit 用 checkWrite；bash 用 checkBash（deny 才拦，confirm/allow 由 loop confirm 层处理）。
+   */
+  sandbox?: import('../services/sandbox.js').Sandbox
 }
 
 export interface Tool {

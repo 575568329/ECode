@@ -61,6 +61,9 @@ export const editFileTool: Tool = {
     }
 
     const abs = path.isAbsolute(rel) ? rel : path.resolve(ctx.cwd, rel)
+    // M9-P4：沙箱前置校验（read-only 拒 / workspace-write 越界拒；软沙箱在工具层）
+    const gate = ctx.sandbox?.checkWrite(abs)
+    if (gate !== undefined && !gate.ok) return { content: gate.reason, is_error: true }
     // M9-P1：写前快照（失败不阻断——安全网自身的问题不挡主流程）
     try {
       await ctx.onBeforeWrite?.([abs], 'edit_file')

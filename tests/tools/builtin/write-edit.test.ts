@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { writeFileTool } from '../../../src/tools/builtin/write_file.js'
 import { editFileTool } from '../../../src/tools/builtin/edit_file.js'
 import type { ToolContext } from '../../../src/tools/interface.js'
+import { makeSandbox } from '../../../src/services/sandbox.js'
 
 let tmpDir: string
 let ctx: ToolContext
@@ -112,6 +113,29 @@ describe('onBeforeWrite（M9-P1 checkpoint 触发）', () => {
       { ...ctx, onBeforeWrite: async (paths, tool) => { calls.push([paths, tool]) } },
     )
     expect(calls).toEqual([[ [join(tmpDir, 'e.ts')], 'edit_file' ]])
+  })
+
+  it('read-only 档：write/edit 被拒（is_error + 档位文案）——M9-P4 沙箱前置校验', async () => {
+    const ro = { ...ctx, sandbox: makeSandbox('read-only', tmpDir) }
+    const w = await writeFileTool.execute({ path: 'ro.txt', content: 'x' }, ro)
+    expect(w.is_error).toBe(true)
+    expect(w.content).toContain('read-only')
+    writeFileSync(join(tmpDir, 'e.ts'), 'old')
+    const e = await editFileTool.execute({ path: 'e.ts', oldString: 'old', newString: 'new' }, ro)
+    expect(e.is_error).toBe(true)
+    expect(e.content).toContain('read-only')
+    expect(existsSync(join(tmpDir, 'ro.txt'))).toBe(false) // 未写入
+  })
+
+  it('workspace-write 档：cwd 内放行 / 越界拒绝（resolve 后比较，拦 .. 逃逸）', async () => {
+    const ww = { ...ctx, sandbox: makeSandbox('workspace-write', tmpDir) }
+    const ok = await writeFileTool.execute({ path: 'in.txt', content: 'x' }, ww)
+    expect(ok.is_error).toBeFalsy()
+    const outside = join(tmpDir, '..', `esc-${Date.now()}.ts`)
+    const denied = await writeFileTool.execute({ path: outside, content: 'x' }, ww)
+    expect(denied.is_error).toBe(true)
+    expect(denied.content).toContain('workspace-write')
+    rmSync(join(tmpDir, 'in.txt'), { force: true })
   })
 
   it('回调抛错不阻断写入（快照失败是安全网问题，不该挡主流程）', async () => {

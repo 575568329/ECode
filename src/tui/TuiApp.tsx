@@ -50,6 +50,8 @@ import { PluginPanel } from './PluginPanel.js'
 import { QuestionPanel } from './QuestionPanel.js'
 import { WarningsPanel } from './WarningsPanel.js'
 import { RewindPanel } from './RewindPanel.js'
+import { SandboxPanel } from './SandboxPanel.js'
+import { makeSandbox, nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
 import { setAskUserHandler } from '../tools/builtin/askUserBridge.js'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
@@ -115,6 +117,15 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   const confirmAlwaysRef = useRef(new Set<string>())
   // SessionStart 的 additionalContext 暂存（M9-P0）：注入启动/恢复后首轮 user 消息，一次性消费
   const pendingSessionCtxRef = useRef<string[]>([])
+  // M9-P4：沙箱档位（会话级不落盘；初始取 config.sandbox.defaultMode，default=现状=关）
+  const [sandboxMode, setSandboxMode] = useState<SandboxMode>(
+    deps.config.sandbox?.defaultMode ?? 'default',
+  )
+  const sandboxModeRef = useRef(sandboxMode)
+  const applySandboxMode = (mode: SandboxMode): void => {
+    sandboxModeRef.current = mode
+    setSandboxMode(mode)
+  }
 
   const [committed, setCommitted] = useState<CommittedItem[]>([])
   const [active, setActive] = useState<ActiveState>(() => createActive())
@@ -147,6 +158,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     | { kind: 'plugin-panel' }
     | { kind: 'warnings-panel' }
     | { kind: 'rewind-panel' }
+    | { kind: 'sandbox-panel' }
     | { kind: 'select'; title: string; options: string[]; resolve: (v: string | undefined) => void }
     // M8 ask_user：工具发起的提问面板（Promise 桥——resolve 回工具 execute）
     | { kind: 'question-panel'; questions: AskUserQuestion[]; resolve: (r: AskUserResult) => void }
@@ -311,6 +323,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           onBeforeWrite: async (paths, tool, toolUseId) => {
             await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
           },
+          // M9-P4：沙箱装配（read-only/workspace-write 拦截 + blockedCommands 全档硬拒在 bash 工具内）
+          sandbox: makeSandbox(sandboxModeRef.current, process.cwd(), config.sandbox?.blockedCommands ?? []),
         },
         // M9-P3：轮末质量回喂（编辑成功→lint/test 失败输出回喂自纠；熔断后静默）
         afterTools: deps.quality
@@ -324,6 +338,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         onBeforeRequest,
         onCompacted,
         confirm: async (use) => {
+          // M9-P4：full-access 全免确认（deny 语义仍硬拒在工具层：内置黑名单 + blockedCommands）
+          if (sandboxModeRef.current === 'full-access') return true
+          // M9-P4：read-only 档——MCP 副作用工具整体拒绝（本地 write/edit/bash 在工具层拦，文案准确；
+          // MCP 经 server 无法工具层拦，此处 false + 用户提示，LLM 收到 is_error 自纠）
+          if (sandboxModeRef.current === 'read-only' && use.name.startsWith('mcp__')) {
+            setSystemMsgs([`read-only 模式：MCP 工具 ${use.name} 被拒绝`])
+            return false
+          }
           // MCP「本会话记住」（M6 v3 P1-3）：server 级前缀放行（mcp__server__*），本会话不再逐次弹窗
           const mcpPrefix = use.name.startsWith('mcp__') ? use.name.split('__').slice(0, 2).join('__') : null
           if (mcpPrefix !== null && confirmAlwaysRef.current.has(mcpPrefix)) return true
@@ -779,6 +801,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       activity={activity.state}
       activityText={activity.text}
       mcp={mcpSegment}
+      sandbox={sandboxMode === 'default' ? undefined : sandboxMode}
+      sandboxDanger={sandboxMode === 'full-access'}
       tokens={tokens}
       iter={iter}
       maxIter={maxIter}
@@ -907,6 +931,18 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           }}
         />
       )}
+      {overlay?.kind === 'sandbox-panel' && (
+        <SandboxPanel
+          current={sandboxMode}
+          onPick={(mode) => {
+            pickerRef.current = false
+            setOverlay(null)
+            if (mode === null) return
+            applySandboxMode(mode)
+            setSystemMsgs([mode === 'default' ? '沙箱：default（现状，写/bash 每次确认）' : `沙箱：已切换到 ${mode}`])
+          }}
+        />
+      )}
       {overlay?.kind === 'rewind-panel' && (
         <RewindPanel
           store={deps.checkpoint ?? null}
@@ -956,6 +992,17 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       )}
       <InputStream
         onSubmit={submit}
+        onTabSandbox={() => {
+          // M9-D13：Tab 专职循环切档；D12：进 full-access 需确认——循环到该档时打开面板二级确认
+          const next = nextSandboxMode(sandboxModeRef.current)
+          if (next === 'full-access') {
+            pickerRef.current = true
+            setOverlay({ kind: 'sandbox-panel' })
+            return
+          }
+          applySandboxMode(next)
+          setSystemMsgs([`沙箱：${next}${next === 'default' ? '（写/bash 每次确认）' : ''}`])
+        }}
         onSkillInvoke={(name, args) => {
           // S4.4 手动触发：展开全文作 userInput，原始 `/name args` 作 display
           const info = deps.skillRegistry.get(name)
@@ -1021,6 +1068,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           if (result.action === 'open-warnings-panel') {
             pickerRef.current = true
             setOverlay({ kind: 'warnings-panel' })
+            return
+          }
+          if (result.action === 'open-sandbox-panel') {
+            pickerRef.current = true
+            setOverlay({ kind: 'sandbox-panel' })
             return
           }
           if (result.action === 'open-rewind-panel') {

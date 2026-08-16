@@ -31,6 +31,10 @@ interface AppProps {
   cost?: string
   /** MCP 段（StatusBar 透传，M6） */
   mcp?: string
+  /** M9-P4：沙箱档位段（StatusBar 透传；default 不显示） */
+  sandbox?: string
+  /** full-access 危险色 */
+  sandboxDanger?: boolean
   /** 运行时告警（重试/限流/压缩等）——底部独立第二行渲染并截断（防长消息挤碎状态行） */
   warning?: string
   /** 告警分级着色（M8②：error 红 / warn 黄 / info 蓝；缺省 warn） */
@@ -54,6 +58,8 @@ export function App({
   tokens,
   cost,
   mcp,
+  sandbox,
+  sandboxDanger,
   warning,
   warningLevel,
   banner,
@@ -90,6 +96,8 @@ export function App({
               tokens={tokens}
               cost={cost}
               mcp={mcp}
+              sandbox={sandbox}
+              sandboxDanger={sandboxDanger}
             />
             <Text dimColor> · </Text>
             <ShortcutHint context={busy ? 'busy' : 'default'} />

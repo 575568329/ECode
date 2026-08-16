@@ -23,6 +23,7 @@ import { LogStore } from '../services/logstore.js'
 import { FileHistoryStore } from '../services/history.js'
 import { CheckpointStore } from '../services/checkpoint.js'
 import { QualityGate, detectQualityCommands, makeShellRunner } from '../services/quality.js'
+import { makeSandbox } from '../services/sandbox.js'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { join } from 'node:path'
@@ -192,6 +193,12 @@ async function runOnce(messages: HistoryLine[], input: string, deps: Deps): Prom
       onBeforeWrite: async (paths, tool, toolUseId) => {
         await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
       },
+      // M9-P4：argv 模式按 config 默认档装配（deny 校验仍拦；argv 本就无交互确认）
+      sandbox: makeSandbox(
+        (deps.config.sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default',
+        process.cwd(),
+        deps.config.sandbox?.blockedCommands ?? [],
+      ),
     },
     onBeforeRequest,
     onCompacted,

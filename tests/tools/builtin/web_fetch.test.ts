@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createWebFetchTool, isPrivateIp, htmlToText, truncateMiddle, normalizeHostname, type FetchLike } from '../../../src/tools/builtin/web_fetch.js'
+import { createWebFetchTool, isPrivateIp, htmlToText, truncateMiddle, normalizeHostname, setWebFetchLimits, type FetchLike } from '../../../src/tools/builtin/web_fetch.js'
 
 // DNS 模块级 mock（ESM 导出只读，赋值法不可用；*.example.com 公网 IP，其余私网——SSRF 用例复用）
 vi.mock('node:dns/promises', () => ({
@@ -146,5 +146,19 @@ describe('审阅修复：IPv6 归一化（P1-1/P1-3）', () => {
   it('normalizeHostname 剥 IPv6 方括号', () => {
     expect(normalizeHostname('[::ffff:ac10:101]')).toBe('::ffff:ac10:101')
     expect(normalizeHostname('example.com')).toBe('example.com')
+  })
+})
+
+describe('截断上限可配（setWebFetchLimits）', () => {
+  it('调小上限后更早截断', async () => {
+    setWebFetchLimits({ maxContentKB: 1 }) // 1KB
+    const big = 'z'.repeat(3 * 1024)
+    const tool = createWebFetchTool((async () => res(200, big, { 'content-type': 'text/plain' })) as unknown as FetchLike)
+    const r = await tool.execute({ url: 'https://example.com/big' }, ctx)
+    expect(r.content).toContain('truncated="true"')
+    expect((r.content ?? '').length).toBeLessThan(3 * 1024)
+    setWebFetchLimits({ maxContentKB: 30 }) // 恢复默认
+    const r2 = await tool.execute({ url: 'https://example.com/big' }, ctx)
+    expect(r2.content).not.toContain('truncated="true"')
   })
 })

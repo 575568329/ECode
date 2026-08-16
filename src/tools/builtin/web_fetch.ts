@@ -13,7 +13,15 @@ import type { Tool } from '../interface.js'
 
 const FETCH_TIMEOUT_MS = 15_000
 const MAX_REDIRECTS = 3
-const MAX_CONTENT_BYTES = 30 * 1024
+const DEFAULT_MAX_CONTENT_BYTES = 30 * 1024
+/** 回喂上限（cli 启动时从 config webFetchMaxKB 注入；默认 30KB） */
+let maxContentBytes = DEFAULT_MAX_CONTENT_BYTES
+
+export function setWebFetchLimits(opts: { maxContentKB?: number }): void {
+  if (opts.maxContentKB !== undefined && opts.maxContentKB > 0) {
+    maxContentBytes = Math.floor(opts.maxContentKB * 1024)
+  }
+}
 
 /** URL hostname 归一化：剥 IPv6 字面量方括号（WHATWG URL 保留 [::ffff:ac10:101] 形态——审阅 P1-3）。 */
 export function normalizeHostname(hostname: string): string {
@@ -103,13 +111,13 @@ export function htmlToText(html: string): string {
 /** 30KB 头尾中截（与 bash 输出截断同惯例：防刷屏 + 防编造）。 */
 export function truncateMiddle(text: string): { text: string; truncated: boolean } {
   const bytes = Buffer.byteLength(text, 'utf8')
-  if (bytes <= MAX_CONTENT_BYTES) return { text, truncated: false }
+  if (bytes <= maxContentBytes) return { text, truncated: false }
   const buf = Buffer.from(text, 'utf8')
-  const half = Math.floor(MAX_CONTENT_BYTES / 2)
+  const half = Math.floor(maxContentBytes / 2)
   const head = buf.subarray(0, half).toString('utf8')
   const tail = buf.subarray(bytes - half).toString('utf8')
   return {
-    text: `${head}\n…（中间 ${bytes - MAX_CONTENT_BYTES} 字节已截断；需要其它部分换更具体的 URL/锚点）\n${tail}`,
+    text: `${head}\n…（中间 ${bytes - maxContentBytes} 字节已截断；需要其它部分换更具体的 URL/锚点）\n${tail}`,
     truncated: true,
   }
 }

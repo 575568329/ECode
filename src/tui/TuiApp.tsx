@@ -73,6 +73,8 @@ export interface TuiAppDeps {
   mcpPendingApproval?: { file: string; approve: () => Promise<void> }
   /** M6：MCP 启动警告（解析失败/env 缺失跳过/项目级覆盖——不透传用户无感知，审阅 P1） */
   mcpWarnings?: string[]
+  /** M8：指令/记忆截断提示（注入内容用户不可见，截断需可行动） */
+  instructionWarnings?: string[]
   /** M7：hooks 分发器（null = 未启用；SessionStart/UserPromptSubmit/Stop 在此触发） */
   hookRunner?: HookRunner | null
   /** M7：plugin 装载器（null = 未启用；/plugin 面板操作） */
@@ -185,7 +187,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     abortRef.current = new AbortController()
     const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
     const providerReq = buildProviderReq(config)
-    const system = buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindowRef.current)
+    const system = buildSystemPrompt(
+      deps.skillRegistry.listForPrompt(),
+      ctxWindowRef.current,
+      config.maxInstructionsKB !== undefined ? { maxInstructionBytes: config.maxInstructionsKB * 1024 } : undefined,
+    )
     const onCompacted = (m: HistoryLine[]) => {
       setCommitted(messagesToCommitted(m))
       setSystemMsgs(['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）'])
@@ -612,10 +618,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     return unsub
     // eslint-disable-next-line react-hooks/exhaustive-deps -- deps 不变（挂载期一次）
   }, [])
-  // MCP 启动警告（无待批准事项时展示；有待批准时批准流的消息优先，警告并入其后）
+  // MCP 启动警告 + M8 指令/记忆截断提示（无待批准事项时展示；有待批准时批准流的消息优先，警告并入其后）
   useEffect(() => {
-    if ((deps.mcpWarnings?.length ?? 0) === 0) return
-    const lines = deps.mcpWarnings!
+    const startupWarnings = [...(deps.mcpWarnings ?? []), ...(deps.instructionWarnings ?? [])]
+    if (startupWarnings.length === 0) return
+    const lines = startupWarnings
     if (deps.mcpPendingApproval === undefined) {
       setSystemMsgs(lines.slice())
     } else {

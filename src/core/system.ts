@@ -13,7 +13,13 @@ import { ECODE_CONFIG_SKILL_NAME } from '../services/skill/builtin.js'
 import { loadInstructions, renderInstructions } from '../services/instructions.js'
 import { loadMemoryIndexes, renderMemory } from '../services/memory.js'
 
-export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number): string {
+/** 动态段注入选项（M8：上限从 config 透传——maxInstructionsKB 可调）。 */
+export interface SystemPromptOpts {
+  /** 指令/记忆单级上限字节（config maxInstructionsKB × 1024；缺省 32KB） */
+  maxInstructionBytes?: number
+}
+
+export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number, opts?: SystemPromptOpts): string {
   // —— 静态前缀（永不变，cache 友好）——
   const prefix = `你是 ECode，一个终端 Agent CLI。你能通过工具读文件、执行命令、搜索代码，帮用户完成编程任务。
 当前工作目录：${process.cwd()}
@@ -32,8 +38,9 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number): str
 
   // —— 动态后缀（会话间可变；空段过滤——两级都无文件零开销）——
   const dynamic: string[] = []
-  dynamic.push(renderInstructions(loadInstructions())) // 指令：用户级先、项目级后
-  dynamic.push(renderMemory(loadMemoryIndexes())) // 记忆索引
+  const maxBytes = opts?.maxInstructionBytes
+  dynamic.push(renderInstructions(loadInstructions(maxBytes !== undefined ? { maxBytes } : {}))) // 指令：用户级先、项目级后
+  dynamic.push(renderMemory(loadMemoryIndexes(maxBytes !== undefined ? { maxBytes } : {}))) // 记忆索引
   if (skills !== undefined && skills.length > 0) {
     const listing = renderSkillListing(skills, listingBudget(ctxWindow ?? 200_000))
     if (listing !== '') {

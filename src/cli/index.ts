@@ -46,11 +46,13 @@ import { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../services/compaction/summarize.js'
 import { skillTool } from '../tools/builtin/skill.js'
 import { askUserTool } from '../tools/builtin/ask_user.js'
-import { webFetchTool } from '../tools/builtin/web_fetch.js'
+import { webFetchTool, setWebFetchLimits } from '../tools/builtin/web_fetch.js'
 import { skillRegistry, createSkillRegistry } from '../services/skill.js'
 import { setupMcp } from '../services/mcp/setup.js'
 import type { McpManager } from '../services/mcp/manager.js'
 import { makeGracefulShutdown } from '../services/gracefulShutdown.js'
+import { loadInstructions } from '../services/instructions.js'
+import { loadMemoryIndexes } from '../services/memory.js'
 import { globalExtensionHooks } from '../services/hooks/global.js'
 import { HookRunner } from '../services/hooks/runner.js'
 import { parseUserHooks } from '../services/hooks/validate.js'
@@ -71,6 +73,8 @@ interface Deps {
   mcpManager: McpManager | null
   mcpPendingApproval?: { file: string; approve: () => Promise<void> }
   mcpWarnings: string[]
+  /** M8：指令/记忆截断提示（用户需知——自己写的 ECODE.md/MEMORY.md 没全生效） */
+  instructionWarnings: string[]
   hookRunner: HookRunner | null
   pluginLoader: PluginLoader | null
 }
@@ -112,6 +116,16 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   })
   let hookRunnerRef: HookRunner | null = hookRunner
   const hookedTools = new HookedToolRegistry(toolReg, () => hookRunnerRef)
+  // M8：指令/记忆截断检查（用户提示——注入内容对用户不可见，截断了必须让用户知道可行动）
+  const maxInstructionBytes = config.maxInstructionsKB !== undefined ? config.maxInstructionsKB * 1024 : undefined
+  const instructionWarnings: string[] = []
+  for (const b of loadInstructions(maxInstructionBytes !== undefined ? { maxBytes: maxInstructionBytes } : {})) {
+    if (b.truncated === true) instructionWarnings.push(`指令文件（${b.source}）超出上限被截断——可拆分文件或在 config 调大 maxInstructionsKB`)
+  }
+  for (const m of loadMemoryIndexes(maxInstructionBytes !== undefined ? { maxBytes: maxInstructionBytes } : {})) {
+    if (m.truncated === true) instructionWarnings.push(`记忆索引（${m.level === 'user' ? '用户级' : '项目级'}）超出上限被截断`)
+  }
+  setWebFetchLimits({ maxContentKB: config.webFetchMaxKB })
   return {
     providerRegistry: providerReg,
     tools: hookedTools,
@@ -123,6 +137,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
     skillRegistry,
     mcpManager: mcp.manager,
     mcpWarnings: mcp.warnings,
+    instructionWarnings,
     hookRunner,
     pluginLoader: new PluginLoader({ warn: (m) => logger.warn('plugin', 'load', { message: m }) }),
     ...(mcp.pendingApproval !== undefined ? { mcpPendingApproval: mcp.pendingApproval } : {}),
@@ -130,6 +145,11 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
 }
 
 /** argv 单次模式：M1 stdout 输出（流式打印 + 工具摘要）。 */
+/** buildSystemPrompt 的上限透传（config maxInstructionsKB → 字节）。 */
+function buildPromptOpts(config: Config): { maxInstructionBytes?: number } | undefined {
+  return config.maxInstructionsKB !== undefined ? { maxInstructionBytes: config.maxInstructionsKB * 1024 } : undefined
+}
+
 async function runOnce(messages: HistoryLine[], input: string, deps: Deps): Promise<void> {
   const provider = deps.providerRegistry.getByType(deps.config.providers[deps.config.current.name].type)
   const providerReq = buildProviderReq(deps.config)
@@ -137,7 +157,7 @@ async function runOnce(messages: HistoryLine[], input: string, deps: Deps): Prom
     deps.config.current.model,
     deps.config.providers[deps.config.current.name]?.contextWindow,
   )
-  const system = buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindow)
+  const system = buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindow, buildPromptOpts(deps.config))
   const onCompacted = (_messages: HistoryLine[]) => process.stdout.write('\n[已压缩对话]\n')
   const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, {
     onCompacted,
@@ -273,6 +293,8 @@ async function main(): Promise<void> {
   // argv 单次模式：M1 stdout 输出 → 跑一次退出（graceful：SessionEnd/MCP 清理走预算窗口）
   const initialInput = process.argv.slice(2).join(' ').trim()
   if (initialInput) {
+    for (const w of deps.instructionWarnings) process.stderr.write(`⚠ ${w}
+`)
     const messages: HistoryLine[] = []
     try {
       await runOnce(messages, initialInput, deps)

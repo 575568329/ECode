@@ -21,12 +21,16 @@ export interface InstructionBlock {
   /** 来源标注（'用户级 ~/.ecode/ECODE.md' / '项目级 <path>'） */
   source: string
   content: string
+  /** 截断标记（M8：启动时聚合给用户底部提示——自己写的指令没全生效需可知） */
+  truncated?: boolean
 }
 
 export interface LoadInstructionsOpts {
   cwd?: string
   /** 用户级文件路径（默认 ~/.ecode/ECODE.md；测试注入） */
   userFile?: string
+  /** 单级上限字节（默认 32KB；config maxInstructionsKB 可调） */
+  maxBytes?: number
 }
 
 /**
@@ -37,18 +41,19 @@ export interface LoadInstructionsOpts {
 export function loadInstructions(opts: LoadInstructionsOpts = {}): InstructionBlock[] {
   const blocks: InstructionBlock[] = []
   const cwd = opts.cwd ?? process.cwd()
+  const maxBytes = opts.maxBytes ?? MAX_INSTRUCTION_BYTES
 
   const userFile = opts.userFile ?? path.join(os.homedir(), '.ecode', 'ECODE.md')
-  const user = readClamped(userFile)
+  const user = readClamped(userFile, maxBytes)
   if (user !== undefined) {
-    blocks.push({ source: '用户级 ~/.ecode/ECODE.md', content: user })
+    blocks.push({ source: '用户级 ~/.ecode/ECODE.md', content: user.text, ...(user.truncated ? { truncated: true } : {}) })
   }
 
   const projectFile = findProjectInstructionFile(cwd)
   if (projectFile !== undefined) {
-    const project = readClamped(projectFile)
+    const project = readClamped(projectFile, maxBytes)
     if (project !== undefined) {
-      blocks.push({ source: `项目级 ${projectFile.split(path.sep).join('/')}`, content: project })
+      blocks.push({ source: `项目级 ${projectFile.split(path.sep).join('/')}`, content: project.text, ...(project.truncated ? { truncated: true } : {}) })
     }
   }
   return blocks
@@ -62,8 +67,8 @@ export function findProjectInstructionFile(cwd: string): string | undefined {
   return fs.existsSync(ecode) ? ecode : path.join(dir, 'CLAUDE.md')
 }
 
-/** 读文件 + 32KB 截断（截断时尾注原文路径与提示，防静默丢指令）。缺文件返回 undefined。 */
-function readClamped(file: string): string | undefined {
+/** 读文件 + 上限截断（截断时尾注原文路径与提示，防静默丢指令）。缺文件返回 undefined。 */
+function readClamped(file: string, maxBytes: number): { text: string; truncated?: boolean } | undefined {
   let text: string
   try {
     text = fs.readFileSync(file, 'utf8')
@@ -71,9 +76,12 @@ function readClamped(file: string): string | undefined {
     return undefined
   }
   const bytes = Buffer.byteLength(text, 'utf8')
-  if (bytes <= MAX_INSTRUCTION_BYTES) return text
-  const head = Buffer.from(text, 'utf8').subarray(0, MAX_INSTRUCTION_BYTES).toString('utf8')
-  return `${head}\n\n[已截断：原文 ${bytes} 字节超出 ${MAX_INSTRUCTION_BYTES} 上限，完整内容用 read_file 读取 ${file.split(path.sep).join('/')}]`
+  if (bytes <= maxBytes) return { text }
+  const head = Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8')
+  return {
+    truncated: true,
+    text: `${head}\n\n[已截断：原文 ${bytes} 字节超出 ${maxBytes} 上限，完整内容用 read_file 读取 ${file.split(path.sep).join('/')}]`,
+  }
 }
 
 /** 拼注入段（空块返回 ''——调用方判空零开销）。 */

@@ -37,6 +37,10 @@ export interface Config {
   current: { name: string; model: string } // 当前激活（/model 改这个）
   maxIterations: number
   bashMaxOutputBytes: number
+  /** 指令/记忆注入单级上限 KB（M8：ECODE.md/CLAUDE.md/MEMORY.md 各级截断阈值，默认 32） */
+  maxInstructionsKB?: number
+  /** web_fetch 回喂内容上限 KB（默认 30，头尾中截） */
+  webFetchMaxKB?: number
   logLevel: 'debug' | 'info' | 'warn' | 'error'
   /** MCP servers（M6；用户级配置，项目级 .mcp.json 在 mcp/config.ts 单独合并） */
   mcpServers?: Record<string, import('./mcp/config.js').McpServerConfig>
@@ -55,6 +59,8 @@ interface ConfigFile {
   providers?: Record<string, Partial<ProviderCfg>>
   maxIterations?: number
   bashMaxOutputBytes?: number
+  maxInstructionsKB?: number
+  webFetchMaxKB?: number
   logLevel?: string
   mcpServers?: Record<string, import('./mcp/config.js').McpServerConfig>
   /** hooks 原始数组（jsonc 透传；过滤在 hooks/validate.ts） */
@@ -224,6 +230,8 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     current: { name: providerName, model },
     maxIterations: file.maxIterations ?? DEFAULT_MAX_ITERATIONS,
     bashMaxOutputBytes: file.bashMaxOutputBytes ?? DEFAULT_BASH_MAX_BYTES,
+    ...(file.maxInstructionsKB !== undefined ? { maxInstructionsKB: file.maxInstructionsKB } : {}),
+    ...(file.webFetchMaxKB !== undefined ? { webFetchMaxKB: file.webFetchMaxKB } : {}),
     logLevel: (file.logLevel as Config['logLevel']) ?? DEFAULT_LOG_LEVEL,
     ...(file.mcpServers !== undefined ? { mcpServers: file.mcpServers } : {}),
   ...(file.hooks !== undefined ? { hooks: file.hooks } : {}),

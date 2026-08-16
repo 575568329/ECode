@@ -7,6 +7,7 @@ import {
   loadInstructions,
   renderInstructions,
 } from '../../src/services/instructions.js'
+import { setWebFetchLimits } from '../../src/tools/builtin/web_fetch.js'
 
 let tmpRoot: string
 
@@ -87,5 +88,23 @@ describe('renderInstructions', () => {
     const out = renderInstructions([{ source: '用户级 ~/.ecode/ECODE.md', content: 'a' }])
     expect(out).toContain('--- 指令（用户级 ~/.ecode/ECODE.md）---')
     expect(out).toContain('a')
+  })
+})
+
+describe('截断可配 + 用户提示标记', () => {
+  it('maxBytes 可调（大上限不截断 / 小上限截断并标 truncated）', async () => {
+    const f = await touch('proj/ECODE.md', 'y'.repeat(40 * 1024))
+    void f
+    // 默认 32KB → 截断
+    const def = loadInstructions({ cwd: path.join(tmpRoot, 'proj'), userFile: path.join(tmpRoot, 'none.md') })
+    expect(def[0]?.truncated).toBe(true)
+    // maxBytes 48KB → 不截断
+    const big = loadInstructions({ cwd: path.join(tmpRoot, 'proj'), userFile: path.join(tmpRoot, 'none.md'), maxBytes: 48 * 1024 })
+    expect(big[0]?.truncated).toBeUndefined()
+    expect(big[0]?.content).not.toContain('[已截断')
+    // maxBytes 1KB → 截断更狠
+    const tiny = loadInstructions({ cwd: path.join(tmpRoot, 'proj'), userFile: path.join(tmpRoot, 'none.md'), maxBytes: 1024 })
+    expect(tiny[0]?.truncated).toBe(true)
+    expect((tiny[0]?.content.length ?? 0)).toBeLessThan((def[0]?.content.length ?? 0))
   })
 })

@@ -81,6 +81,22 @@ describe('InputStream：skill 分流（S-P5）', () => {
     expect(onSkillInvoke).toHaveBeenCalledWith('commit', '修复登录')
   })
 
+  it('Tab 不补全（已专职沙箱档位，M9-D13）——补全只走回车', async () => {
+    reg('commit')
+    const onSkillInvoke = vi.fn()
+    const { stdin } = render(React.createElement(InputStream, { onSubmit: () => {}, onSkillInvoke }))
+    stdin.write('/comm')
+    await flush()
+    stdin.write('\t')
+    await flush()
+    stdin.write('\r') // Tab 若曾补全（文本带尾随空格）此回车会直接执行；现在应只回填不执行
+    await flush()
+    expect(onSkillInvoke).not.toHaveBeenCalled()
+    stdin.write('\r') // 再回车（此时文本已带空格）→ 执行
+    await flush()
+    expect(onSkillInvoke).toHaveBeenCalledWith('commit', undefined)
+  })
+
   it('/skill-name 无参 → onSkillInvoke(name, undefined)', async () => {
     reg('commit')
     const onSkillInvoke = vi.fn()
@@ -148,18 +164,6 @@ describe('InputStream：skill 分流（S-P5）', () => {
     expect(result?.output).toBe('got:a b')
   })
 
-  it('Tab 补全带尾随空格（提示可接参数；空格后停匹配）', async () => {
-    reg('commit')
-    const { stdin, lastFrame } = render(React.createElement(InputStream, { onSubmit: () => {} }))
-    stdin.write('/commi') // 避开命令 compact（命令在前会先选中）
-    await flush()
-    stdin.write('\t')
-    await flush()
-    // 尾随空格后建议列表消失（停止命令名匹配），输入框含补全名
-    const f = lastFrame() ?? ''
-    expect(f).toContain('commit')
-    expect(f).not.toContain('(skill)')
-  })
 })
 
 describe('InputStream：insert 回填通道（S-P6）', () => {
@@ -247,3 +251,4 @@ describe('matchSlashEntries 跨组排序（命令在前 skill 在后——纯函
     expect(skillNames).toEqual(['zz-skill', 'aa-skill']) // 组内注册序（zz 先注册）
   })
 })
+

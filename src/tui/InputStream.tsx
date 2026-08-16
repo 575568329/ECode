@@ -68,7 +68,7 @@ export function SlashSuggest({
         )
       })}
       {hidden > 0 && <Text dimColor> ↓ 还有 {hidden} 条（共 {matches.length} 项 · ↑↓ 浏览）</Text>}
-      <Text dimColor> ↑↓ 选择 · 回车 填入 · Tab 补全（填入后再回车执行）</Text>
+      <Text dimColor> ↑↓ 选择 · 回车 填入（再回车执行）</Text>
     </Box>
   )
 }
@@ -87,7 +87,7 @@ interface InputStreamProps {
 }
 
 /**
- * 输入流：TextInput + 历史（↑↓）+ / 补全（↑↓ 选中 + 回车回填 + Tab 补全）。
+ * 输入流：TextInput + 历史（↑↓）+ / 补全（↑↓ 选中 + 回车两段式回填；Tab 已专职沙箱档位）。
  * - 统一两段式（与 SkillPanel 一致，用户拍板）：回车 = 回填 `/选中名 `（尾随空格留参数位），
  *   不直接执行；用户看到回填内容后再回车才执行（所见即所发，也防 /com 误发未补全文本）
  * - `/name args...`（含空格，回填态或手输参数）→ 回车提交：命令带参 run(args)；无命令查 skill
@@ -174,13 +174,11 @@ export function InputStream({
     const slashMode = cur.text.startsWith('/')
     if (slashMode) {
       const matches = matchSlashEntries(cur.text.slice(1))
+      // 补全统一走回车两段式（↑↓ 选 + 回车回填）；Tab 不参与——已专职沙箱档位切换（M9-D13）
       if (key.upArrow && matches.length > 0) {
         setSlashIdx((i) => (i <= 0 ? matches.length - 1 : i - 1))
       } else if (key.downArrow && matches.length > 0) {
         setSlashIdx((i) => (i >= matches.length - 1 ? 0 : i + 1))
-      } else if (key.tab && slashIdx >= 0 && matches[slashIdx]) {
-        // Tab 补全带尾随空格（提示可接参数；空格后停止命令名匹配）
-        setCur(createCursor(`/${matches[slashIdx].name} `))
       }
       return
     }

@@ -210,7 +210,9 @@ export class CheckpointStore {
       const out: string[] = []
       for (const entry of stdout.split('\0')) {
         if (entry === '') continue
-        // porcelain -z 记录形如 "XY path"（XY=状态码两字符+空格）；rename 形如 "R  new\x00old"——取 new
+        // 合法项形如 "XY path"（两状态码+空格）。rename 的 old 路径是独立 NUL 项、无状态码
+        // 前缀——直接 slice(3) 会产生假路径，与真实文件撞名时误拍（"xyzkeepme.txt"→"keepme.txt"）。
+        if (entry.length < 3 || entry.charCodeAt(2) !== 32) continue
         const p = entry.slice(3)
         if (p !== '') out.push(resolve(this.cwd, p))
       }

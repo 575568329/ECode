@@ -1,5 +1,5 @@
 /** git 轻量集成测（M9-P6）：tmpdir 真 git 仓库（TEST_GIT_ENV 注入 identity）。 */
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
@@ -94,5 +94,46 @@ describe('git 轻量集成（M9-P6）', () => {
     const u2 = await undoEcodeCommit(dir)
     expect(u2.ok).toBe(false)
     expect(u2.message).toContain('拒绝撤销')
+  }, 20_000)
+
+  it('中文文件名（tracked）：/undo 完整恢复——quotepath 转义不解析', async () => {
+    await initRepo()
+    await configIdentity()
+    writeFileSync(join(dir, '文档.md'), 'v1')
+    await userCommit('user init')
+    writeFileSync(join(dir, '文档.md'), 'v2')
+    const c = await ecodeCommit(dir, 'sess-1', [join(dir, '文档.md')], 'ecode: 改文档')
+    expect(c.committed).toBe(true)
+    const u = await undoEcodeCommit(dir)
+    expect(u.ok).toBe(true)
+    expect(readFileSync(join(dir, '文档.md'), 'utf8')).toBe('v1')
+  }, 20_000)
+
+  it('中文文件名（新建）：/undo 删除 ECode 新建的文件', async () => {
+    await initRepo()
+    await configIdentity()
+    writeFileSync(join(dir, '新建.md'), 'new')
+    const c = await ecodeCommit(dir, 'sess-1', [join(dir, '新建.md')], 'ecode: 新建')
+    expect(c.committed).toBe(true)
+    const u = await undoEcodeCommit(dir)
+    expect(u.ok).toBe(true)
+    expect(existsSync(join(dir, '新建.md'))).toBe(false)
+  }, 20_000)
+
+  it('commit 失败：add 的 stage 回滚，index 不残留', async () => {
+    await initRepo()
+    await configIdentity()
+    // 失败诱因用 pre-commit hook（exit 1）——无 identity 在有全局配置的机器上造不出失败
+    const hooks = join(dir, 'hooks')
+    mkdirSync(hooks)
+    writeFileSync(join(hooks, 'pre-commit'), '#!/bin/sh\nexit 1\n')
+    await execFileAsync('git', ['config', 'core.hooksPath', hooks], { cwd: dir })
+    writeFileSync(join(dir, 'a.ts'), 'A')
+    const r = await ecodeCommit(dir, 'sess-1', [join(dir, 'a.ts')], 'ecode: 改')
+    expect(r.committed).toBe(false)
+    // 修复前：add 已执行、commit 失败不清理 → 'A  a.ts' 残留在用户 index
+    const st = await execFileAsync('git', ['status', '--porcelain'], { cwd: dir, env: { ...process.env, TEST_GIT_ENV } })
+    expect(st.stdout).toContain('?? a.ts') // 回到 untracked（?? hooks/ 是本测试自造的 hook 目录）
+    expect(st.stdout).not.toContain('A  a.ts')
   }, 20_000)
 })

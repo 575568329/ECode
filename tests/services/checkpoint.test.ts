@@ -97,6 +97,22 @@ describe('CheckpointStore：快照与 content-addressed 布局', () => {
     expect(metas[0]?.files.some((f) => f.path.endsWith('tracked.txt'))).toBe(true)
   })
 
+  it('bash 近修改集：rename 的 old 路径项无状态码前缀——不解析、不误拍撞名文件', async () => {
+    const repo = join(dir, 'repo')
+    await mkdir(repo)
+    await execFileAsync('git', ['init'], { cwd: repo })
+    // old 项 "xyzkeepme.txt" 被错误 slice(3) 后恰为 "keepme.txt"（tracked 干净文件）——修复前会被误拍
+    await writeFile(join(repo, 'xyzkeepme.txt'), 'to-rename')
+    await writeFile(join(repo, 'keepme.txt'), 'innocent')
+    await execFileAsync('git', ['add', '.'], { cwd: repo })
+    await execFileAsync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'init'], { cwd: repo })
+    await execFileAsync('git', ['mv', 'xyzkeepme.txt', 'b.txt'], { cwd: repo })
+    const store = makeStore({ cwd: repo })
+    await store.snapshot('s1', [], { tool: 'bash' })
+    const metas = await store.list('s1')
+    expect(metas[0]?.files.map((f) => f.path)).toEqual([join(repo, 'b.txt')])
+  })
+
   it('bash 近修改集：非 git 仓库 → 跳过 + warn', async () => {
     const store = makeStore()
     const seq = await store.snapshot('s1', [], { tool: 'bash' })

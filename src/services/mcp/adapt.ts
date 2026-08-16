@@ -188,6 +188,13 @@ export function adaptTool(
       manager.beginCall(serverName)
       try {
         const client = await manager.getClientFor(serverName, ctx.signal)
+        // M9-P1 覆盖面补齐：MCP 工具入参里的路径不可信（第三方代码），快照走 bash 同款
+        // 近修改集兜底（onBeforeWrite 空数组 → git status）；失败不挡主流程（与内置工具一致）
+        try {
+          await ctx.onBeforeWrite?.([], prefixedName)
+        } catch {
+          /* 快照失败静默继续（装配方 warn 已记） */
+        }
         const r = await client.callTool({ name: def.name, arguments: args }, { signal: ctx.signal, timeout: timeoutMs })
         return { content: renderContent(r.content), is_error: r.isError === true }
       } catch (e) {

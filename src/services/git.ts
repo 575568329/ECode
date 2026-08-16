@@ -49,6 +49,9 @@ export async function ecodeCommit(cwd: string, sessionId: string, files: string[
     await git(cwd, ['commit', '--only', '-m', subject, '-m', `${ECODE_TRAILER_PREFIX}${sessionId}`, '--', ...files])
     return { committed: true }
   } catch (e) {
+    // add 已执行而 commit 失败 → 本轮 add 的 stage 退回（尽力而为，回滚失败不掩盖原始错误）。
+    // 极端场景（用户此前 staged 过同名文件）其 staged 版本一并退回 HEAD——工作区无损。
+    await git(cwd, ['reset', '-q', '--', ...files]).catch(() => {})
     return { committed: false, reason: `git commit 失败：${e instanceof Error ? e.message : String(e)}` }
   }
 }
@@ -82,7 +85,7 @@ export async function undoEcodeCommit(cwd: string): Promise<UndoOutcome> {
     return { ok: false, message: `最近一次提交不是 ECode 创建的（${last.subject || '（无提交）'}），拒绝撤销——绝不回退用户自己的提交。文件回退可用 /rewind。` }
   }
   try {
-    const files = (await git(cwd, ['show', '--name-only', '--format=', 'HEAD'])).split('\n').map((l) => l.trim()).filter(Boolean)
+    const files = (await git(cwd, ['-c', 'core.quotepath=false', 'show', '--name-only', '--format=', 'HEAD'])).split('\n').map((l) => l.trim()).filter(Boolean)
     // 首个提交（无父）不能 reset HEAD~1——update-ref -d 回到无提交态（index/worktree 不动）
     const hasParent = await git(cwd, ['rev-parse', '--verify', 'HEAD~1'])
       .then(() => true)

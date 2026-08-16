@@ -126,6 +126,13 @@ describe('adaptTool', () => {
     expect(endCall).toHaveBeenCalledWith('fs')
   })
 
+  it('副作用快照兜底（M9-P1 覆盖面补齐）：execute 前 onBeforeWrite([], mcp 名)——与 bash 同款', async () => {
+    const onBeforeWrite = vi.fn(async () => {})
+    const t = adaptTool('fs', { name: 'write_file', description: '写' }, fakeManager(), cfg)
+    await t.execute({ p: 1 }, { ...ctx, onBeforeWrite })
+    expect(onBeforeWrite).toHaveBeenCalledWith([], 'mcp__fs__write_file')
+  })
+
   it('isError → is_error:true（recoverable 回喂）', async () => {
     const mgr = fakeManager({
       getClientFor: vi.fn(async () => ({

@@ -60,9 +60,18 @@ const NOTICE_ICON: Record<NoticeLevel, string> = { error: '✖', warn: '⚠', in
  */
 export function renderNoticeLine(line: { level: NoticeLevel; text: string; rest: number }, cols: number): string {
   const icon = NOTICE_ICON[line.level]
-  const badge = line.rest > 0 ? ` · 还有 ${line.rest} 条（/warnings 查看）` : ''
-  const budget = cols - stringWidth(icon) - 1 - stringWidth(badge) - 1 // -1 空格 -1 余量
-  return `${icon} ${clampByWidth(line.text, Math.max(10, budget))}${badge}`
+  const fullBadge = line.rest > 0 ? ` · 还有 ${line.rest} 条（/warnings 查看）` : ''
+  // 窄终端降级（审阅 P1-2）：整角标放不下时缩为 (+N)，再放不下彻底去掉——
+  // 单行不换行优先于角标完整；宽终端（≥~45 列）两档都不触发
+  const budgetWith = (badge: string): number => cols - stringWidth(icon) - 1 - stringWidth(badge) - 1
+  if (line.rest > 0 && budgetWith(fullBadge) >= 10) {
+    return `${icon} ${clampByWidth(line.text, budgetWith(fullBadge))}${fullBadge}`
+  }
+  const shortBadge = line.rest > 0 ? ` (+${line.rest})` : ''
+  if (line.rest > 0 && budgetWith(shortBadge) >= 10) {
+    return `${icon} ${clampByWidth(line.text, budgetWith(shortBadge))}${shortBadge}`
+  }
+  return `${icon} ${clampByWidth(line.text, Math.max(10, budgetWith('')))}`
 }
 
 /** 显示宽度截断（中文按 2 列计——js 字符数截断会超宽导致 Ink 换行）。 */

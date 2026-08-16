@@ -53,7 +53,7 @@ export function SlashSuggest({
   // 窗口化：选中项保持在窗口内（跟随滚动）；未选中态显示前 6 条
   const start = selectedIdx >= SUGGEST_MAX_ROWS ? Math.min(selectedIdx - SUGGEST_MAX_ROWS + 1, matches.length - SUGGEST_MAX_ROWS) : 0
   const visible = matches.slice(start, start + SUGGEST_MAX_ROWS)
-  const hidden = matches.length - visible.length
+  const hidden = Math.max(0, matches.length - (start + SUGGEST_MAX_ROWS)) // 只数窗口下方（滚到底时 0——审阅 P1-1）
   return (
     <Box flexDirection="column" paddingLeft={2}>
       {start > 0 && <Text dimColor> ↑ 还有 {start} 条</Text>}

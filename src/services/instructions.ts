@@ -13,6 +13,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { findUpDir } from './skill.js'
+import { readClampedFile } from './readClamped.js'
 
 /** 单级上限（32KB）：注入在 system 内，天然计入压缩估算。 */
 const MAX_INSTRUCTION_BYTES = 32 * 1024
@@ -67,35 +68,14 @@ export function findProjectInstructionFile(cwd: string): string | undefined {
   return fs.existsSync(ecode) ? ecode : path.join(dir, 'CLAUDE.md')
 }
 
-/** 读文件 + 上限截断（截断时尾注原文路径与提示，防静默丢指令）。
- *  stat 先行（M8 补充交付③）：超上限只定位读上限字节——超大误写文件不整读进内存。 */
+/** 读文件 + 上限截断（尾注原文路径与提示，防静默丢指令）。缺文件/读失败返回 undefined。 */
 function readClamped(file: string, maxBytes: number): { text: string; truncated?: boolean } | undefined {
-  let stat: fs.Stats
-  try {
-    stat = fs.statSync(file)
-  } catch {
-    return undefined
-  }
-  const bytes = stat.size
-  if (bytes <= maxBytes) {
-    try {
-      return { text: fs.readFileSync(file, 'utf8') }
-    } catch {
-      return undefined
-    }
-  }
-  const fd = fs.openSync(file, 'r')
-  let head: string
-  try {
-    const buf = Buffer.alloc(maxBytes)
-    const read = fs.readSync(fd, buf, 0, maxBytes, 0)
-    head = buf.subarray(0, read).toString('utf8')
-  } finally {
-    fs.closeSync(fd)
-  }
+  const r = readClampedFile(file, maxBytes)
+  if (r === undefined) return undefined
+  if (!r.truncated) return { text: r.text }
   return {
     truncated: true,
-    text: `${head}\n\n[已截断：原文 ${bytes} 字节超出 ${maxBytes} 上限，完整内容用 read_file 读取 ${file.split(path.sep).join('/')}]`,
+    text: `${r.text}\n\n[已截断：原文超出 ${maxBytes} 上限，完整内容用 read_file 读取 ${file.split(path.sep).join('/')}]`,
   }
 }
 

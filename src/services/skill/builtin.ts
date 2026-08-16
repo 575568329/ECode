@@ -44,7 +44,6 @@ ECode 自身的权威配置指南。修改配置前先读本手册；不确定�
 | webFetchMaxKB | number | 30 | web_fetch 回喂内容上限 KB |
 | providers.*.pricing | Record<模型, {input,output,cacheRead?,cacheWrite?}> | — | 定价覆盖（¥/Mtok，优先于内置表与 models.dev 同步值） |
 | plugins | Record<"name@market", boolean> | — | 插件启用状态（/plugin 面板维护） |
-| logLevel | string | info | debug / info / warn / error |
 
 providers.<名> 字段：
 

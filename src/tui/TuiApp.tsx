@@ -950,7 +950,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           }
           if (result.action === 'inject-prompt') {
             // /doctor 等：预填检查指令直接提交（用户看到指令全文再由 LLM 执行）
-            if (result.payload !== undefined && result.payload !== '') void submit(result.payload)
+            if (result.payload !== undefined && result.payload !== '') void submit(result.payload, '/doctor') // display 分离：转录显示命令名，不刷屏 800 字全文
             return
           }
           if (result.action === 'open-warnings-panel') {

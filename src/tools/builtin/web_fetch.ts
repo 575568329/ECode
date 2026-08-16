@@ -214,8 +214,9 @@ export function createWebFetchTool(fetchImpl: FetchLike = fetch as unknown as Fe
 
 export const webFetchTool: Tool = createWebFetchTool()
 
-/** 响应体上限读取（M8 补充交付③）：累计字节数超 hardCap 返回 null（调用方放弃）。 */
+/** 响应体上限读取（M8 补充③）：字节数（Buffer.byteLength——字符数对中文页会低估 3 倍）
+ *  超 hardCap 返回 null（调用方放弃）。 */
 async function readBodyCapped(readText: () => Promise<string>, hardCap: number): Promise<string | null> {
   const body = await readText()
-  return body.length > hardCap ? null : body
+  return Buffer.byteLength(body, 'utf8') > hardCap ? null : body
 }

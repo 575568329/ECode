@@ -48,3 +48,19 @@ describe('App 底部告警第二行', () => {
     expect(lastFrame() ?? '').not.toContain('⚠')
   })
 })
+
+describe('瞬时提示与告警中心行的优先级（useInterrupt warning 压过 notice——pty 双告警场景的渲染层锁定，审阅 P2-16）', () => {
+  it('warning（双击退出提示）优先于 warningLevel 渲染（同时给时）', () => {
+    const { lastFrame } = render(
+      React.createElement(App, {
+        model: 'M',
+        committed: [],
+        active: { userInput: '', tools: [], streamingText: '', streaming: false, confirm: null },
+        activity: 'idle',
+        warning: '再按一次 Ctrl+C 退出',
+        warningLevel: 'warn',
+      }),
+    )
+    expect(lastFrame() ?? '').toContain('再按一次 Ctrl+C 退出')
+  })
+})

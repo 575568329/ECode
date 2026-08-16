@@ -7,7 +7,6 @@ import {
   loadInstructions,
   renderInstructions,
 } from '../../src/services/instructions.js'
-import { setWebFetchLimits } from '../../src/tools/builtin/web_fetch.js'
 
 let tmpRoot: string
 

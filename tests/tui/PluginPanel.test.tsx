@@ -187,10 +187,11 @@ describe('搜索态的页签切换与添加失败行内错误', () => {
     stdin.write(badDir.split(path.sep).join('/'))
     await flush()
     stdin.write('\r') // 提交（目录缺 marketplace.json → addMarketplace throw）
-    await new Promise((r) => setTimeout(r, 300))
+    await vi.waitFor(() => {
+      expect(lastFrame() ?? '').toContain('marketplace.json') // 轮询替代固定延时（审阅 P2-10，CI 慢机稳）
+    }, { timeout: 3000, interval: 50 })
     const f = lastFrame() ?? ''
     expect(f).toContain('⚠')
-    expect(f).toContain('marketplace.json')
     expect(f).toContain('回车 提交') // 仍在添加页（可修改重试）
   })
 })

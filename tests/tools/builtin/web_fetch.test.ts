@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createWebFetchTool, isPrivateIp, htmlToText, truncateMiddle, normalizeHostname, setWebFetchLimits, type FetchLike } from '../../../src/tools/builtin/web_fetch.js'
 
 // DNS 模块级 mock（ESM 导出只读，赋值法不可用；*.example.com 公网 IP，其余私网——SSRF 用例复用）
@@ -150,6 +150,10 @@ describe('审阅修复：IPv6 归一化（P1-1/P1-3）', () => {
 })
 
 describe('截断上限可配（setWebFetchLimits）', () => {
+  afterEach(() => {
+    setWebFetchLimits({ maxContentKB: 30 }) // 恢复默认（断言失败也复位——全局状态不泄漏污染后续用例）
+  })
+
   it('调小上限后更早截断', async () => {
     setWebFetchLimits({ maxContentKB: 1 }) // 1KB
     const big = 'z'.repeat(3 * 1024)
@@ -157,8 +161,16 @@ describe('截断上限可配（setWebFetchLimits）', () => {
     const r = await tool.execute({ url: 'https://example.com/big' }, ctx)
     expect(r.content).toContain('truncated="true"')
     expect((r.content ?? '').length).toBeLessThan(3 * 1024)
-    setWebFetchLimits({ maxContentKB: 30 }) // 恢复默认
+    setWebFetchLimits({ maxContentKB: 30 })
     const r2 = await tool.execute({ url: 'https://example.com/big' }, ctx)
     expect(r2.content).not.toContain('truncated="true"')
+  })
+
+  it('body 硬顶：字节数判定（中文页字符数低估 3 倍——审阅 P1-3）超 512KB 放弃', async () => {
+    const huge = '字'.repeat(200 * 1024) // 600KB 字节（200K 字符——旧 length 判定不触发）
+    const tool = createWebFetchTool((async () => res(200, huge, { 'content-type': 'text/plain' })) as unknown as FetchLike)
+    const r = await tool.execute({ url: 'https://example.com/huge' }, ctx)
+    expect(r.is_error).toBe(true)
+    expect(r.content).toContain('硬顶')
   })
 })

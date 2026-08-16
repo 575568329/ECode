@@ -18,13 +18,6 @@ import { AnthropicProvider } from '../providers/anthropic.js'
 import { OpenaiProvider } from '../providers/openai.js'
 import { LLMProviderRegistryImpl } from '../providers/registry.js'
 import { ToolRegistryImpl } from '../tools/registry.js'
-import { readFileTool } from '../tools/builtin/read_file.js'
-import { bashTool } from '../tools/builtin/bash.js'
-import { lsTool } from '../tools/builtin/ls.js'
-import { globTool } from '../tools/builtin/glob.js'
-import { grepTool } from '../tools/builtin/grep.js'
-import { writeFileTool } from '../tools/builtin/write_file.js'
-import { editFileTool } from '../tools/builtin/edit_file.js'
 import { JsonlLogger } from '../services/logger.js'
 import { LogStore } from '../services/logstore.js'
 import { FileHistoryStore } from '../services/history.js'
@@ -44,9 +37,6 @@ import { makeOnBeforeRequest } from '../services/compaction/hook.js'
 import { resolveContextWindow } from '../services/contextWindow.js'
 import { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../services/compaction/summarize.js'
-import { skillTool } from '../tools/builtin/skill.js'
-import { askUserTool } from '../tools/builtin/ask_user.js'
-import { webFetchTool, setWebFetchLimits } from '../tools/builtin/web_fetch.js'
 import { skillRegistry, createSkillRegistry } from '../services/skill.js'
 import { setupMcp } from '../services/mcp/setup.js'
 import type { McpManager } from '../services/mcp/manager.js'
@@ -58,6 +48,8 @@ import { HookRunner } from '../services/hooks/runner.js'
 import { parseUserHooks } from '../services/hooks/validate.js'
 import { runCommandHook } from '../services/hooks/exec.js'
 import { HookedToolRegistry } from '../tools/hooked.js'
+import { setWebFetchLimits } from '../tools/builtin/web_fetch.js'
+import { BUILTIN_TOOLS } from '../tools/builtin/index.js'
 import { PluginLoader } from '../services/plugin/loader.js'
 import type { HistoryLine } from '../core/types.js'
 
@@ -84,16 +76,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   providerReg.register(new AnthropicProvider())
   providerReg.register(new OpenaiProvider())
   const toolReg = new ToolRegistryImpl()
-  toolReg.register(readFileTool)
-  toolReg.register(bashTool)
-  toolReg.register(lsTool)
-  toolReg.register(globTool)
-  toolReg.register(grepTool)
-  toolReg.register(writeFileTool)
-  toolReg.register(editFileTool)
-  toolReg.register(skillTool)
-  toolReg.register(askUserTool) // M8：信息收集选项框（argv 模式走非交互守卫）
-  toolReg.register(webFetchTool) // M8：网页转文本（SSRF 拦截/30KB 截断）
+  for (const t of BUILTIN_TOOLS) toolReg.register(t) // 单一事实源（tools/builtin/index.ts）——防漂移测试同源断言
   const orchestrator = new CompactionOrchestrator()
   orchestrator.register(new SummarizeStrategy())
   // models.dev 预热（fire-and-forget）：进程首次无缓存时 resolveContextWindow 联网拉取（10s timeout），

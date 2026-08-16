@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render } from 'ink-testing-library'
 import React from 'react'
-import { SlashSuggest, InputStream } from '../../src/tui/InputStream.js'
+import { SlashSuggest, InputStream, matchSlashEntries } from '../../src/tui/InputStream.js'
 import { commandRegistry, registerBuiltinCommands } from '../../src/commands/registry.js'
 import { skillRegistry, type SkillInfo } from '../../src/services/skill.js'
 
@@ -231,5 +231,19 @@ describe('统一两段式（用户拍板：回车=回填，再回车=执行）',
     stdin.write('\r')
     await flush()
     expect(onSkillInvoke).toHaveBeenCalledWith('zz-sb', undefined)
+  })
+})
+
+describe('matchSlashEntries 跨组排序（命令在前 skill 在后——纯函数直测，审阅 P1-8）', () => {
+  it('命令组全部在 skill 组之前；组内保持注册/字母序', () => {
+    reg('zz-skill')
+    reg('aa-skill')
+    const entries = matchSlashEntries('')
+    const firstSkill = entries.findIndex((e) => e.kind === 'skill')
+    expect(firstSkill).toBeGreaterThan(-1)
+    for (let i = 0; i < firstSkill; i++) expect(entries[i]?.kind).toBe('cmd')
+    for (let i = firstSkill; i < entries.length; i++) expect(entries[i]?.kind).toBe('skill')
+    const skillNames = entries.slice(firstSkill).map((e) => e.name)
+    expect(skillNames).toEqual(['zz-skill', 'aa-skill']) // 组内注册序（zz 先注册）
   })
 })

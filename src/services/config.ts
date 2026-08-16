@@ -43,6 +43,8 @@ export interface Config {
   testCommand?: string
   /** M9-P4：沙箱（defaultMode 缺省 default=现状=关；blockedCommands 全档硬拒） */
   sandbox?: { defaultMode?: SandboxMode; blockedCommands?: string[] }
+  /** M9-P6：编辑轮末自动 git commit（默认 false——不静默改用户 repo；/undo 只退 ECode 提交） */
+  autoCommit?: boolean
   /** 指令/记忆注入单级上限 KB（M8：ECODE.md/CLAUDE.md/MEMORY.md 各级截断阈值，默认 32） */
   maxInstructionsKB?: number
   /** web_fetch 回喂内容上限 KB（默认 30，头尾中截） */
@@ -143,6 +145,7 @@ const CONFIG_TEMPLATE = `{
   "testCommand": "",
   // M9：沙箱（default=现状=关；blockedCommands 通配全档硬拒，full-access 也不放行）
   "sandbox": { "defaultMode": "default", "blockedCommands": ["git push --force*", "npm publish*"] },
+  "autoCommit": false, // M9：编辑轮末自动 git commit（默认关；/undo 只退 ECode 提交）
   // "logLevel": "info",       // 日志级别：debug | info | warn | error
   // "maxInstructionsKB": 32,  // 指令/记忆注入单级上限 KB（ECODE.md/CLAUDE.md/MEMORY.md）
   // "webFetchMaxKB": 30,      // web_fetch 回喂内容上限 KB（头尾中截）

@@ -7,7 +7,7 @@ import { useInput, Text, Box } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
 import { runLoop, type ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
-import type { AppError, HistoryLine, Message, RewindLine } from '../core/types.js'
+import { isMessageLine, type AppError, type HistoryLine, type Message, type RewindLine } from '../core/types.js'
 import { makeOnBeforeRequest } from '../services/compaction/hook.js'
 import { tokensToCost } from '../services/pricing.js'
 import { buildContextMessages } from '../core/context.js'
@@ -53,6 +53,7 @@ import { RewindPanel } from './RewindPanel.js'
 import { SandboxPanel } from './SandboxPanel.js'
 import { makeSandbox, nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
 import { setPermissionAsker } from '../services/permissions.js'
+import { ecodeCommit, undoEcodeCommit } from '../services/git.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
 import { setAskUserHandler } from '../tools/builtin/askUserBridge.js'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
@@ -118,6 +119,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   const confirmAlwaysRef = useRef(new Set<string>())
   // SessionStart 的 additionalContext 暂存（M9-P0）：注入启动/恢复后首轮 user 消息，一次性消费
   const pendingSessionCtxRef = useRef<string[]>([])
+  // M9-P6：本轮编辑文件集（onBeforeWrite 收集；autoCommit 开启时轮末提交+清空）
+  const editedFilesRef = useRef<Set<string>>(new Set())
   // M9-P4：沙箱档位（会话级不落盘；初始取 config.sandbox.defaultMode，default=现状=关）
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>(
     deps.config.sandbox?.defaultMode ?? 'default',
@@ -322,19 +325,41 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           signal: abortRef.current.signal,
           // M9-P1：写前快照装配（心脏零改动——loop 只透传 toolCtx；快照失败工具侧已 catch）
           onBeforeWrite: async (paths, tool, toolUseId) => {
+            for (const p of paths) editedFilesRef.current.add(p) // M9-P6：autoCommit 文件集
             await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
           },
           // M9-P4：沙箱装配（read-only/workspace-write 拦截 + blockedCommands 全档硬拒在 bash 工具内）
           sandbox: makeSandbox(sandboxModeRef.current, process.cwd(), config.sandbox?.blockedCommands ?? []),
         },
-        // M9-P3：轮末质量回喂（编辑成功→lint/test 失败输出回喂自纠；熔断后静默）
-        afterTools: deps.quality
-          ? async (round) => {
-              const fb = await deps.quality?.afterRound(round.tools)
-              if (fb !== undefined) pushNoticeFn('warn', 'lint/test 有失败，已回喂模型自纠')
-              return fb !== undefined ? { feedback: fb } : undefined
+        // M9-P3 轮末质量回喂 + M9-P6 autoCommit（quality 之后：绿了再提交）
+        afterTools: async (round) => {
+          let feedback: string | undefined
+          if (deps.quality) {
+            const fb = await deps.quality.afterRound(round.tools)
+            if (fb !== undefined) {
+              pushNoticeFn('warn', 'lint/test 有失败，已回喂模型自纠')
+              feedback = fb
             }
-          : undefined,
+          }
+          if (config.autoCommit === true) {
+            const files = [...editedFilesRef.current]
+            editedFilesRef.current.clear()
+            if (files.length > 0) {
+              // subject 取本轮最后一条 assistant 文本首行（模型自己的改动描述），兜底固定模板
+              const lastAsst = [...messagesRef.current].reverse().find((l): l is Message => isMessageLine(l) && l.role === 'assistant')
+              const textBlock = lastAsst?.content.find((b) => b.type === 'text')
+              const subject =
+                textBlock !== undefined && 'text' in textBlock && textBlock.text.trim() !== ''
+                  ? `ecode: ${textBlock.text.trim().split('\n')[0]?.slice(0, 60)}`
+                  : `ecode: 修改 ${files.length} 个文件`
+              const r = await ecodeCommit(process.cwd(), deps.history.currentSessionId(), files, subject)
+              pushNoticeFn(r.committed ? 'info' : 'warn', r.committed ? `已自动提交：${subject}` : `自动提交未完成——${r.reason ?? ''}`)
+            }
+          } else {
+            editedFilesRef.current.clear()
+          }
+          return feedback !== undefined ? { feedback } : undefined
+        },
         signal: abortRef.current.signal,
         onBeforeRequest,
         onCompacted,
@@ -1089,6 +1114,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           if (result.action === 'open-warnings-panel') {
             pickerRef.current = true
             setOverlay({ kind: 'warnings-panel' })
+            return
+          }
+          if (result.action === 'git-undo') {
+            void undoEcodeCommit(process.cwd()).then((r) => {
+              pushNoticeFn(r.ok ? 'info' : 'warn', r.message)
+            })
             return
           }
           if (result.action === 'open-sandbox-panel') {

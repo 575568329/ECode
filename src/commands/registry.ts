@@ -35,6 +35,7 @@ export interface CommandResult {
     | 'open-warnings-panel'
     | 'open-rewind-panel'
     | 'open-sandbox-panel'
+    | 'git-undo'
     | 'restart'
     | 'inject-prompt'
 }
@@ -162,6 +163,11 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     name: 'sandbox',
     description: '沙箱档位切换（default/read-only/workspace-write/full-access；Tab 快捷循环）',
     run: () => ({ action: 'open-sandbox-panel' as const }),
+  })
+  registry.register({
+    name: 'undo',
+    description: '撤销最近一次 ECode 自动提交（带 Ecode-Commit 标记的才退，用户提交绝不动）',
+    run: () => ({ action: 'git-undo' as const }),
   })
   registry.register({
     name: 'rewind',

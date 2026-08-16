@@ -57,34 +57,52 @@ function wrapTool(tool: Tool, getRunner: () => HookRunner | null): Tool {
       if (runner === null) return tool.execute(args, ctx)
 
       // PreToolUse：block → is_error（recoverable，LLM 自纠）；updatedInput → 整体替换入参
+      // M9-P0：verdict 全字段消费——block 时 additionalContext/systemMessages 一并展示；
+      // 非阻塞 context 注入成功 tool_result（结果前缀，LLM 同轮可见）；dispatch 透传 ctx.signal
+      let preAttach: string[] = []
       if (runner.hasHandlers('PreToolUse')) {
-        const pre = await runner.dispatch('PreToolUse', {
-          event: 'PreToolUse',
-          session_id: '',
-          tool_name: tool.name,
-          tool_input: args,
-        })
+        const pre = await runner.dispatch(
+          'PreToolUse',
+          {
+            event: 'PreToolUse',
+            session_id: '',
+            tool_name: tool.name,
+            tool_input: args,
+          },
+          { signal: ctx.signal },
+        )
         if (pre.block) {
+          const extra = [...pre.additionalContext, ...pre.systemMessages.map((m) => `[hook] ${m}`)]
           return {
-            content: `hook blocked：${pre.reason !== undefined && pre.reason !== '' ? pre.reason : '工具调用被 hook 拦截'}`,
+            content:
+              `hook blocked：${pre.reason !== undefined && pre.reason !== '' ? pre.reason : '工具调用被 hook 拦截'}` +
+              (extra.length > 0 ? `\n\n[hook context]\n${extra.join('\n')}` : ''),
             is_error: true,
           }
         }
         if (pre.updatedInput !== undefined) args = pre.updatedInput
+        preAttach = [...pre.additionalContext, ...pre.systemMessages.map((m) => `[hook] ${m}`)]
       }
 
-      const result = await tool.execute(args, ctx)
+      let result = await tool.execute(args, ctx)
+      if (preAttach.length > 0) {
+        result = { ...result, content: `[hook context]\n${preAttach.join('\n').slice(0, ATTACH_LIMIT)}\n\n${result.content}` }
+      }
 
       // PostToolUse：additionalContext 追加到结果（LLM 可见，下一轮生效）；systemMessage 同途
       //（MVP 不建独立 systemMsgs 通道——TuiApp 层事件才走底部提示）
       if (runner.hasHandlers('PostToolUse')) {
-        const post = await runner.dispatch('PostToolUse', {
-          event: 'PostToolUse',
-          session_id: '',
-          tool_name: tool.name,
-          tool_input: args,
-          tool_result: { content: result.content.slice(0, ATTACH_LIMIT), is_error: result.is_error },
-        })
+        const post = await runner.dispatch(
+          'PostToolUse',
+          {
+            event: 'PostToolUse',
+            session_id: '',
+            tool_name: tool.name,
+            tool_input: args,
+            tool_result: { content: result.content.slice(0, ATTACH_LIMIT), is_error: result.is_error },
+          },
+          { signal: ctx.signal },
+        )
         const attach = [
           ...post.additionalContext,
           ...post.systemMessages.map((m) => `[hook] ${m}`),

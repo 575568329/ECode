@@ -108,6 +108,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   const ctxWindowRef = useRef(200_000)
   // MCP 确认「本会话记住」前缀表（mcp__server；v3 P1-3，会话级不落盘）
   const confirmAlwaysRef = useRef(new Set<string>())
+  // SessionStart 的 additionalContext 暂存（M9-P0）：注入启动/恢复后首轮 user 消息，一次性消费
+  const pendingSessionCtxRef = useRef<string[]>([])
 
   const [committed, setCommitted] = useState<CommittedItem[]>([])
   const [active, setActive] = useState<ActiveState>(() => createActive())
@@ -168,13 +170,19 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       setCommitted(messagesToCommitted(messagesRef.current))
     }
     runningRef.current = true
+    abortRef.current = new AbortController()
     // UserPromptSubmit hook（H-P4：分流后、runLoop 前）：block 拦截本轮输入；additionalContext 拼接进消息
+    // M9-P0：controller 前置 + dispatch 透传 AbortSignal——hook 等待期 Ctrl+C 可中断 hook 子进程（此前仅超时兜底）
     if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
-      const verdict = await deps.hookRunner.dispatch('UserPromptSubmit', {
-        event: 'UserPromptSubmit',
-        session_id: '',
-        prompt: input,
-      })
+      const verdict = await deps.hookRunner.dispatch(
+        'UserPromptSubmit',
+        {
+          event: 'UserPromptSubmit',
+          session_id: '',
+          prompt: input,
+        },
+        { signal: abortRef.current.signal },
+      )
       if (verdict.block) {
         runningRef.current = false
         setSystemMsgs([`✋ 输入被 hook 拦截${verdict.reason !== undefined && verdict.reason !== '' ? `：${verdict.reason}` : ''}`])
@@ -186,13 +194,18 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       }
       if (verdict.systemMessages.length > 0) setSystemMsgs(verdict.systemMessages)
     }
+    // M9-P0：SessionStart 的 additionalContext 注入启动/恢复后首轮 user 消息（环境信息进上下文一次；
+    // 在 UserPromptSubmit 之后拼接——hook 收到的 prompt 保持用户原文）
+    if (pendingSessionCtxRef.current.length > 0) {
+      input = `${input}\n\n[hook context]\n${pendingSessionCtxRef.current.join('\n')}`
+      pendingSessionCtxRef.current = []
+    }
     // 新轮：userInput 乐观显示 + streaming=true（流式灰字）。
     // display（S4.4 最小 display/content 分离）：手动 skill 触发时输入框/转录显示原始
     // `/name args`，消息本体是展开全文（runLoop 的 userInput 必须传全文，防 alreadyUser 双推）
     setActive({ ...createActive(), userInput: display ?? input, streaming: true })
     setError(null)
     setActivity({ state: 'thinking' })
-    abortRef.current = new AbortController()
     const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
     const providerReq = buildProviderReq(config)
     const system = buildSystemPrompt(
@@ -215,6 +228,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       tools: deps.tools.specs(), // M6：MCP 工具 schema 计入压缩估算（v3 P1-1）
     })
 
+    let aborted = false
     try {
       await runLoop(messagesRef.current, input, {
         provider,
@@ -274,7 +288,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
             setIter(i)
             setMaxIter(m)
           },
-          onActivity: (state, text) => setActivity({ state, text }),
+          onActivity: (state, text) => {
+            // M9-P0：loop 内部消化 AbortError 正常返回（不抛出），中断信号经此回调传回——Stop 区分 aborted 用
+            if (state === 'aborted') aborted = true
+            setActivity({ state, text })
+          },
           onWarn: (m) => pushNoticeFn('warn', m),
         },
         providerReq,
@@ -315,6 +333,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       // 中断/错误：同样保留动态区（用户看中断内容），下次 submit 才 commit
       setActive((a) => ({ ...a, streaming: false }))
       if (isAbortError(e)) {
+        aborted = true
         setActivity({ state: 'aborted' })
       } else {
         setError(toAppError(e))
@@ -323,9 +342,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     } finally {
       runningRef.current = false
       // Stop hook（H-P4）：一轮结束即触发，fire（async hook 本就不等；systemMessage 到达后展示）
+      // M9-P0：中断路径 stop_reason=aborted（hook 可区分「用户主动停」与「正常完成」）
       if (deps.hookRunner != null && deps.hookRunner.hasHandlers('Stop')) {
         void deps.hookRunner
-          .dispatch('Stop', { event: 'Stop', session_id: '', stop_reason: 'turn-complete' })
+          .dispatch('Stop', { event: 'Stop', session_id: '', stop_reason: aborted ? 'aborted' : 'turn-complete' })
           .then((v) => {
             if (v.systemMessages.length > 0) setSystemMsgs(v.systemMessages)
           })
@@ -584,6 +604,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       ?.dispatch('SessionStart', { event: 'SessionStart', session_id: '', source: 'resume' })
       .then((v) => {
         if (v.systemMessages.length > 0) setSystemMsgs(v.systemMessages)
+        // M9-P0：additionalContext 暂存，恢复后首轮 user 消息注入（典型用途：会话环境信息）
+        if (v.additionalContext.length > 0) pendingSessionCtxRef.current = v.additionalContext
       })
       .catch(() => {})
   }
@@ -608,6 +630,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       ?.dispatch('SessionStart', { event: 'SessionStart', session_id: '', source: 'startup' })
       .then((v) => {
         if (v.systemMessages.length > 0) setSystemMsgs(v.systemMessages)
+        // M9-P0：additionalContext 暂存，启动后首轮 user 消息注入
+        if (v.additionalContext.length > 0) pendingSessionCtxRef.current = v.additionalContext
       })
       .catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅启动一次

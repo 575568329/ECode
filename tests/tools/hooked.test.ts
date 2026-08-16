@@ -124,4 +124,53 @@ describe('HookedToolRegistry（装饰接入，loop 零改动）', () => {
     expect(loopSrc).not.toMatch(/HookRunner|HookedToolRegistry|ExtensionHooksRegistry|services\/hooks/)
     expect(loopSrc).not.toMatch(/\bplugin/i)
   })
+
+  // —— M9-P0：PreToolUse verdict 全字段消费 + dispatch 透传 AbortSignal ——
+
+  it('PreToolUse block → reason + additionalContext/systemMessages 一并展示（全字段消费）', async () => {
+    const { hooked } = makeHookedRegistry(
+      [{ event: 'PreToolUse', handler: { kind: 'command', command: 'gate' } }],
+      async () => ({
+        continue: false,
+        reason: '禁用时段',
+        additionalContext: '今天是维护日',
+        systemMessage: 'check the calendar',
+      }),
+    )
+    const r = await hooked.get('echo_tool')?.execute({ a: 1 }, { cwd: '.', signal: new AbortController().signal })
+    expect(r?.is_error).toBe(true)
+    expect(r?.content).toContain('hook blocked：禁用时段')
+    expect(r?.content).toContain('今天是维护日')
+    expect(r?.content).toContain('[hook] check the calendar')
+    expect(echoTool.execute).not.toHaveBeenCalled()
+    echoTool.execute.mockClear()
+  })
+
+  it('PreToolUse 非阻塞 additionalContext → 注入成功 tool_result（结果前缀）', async () => {
+    const { hooked } = makeHookedRegistry(
+      [{ event: 'PreToolUse', handler: { kind: 'command', command: 'hint' } }],
+      async () => ({ additionalContext: 'target file is read-only fs' }),
+    )
+    const r = await hooked.get('echo_tool')?.execute({ a: 1 }, { cwd: '.', signal: new AbortController().signal })
+    expect(r?.is_error).toBeUndefined()
+    expect(r?.content).toContain('done {"a":1}')
+    expect(r?.content).toContain('target file is read-only fs')
+  })
+
+  it('Pre/Post dispatch 透传 ctx.signal（hook 子进程随 Ctrl+C 中断）', async () => {
+    const execute = vi.fn(async () => null)
+    const { hooked } = makeHookedRegistry(
+      [
+        { event: 'PreToolUse', handler: { kind: 'command', command: 'pre' } },
+        { event: 'PostToolUse', handler: { kind: 'command', command: 'post' } },
+      ],
+      execute,
+    )
+    const ac = new AbortController()
+    await hooked.get('echo_tool')?.execute({ a: 1 }, { cwd: '.', signal: ac.signal })
+    expect(execute).toHaveBeenCalledTimes(2)
+    for (const call of execute.mock.calls) {
+      expect((call[2] as { signal?: AbortSignal } | undefined)?.signal).toBe(ac.signal)
+    }
+  })
 })

@@ -61,11 +61,27 @@ const stubProvider: LLMProvider = {
   },
 }
 
-function makeDeps(hookRunner: HookRunner | null) {
+/** 挂起的 stub provider（等待中断）：监听 req.signal，aborted 时抛 AbortError——对齐真 SDK 行为。 */
+function makeHangingProvider(): LLMProvider {
+  return {
+    type: 'anthropic',
+    async *run(req: LLMProviderRunRequest): AsyncIterable<Delta> {
+      await new Promise<never>((_, reject) => {
+        req.signal?.addEventListener('abort', () => {
+          const err = new Error('This operation was aborted')
+          err.name = 'AbortError'
+          reject(err)
+        })
+      })
+    },
+  }
+}
+
+function makeDeps(hookRunner: HookRunner | null, provider: LLMProvider = stubProvider) {
   const orchestrator = new CompactionOrchestrator()
   orchestrator.register(new SummarizeStrategy())
   const providerRegistry = new LLMProviderRegistryImpl()
-  providerRegistry.register(stubProvider)
+  providerRegistry.register(provider)
   return {
     providerRegistry,
     tools: new ToolRegistryImpl(),
@@ -122,10 +138,11 @@ describe('TuiApp hooks 事件（H-P4）', () => {
     await flush()
     stdin.write('\r')
     await flush()
-    // 不驱动真 LLM——只断 dispatch 收到 prompt 原文（拼接发生在其后）
+    // 不驱动真 LLM——只断 dispatch 收到 prompt 原文（拼接发生在其后；M9-P0 起第三参透传 signal）
     expect((runner as unknown as { dispatch: ReturnType<typeof vi.fn> }).dispatch).toHaveBeenCalledWith(
       'UserPromptSubmit',
       expect.objectContaining({ prompt: 'hi' }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
   })
 
@@ -155,5 +172,61 @@ describe('TuiApp hooks 事件（H-P4）', () => {
     stdin.write('\r')
     await flush()
     expect(lastFrame() ?? '').toBeTruthy()
+  })
+
+  // —— M9-P0 接线修复 ——
+
+  it('SessionStart additionalContext → 注入恢复后首轮 user 消息（[hook context] 同款格式）', async () => {
+    const runner = makeHookRunner((event) =>
+      event === 'SessionStart' ? { ...noVerdict, additionalContext: ['env: node22', 'cwd: tmp'] } : noVerdict,
+    )
+    const append = vi.fn()
+    const deps = { ...makeDeps(runner), history: { ...noopHistory, append } as unknown as HistoryStore }
+    const { stdin } = render(React.createElement(TuiApp, { deps }))
+    await flush()
+    stdin.write('hi')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    await flush()
+    const injected = append.mock.calls.some((c) => {
+      const s = JSON.stringify(c[0])
+      return s.includes('[hook context]') && s.includes('env: node22') && s.includes('cwd: tmp')
+    })
+    expect(injected).toBe(true)
+  })
+
+  it('中断路径 Stop stop_reason=aborted（正常完成仍 turn-complete）', async () => {
+    // provider 挂起等待中断；Ctrl+C abort → catch(isAbortError) → finally Stop(aborted)
+    const runner = makeHookRunner(() => noVerdict)
+    const { stdin } = render(React.createElement(TuiApp, { deps: makeDeps(runner, makeHangingProvider()) }))
+    await flush()
+    stdin.write('hi')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    await flush()
+    stdin.write('\x03') // Ctrl+C
+    await flush()
+    const dispatch = (runner as unknown as { dispatch: ReturnType<typeof vi.fn> }).dispatch
+    await vi.waitFor(() => {
+      expect(dispatch).toHaveBeenCalledWith('Stop', expect.objectContaining({ stop_reason: 'aborted' }))
+    })
+  })
+
+  it('UserPromptSubmit dispatch 透传 AbortSignal（hook 子进程随中断停）', async () => {
+    const runner = makeHookRunner(() => noVerdict)
+    const { stdin } = render(React.createElement(TuiApp, { deps: makeDeps(runner) }))
+    await flush()
+    stdin.write('hi')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    const dispatch = (runner as unknown as { dispatch: ReturnType<typeof vi.fn> }).dispatch
+    expect(dispatch).toHaveBeenCalledWith(
+      'UserPromptSubmit',
+      expect.anything(),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
   })
 })

@@ -82,6 +82,8 @@ export interface TuiAppDeps {
   hookRunner?: HookRunner | null
   /** M9-P1：快照存储（null/undefined = 未启用，如测试；onBeforeWrite 装配进 toolCtx） */
   checkpoint?: import('../services/checkpoint.js').CheckpointStore | null
+  /** M9-P3：编辑后 lint/test 回喂门（null = 未启用；afterTools 装配进 runLoop opts） */
+  quality?: import('../services/quality.js').QualityGate | null
   /** M7：plugin 装载器（null = 未启用；/plugin 面板操作） */
   pluginLoader?: import('../services/plugin/loader.js').PluginLoader | null
   /** /restart 的执行句柄（cli 注入：unmount + spawn 新实例 + exit；缺省时提示不可用） */
@@ -310,6 +312,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
             await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
           },
         },
+        // M9-P3：轮末质量回喂（编辑成功→lint/test 失败输出回喂自纠；熔断后静默）
+        afterTools: deps.quality
+          ? async (round) => {
+              const fb = await deps.quality?.afterRound(round.tools)
+              if (fb !== undefined) pushNoticeFn('warn', 'lint/test 有失败，已回喂模型自纠')
+              return fb !== undefined ? { feedback: fb } : undefined
+            }
+          : undefined,
         signal: abortRef.current.signal,
         onBeforeRequest,
         onCompacted,

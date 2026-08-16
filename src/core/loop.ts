@@ -87,6 +87,11 @@ export interface LoopRunOptions {
   onBeforeRequest?: (messages: HistoryLine[], trigger?: 'pressure' | 'overflow') => Promise<Message[]>
   /** M5：压缩完成通知 UI（boundary 已追加到 messages，重建 committed） */
   onCompacted?: (messages: HistoryLine[]) => void
+  /**
+   * M9-P3：轮末质量回喂钩子（onCompacted 同款注入模式）。loop 只透传本轮工具清单
+   * （宿主检测编辑成功→跑 lint/test），返回 feedback 则追加为 user 消息——loop 不认识 lint。
+   */
+  afterTools?: (round: { tools: Array<{ name: string; isError: boolean }> }) => Promise<{ feedback?: string } | void>
 }
 
 /**
@@ -303,6 +308,18 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     const resultMsg: Message = { role: 'user', content: results }
     messages.push(resultMsg)
     opts.history.append(resultMsg)
+    // M9-P3：轮末质量回喂——feedback 作为 user 消息追加（模型下一轮看到自纠；协议上 tool_result
+    // 必须配对 tool_use，信息性回喂不能造无主 result，走 user 文本）
+    if (opts.afterTools) {
+      const fb = await opts.afterTools({
+        tools: newToolUses.map((u, i) => ({ name: u.name, isError: results[i]?.is_error === true })),
+      })
+      if (fb?.feedback !== undefined && fb.feedback !== '') {
+        const fbMsg: Message = { role: 'user', content: [{ type: 'text', text: fb.feedback }] }
+        messages.push(fbMsg)
+        opts.history.append(fbMsg)
+      }
+    }
   }
 
   return messages

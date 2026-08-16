@@ -22,6 +22,7 @@ import { JsonlLogger } from '../services/logger.js'
 import { LogStore } from '../services/logstore.js'
 import { FileHistoryStore } from '../services/history.js'
 import { CheckpointStore } from '../services/checkpoint.js'
+import { QualityGate, detectQualityCommands, makeShellRunner } from '../services/quality.js'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { join } from 'node:path'
@@ -72,6 +73,8 @@ interface Deps {
   pluginLoader: PluginLoader | null
   /** M9-P1：快照存储（onBeforeWrite 装配进 toolCtx） */
   checkpoint?: CheckpointStore | null
+  /** M9-P3：编辑后 lint/test 回喂门（afterTools 装配进 runLoop opts） */
+  quality?: QualityGate | null
 }
 
 function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
@@ -119,6 +122,11 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
     history: new FileHistoryStore({ sessionId, model: config.current.model }),
     checkpoint: new CheckpointStore(process.cwd(), {
       warn: (m) => logger.warn('checkpoint', 'snapshot', { message: m }),
+    }),
+    quality: new QualityGate({
+      commands: detectQualityCommands(process.cwd(), { lintCommand: config.lintCommand, testCommand: config.testCommand }),
+      run: makeShellRunner(process.cwd()),
+      warn: (m) => logger.warn('quality', 'gate', { message: m }),
     }),
     config,
     orchestrator,
@@ -187,6 +195,13 @@ async function runOnce(messages: HistoryLine[], input: string, deps: Deps): Prom
     },
     onBeforeRequest,
     onCompacted,
+    // M9-P3：轮末质量回喂（argv 单次模式同款）
+    afterTools: deps.quality
+      ? async (round) => {
+          const fb = await deps.quality?.afterRound(round.tools)
+          return fb !== undefined ? { feedback: fb } : undefined
+        }
+      : undefined,
   })
   process.stdout.write('\n')
 }

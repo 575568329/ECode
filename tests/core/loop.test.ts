@@ -50,6 +50,46 @@ const echoTool: Tool = {
 
 const last = (m: Message[]) => m.at(-1)!.content[0] as Record<string, unknown>
 
+describe('runLoop：afterTools（M9-P3 轮末质量回喂）', () => {
+  const writeTool: Tool = {
+    name: 'write_file',
+    description: 'write',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    readonly: false,
+    async execute() {
+      return { content: 'ok' }
+    },
+  }
+
+  it('编辑轮后回调收到工具清单；feedback 追加为 user 消息', async () => {
+    const afterTools = vi.fn(async () => ({ feedback: '[lint] 1 error' }))
+    const p = new MockProvider([
+      [{ type: 'tool_use_start', id: 't1', name: 'write_file' }, { type: 'tool_use_end', id: 't1' }, { type: 'done', stop_reason: 'tool_use' }],
+      [{ type: 'text', text: 'fixed' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const opts = { ...makeOpts(p, [writeTool]), afterTools }
+    const messages = await runLoop([], 'fix it', opts)
+    expect(afterTools).toHaveBeenCalledWith({ tools: [{ name: 'write_file', isError: false }] })
+    // messages：user 输入 / assistant tool_use / user tool_result / user feedback / assistant text
+    const fb = messages[3]
+    expect(fb.role).toBe('user')
+    expect((fb.content[0] as { text?: string }).text).toContain('[lint] 1 error')
+    expect(messages).toHaveLength(5)
+  })
+
+  it('无 feedback（全绿/未配置）→ 不追加消息', async () => {
+    const afterTools = vi.fn(async () => undefined)
+    const p = new MockProvider([
+      [{ type: 'tool_use_start', id: 't1', name: 'write_file' }, { type: 'tool_use_end', id: 't1' }, { type: 'done', stop_reason: 'tool_use' }],
+      [{ type: 'text', text: 'done' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const opts = { ...makeOpts(p, [writeTool]), afterTools }
+    const messages = await runLoop([], 'go', opts)
+    expect(afterTools).toHaveBeenCalled()
+    expect(messages).toHaveLength(4) // 无 feedback 消息
+  })
+})
+
 describe('runLoop', () => {
   it('纯文本回复 → user + assistant，onText 收到增量', async () => {
     const onText = vi.fn()

@@ -37,6 +37,9 @@ export interface Config {
   current: { name: string; model: string } // 当前激活（/model 改这个）
   maxIterations: number
   bashMaxOutputBytes: number
+  /** M9-P3：编辑后自动 lint/test（undefined=自动探测 package.json；''=关闭） */
+  lintCommand?: string
+  testCommand?: string
   /** 指令/记忆注入单级上限 KB（M8：ECODE.md/CLAUDE.md/MEMORY.md 各级截断阈值，默认 32） */
   maxInstructionsKB?: number
   /** web_fetch 回喂内容上限 KB（默认 30，头尾中截） */
@@ -59,6 +62,9 @@ interface ConfigFile {
   providers?: Record<string, Partial<ProviderCfg>>
   maxIterations?: number
   bashMaxOutputBytes?: number
+  /** M9-P3：编辑后自动 lint/test 命令（缺省自动探测 package.json scripts；空串=关闭） */
+  lintCommand?: string
+  testCommand?: string
   maxInstructionsKB?: number
   webFetchMaxKB?: number
   logLevel?: string
@@ -236,6 +242,8 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     current: { name: providerName, model },
     maxIterations: file.maxIterations ?? DEFAULT_MAX_ITERATIONS,
     bashMaxOutputBytes: file.bashMaxOutputBytes ?? DEFAULT_BASH_MAX_BYTES,
+    lintCommand: file.lintCommand,
+    testCommand: file.testCommand,
     ...(file.maxInstructionsKB !== undefined ? { maxInstructionsKB: file.maxInstructionsKB } : {}),
     ...(file.webFetchMaxKB !== undefined ? { webFetchMaxKB: file.webFetchMaxKB } : {}),
     logLevel: (file.logLevel as Config['logLevel']) ?? DEFAULT_LOG_LEVEL,

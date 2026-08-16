@@ -22,6 +22,9 @@ ECode 自身的权威配置指南。修改配置前先读本手册；不确定�
 | 文件 | 作用域 | 说明 |
 |---|---|---|
 | ~/.ecode/config.json | 用户级主配置 | JSONC（允许注释）；providers / mcpServers / 全局参数 |
+| ~/.ecode/settings.json | 用户级权限 | permissions 规则（见「权限规则」节） |
+| <项目根>/.ecode/settings.json | 项目级权限 | 同上；进 git 团队共享 |
+| <项目根>/.ecode/settings.local.json | local 权限 | 弹窗「永久记住」的落点；gitignore 不污染团队 |
 | <项目根>/.mcp.json | 项目级 MCP | 团队共享可进 git；首用时弹批准（指纹存 ~/.ecode/approved-mcp.json） |
 | .env | 仅开发模式 | npm run dev 时读；发布版（ecode 命令）不读 |
 | ~/.ecode/skills/ | 用户级 skill | 目录名=skill 名，内放 SKILL.md |
@@ -44,6 +47,9 @@ ECode 自身的权威配置指南。修改配置前先读本手册；不确定�
 | webFetchMaxKB | number | 30 | web_fetch 回喂内容上限 KB |
 | providers.*.pricing | Record<模型, {input,output,cacheRead?,cacheWrite?}> | — | 定价覆盖（¥/Mtok，优先于内置表与 models.dev 同步值） |
 | plugins | Record<"name@market", boolean> | — | 插件启用状态（/plugin 面板维护） |
+| sandbox | {defaultMode?, blockedCommands?} | 关 | 沙箱（M9）：defaultMode = default/read-only/workspace-write/full-access（Tab 键或 /sandbox 面板切换）；blockedCommands 通配黑名单全档硬拒 |
+| lintCommand / testCommand | string | 自动探测 | 编辑后自动验证（M9）：留空探测 package.json 的 lint/test scripts；显式命令优先；无 scripts 不跑。失败输出回喂模型自纠，连续失败熔断 |
+| autoCommit | boolean | false | git 轻量集成（M9）：轮末有编辑且 lint/test 绿自动 commit（带 Ecode-Commit trailer，只提交本轮文件；/undo 只退 ECode 提交） |
 
 providers.<名> 字段：
 
@@ -86,6 +92,27 @@ thinking 注意：anthropic 协议映射为 budget_tokens（low=2048 / medium=81
 
 行为要点：改完重启生效；工具清单缓存在 ~/.ecode/mcp-cache.json；每个 MCP 工具首次执行会弹确认（可选「本会话记住」server 级放行）；/mcp 面板查看状态/重连/断开。项目级 .mcp.json 格式相同，外层为 {"mcpServers": {...}}，首用时需批准（防克隆恶意仓库静默 spawn）。secret 一律用 \${ENV_VAR} 占位符，不落明文。
 
+## 权限规则（settings 三层，M9）
+
+管控扩展源（skill/plugin）hook 的执行；用户自己在 config.json 配的 hooks 不问。
+
+~~~jsonc
+// <项目根>/.ecode/settings.local.json（或 ~/.ecode/settings.json 用户级）
+{
+  "permissions": {
+    "allow": ["Hook(skill:*)"],        // 通配：括号内尾 * 前缀匹配
+    "ask":   ["Hook(plugin:other@npm)"],
+    "deny":  ["Hook(plugin:evil@mkt)"]
+  }
+}
+~~~
+
+- 三态 allow / ask / deny；无规则默认 ask（每次弹窗问）
+- 求值：deny 任一层终局 > local > project > user 首个命中
+- 手改即生效（每次求值现读文件，不用重启）；写坏 JSON 该层静默按无规则处理（表现为又开始弹询问，/doctor 第 8 项可查出）
+- 弹窗第三键「永久记住」= 写入 local 层 settings.local.json
+- 目前仅 Hook(owner) 一维；Skill/Plugin/Mcp 维度与 /permissions 面板后置
+
 ## 常见任务配方
 
 ### 加一个 MCP server
@@ -110,9 +137,9 @@ export function builtinSkillInfos(): SkillInfo[] {
     {
       name: ECODE_CONFIG_SKILL_NAME,
       description:
-        'ECode 自身配置权威手册：config.json 字段速览、MCP server 配置（stdio/http）、provider/thinking/采样参数、常见任务配方与运维事实。用户想修改或询问 ECode 的配置与用法时加载，不要凭记忆猜配置格式。',
+        'ECode 自身配置权威手册：config.json 字段速览、MCP server 配置（stdio/http）、权限规则（settings 三层 allow/ask/deny）、provider/thinking/采样参数、常见任务配方与运维事实。用户想修改或询问 ECode 的配置与用法时加载，不要凭记忆猜配置格式。',
       whenToUse:
-        '用户提到 ~/.ecode/config.json、mcpServers、.mcp.json、provider 配置、thinking/采样参数、/setup，或问「ECode 怎么配置/怎么用」时',
+        '用户提到 ~/.ecode/config.json、mcpServers、.mcp.json、settings.json/settings.local.json、权限规则（permissions/allow/deny）、provider 配置、thinking/采样参数、/setup，或问「ECode 怎么配置/怎么用」时',
       body: ECODE_CONFIG_BODY,
       baseDir: '',
       source: 'builtin',

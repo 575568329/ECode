@@ -11,7 +11,8 @@ import type { Tool } from '../interface.js'
 
 export const writeFileTool: Tool = {
   name: 'write_file',
-  description: '写新文件或覆盖文件（UTF-8，原子写）。path 相对 cwd 或绝对。会请求确认。',
+  description:
+    '写新文件或覆盖文件（UTF-8，原子写）。path 相对 cwd 或绝对。会请求确认。编辑 .ecode/settings*（权限规则）属安全敏感操作：改了哪条规则必须在回复中明确告知用户。',
   input_schema: {
     type: 'object',
     properties: {

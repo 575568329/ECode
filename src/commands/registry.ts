@@ -230,6 +230,7 @@ export function buildDoctorPrompt(args?: string): string {
 4. Hooks：config.json 的 hooks 键各项是否合法（event 名/command 非空）；skill 目录的 hooks.json 是否可解析。
 5. MCP：项目级 .mcp.json 是否可解析、server 必填字段是否齐全（stdio 要 command / http 要 url）。
 6. Skills：各 skill 的 SKILL.md frontmatter 是否含 name 与 description。
-${item7}输出格式：按 检查项 → 状态（正常/警告/问题）→ 问题描述与建议修复法 列表；全部正常也要明确说"全部正常"。${args !== undefined && args.trim() !== '' ? `
+${item7}8. 权限规则（M9-P5 配套自查）：检查三层 settings——${home}/.ecode/settings.json（用户级）、项目根 .ecode/settings.json（团队共享进 git）与 .ecode/settings.local.json（local 层，弹窗「永久记住」的落点）——存在的文件能否解析、permissions.allow/ask/deny 每条是否为 Type(param) 形态（如 Hook(skill:foo)、括号内尾 * 通配）；语法不合法的规则永不匹配（静默失效），解析失败的层按无规则处理（表现为反复弹询问）——两者都要报告。
+输出格式：按 检查项 → 状态（正常/警告/问题）→ 问题描述与建议修复法 列表；全部正常也要明确说"全部正常"。${args !== undefined && args.trim() !== '' ? `
 额外关注：${args.trim()}` : ''}`
 }

@@ -28,7 +28,7 @@ function countOccurrences(haystack: string, needle: string): number {
 export const editFileTool: Tool = {
   name: 'edit_file',
   description:
-    '改文件中的某段（string_replace）。oldString 必须唯一匹配（或 replaceAll=true）。会请求确认显示 diff。',
+    '改文件中的某段（string_replace）。oldString 必须唯一匹配（或 replaceAll=true）。会请求确认显示 diff。编辑 .ecode/settings*（权限规则）属安全敏感操作：改了哪条规则必须在回复中明确告知用户。',
   input_schema: {
     type: 'object',
     properties: {

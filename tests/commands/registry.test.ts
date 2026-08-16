@@ -161,4 +161,12 @@ describe('buildDoctorPrompt（审阅 P1-4 运行时构造）', () => {
     // args 透传附加关注
     expect(buildDoctorPrompt('重点看 hooks')).toContain('重点看 hooks')
   })
+
+  it('第 8 项：三层 settings 权限规则检查（M9-P5 配套自查）', () => {
+    const prompt = buildDoctorPrompt()
+    expect(prompt).toContain('settings.local.json')
+    expect(prompt).toContain('permissions')
+    expect(prompt).toContain('Type(param)') // 规则形态自查（不合法=静默失效）
+    expect(prompt).not.toContain('~/.ecode/settings') // 同样按 homedir 展开
+  })
 })

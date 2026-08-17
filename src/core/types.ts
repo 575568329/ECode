@@ -54,6 +54,8 @@ export interface ImageBlock {
   /** 尺寸元信息（token 估算 (w×h)/750 用；读入时解析，非协议字段不外发） */
   _w?: number
   _h?: number
+  /** 源文件路径（M10-P2b 粘贴场景：history 落盘转 ImageRef 的引用路径；协议侧剥除） */
+  _path?: string
 }
 
 /** PDF 文档块（M10-P0；Anthropic document block 同构）。 */
@@ -63,6 +65,16 @@ export interface DocumentBlock {
 }
 
 export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlock | DocumentBlock
+
+/**
+ * 图片引用块（M10-P2b，**仅存储态**——history 落盘时 ImageBlock 的序列化形态，内存态不存在）：
+ * base64 不进会话文件（几十 KB×N 撑爆）；恢复时按 path 重读转回 ImageBlock，文件缺失降级 TextBlock 占位。
+ */
+export interface ImageRefBlock {
+  type: 'image_ref'
+  path: string
+  media_type: ImageBlock['source']['media_type']
+}
 
 // system 不进 messages，只走 LLMProvider.run({ system }) 参数（ADR-009）。
 // 与 Anthropic 一致；OpenaiProvider 内部把 system 翻译成 messages[0]。

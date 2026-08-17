@@ -86,6 +86,8 @@ interface InputStreamProps {
   insert?: { text: string; seq: number }
   /** M9-P4/D13：Tab 专职沙箱模式循环（主输入空闲态；slash 补全态不拦截） */
   onTabSandbox?: () => void
+  /** M10-P2b：Alt+V 粘贴剪贴板图片（图片数据不走 stdin，须专用键位主动读系统剪贴板） */
+  onPasteImage?: () => void
 }
 
 /**
@@ -103,6 +105,7 @@ export function InputStream({
   inactive,
   insert,
   onTabSandbox,
+  onPasteImage,
 }: InputStreamProps): ReactElement {
   const [cur, setCur] = useState<CursorState>(() => createCursor(''))
   const [history, setHistory] = useState<string[]>([])
@@ -173,11 +176,16 @@ export function InputStream({
     submit(text)
   }
 
-  useInput((_input, key) => {
+  useInput((input, key) => {
     const slashMode = cur.text.startsWith('/')
     // M9-D13：Tab 专职沙箱模式循环——非 slash 补全态的空闲输入才拦截（面板内 Tab 由面板自处理）
     if (key.tab && !key.shift && onTabSandbox !== undefined && !slashMode) {
       onTabSandbox()
+      return
+    }
+    // M10-P2b：Alt+V 读系统剪贴板图片（named meta 组合键；Ctrl+V 在 raw mode 是 0x16 字面字符不可用）
+    if (input === 'v' && key.meta && onPasteImage !== undefined) {
+      onPasteImage()
       return
     }
     if (slashMode) {

@@ -7,7 +7,7 @@ import { useInput, Text, Box } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
 import { runLoop, type ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
-import { isMessageLine, type AppError, type HistoryLine, type Message, type RewindLine } from '../core/types.js'
+import { isMessageLine, type AppError, type ContentBlock, type HistoryLine, type ImageBlock, type Message, type RewindLine } from '../core/types.js'
 import { makeOnBeforeRequest } from '../services/compaction/hook.js'
 import { tokensToCost } from '../services/pricing.js'
 import { buildContextMessages } from '../core/context.js'
@@ -54,6 +54,8 @@ import { SandboxPanel } from './SandboxPanel.js'
 import { makeSandbox, nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
 import { setPermissionAsker } from '../services/permissions.js'
 import { ecodeCommit, undoEcodeCommit } from '../services/git.js'
+import { readClipboardImage } from '../services/clipboard.js'
+import { buildMediaBlock } from '../services/media.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
 import { setAskUserHandler } from '../tools/builtin/askUserBridge.js'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
@@ -94,6 +96,25 @@ export interface TuiAppDeps {
   onRestart?: () => void
 }
 
+/** M10-P2b：磁盘图片路径 → ImageBlock[]（守卫失败降级文本提示，不阻断提交） */
+async function imageBlocksFromPaths(paths: string[]): Promise<{ blocks: ImageBlock[] }> {
+  const blocks: ImageBlock[] = []
+  for (const p of paths) {
+    try {
+      const { readFile } = await import('node:fs/promises')
+      const buf = await readFile(p)
+      const ext = p.slice(p.lastIndexOf('.')).toLowerCase()
+      const guard = buildMediaBlock(buf, ext, p)
+      if (guard.ok && guard.block.type === 'image') {
+        blocks.push({ ...guard.block, _path: p })
+      }
+    } catch {
+      // 读取失败跳过（粘贴文件被删等）
+    }
+  }
+  return { blocks }
+}
+
 function isAbortError(e: unknown): boolean {
   return e instanceof Error && (e.name === 'AbortError' || 'aborted' in e)
 }
@@ -121,6 +142,20 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   const pendingSessionCtxRef = useRef<string[]>([])
   // M9-P6：本轮编辑文件集（onBeforeWrite 收集；autoCommit 开启时轮末提交+清空）
   const editedFilesRef = useRef<Set<string>>(new Set())
+  // M10-P2b：待发送的粘贴图片（Alt+V 落盘后的路径；submit 时组装 blocks 并清空）
+  const pendingImagesRef = useRef<Array<{ path: string; label: string }>>([])
+
+  /** M10-P2b：Alt+V 粘贴——读剪贴板图落附件目录，占位符提示（无图静默一行提示） */
+  const pasteImageFromClipboard = async (): Promise<void> => {
+    const img = await readClipboardImage(deps.history.currentSessionId())
+    if (img === null) {
+      setSystemMsgs(['剪贴板无图片（或读取失败）'])
+      return
+    }
+    const label = `[图片#${pendingImagesRef.current.length + 1} PNG ${(img.bytes / 1024).toFixed(1)}KB]`
+    pendingImagesRef.current.push({ path: img.path, label })
+    setSystemMsgs([`已粘贴 ${label} —— 随下一条消息发送`])
+  }
   // M9-P4：沙箱模式（会话级不落盘；初始取 config.sandbox.defaultMode，default=现状=关）
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>(
     deps.config.sandbox?.defaultMode ?? 'default',
@@ -179,7 +214,25 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   // /restart 句柄经 ref（deps 闭包稳定，setTimeout 回调取最新）
   const onRestartRef = useRef(onRestart)
 
-  const submit = async (input: string, display?: string): Promise<void> => {
+  const submit = async (input: string, display?: string, blocks?: ContentBlock[]): Promise<void> => {
+    // M10-P2b：零键位增强——提交文本恰好是存在的图片路径 → 转图片输入（display 保持原文）
+    if (blocks === undefined && /^\s*[^\n]+\.(png|jpe?g|webp|gif)\s*$/i.test(input)) {
+      const detected = await imageBlocksFromPaths([input.trim()])
+      if (detected.blocks.length > 0) {
+        input = `${input.trim()}（已作为图片输入）`
+        blocks = detected.blocks
+      }
+    }
+    // M10-P2b：粘贴 pending 组装（Alt+V 暂存的图片随本条消息发送）
+    if (blocks === undefined && pendingImagesRef.current.length > 0) {
+      const pending = pendingImagesRef.current
+      pendingImagesRef.current = []
+      const built = await imageBlocksFromPaths(pending.map((p) => p.path))
+      if (built.blocks.length > 0) {
+        input = `${input}\n${pending.map((p) => p.label).join('\n')}`
+        blocks = built.blocks
+      }
+    }
     if (runningRef.current) return
     // 配置无效态（空壳 Config）：不 runLoop，提示 /setup；/setup /history /clear 等命令不受影响
     if (!config.providers[config.current.name]) {
@@ -333,6 +386,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           // M10-P0：无视觉能力守卫判定用（读图前 isVisionModel）
           model: config.current.model,
         },
+        // M10-P2b：附着块（图片粘贴/路径检测）进首条 user 消息
+        ...(blocks !== undefined && blocks.length > 0 ? { userBlocks: blocks } : {}),
         // M9-P3 轮末质量回喂 + M9-P6 autoCommit（quality 之后：绿了再提交）
         afterTools: async (round) => {
           let feedback: string | undefined
@@ -1045,6 +1100,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       )}
       <InputStream
         onSubmit={submit}
+        onPasteImage={() => {
+          void pasteImageFromClipboard()
+        }}
         onTabSandbox={() => {
           // M9-D13：Tab 专职循环切档；D12：进 full-access 需确认——循环到该档时打开面板二级确认
           const next = nextSandboxMode(sandboxModeRef.current)

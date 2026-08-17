@@ -81,6 +81,8 @@ export interface LoopRunOptions {
   system: string
   maxIterations: number
   toolCtx: ToolContext
+  /** M10-P2b：首条 user 消息的附着块（图片粘贴 ImageBlock；显示层占位符与内容分离） */
+  userBlocks?: ContentBlock[]
   confirm?: (use: ToolUseBlock) => Promise<boolean>
   signal?: AbortSignal
   /** M5：每轮 provider.run 前的压缩 hook（投影+压缩+返回子集喂 LLM）。不配则 messages 直接喂。 */
@@ -108,7 +110,11 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         lastMsg.content.some((b) => b.type === 'text' && (b as { text?: string }).text === userInput)
       : false
   if (!alreadyUser) {
-    const userMsg: Message = { role: 'user', content: [{ type: 'text', text: userInput }] }
+    // M10-P2b：图片粘贴等附着块（display 分离——userInput 文本仍为占位/说明，blocks 是真内容）
+    const userMsg: Message = {
+      role: 'user',
+      content: [{ type: 'text', text: userInput }, ...(opts.userBlocks ?? [])],
+    }
     messages.push(userMsg)
     opts.history.append(userMsg) // P0-3：初始 user 也要落盘（restore 才完整）
   }

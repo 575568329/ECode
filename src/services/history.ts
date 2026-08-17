@@ -18,7 +18,8 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { isMessageLine, type BoundaryLine, type HistoryLine, type Message, type RewindLine } from '../core/types.js'
+import { isMessageLine, type BoundaryLine, type HistoryLine, type Message, type RewindLine, type ImageBlock, type ImageRefBlock } from '../core/types.js'
+import { readFileSync } from 'node:fs'
 
 export interface SessionMeta {
   sessionId: string
@@ -91,6 +92,12 @@ export class FileHistoryStore implements HistoryStore {
   }
 
   append(msg: Message): void {
+    // M10-P2b：落盘前 ImageBlock → ImageRef（base64 不进会话文件）
+    this.appendStorable({ role: msg.role, content: msg.content.map(toStorableBlock) })
+  }
+
+  /** 实际写盘（storable 形态） */
+  private appendStorable(msg: { role: Message['role']; content: StorableBlock[] }): void {
     // 懒写首行 meta：首条 message append 时写（首条通常是 user，firstUser 此刻已知）
     if (!this.metaWritten) {
       if (msg.role === 'user') {
@@ -196,7 +203,12 @@ export class FileHistoryStore implements HistoryStore {
         // 终审 P2-1：按标记字段三分发——rewind 行伪装成 Message 是类型谎言（下游守卫兜得住，但新消费点会踩）
         if (parsed.compact_boundary) lines.push(parsed as BoundaryLine)
         else if (parsed.rewind) lines.push(parsed as RewindLine)
-        else lines.push(parsed as Message)
+        else {
+          // M10-P2b：存储态 image_ref → 内存态 ImageBlock（文件缺失降级 TextBlock 占位）
+          const msg = parsed as Message
+          const hasRef = msg.content.some((b) => (b as { type?: string }).type === 'image_ref')
+          lines.push(hasRef ? { role: msg.role, content: msg.content.map((b) => fromStorableBlock(b)) } : msg)
+        }
       } catch (e) {
         // 损坏行跳过但记录（不静默吞）
         process.stderr.write(`[HistoryStore] ${sessionId}.jsonl 跳过损坏行：${e instanceof Error ? e.message : String(e)}\n`)
@@ -212,6 +224,43 @@ export class FileHistoryStore implements HistoryStore {
   /** 读纯 Message（跳过 meta + boundary 行；M4 兼容） */
   restore(sessionId: string): Message[] {
     return this.restoreFull(sessionId).filter(isMessageLine)
+  }
+}
+
+// —— M10-P2b：图片块的双向存储转换（内存 ImageBlock ↔ 落盘 ImageRef） ——
+
+/** 落盘形态：ImageBlock → ImageRef（base64 换路径引用；其余块原样）。 */
+/** 落盘形态（宽化：存储态可含 image_ref，内存态不含）。 */
+type StorableBlock = Message['content'][number] | ImageRefBlock
+
+function toStorableBlock(b: Message['content'][number]): StorableBlock {
+  if (b.type === 'image') {
+    // 粘贴场景带 _path（粘贴目录持久）；无 _path 的图（理论不该有）仍写 base64 兜底不丢内容
+    if (b._path !== undefined && b._path !== '') {
+      return { type: 'image_ref', path: b._path, media_type: b.source.media_type }
+    }
+  }
+  return b
+}
+
+/** 恢复形态：ImageRef → ImageBlock（按路径重读 base64；失败降级 TextBlock 占位）。 */
+function fromStorableBlock(b: unknown): Message['content'][number] {
+  const ref = b as Partial<ImageRefBlock>
+  if (ref.type !== 'image_ref') return b as Message['content'][number]
+  if (typeof ref.path !== 'string' || ref.path === '') {
+    return { type: 'text', text: '[图片已失效（无路径）]' }
+  }
+  try {
+    const buf = readFileSync(ref.path)
+    const dims = ref.media_type === 'image/png' && buf.length >= 24 ? { _w: buf.readUInt32BE(16), _h: buf.readUInt32BE(20) } : {}
+    const img: ImageBlock = {
+      type: 'image',
+      source: { type: 'base64', media_type: ref.media_type ?? 'image/png', data: buf.toString('base64') },
+      ...dims,
+    }
+    return img
+  } catch {
+    return { type: 'text', text: `[图片已失效 ${ref.path}]` }
   }
 }
 

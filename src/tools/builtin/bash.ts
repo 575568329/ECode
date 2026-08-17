@@ -15,6 +15,7 @@
 import type { ChildProcess } from 'node:child_process'
 import type { Tool } from '../interface.js'
 import { isDangerousCommand, killTree, spawnShellCommand } from '../../services/proc.js'
+import { taskRegistry } from '../../services/tasks.js'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
@@ -50,6 +51,10 @@ export const bashTool: Tool = {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'shell 命令' },
+      run_in_background: {
+        type: 'boolean',
+        description: 'true=后台运行（长命令 npm test/build/dev server 不阻塞当前轮）：立即返回 task_id，用 task_output 读输出、task_stop 停止',
+      },
     },
     required: ['command'],
   },
@@ -57,7 +62,7 @@ export const bashTool: Tool = {
   timeout_ms: DEFAULT_TIMEOUT_MS,
 
   async execute(args, ctx) {
-    const { command } = args as { command: string }
+    const { command, run_in_background } = args as { command: string; run_in_background?: boolean }
     // 危险命令拦截（D4：正则黑名单，命中直接 is_error，不 spawn）
     if (isDangerous(command)) {
       return { content: `危险命令已拦截：${command}`, is_error: true }
@@ -66,6 +71,14 @@ export const bashTool: Tool = {
     const bashGate = ctx.sandbox?.checkBash(command)
     if (bashGate !== undefined && bashGate.action === 'deny') {
       return { content: bashGate.reason, is_error: true }
+    }
+    // M10-P3：后台分流（危险命令与沙箱校验照走——黑名单不因后台豁免）
+    if (run_in_background === true) {
+      const started = taskRegistry.start(command, ctx.cwd)
+      if (!started.ok) return { content: started.reason, is_error: true }
+      return {
+        content: `后台任务已启动：#${started.task.id}（输出文件 ${started.task.outputFile}）——用 task_output("${started.task.id}") 读增量输出；完成时会在下轮通知`,
+      }
     }
     // M9-P1：写前快照——bash 不可解析目标，传空数组由服务端 git status 近修改集兜底（无 git 跳过+warn）
     try {

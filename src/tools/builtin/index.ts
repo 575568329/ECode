@@ -16,6 +16,7 @@ import { skillTool } from './skill.js'
 import { askUserTool } from './ask_user.js'
 import { webFetchTool } from './web_fetch.js'
 import { webSearchTool } from './web_search.js'
+import { taskOutputTool, taskStopTool } from './task_tools.js'
 
 export const BUILTIN_TOOLS: Tool[] = [
   readFileTool,
@@ -29,4 +30,6 @@ export const BUILTIN_TOOLS: Tool[] = [
   askUserTool,
   webFetchTool,
   webSearchTool,
+  taskOutputTool,
+  taskStopTool,
 ]

@@ -37,6 +37,9 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number, opts
 - ask_user：需求模糊且调查后仍无法推断时向用户提问（选项框；能推断就别问）
 - web_fetch <url>：抓公开网页转文本（查最新文档；优先读本地，线上不确定才用）
 - web_search <query>：联网搜索（不知道 URL 时先搜；拿到结果常配合 web_fetch 抓全文；可带 domain/recency 收窄）
+- bash run_in_background=true：长命令后台跑（npm test/build/dev server）——立即返回 task_id
+- task_output <task_id>：读后台任务增量输出（wait_ms 可短等新输出或退出）
+- task_stop <task_id>：终止后台任务（统一杀树，孙进程一并终止）
 
 回复用中文。`
 

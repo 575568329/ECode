@@ -33,6 +33,8 @@ export interface GracefulShutdownDeps {
   runSessionEndHooks: () => Promise<unknown>
   /** MCP 优雅关（预算内 await；throw 视为完成） */
   stopMcp: () => Promise<unknown>
+  /** M10-P3：后台任务全杀（预算内 await；throw 视为完成——killTree 自带梯度） */
+  stopTasks?: () => Promise<unknown>
   /** 退出（默认 process.exit；测试注入） */
   exit?: (code: number) => void
   /** 定时器工厂（测试注入；默认 setTimeout 且 unref） */
@@ -74,6 +76,7 @@ export function makeGracefulShutdown(deps: GracefulShutdownDeps): (code: number)
       deps.restoreTerminal?.() // 同步先行（后续被强杀终端已恢复）
       await raceSettled(deps.runSessionEndHooks(), b.hooksMs)
       await raceSettled(deps.stopMcp(), b.mcpMs)
+      await raceSettled(deps.stopTasks?.(), b.mcpMs) // 复用 MCP 预算档（同类清理）
       exit(code)
     })()
   }

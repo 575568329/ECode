@@ -58,6 +58,7 @@ import { setPermissionAsker } from '../services/permissions.js'
 import { ecodeCommit, undoEcodeCommit } from '../services/git.js'
 import { readClipboardImage } from '../services/clipboard.js'
 import { buildMediaBlock } from '../services/media.js'
+import { taskRegistry } from '../services/tasks.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
 import { setAskUserHandler } from '../tools/builtin/askUserBridge.js'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
@@ -96,6 +97,49 @@ export interface TuiAppDeps {
   pluginLoader?: import('../services/plugin/loader.js').PluginLoader | null
   /** /restart 的执行句柄（cli 注入：unmount + spawn 新实例 + exit；缺省时提示不可用） */
   onRestart?: () => void
+}
+
+/** M10-P3：afterTools 工厂（quality 回喂 + autoCommit 轮末 + 后台任务 turn 内通知）。 */
+function makeAfterTools(
+  deps: TuiAppDeps,
+  config: import('../services/config.js').Config,
+  pushNoticeFn: (level: 'error' | 'warn' | 'info', text: string) => void,
+  editedFilesRef: { current: Set<string> },
+  messagesRef: { current: HistoryLine[] },
+): NonNullable<import('../core/loop.js').LoopRunOptions['afterTools']> {
+  return async (round) => {
+    let feedback: string | undefined
+    if (deps.quality) {
+      const fb = await deps.quality.afterRound(round.tools)
+      if (fb !== undefined) {
+        pushNoticeFn('warn', 'lint/test 有失败，已回喂模型自纠')
+        feedback = fb
+      }
+    }
+    // M10-P3：后台任务 turn 内通知（与 quality feedback 合并注入；去重由 collectNotifications 的 notified 保证）
+    const notes = taskRegistry.collectNotifications()
+    if (notes.length > 0) {
+      feedback = feedback !== undefined ? `${feedback}\n${notes.join('\n')}` : notes.join('\n')
+    }
+    // 终审 P1-5：红灯或熔断不提交
+    if (config.autoCommit === true && feedback === undefined && deps.quality?.lastRoundFailed !== true && !deps.quality?.tripped) {
+      const files = [...editedFilesRef.current]
+      editedFilesRef.current.clear()
+      if (files.length > 0) {
+        const lastAsst = [...messagesRef.current].reverse().find((l): l is Message => isMessageLine(l) && l.role === 'assistant')
+        const textBlock = lastAsst?.content.find((b) => b.type === 'text')
+        const subject =
+          textBlock !== undefined && 'text' in textBlock && textBlock.text.trim() !== ''
+            ? `ecode: ${textBlock.text.trim().split('\n')[0]?.slice(0, 60)}`
+            : `ecode: 修改 ${files.length} 个文件`
+        const r = await ecodeCommit(process.cwd(), deps.history.currentSessionId(), files, subject)
+        pushNoticeFn(r.committed ? 'info' : 'warn', r.committed ? `已自动提交：${subject}` : `自动提交未完成——${r.reason ?? ''}`)
+      }
+    } else {
+      editedFilesRef.current.clear()
+    }
+    return feedback !== undefined ? { feedback } : undefined
+  }
 }
 
 /** M10-P2：常规页可编辑项（从 config 派生；值展示 + 档位循环） */
@@ -282,6 +326,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       }
       if (verdict.systemMessages.length > 0) setSystemMsgs(verdict.systemMessages)
     }
+    // M10-P3：后台任务跨 turn 通知（双时点之二——turn 结束后完成的任务在下次 submit 前注入）
+    const pendingNotes = taskRegistry.collectNotifications()
+    for (const n of pendingNotes) {
+      input = `${input}\n${n}`
+    }
     // M9-P0：SessionStart 的 additionalContext 注入启动/恢复后首轮 user 消息（环境信息进上下文一次；
     // 在 UserPromptSubmit 之后拼接——hook 收到的 prompt 保持用户原文）
     if (pendingSessionCtxRef.current.length > 0) {
@@ -401,36 +450,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         },
         // M10-P2b：附着块（图片粘贴/路径检测）进首条 user 消息
         ...(blocks !== undefined && blocks.length > 0 ? { userBlocks: blocks } : {}),
-        // M9-P3 轮末质量回喂 + M9-P6 autoCommit（quality 之后：绿了再提交）
-        afterTools: async (round) => {
-          let feedback: string | undefined
-          if (deps.quality) {
-            const fb = await deps.quality.afterRound(round.tools)
-            if (fb !== undefined) {
-              pushNoticeFn('warn', 'lint/test 有失败，已回喂模型自纠')
-              feedback = fb
-            }
-          }
-          // 终审 P1-5：红灯（lint/test 失败）或熔断态不提交——不把 broken code 写进 git 历史
-          if (config.autoCommit === true && feedback === undefined && deps.quality?.lastRoundFailed !== true && !deps.quality?.tripped) {
-            const files = [...editedFilesRef.current]
-            editedFilesRef.current.clear()
-            if (files.length > 0) {
-              // subject 取本轮最后一条 assistant 文本首行（模型自己的改动描述），兜底固定模板
-              const lastAsst = [...messagesRef.current].reverse().find((l): l is Message => isMessageLine(l) && l.role === 'assistant')
-              const textBlock = lastAsst?.content.find((b) => b.type === 'text')
-              const subject =
-                textBlock !== undefined && 'text' in textBlock && textBlock.text.trim() !== ''
-                  ? `ecode: ${textBlock.text.trim().split('\n')[0]?.slice(0, 60)}`
-                  : `ecode: 修改 ${files.length} 个文件`
-              const r = await ecodeCommit(process.cwd(), deps.history.currentSessionId(), files, subject)
-              pushNoticeFn(r.committed ? 'info' : 'warn', r.committed ? `已自动提交：${subject}` : `自动提交未完成——${r.reason ?? ''}`)
-            }
-          } else {
-            editedFilesRef.current.clear()
-          }
-          return feedback !== undefined ? { feedback } : undefined
-        },
+        // M9-P3 轮末质量回喂 + M9-P6 autoCommit + M10-P3 后台任务通知（工厂：见 makeAfterTools）
+        afterTools: makeAfterTools(deps, config, pushNoticeFn, editedFilesRef, messagesRef),
         signal: abortRef.current.signal,
         onBeforeRequest,
         onCompacted,

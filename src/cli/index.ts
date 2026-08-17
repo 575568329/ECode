@@ -26,6 +26,7 @@ import { QualityGate, detectQualityCommands, makeShellRunner } from '../services
 import { makeSandbox } from '../services/sandbox.js'
 import { resolveSearchProvider } from '../services/websearch.js'
 import { setWebSearchProvider } from '../tools/builtin/web_search.js'
+import { taskRegistry } from '../services/tasks.js'
 import { evalPermission, loadPermissionLayers, saveLocalPermission, askPermissionInteractive } from '../services/permissions.js'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
@@ -264,6 +265,10 @@ async function main(): Promise<void> {
     runSessionEndHooks: () =>
       sessionEndHook?.dispatch('SessionEnd', { event: 'SessionEnd', session_id: '' }) ?? Promise.resolve(),
     stopMcp: () => mcpManagerRef?.stop() ?? Promise.resolve(),
+    stopTasks: () => {
+      taskRegistry.cleanup()
+      return Promise.resolve()
+    },
   })
   // exit handler = 兜底层（graceful 路径已完成异步清理；此处覆盖 uncaught/restart 等
   // 未走 graceful 的退出：stopNow 同步杀 + 日志 flush。注册序 = 执行序，先杀再 flush）

@@ -49,6 +49,7 @@
 | M5 真机测试单 | [诊断/2026-08-14_M5真机测试单_已完成.md](./诊断/2026-08-14_M5真机测试单_已完成.md) | T1-T9 case（压缩触发/命令/数据完整性），含 P0 修复验证重点 + 失败速查表 |
 | ADR-026 AppContext 与 Plugin 装配骨架 | [决策/2026-08-14_ADR-026-引入AppContext与Plugin装配骨架_已完成.md](./决策/2026-08-14_ADR-026-引入AppContext与Plugin装配骨架_已完成.md) | 借鉴 deepseek-harness（Cordis Plugin 形状 + capability seam 三角色）统一装配；**暂缓采纳**——M5 后 makeDeps 未膨胀（22 行）、M6 PluginLoader 需求未验证；M6 实施到装配环节若确需再开新 ADR supersedes；源码引用已验证准确 |
 | M7 Hooks 与 Plugin 执行链解析 | [解析/2026-08-15_后续-M7-Hooks与Plugin执行链解析_待审核.md](./解析/2026-08-15_后续-M7-Hooks与Plugin执行链解析_待审核.md) | 一轮连续代码走读整理：三分离模型（声明分散/触发分散/执行集中）/ 三源注册与 specsFor 归一（拉模型）/ makeDeps 只插线 / 七案发现场+装饰器 / dispatch→runOne→runCommandHook 逐跳 / handler 五字段消费点 / verdict 对账表 / fail-open 落点 / 黑名单 / mcp_tool 占位≠MCP 不可用 / plugin 安装链+loadOne 四类分发 / 高频误区速查 + 接线缺口（→M9 附录D.5） |
+| M11 Subagent 实施方案 | [详设/2026-08-17_后续-M11-Subagent实施方案_待启动.md](./详设/2026-08-17_后续-M11-Subagent实施方案_待启动.md) | task 工具内嵌 runLoop（心脏零改动）/并发直上（readonly 并行池无硬上限+竞态三防线）/禁配 task+ask_user（交互权归主循环）/transcript 独立/log agentId 隔离/UI 高度预算/顺带修 stop 谎报；M11-D1~D13 全决策 |
 | Subagent 机制调研 | [解析/2026-08-17_Subagent机制调研_已完成.md](./解析/2026-08-17_Subagent机制调研_已完成.md) | 立项前一手源码调研（CC/opencode）：调用纪律=description 反例教学非硬限制（业界防错用不防多用、鼓励并发）/ 唯一共同硬限制=递归一层封顶（CC 工具过滤 vs opencode 深度+权限派生）/ 两层提示词模板（主侧反"委派理解"+子侧返回契约）/ UI=折叠一行+进度流+高度自适应降级 / S1-S7 立项决策清单 + ECode 复用面映射 |
 
 > 其余文档按需在各目录补充，命名见下方约定。

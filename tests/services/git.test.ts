@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+// 全量并发下 git 子进程慢（M9 问题清单已知项）：本文件放宽超时，根治偶发
+vi.setConfig({ testTimeout: 30_000 })
 import { ecodeCommit, lastCommitIsEcode, undoEcodeCommit, isGitRepo, TEST_GIT_ENV } from '../../src/services/git.js'
 
 const execFileAsync = promisify(execFile)

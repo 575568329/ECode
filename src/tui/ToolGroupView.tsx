@@ -72,7 +72,8 @@ export function ToolGroupView({ tools, expanded = false, done, onToggle }: ToolG
               ? { sym: symbols.success, color: theme.success }
               : null // running：无 tail（等 done 才 ✓/✗）
         const content = t.result?.content ?? ''
-        const hasOutput = content.length > 0
+        const mediaBlocks = t.result?.blocks ?? []
+        const hasOutput = content.length > 0 || mediaBlocks.length > 0
         const bytes = Buffer.byteLength(content, 'utf8')
         // 副作用工具（edit_file/write_file）默认展开输出（直接显示 diff/content），
         // 只读工具默认折叠（▸ preview）；Ctrl+O 全展开覆盖

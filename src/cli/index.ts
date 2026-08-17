@@ -215,6 +215,8 @@ async function runOnce(messages: HistoryLine[], input: string, deps: Deps): Prom
       onBeforeWrite: async (paths, tool, toolUseId) => {
         await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
       },
+      // M10-P0：无视觉能力守卫（argv 同款）
+      model: deps.config.current.model,
       // M9-P4：argv 模式按 config 默认档装配（deny 校验仍拦；argv 本就无交互确认）
       sandbox: makeSandbox(
         (deps.config.sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default',

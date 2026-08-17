@@ -225,9 +225,13 @@ export function serializeMessage(m: Message): string {
       parts.push(`${m.role === 'user' ? '[User]' : '[Assistant]'}: ${b.text}`)
     } else if (b.type === 'tool_use') {
       parts.push(`[Assistant tool call]: ${b.name}(${safeJsonStringify(b.input)})`)
+    } else if (b.type === 'image' || b.type === 'document') {
+      // M10-P0：多模态占位——base64 不进摘要（几十 KB 编码串只污染）
+      parts.push(b.type === 'image' ? '[图片输入]' : '[PDF 输入]')
     } else {
       const tag = b.is_error ? '[Tool error]' : '[Tool result]'
-      parts.push(`${tag}: ${truncateMiddle(b.content, TOOL_RESULT_MAX_CHARS)}`)
+      const media = b.blocks !== undefined ? ` ${b.blocks.map((x) => (x.type === 'image' ? '[图片]' : '[PDF]')).join('')}` : ''
+      parts.push(`${tag}: ${truncateMiddle(b.content, TOOL_RESULT_MAX_CHARS)}${media}`)
     }
   }
   return parts.join('\n')

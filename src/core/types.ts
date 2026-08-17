@@ -39,12 +39,30 @@ export interface ToolResultBlock {
   tool_use_id: string
   content: string
   is_error?: boolean
+  /**
+   * M10-P0：多模态附着块（image/document）——tool_result 的非文本载荷。
+   * content 主路径保持 string（byteLength/渲染/serialize 零破坏）；Anthropic 翻译时
+   * 组装为 content 数组（text + blocks），OpenAI 翻译时转移至紧随 user 消息（协议约束）。
+   */
+  blocks?: Array<ImageBlock | DocumentBlock>
 }
 
-// ImageBlock 留位（MVP 不实现图像输入，占类型位避免后续破坏性变更）：
-// export interface ImageBlock { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+/** 图片块（M10-P0；source 形态与 Anthropic 协议完全一致——透传零翻译）。 */
+export interface ImageBlock {
+  type: 'image'
+  source: { type: 'base64'; media_type: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string }
+  /** 尺寸元信息（token 估算 (w×h)/750 用；读入时解析，非协议字段不外发） */
+  _w?: number
+  _h?: number
+}
 
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock
+/** PDF 文档块（M10-P0；Anthropic document block 同构）。 */
+export interface DocumentBlock {
+  type: 'document'
+  source: { type: 'base64'; media_type: 'application/pdf'; data: string }
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlock | DocumentBlock
 
 // system 不进 messages，只走 LLMProvider.run({ system }) 参数（ADR-009）。
 // 与 Anthropic 一致；OpenaiProvider 内部把 system 翻译成 messages[0]。

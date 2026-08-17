@@ -330,6 +330,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           },
           // M9-P4：沙箱装配（read-only/workspace-write 拦截 + blockedCommands 全档硬拒在 bash 工具内）
           sandbox: makeSandbox(sandboxModeRef.current, process.cwd(), config.sandbox?.blockedCommands ?? []),
+          // M10-P0：无视觉能力守卫判定用（读图前 isVisionModel）
+          model: config.current.model,
         },
         // M9-P3 轮末质量回喂 + M9-P6 autoCommit（quality 之后：绿了再提交）
         afterTools: async (round) => {

@@ -11,7 +11,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import type { LLMProvider, LLMProviderRunRequest, ThinkingLevel } from './interface.js'
-import type { Delta, Message, StopReason } from '../core/types.js'
+import type { Delta, Message, StopReason, ImageBlock, DocumentBlock } from '../core/types.js'
 
 /** M1 默认输出上限（max_tokens 是 SDK 必填；M4 从 config 透传）。 */
 const DEFAULT_MAX_TOKENS = 8192
@@ -184,8 +184,30 @@ export function translateAnthropicStream(events: Iterable<RawEvent>): Delta[] {
 
 /** 规范 Message → Anthropic 协议 messages（规范模型贴近 Anthropic，基本透传）。 */
 export function toAnthropicMsgs(messages: Message[]): unknown[] {
-  // 规范 content block（TextBlock/ToolUseBlock/ToolResultBlock）字段与 Anthropic 一致
-  return messages.map((m) => ({ role: m.role, content: m.content }))
+  // M10-P0：tool_result 带 blocks 时 content 组数组（text + image/document——协议原生形态）；
+  // user 消息的 ImageBlock/DocumentBlock 形态与协议完全一致，透传即可（内部元信息 _w/_h 需剥）
+  return messages.map((m) => ({
+    role: m.role,
+    content: m.content.map((b) => {
+      if (b.type === 'tool_result') {
+        if (b.blocks === undefined || b.blocks.length === 0) return b
+        return {
+          type: 'tool_result',
+          tool_use_id: b.tool_use_id,
+          is_error: b.is_error,
+          content: [{ type: 'text', text: b.content }, ...b.blocks.map(stripMediaMeta)],
+        }
+      }
+      if (b.type === 'image' || b.type === 'document') return stripMediaMeta(b)
+      return b
+    }),
+  }))
+}
+
+/** 剥多模态块的内部元信息（_w/_h 非协议字段）。 */
+function stripMediaMeta(b: ImageBlock | DocumentBlock): ImageBlock | DocumentBlock {
+  if (b.type !== 'image') return b
+  return { type: 'image', source: b.source }
 }
 
 /** AnthropicProvider（M1 唯一 Provider 实现；OpenaiProvider 留 M3）。 */

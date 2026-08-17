@@ -383,9 +383,16 @@ async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<Tool
       id: use.id,
       name: use.name,
       is_error: r.is_error,
-      bytes: Buffer.byteLength(r.content, 'utf8'),
+      bytes: Buffer.byteLength(r.content, 'utf8') + (r.blocks?.reduce((n, b) => n + b.source.data.length, 0) ?? 0),
     })
-    return { type: 'tool_result', tool_use_id: use.id, content: r.content, is_error: r.is_error }
+    // M10-P0：多模态附着块透传（blocks 从 ToolResult 到 ToolResultBlock，翻译层组装协议形态）
+    return {
+      type: 'tool_result',
+      tool_use_id: use.id,
+      content: r.content,
+      is_error: r.is_error,
+      ...(r.blocks !== undefined && r.blocks.length > 0 ? { blocks: r.blocks } : {}),
+    }
   } catch (e) {
     const err = toAppError(e)
     if (!err.recoverable) throw err

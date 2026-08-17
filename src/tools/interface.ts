@@ -11,6 +11,8 @@ import type { ToolSpec } from '../core/types.js'
 export interface ToolResult {
   content: string
   is_error?: boolean
+  /** M10-P0：多模态附着块（image/document）——read_file 读图/PDF 时带出，翻译层组装协议形态 */
+  blocks?: Array<import('../core/types.js').ImageBlock | import('../core/types.js').DocumentBlock>
 }
 
 /** 注入给工具，工具无全局状态。M1 最小切片：cwd + signal（config/logger 留 M3/M4）。 */
@@ -30,6 +32,11 @@ export interface ToolContext {
    * write/edit 用 checkWrite；bash 用 checkBash（deny 才拦，confirm/allow 由 loop confirm 层处理）。
    */
   sandbox?: import('../services/sandbox.js').Sandbox
+  /**
+   * M10-P0：当前模型名（无视觉能力守卫——read_file 读图前查 isVisionModel）。
+   * 宿主装配注入；缺省 = 不拦截（向后兼容）。
+   */
+  model?: string
 }
 
 export interface Tool {

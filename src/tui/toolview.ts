@@ -37,13 +37,15 @@ export function previewLine(content: string): string {
 /** 单个工具调用摘要。 */
 export function summarize(entry: ToolCallEntry): ToolSummary {
   const content = entry.result?.content ?? ''
-  const bytes = Buffer.byteLength(content, 'utf8')
+  const media = entry.result?.blocks ?? []
+  const bytes = Buffer.byteLength(content, 'utf8') + media.reduce((n, b) => n + b.source.data.length, 0)
+  const mediaTag = media.length > 0 ? ` [${media.map((b) => (b.type === 'image' ? '图片' : 'PDF')).join(' ')}]` : ''
   return {
     name: entry.use.name,
     inputDigest: inputDigest(entry.use.input),
     status: entry.result == null ? 'running' : entry.result.is_error ? 'error' : 'success',
     bytes,
-    preview: previewLine(content),
+    preview: `${previewLine(content)}${mediaTag}`,
     collapsed: bytes > FOLD_THRESHOLD,
   }
 }

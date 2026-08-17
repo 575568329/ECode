@@ -15,7 +15,7 @@
  * chat template / tool schema / 图片 tile。真实计费一律用 API usage。
  */
 
-import type { Message, ContentBlock, ToolSpec } from '../core/types.js'
+import type { Message, ContentBlock, ToolSpec, ImageBlock, DocumentBlock } from '../core/types.js'
 
 /** 文本 → token 估算（UTF-8 字节数/4 向上取整）。 */
 export function estimateTokens(text: string): number {
@@ -58,8 +58,21 @@ function blockBytes(block: ContentBlock): number {
     case 'tool_use':
       return Buffer.byteLength(block.name, 'utf8') + safeStringifyBytes(block.input)
     case 'tool_result':
-      return Buffer.byteLength(block.content, 'utf8')
+      return Buffer.byteLength(block.content, 'utf8') + (block.blocks?.reduce((n, b) => n + mediaBlockTokens(b) * 4, 0) ?? 0)
+    // M10-P0：图片/PDF 进上下文估算——图片 (w×h)/750 换算 token 再折字节（×4 回 bytes/4 轨道）；
+    // PDF 按 base64 体量近似（无页元信息，粗估方向偏大=安全侧）；尺寸缺失的图片按 1568² 中档估
+    case 'image':
+    case 'document':
+      return mediaBlockTokens(block) * 4
   }
+}
+
+/** 多模态块的 token 估算（图片 Anthropic 公式 (w×h)/750；PDF 按体量粗估）。 */
+function mediaBlockTokens(b: ImageBlock | DocumentBlock): number {
+  if (b.type === 'document') return Math.ceil((b.source.data.length * 0.75) / 3000) * 1000
+  const w = b._w ?? 1568
+  const h = b._h ?? 1568
+  return Math.ceil((w * h) / 750)
 }
 
 /** 单消息字节数（blockBytes 累加；estimateMessageTokens/estimateContextTokens 共用）。 */

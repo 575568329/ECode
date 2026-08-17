@@ -12,7 +12,7 @@
 
 import OpenAI from 'openai'
 import type { LLMProvider, LLMProviderRunRequest, ThinkingLevel } from './interface.js'
-import type { Delta, Message, StopReason, ToolSpec } from '../core/types.js'
+import type { Delta, Message, StopReason, ToolSpec, ToolResultBlock, TextBlock, ImageBlock, DocumentBlock } from '../core/types.js'
 
 /** OpenAI 流式 chunk（宽松结构，鸭子类型；不硬依赖 SDK 内部类型）。 */
 interface OpenaiChunk {
@@ -144,16 +144,32 @@ export function toOpenaiMsgs(messages: Message[], system: string): unknown[] {
   const out: unknown[] = [{ role: 'system', content: system }]
   for (const m of messages) {
     if (m.role === 'user') {
-      const toolResults = m.content.filter((b) => b.type === 'tool_result')
-      const texts = m.content.filter((b) => b.type === 'text')
-      // tool_result → 每条独立 { role:'tool', tool_call_id, content }
+      const toolResults = m.content.filter((b) => b.type === 'tool_result') as ToolResultBlock[]
+      const texts = m.content.filter((b) => b.type === 'text') as TextBlock[]
+      const media = m.content.filter((b): b is ImageBlock | DocumentBlock => b.type === 'image' || b.type === 'document')
+      // tool_result → 每条独立 { role:'tool', tool_call_id, content }；
+      // M10-P0：tool 消息不支持 image/document——blocks 转移至紧随 user 消息（image_url data URI，CCode 同款先例）
+      const transferable: Array<ImageBlock | DocumentBlock> = []
       for (const b of toolResults) {
-        const tr = b as { tool_use_id: string; content: string; is_error?: boolean }
-        out.push({ role: 'tool', tool_call_id: tr.tool_use_id, content: tr.content })
+        out.push({ role: 'tool', tool_call_id: b.tool_use_id, content: b.content })
+        if (b.blocks !== undefined) transferable.push(...b.blocks)
       }
-      if (texts.length > 0) {
-        const text = texts.map((b) => (b as { text: string }).text).join('\n')
-        out.push({ role: 'user', content: text })
+      const images = [...media, ...transferable].filter((b): b is ImageBlock => b.type === 'image')
+      // document：chat.completions 无对应形态不转移（智谱自有形态验证关卡时核实）；纯 document 消息给占位
+      const hasDocumentOnly = texts.length === 0 && images.length === 0 && (media.some((b) => b.type === 'document') || transferable.some((b) => b.type === 'document'))
+      const text = texts.map((b) => b.text).join('\n')
+      if (images.length > 0) {
+        const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = []
+        // 部分兼容端点要求数组首元素为 text——无文本时补占位（image-only 消息）
+        parts.push({ type: 'text', text: text !== '' ? text : '(图片输入)' })
+        for (const img of images) {
+          parts.push({ type: 'image_url', image_url: { url: `data:${img.source.media_type};base64,${img.source.data}` } })
+        }
+        out.push({ role: 'user', content: parts })
+      } else if (text !== '') {
+        out.push({ role: 'user', content: hasDocumentOnly ? `${text}\n[文档输入：OpenAI 协议不支持 document，已省略]` : text })
+      } else if (hasDocumentOnly) {
+        out.push({ role: 'user', content: '[文档输入：OpenAI 协议不支持 document，已省略]' })
       }
     } else if (m.role === 'assistant') {
       const toolUses = m.content.filter((b) => b.type === 'tool_use')

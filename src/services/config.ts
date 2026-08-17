@@ -45,6 +45,8 @@ export interface Config {
   sandbox?: { defaultMode?: SandboxMode; blockedCommands?: string[] }
   /** M9-P6：编辑轮末自动 git commit（默认 false——不静默改用户 repo；/undo 只退 ECode 提交） */
   autoCommit?: boolean
+  /** M10-P1：联网搜索（provider 缺省 bing RSS 免费；preferMcp 显式声明搜索 MCP server 名；命中搜索 MCP 时内置不注册） */
+  webSearch?: { provider?: 'bing' | 'zhipu'; apiKey?: string; engine?: 'search_std' | 'search_pro' | 'search_pro_sogou' | 'search_pro_quark'; preferMcp?: string[] }
   /** 指令/记忆注入单级上限 KB（M8：ECODE.md/CLAUDE.md/MEMORY.md 各级截断阈值，默认 32） */
   maxInstructionsKB?: number
   /** web_fetch 回喂内容上限 KB（默认 30，头尾中截） */
@@ -70,6 +72,8 @@ interface ConfigFile {
   /** M9-P3：编辑后自动 lint/test 命令（缺省自动探测 package.json scripts；空串=关闭） */
   lintCommand?: string
   testCommand?: string
+  /** M10-P1：联网搜索（provider 缺省 bing；preferMcp 声明搜索 MCP server 名） */
+  webSearch?: { provider?: 'bing' | 'zhipu'; apiKey?: string; engine?: 'search_std' | 'search_pro' | 'search_pro_sogou' | 'search_pro_quark'; preferMcp?: string[] }
   /** M9-P4：沙箱（defaultMode: default/read-only/workspace-write/full-access；blockedCommands 通配清单） */
   sandbox?: { defaultMode?: string; blockedCommands?: string[] }
   maxInstructionsKB?: number
@@ -146,6 +150,8 @@ const CONFIG_TEMPLATE = `{
   // M9：沙箱（default=现状=关；blockedCommands 通配全档硬拒，full-access 也不放行）
   "sandbox": { "defaultMode": "default", "blockedCommands": ["git push --force*", "npm publish*"] },
   "autoCommit": false, // M9：编辑轮末自动 git commit（默认关；/undo 只退 ECode 提交）
+  // M10：联网搜索（缺省 bing RSS 免费零配置；配了搜索类 MCP 可 preferMcp 声明其名；质量增强可切 zhipu）
+  "webSearch": { "provider": "bing" },
   // "logLevel": "info",       // 日志级别：debug | info | warn | error
   // "maxInstructionsKB": 32,  // 指令/记忆注入单级上限 KB（ECODE.md/CLAUDE.md/MEMORY.md）
   // "webFetchMaxKB": 30,      // web_fetch 回喂内容上限 KB（头尾中截）
@@ -256,6 +262,7 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     maxIterations: file.maxIterations ?? DEFAULT_MAX_ITERATIONS,
     bashMaxOutputBytes: file.bashMaxOutputBytes ?? DEFAULT_BASH_MAX_BYTES,
     lintCommand: file.lintCommand,
+    webSearch: file.webSearch,
     testCommand: file.testCommand,
     sandbox: file.sandbox !== undefined
       ? {

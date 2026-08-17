@@ -36,6 +36,7 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number, opts
 - Skill <skill>：加载工作流手册（available_skills 清单里匹配时调用，返回步骤照做）
 - ask_user：需求模糊且调查后仍无法推断时向用户提问（选项框；能推断就别问）
 - web_fetch <url>：抓公开网页转文本（查最新文档；优先读本地，线上不确定才用）
+- web_search <query>：联网搜索（不知道 URL 时先搜；拿到结果常配合 web_fetch 抓全文；可带 domain/recency 收窄）
 
 回复用中文。`
 

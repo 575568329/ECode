@@ -24,6 +24,8 @@ import { FileHistoryStore } from '../services/history.js'
 import { CheckpointStore } from '../services/checkpoint.js'
 import { QualityGate, detectQualityCommands, makeShellRunner } from '../services/quality.js'
 import { makeSandbox } from '../services/sandbox.js'
+import { resolveSearchProvider } from '../services/websearch.js'
+import { setWebSearchProvider } from '../tools/builtin/web_search.js'
 import { evalPermission, loadPermissionLayers, saveLocalPermission, askPermissionInteractive } from '../services/permissions.js'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
@@ -138,6 +140,8 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
     if (m.truncated === true) instructionWarnings.push(`记忆索引（${m.level === 'user' ? '用户级' : '项目级'}）超出上限被截断`)
   }
   setWebFetchLimits({ maxContentKB: config.webFetchMaxKB })
+  // M10-P1：三层装配（搜索 MCP 命中→null 不注册内置；默认 bing RSS；配置后 zhipu）
+  setWebSearchProvider(resolveSearchProvider(config))
   return {
     providerRegistry: providerReg,
     tools: hookedTools,

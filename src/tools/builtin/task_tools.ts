@@ -21,7 +21,7 @@ export const taskOutputTool: Tool = {
 
   async execute(args) {
     const { task_id, offset, wait_ms } = args as { task_id: string; offset?: number; wait_ms?: number }
-    const r = taskRegistry.output(task_id, offset, wait_ms !== undefined ? Math.min(wait_ms, 10_000) : undefined)
+    const r = await taskRegistry.output(task_id, offset, wait_ms !== undefined ? Math.min(wait_ms, 10_000) : undefined)
     if ('error' in r) return { content: r.error, is_error: true }
     const tail = r.output.length > 20_000 ? `${r.output.slice(0, 10_000)}\n…（中间截断，完整用 offset 重读或看输出文件）\n${r.output.slice(-8_000)}` : r.output
     return {

@@ -93,9 +93,18 @@ describe('resolveSearchProvider（三层判定）', () => {
   it('preferMcp 显式命中 → null（内置不注册）', () => {
     expect(resolveSearchProvider({ webSearch: { preferMcp: ['my-search'] }, mcpServers: { 'my-search': {} } })).toBeNull()
   })
-  it('server 名启发式命中（search/web/searxng）→ null；自定义名未声明不误判', () => {
+  it('server 名启发式命中（search/searxng）→ null；自定义名未声明不误判', () => {
     expect(resolveSearchProvider({ mcpServers: { 'web-search-svc': {} } })).toBeNull()
     expect(resolveSearchProvider({ mcpServers: { 'db-service': {} } })?.name).toBe('bing')
+  })
+  it('终审 P1-2：非搜索 server 名含 web（webhook/webpack/web-fetch）不误判——内置照常注册', () => {
+    expect(resolveSearchProvider({ mcpServers: { 'webhook-notifier': {} } })?.name).toBe('bing')
+    expect(resolveSearchProvider({ mcpServers: { 'webpack-build': {} } })?.name).toBe('bing')
+    expect(resolveSearchProvider({ mcpServers: { 'web-fetch': {} } })?.name).toBe('bing')
+  })
+  it('终审 P1-3：显式 zhipu 但无 apiKey → 回落 bing（D5）', () => {
+    expect(resolveSearchProvider({ webSearch: { provider: 'zhipu' } })?.name).toBe('bing')
+    expect(resolveSearchProvider({ webSearch: { provider: 'zhipu', apiKey: '' } })?.name).toBe('bing')
   })
   it('默认零配置 → bing；显式 zhipu 或配了 key → zhipu', () => {
     expect(resolveSearchProvider({})?.name).toBe('bing')

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render } from 'ink-testing-library'
 import React from 'react'
 import { FileHistoryStore } from '../../src/services/history.js'
+import { readFileTool } from '../../src/tools/builtin/read_file.js'
 import { isBoundary, type ImageBlock, type Message } from '../../src/core/types.js'
 import { InputStream } from '../../src/tui/InputStream.js'
 
@@ -85,5 +86,35 @@ describe('InputStream Alt+V 键位', () => {
     stdin.write('\x1bv') // ESC+v = Alt+v（meta 组合的终端编码）
     await new Promise((r) => setTimeout(r, 40))
     expect(onPasteImage).toHaveBeenCalled()
+  })
+})
+
+describe('read_file 主路径的 tool_result.blocks 落盘（终审 P1-1）', () => {
+  it('read_file 读图 → history 落盘为 image_ref（base64 不进会话文件）；restoreFull 经 blocks 递归转回', async () => {
+    const { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'ecode-rf-hist-'))
+    const imgPath = join(dir, 'shot.png')
+    // 最小 PNG（签名+IHDR 1x1）
+    const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const ihdr = Buffer.concat([Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'), (() => { const d = Buffer.alloc(13); d.writeUInt32BE(1, 0); d.writeUInt32BE(1, 4); return d })(), Buffer.alloc(4)])
+    writeFileSync(imgPath, Buffer.concat([sig, ihdr]))
+    const sessionsDir = join(dir, 'sessions')
+    mkdirSync(sessionsDir)
+    // 模拟 loop：read_file 返回 blocks → 构造 tool_result 消息 append
+    const r = await readFileTool.execute({ path: imgPath }, { cwd: dir, signal: new AbortController().signal, model: 'glm-4.6v' })
+    expect(r.blocks?.[0]).toBeDefined()
+    const store = new FileHistoryStore({ sessionId: 's-rf', model: 'm', dir: sessionsDir })
+    store.append({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: r.content, blocks: r.blocks }] })
+    const raw = readFileSync(join(sessionsDir, 's-rf.jsonl'), 'utf8')
+    expect(raw).toContain('image_ref')
+    expect(raw).toContain(imgPath.replace(/\\/g, '\\\\'))
+    expect(raw).not.toContain(r.blocks![0]!.source.data.slice(0, 20)) // base64 未落盘
+    // 恢复：blocks 内 image_ref 递归转回 ImageBlock
+    const restored = store.restoreFull('s-rf')
+    const tr = restored[0]?.content[0] as { blocks?: Array<{ type: string }> }
+    expect(tr?.blocks?.[0]?.type).toBe('image')
+    rmSync(dir, { recursive: true, force: true })
   })
 })

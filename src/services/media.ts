@@ -145,7 +145,7 @@ export function buildMediaBlock(buf: Buffer, ext: string, name: string): MediaGu
 export const NO_VISION_MESSAGE =
   '当前模型不支持图片输入。可 /model 切换到有视觉能力的模型（自选），或安装图像理解类 MCP server。'
 
-/** 模型视觉能力判定（名称后缀启发式；models.dev 视觉标记通道后置——判定双源里先落地名称侧）。 */
+/** 模型视觉能力判定（名称后缀启发 + 常见视觉系名单——终审 P2-10：gpt-4o/gemini 系名不含 v/vl 后缀会误拦；models.dev 视觉标记通道后置）。 */
 export function isVisionModel(model: string): boolean {
-  return /[-_.]v$|[-_.]\d+v$|[-_.](vl|vision)([-_.]|$)/i.test(model)
+  return /[-_.]v$|[-_.]\d+v$|[-_.](vl|vision)([-_.]|$)|\b4o\b|gemini|claude-\d|glm-4v|qvq|internvl/i.test(model)
 }

@@ -106,7 +106,7 @@ export interface BingProviderOpts {
 export function makeBingProvider(opts: BingProviderOpts = {}): WebSearchProvider {
   const doFetch = opts.fetchImpl ?? ((u: string, i?: RequestInit) => fetch(u, i))
   const fuse = opts.fuse ?? new SearchFuse()
-  const FOOTER = '\n(web_search · cn.bing RSS · 免费 · 结果为个人非商业聚合用途，重度使用可能被风控；高质量搜索可配置搜索 MCP 或 webSearch.provider=zhipu)'
+  const FOOTER = '\n(web_search · cn.bing RSS · 免费 · 不支持时间过滤参数（recency 被忽略，按结果日期自行判断） · 结果为个人非商业聚合用途，重度使用可能被风控；高质量搜索可配置搜索 MCP 或 webSearch.provider=zhipu)'
   return {
     name: 'bing',
     async search({ query, domain }) {
@@ -227,13 +227,15 @@ export function resolveSearchProvider(config: {
 }): WebSearchProvider | null {
   const ws = config.webSearch
   const mcpNames = Object.keys(config.mcpServers ?? {})
-  // ① 搜索 MCP 判定：preferMcp 显式声明 > server 名启发式（search/web/searxng）
+  // ① 搜索 MCP 判定：preferMcp 显式声明 > server 名启发式（终审 P1-2：收紧为 search/searxng——
+  //    裸 'web' 的假阳性方向是"非搜索 server 被判搜索→内置不注册→用户失去搜索"，害处大于收益）
   const explicit = ws?.preferMcp?.filter((n) => mcpNames.includes(n)) ?? []
-  const heuristic = mcpNames.filter((n) => /search|web|searxng/i.test(n))
+  const heuristic = mcpNames.filter((n) => /search|searxng/i.test(n))
   if (explicit.length > 0 || heuristic.length > 0) return null
-  // ③ zhipu 配置后（显式 provider，或 provider 缺省但配了 key）
-  if (ws?.provider === 'zhipu' || (ws?.provider === undefined && ws?.apiKey !== undefined && ws.apiKey !== '')) {
-    return makeZhipuProvider({ apiKey: ws.apiKey ?? '', engine: ws.engine })
+  // ③ zhipu 配置后（显式 provider，或 provider 缺省但配了 key）；终审 P1-3：无 key 回落 bing（D5 承诺）
+  const wantsZhipu = ws?.provider === 'zhipu' || (ws?.provider === undefined && ws?.apiKey !== undefined && ws.apiKey !== '')
+  if (wantsZhipu && ws?.apiKey !== undefined && ws.apiKey !== '') {
+    return makeZhipuProvider({ apiKey: ws.apiKey, engine: ws.engine })
   }
   // ② 默认 bing（零配置零 key）
   return makeBingProvider()

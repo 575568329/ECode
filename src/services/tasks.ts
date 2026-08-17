@@ -69,10 +69,21 @@ export class TaskRegistry {
     let child: ReturnType<typeof spawn>
     try {
       child = spawnShellCommand(command, cwd)
-      // stdio 中转写文件（CC file mode 的简化形态：spawn 后 pipe 到 writeStream）
+      // stdio 中转写文件（终审 P2-4：双流 pipe 同一 writeStream——先 end 的流会关目标丢另一流尾部，
+      // { end: false } + 两个都结束后才关）
       const ws = createWriteStream(outputFile, { flags: 'w' })
-      child.stdout?.pipe(ws)
-      child.stderr?.pipe(ws)
+      let openStreams = 0
+      const pipe = (stream: NodeJS.ReadableStream | null): void => {
+        if (stream === null) return
+        openStreams += 1
+        stream.pipe(ws, { end: false })
+        stream.on('end', () => {
+          openStreams -= 1
+          if (openStreams === 0) ws.end()
+        })
+      }
+      pipe(child.stdout)
+      pipe(child.stderr)
       ws.on('error', () => {})
     } catch (e) {
       return { ok: false, reason: `启动失败：${e instanceof Error ? e.message : String(e)}` }
@@ -92,6 +103,14 @@ export class TaskRegistry {
     child.on('close', (code) => {
       task.status = code === 0 ? 'completed' : code === null ? 'stopped' : 'failed'
       task.exitCode = code
+      // 终审 P1-6：任务完成钩子——装配层接 checkpoint 近修改集快照（后台任务期间改的干净文件盲区收口）
+      if (task.status !== 'stopped') {
+        try {
+          this.onComplete?.({ command: task.command })
+        } catch {
+          // 钩子失败不影响任务状态记录
+        }
+      }
     })
     child.on('error', () => {
       task.status = 'failed'
@@ -99,20 +118,25 @@ export class TaskRegistry {
     return { ok: true, task: { id, outputFile } }
   }
 
-  /** 增量读取：从 consumedOffset（或指定字节 offset）到文件末尾（字节精确，utf8 尾截断容忍）。 */
-  output(id: string, offset?: number, waitMs?: number): TaskOutputResult | { error: string } {
+  /**
+   * 增量读取：从 consumedOffset（或指定字节 offset）到文件末尾。
+   * async + setTimeout 轮询（终审 P1-4：Atomics.wait 同步阻塞会冻结 Ink 渲染与 Ctrl+C 最长 10s）。
+   * newOffset = 文件末尾（终审 P2-3：多字节 UTF-8 中间截断按字符数回算会漂移——按字节末尾对齐，
+   * 残尾的替换符下次重读一次，无害不丢字节）。
+   */
+  async output(id: string, offset?: number, waitMs?: number): Promise<TaskOutputResult | { error: string }> {
     const task = this.tasks.get(id)
     if (task === undefined) return { error: `任务 ${id} 不存在` }
     const read = (): TaskOutputResult => {
-      let text = ''
       const start = offset ?? task.consumedOffset
+      let buf = Buffer.alloc(0)
       try {
-        const buf = readFileSync(task.outputFile)
-        if (buf.length > start) text = buf.subarray(start).toString('utf8')
+        buf = readFileSync(task.outputFile)
       } catch {
         // 文件暂不可读：空输出
       }
-      const newOffset = start + Buffer.byteLength(text, 'utf8')
+      const text = buf.length > start ? buf.subarray(start).toString('utf8') : ''
+      const newOffset = buf.length
       if (offset === undefined) task.consumedOffset = newOffset
       return { output: text, newOffset, status: task.status, exitCode: task.exitCode }
     }
@@ -121,7 +145,7 @@ export class TaskRegistry {
       while (Date.now() < deadline && task.status === 'running') {
         const r = read()
         if (r.output.length > 0) return r
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50) // 同步睡 50ms（无输出重试）
+        await sleep(50)
       }
     }
     return read()
@@ -165,6 +189,11 @@ export class TaskRegistry {
 
   /** 任务完成时补拍快照的钩子注入位（M10-P1-8：后台任务期间改的干净文件无快照的盲区收口）。 */
   onComplete?: (task: { command: string }) => void
+}
+
+/** 异步睡（不阻塞事件循环——Atomics.wait 会冻结渲染线程） */
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
 }
 
 /** 模块级单例（bash 工具/TuiApp/清理钩子共享；测试可 new 独立实例注入） */

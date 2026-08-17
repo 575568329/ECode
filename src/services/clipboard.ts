@@ -45,8 +45,9 @@ export async function readClipboardImage(sessionId: string): Promise<ClipboardIm
       // osascript 读剪贴板图片写文件（AppleScript 一段；失败即无图）
       await execFileAsync('osascript', ['-e', `set theClipboardImage to the clipboard as «class PNGf»`, '-e', `set outFile to open for access POSIX file "${out}" with write permission`, '-e', 'write theClipboardImage to outFile', '-e', 'close access outFile'], { timeout: 10_000 })
     } else {
-      const { stdout } = await execFileAsync('xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o'], { timeout: 10_000, maxBuffer: 10 * 1024 * 1024 })
-      await writeFile(out, stdout, 'binary')
+      // 终审 P1-7：二进制直取 Buffer（utf8 string 中转会破坏 PNG 字节序列）
+      const { stdout } = await execFileAsync('xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o'], { timeout: 10_000, maxBuffer: 10 * 1024 * 1024, encoding: 'buffer' })
+      await writeFile(out, stdout)
     }
     const buf = await readFile(out)
     if (buf.length === 0) return null

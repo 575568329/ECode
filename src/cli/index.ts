@@ -324,6 +324,12 @@ async function main(): Promise<void> {
   })
 
   const deps = makeDeps(config, logger, sessionId)
+  // M10-P3 终审 P1-6：后台任务完成钩子——走近修改集快照兜底（bash 同款语义；无 git 时 warn 跳过）
+  taskRegistry.onComplete = (t) => {
+    void deps.checkpoint
+      ?.snapshot(deps.history.currentSessionId(), [], { tool: `bash-bg:${t.command.slice(0, 40)}` })
+      .catch(() => {})
+  }
   mcpManagerRef = deps.mcpManager
   sessionEndHook = deps.hookRunner
 

@@ -18,8 +18,8 @@ describe('TaskRegistry', () => {
     expect(r.ok).toBe(true)
     if (!r.ok) return
     // 等命令完成（echo 毫秒级；轮询）
-    await waitFor(() => reg.output(r.task.id, 0).status !== 'running', 5000)
-    const out = reg.output(r.task.id)
+    await waitFor(async () => (await reg.output(r.task.id, 0)).status !== 'running', 5000)
+    const out = await reg.output(r.task.id)
     expect(out.status).toBe('completed')
     if ('output' in out) expect(out.output).toContain('hello-task')
   })
@@ -28,11 +28,11 @@ describe('TaskRegistry', () => {
     const reg = new TaskRegistry(dir)
     const r = reg.start('echo line1', process.cwd())
     if (!r.ok) return
-    await waitFor(() => reg.output(r.task.id, 0).status !== 'running', 5000)
-    const first = reg.output(r.task.id)
+    await waitFor(async () => (await reg.output(r.task.id, 0)).status !== 'running', 5000)
+    const first = await reg.output(r.task.id)
     if (!('output' in first)) throw new Error('bad')
     expect(first.output).toContain('line1')
-    const second = reg.output(r.task.id)
+    const second = await reg.output(r.task.id)
     if (!('output' in second)) throw new Error('bad')
     expect(second.output).toBe('') // 已消费，无新输出
   })
@@ -44,9 +44,9 @@ describe('TaskRegistry', () => {
     expect(reg.hasRunning()).toBe(true)
     const stop = reg.stop(r.task.id)
     expect('stopped' in stop && stop.stopped).toBe(true)
-    await waitFor(() => reg.output(r.task.id).status === 'stopped', 5000)
-    expect(reg.output(r.task.id)).toMatchObject({ status: 'stopped' }) // 退出码非 0/null
-    expect('error' in reg.output('nope')).toBe(true)
+    await waitFor(async () => (await reg.output(r.task.id)).status === 'stopped', 5000)
+    expect(await reg.output(r.task.id)).toMatchObject({ status: 'stopped' }) // 退出码非 0/null
+    expect('error' in (await reg.output('nope'))).toBe(true)
   })
 
   it('完成通知：collectNotifications 一次返回后标记（不重复）；running 不通知', async () => {
@@ -54,7 +54,7 @@ describe('TaskRegistry', () => {
     const r = reg.start('echo done-note', process.cwd())
     if (!r.ok) return
     expect(reg.collectNotifications()).toHaveLength(0) // running 不通知
-    await waitFor(() => reg.output(r.task.id, 0).status !== 'running', 5000)
+    await waitFor(async () => (await reg.output(r.task.id, 0)).status !== 'running', 5000)
     const notes = reg.collectNotifications()
     expect(notes).toHaveLength(1)
     expect(notes[0]).toContain(r.task.id)
@@ -88,13 +88,18 @@ describe('bash run_in_background 分流', () => {
   }, 10_000)
 })
 
-function waitFor(cond: () => boolean, ms: number): Promise<void> {
+/** waitFor 支持 async 条件（output 已 async 化——终审 P1-4） */
+function waitFor(cond: () => boolean | Promise<boolean>, ms: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const t0 = Date.now()
     const tick = (): void => {
-      if (cond()) return resolve()
-      if (Date.now() - t0 > ms) return reject(new Error('waitFor 超时'))
-      setTimeout(tick, 50)
+      void Promise.resolve(cond())
+        .then((ok) => {
+          if (ok) return resolve()
+          if (Date.now() - t0 > ms) return reject(new Error('waitFor 超时'))
+          setTimeout(tick, 50)
+        })
+        .catch(reject)
     }
     tick()
   })

@@ -206,7 +206,11 @@ export class FileHistoryStore implements HistoryStore {
         else {
           // M10-P2b：存储态 image_ref → 内存态 ImageBlock（文件缺失降级 TextBlock 占位）
           const msg = parsed as Message
-          const hasRef = msg.content.some((b) => (b as { type?: string }).type === 'image_ref')
+          const hasRef = msg.content.some(
+            (b) =>
+              (b as { type?: string }).type === 'image_ref' ||
+              (b as { type?: string; blocks?: Array<{ type?: string }> }).blocks?.some((m) => m.type === 'image_ref') === true,
+          )
           lines.push(hasRef ? { role: msg.role, content: msg.content.map((b) => fromStorableBlock(b)) } : msg)
         }
       } catch (e) {
@@ -235,10 +239,18 @@ type StorableBlock = Message['content'][number] | ImageRefBlock
 
 function toStorableBlock(b: Message['content'][number]): StorableBlock {
   if (b.type === 'image') {
-    // 粘贴场景带 _path（粘贴目录持久）；无 _path 的图（理论不该有）仍写 base64 兜底不丢内容
+    // _path（read_file 源文件路径/粘贴附件路径）→ image_ref：base64 不进会话文件
     if (b._path !== undefined && b._path !== '') {
       return { type: 'image_ref', path: b._path, media_type: b.source.media_type }
     }
+  }
+  // 终审 P1-1：tool_result.blocks 附着块同样转换（read_file 主路径）
+  if (b.type === 'tool_result' && b.blocks !== undefined && b.blocks.length > 0) {
+    const storableBlocks = b.blocks.map((m) => (m.type === 'image' && m._path !== undefined && m._path !== ''
+      ? ({ type: 'image_ref', path: m._path, media_type: m.source.media_type } as ImageRefBlock)
+      : m))
+    const anyRef = storableBlocks.some((m) => (m as { type?: string }).type === 'image_ref')
+    if (anyRef) return { ...b, blocks: storableBlocks } as StorableBlock & { type: 'tool_result' }
   }
   return b
 }
@@ -246,6 +258,15 @@ function toStorableBlock(b: Message['content'][number]): StorableBlock {
 /** 恢复形态：ImageRef → ImageBlock（按路径重读 base64；失败降级 TextBlock 占位）。 */
 function fromStorableBlock(b: unknown): Message['content'][number] {
   const ref = b as Partial<ImageRefBlock>
+  // tool_result.blocks 内的 image_ref 递归恢复（终审 P1-1）
+  const maybeTR = b as { type?: string; blocks?: unknown[] }
+  if (maybeTR.type === 'tool_result' && Array.isArray(maybeTR.blocks)) {
+    const restored = maybeTR.blocks.map((m) => fromStorableBlock(m))
+    if (restored.some((m) => (m as { type?: string }).type === 'image' || (m as { type?: string }).type === 'text')) {
+      return { ...(b as object), blocks: restored } as Message['content'][number]
+    }
+    return b as Message['content'][number]
+  }
   if (ref.type !== 'image_ref') return b as Message['content'][number]
   if (typeof ref.path !== 'string' || ref.path === '') {
     return { type: 'text', text: '[图片已失效（无路径）]' }

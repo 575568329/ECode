@@ -116,13 +116,11 @@ function makeAfterTools(
         feedback = fb
       }
     }
-    // M10-P3：后台任务 turn 内通知（与 quality feedback 合并注入；去重由 collectNotifications 的 notified 保证）
+    // M10-P3：后台任务 turn 内通知（独立于 quality feedback——终审 P1-5：通知并入 feedback 会
+    // 抑制 autoCommit 并清空文件集，模型编辑恰逢任务完成时提交永久丢失；autoCommit 只看 quality 结果）
     const notes = taskRegistry.collectNotifications()
-    if (notes.length > 0) {
-      feedback = feedback !== undefined ? `${feedback}\n${notes.join('\n')}` : notes.join('\n')
-    }
-    // 终审 P1-5：红灯或熔断不提交
-    if (config.autoCommit === true && feedback === undefined && deps.quality?.lastRoundFailed !== true && !deps.quality?.tripped) {
+    const qualityBlocked = feedback !== undefined || deps.quality?.lastRoundFailed === true || deps.quality?.tripped === true
+    if (config.autoCommit === true && !qualityBlocked) {
       const files = [...editedFilesRef.current]
       editedFilesRef.current.clear()
       if (files.length > 0) {
@@ -138,7 +136,15 @@ function makeAfterTools(
     } else {
       editedFilesRef.current.clear()
     }
-    return feedback !== undefined ? { feedback } : undefined
+    const combined =
+      feedback !== undefined
+        ? notes.length > 0
+          ? `${feedback}\n${notes.join('\n')}`
+          : feedback
+        : notes.length > 0
+          ? notes.join('\n')
+          : undefined
+    return combined !== undefined ? { feedback: combined } : undefined
   }
 }
 
@@ -273,7 +279,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
 
   const submit = async (input: string, display?: string, blocks?: ContentBlock[]): Promise<void> => {
     // M10-P2b：零键位增强——提交文本恰好是存在的图片路径 → 转图片输入（display 保持原文）
-    if (blocks === undefined && /^\s*[^\n]+\.(png|jpe?g|webp|gif)\s*$/i.test(input)) {
+    if (blocks === undefined && display === undefined && /^\s*[^\n]+\.(png|jpe?g|webp|gif)\s*$/i.test(input)) {
       const detected = await imageBlocksFromPaths([input.trim()])
       if (detected.blocks.length > 0) {
         input = `${input.trim()}（已作为图片输入）`
@@ -281,13 +287,16 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       }
     }
     // M10-P2b：粘贴 pending 组装（Alt+V 暂存的图片随本条消息发送）
+    // 终审 P2-7：确认发送才清空暂存——hook 拦截/配置无效的早退路径图片不丢；跳过项提示
     if (blocks === undefined && pendingImagesRef.current.length > 0) {
       const pending = pendingImagesRef.current
-      pendingImagesRef.current = []
       const built = await imageBlocksFromPaths(pending.map((p) => p.path))
+      const skipped = pending.length - built.blocks.length
+      if (skipped > 0) pushNoticeFn('warn', `${skipped} 张粘贴图片未发送（读取失败或超守卫上限）`)
       if (built.blocks.length > 0) {
-        input = `${input}\n${pending.map((p) => p.label).join('\n')}`
+        input = `${input}\n${pending.slice(0, built.blocks.length).map((p) => p.label).join('\n')}`
         blocks = built.blocks
+        pendingImagesRef.current = []
       }
     }
     if (runningRef.current) return

@@ -4,7 +4,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { readFileSync, writeFileSync, copyFileSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { defaultConfigPath } from './config.js'
 
@@ -31,20 +31,26 @@ export async function saveConfigKey(path: string, value: unknown, opts?: { confi
   if (tree === undefined || errors.length > 0) {
     throw new Error(`config 解析失败（保存中止，文件未动）：${file}`)
   }
-  // .bak 一次性备份（已存在不覆盖——保留最早的原始备份）
+  // .bak 一次性备份（终审 P2-1：existsSync 保证真一次性——保留最早的原始备份不被覆盖）
+  const bak = `${file}.bak`
   try {
-    copyFileSync(file, `${file}.bak`)
+    if (!existsSync(bak)) copyFileSync(file, bak)
   } catch {
-    // 已存在或不可写：不阻断
+    // 不可写：不阻断
   }
   const jsonPath = path.split('.')
   const edited = modify(text, jsonPath, value, { formattingOptions: { insertSpaces: true, tabSize: 2 } })
   const out = applyEdits(text, edited)
   writeFileSync(file, out, 'utf8')
-  // 写后校验可解析（防写坏）
+  // 写后校验可解析（终审 P2-2：失败自动从 .bak 回滚——不留写坏状态给用户）
   const checkErrors: import('jsonc-parser').ParseError[] = []
   const check = parse(out, checkErrors)
   if (check === undefined || checkErrors.length > 0) {
-    throw new Error('保存后校验失败（文件可能已写坏——请用 .bak 恢复）')
+    try {
+      copyFileSync(bak, file)
+    } catch {
+      // 回滚失败（无 .bak 等）：报错指路
+    }
+    throw new Error('保存后校验失败（已尝试从 .bak 回滚——请检查文件状态）')
   }
 }

@@ -40,6 +40,8 @@ export const readFileTool: Tool = {
         }
         const guard = buildMediaBlock(buf, ext, rel)
         if (!guard.ok) return { content: guard.reason, is_error: true }
+        // 终审 P1-1：带 _path——history 落盘转 image_ref（base64 不进会话文件，主路径同粘贴路径）
+        if (guard.block.type === 'image') guard.block._path = abs
         return {
           content: guard.block.type === 'image' ? `已读取图片 ${rel}（内容见附图）` : `已读取 PDF ${rel}（内容见附件文档）`,
           blocks: [guard.block],

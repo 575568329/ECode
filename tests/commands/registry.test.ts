@@ -116,11 +116,11 @@ describe('/config 平台判断', () => {
     expect(r.get('config')).toBeDefined()
   })
 
-  it('linux 不注册 /config（无可靠 opener，用 /setup）', () => {
+  it('/config 全平台注册（M10-P2 面板无平台依赖；explorer 逃生口才限桌面）', () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
     const r = new CommandRegistry()
     registerBuiltinCommands(r)
-    expect(r.get('config')).toBeUndefined()
+    expect(r.get('config')).toBeDefined() // 面板全平台（v1.9）
   })
 })
 

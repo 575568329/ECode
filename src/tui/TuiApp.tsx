@@ -51,6 +51,8 @@ import { QuestionPanel } from './QuestionPanel.js'
 import { WarningsPanel } from './WarningsPanel.js'
 import { RewindPanel } from './RewindPanel.js'
 import { SandboxPanel } from './SandboxPanel.js'
+import { ConfigPanel, type ConfigItem } from './ConfigPanel.js'
+import { saveConfigKey } from '../services/configFs.js'
 import { makeSandbox, nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
 import { setPermissionAsker } from '../services/permissions.js'
 import { ecodeCommit, undoEcodeCommit } from '../services/git.js'
@@ -94,6 +96,16 @@ export interface TuiAppDeps {
   pluginLoader?: import('../services/plugin/loader.js').PluginLoader | null
   /** /restart 的执行句柄（cli 注入：unmount + spawn 新实例 + exit；缺省时提示不可用） */
   onRestart?: () => void
+}
+
+/** M10-P2：常规页可编辑项（从 config 派生；值展示 + 档位循环） */
+function generalConfigItems(config: import('../services/config.js').Config): ConfigItem[] {
+  return [
+    { key: 'maxIterations', label: 'maxIterations（每轮最大迭代）', value: String(config.maxIterations), options: ['20', '50', '100', '200'], kind: 'enum' },
+    { key: 'autoCommit', label: 'autoCommit（编辑轮末自动 git 提交）', value: String(config.autoCommit === true), options: ['false', 'true'], kind: 'toggle' },
+    { key: 'webSearch.provider', label: 'webSearch.provider（搜索引擎）', value: config.webSearch?.provider ?? 'bing', options: ['bing', 'zhipu'], kind: 'enum' },
+    { key: 'lintCommand', label: 'lintCommand（空=自动探测）', value: config.lintCommand ?? '', kind: 'readonly' },
+  ]
 }
 
 /** M10-P2b：磁盘图片路径 → ImageBlock[]（守卫失败降级文本提示，不阻断提交） */
@@ -198,6 +210,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     | { kind: 'warnings-panel' }
     | { kind: 'rewind-panel' }
     | { kind: 'sandbox-panel' }
+    | { kind: 'config-panel' }
     | { kind: 'select'; title: string; options: string[]; resolve: (v: string | undefined) => void }
     // M8 ask_user：工具发起的提问面板（Promise 桥——resolve 回工具 execute）
     | { kind: 'question-panel'; questions: AskUserQuestion[]; resolve: (r: AskUserResult) => void }
@@ -1039,6 +1052,31 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           }}
         />
       )}
+      {overlay?.kind === 'config-panel' && (
+        <ConfigPanel
+          current={{ provider: config.current.name, model: config.current.model }}
+          providers={Object.entries(config.providers).map(([name, p]) => ({
+            name,
+            type: p.type,
+            models: p.models,
+            baseURL: p.baseURL,
+            hasKey: p.apiKey !== undefined && p.apiKey !== '',
+          }))}
+          general={generalConfigItems(config)}
+          onSave={async (key, value) => {
+            try {
+              await saveConfigKey(key, value)
+              pushNoticeFn('info', `已保存 ${key}（落盘为启动默认；当前会话不受影响，重启或 /restart 生效）`)
+            } catch (e) {
+              pushNoticeFn('warn', `保存失败：${e instanceof Error ? e.message : String(e)}`)
+            }
+          }}
+          onClose={() => {
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+        />
+      )}
       {overlay?.kind === 'sandbox-panel' && (
         <SandboxPanel
           current={sandboxMode}
@@ -1179,6 +1217,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           if (result.action === 'open-warnings-panel') {
             pickerRef.current = true
             setOverlay({ kind: 'warnings-panel' })
+            return
+          }
+          if (result.action === 'open-config-panel') {
+            pickerRef.current = true
+            setOverlay({ kind: 'config-panel' })
             return
           }
           if (result.action === 'git-undo') {

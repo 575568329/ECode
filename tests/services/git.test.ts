@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // 全量并发下 git 子进程慢（M9 问题清单已知项）：本文件放宽超时，根治偶发
-vi.setConfig({ testTimeout: 30_000 })
+vi.setConfig({ testTimeout: 60_000 }) // 全量并发饥饿偶发（单跑恒绿）；CI 化时 --no-file-parallelism 根治
 import { ecodeCommit, lastCommitIsEcode, undoEcodeCommit, isGitRepo, TEST_GIT_ENV } from '../../src/services/git.js'
 
 const execFileAsync = promisify(execFile)

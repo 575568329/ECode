@@ -5,12 +5,9 @@
  * 命令的副作用通过 action 字段交回调用方（InputStream/App）解释，保持 registry 纯逻辑。
  */
 
-import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { sep } from 'node:path'
-import * as path from 'node:path'
-import { defaultConfigPath } from '../services/config.js'
 
 /** 命令执行结果：输出文本（给用户）+ 可选副作用 action */
 export interface CommandResult {
@@ -36,6 +33,7 @@ export interface CommandResult {
     | 'open-rewind-panel'
     | 'open-sandbox-panel'
     | 'git-undo'
+    | 'open-config-panel'
     | 'restart'
     | 'inject-prompt'
 }
@@ -184,28 +182,12 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     description: '重启 ECode（改 config/hooks 后生效用；会话历史保留，/history 可恢复）',
     run: () => ({ action: 'restart' as const }),
   })
-  // /config：仅桌面平台注册（win32=explorer / darwin=open；linux·WSL 无可靠 opener → 用 /setup）
-  if (process.platform === 'win32' || process.platform === 'darwin') {
-    registry.register({
-      name: 'config',
-      description: '打开配置文件夹',
-      run: () => {
-        const dir = path.dirname(defaultConfigPath())
-        const cmd = process.platform === 'win32' ? 'explorer' : 'open'
-        try {
-          // P1-11：spawn 失败（ENOENT 等）异步发 'error'，必须有监听否则 uncaughtException → exit
-          const child = spawn(cmd, [dir], { detached: true, stdio: 'ignore' })
-          child.on('error', (e) => {
-            process.stderr.write(`[CONFIG] 打开文件夹失败（${cmd} 未找到？）：${e.message}\n`)
-          })
-          child.unref()
-        } catch (e) {
-          return { output: `打开配置文件夹失败：${e instanceof Error ? e.message : String(e)}` }
-        }
-        return { output: '已打开 ~/.ecode 配置文件夹（编辑后重启生效）' }
-      },
-    })
-  }
+  // /config：面板全平台（v1.9——explorer 逃生口才限桌面平台，面板本身无平台依赖）
+  registry.register({
+    name: 'config',
+    description: '配置面板（三页签可视化改；jsonc 非破坏保存；/model 仍是会话内切换）',
+    run: () => ({ action: 'open-config-panel' as const }),
+  })
 }
 
 /**

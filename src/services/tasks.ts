@@ -76,11 +76,15 @@ export class TaskRegistry {
       const pipe = (stream: NodeJS.ReadableStream | null): void => {
         if (stream === null) return
         openStreams += 1
-        stream.pipe(ws, { end: false })
-        stream.on('end', () => {
+        const done = (): void => {
           openStreams -= 1
           if (openStreams === 0) ws.end()
-        })
+        }
+        stream.pipe(ws, { end: false })
+        stream.on('end', done)
+        // 复审 P2-5：流 error 不 emit end——计数不归零则 ws 永不 close（fd 泄漏+事件循环保活）
+        stream.on('close', done)
+        stream.on('error', done)
       }
       pipe(child.stdout)
       pipe(child.stderr)
@@ -122,7 +126,7 @@ export class TaskRegistry {
    * 增量读取：从 consumedOffset（或指定字节 offset）到文件末尾。
    * async + setTimeout 轮询（终审 P1-4：Atomics.wait 同步阻塞会冻结 Ink 渲染与 Ctrl+C 最长 10s）。
    * newOffset = 文件末尾（终审 P2-3：多字节 UTF-8 中间截断按字符数回算会漂移——按字节末尾对齐，
-   * 残尾的替换符下次重读一次，无害不丢字节）。
+   * 多字节字符跨读边界会产替换符（解码文本失真但文件字节不丢，日志场景容忍））。
    */
   async output(id: string, offset?: number, waitMs?: number): Promise<TaskOutputResult | { error: string }> {
     const task = this.tasks.get(id)

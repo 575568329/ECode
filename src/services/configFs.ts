@@ -44,7 +44,7 @@ export async function saveConfigKey(path: string, value: unknown, opts?: { confi
   writeFileSync(file, out, 'utf8')
   // 写后校验可解析（终审 P2-2：失败自动从 .bak 回滚——不留写坏状态给用户）
   const checkErrors: import('jsonc-parser').ParseError[] = []
-  const check = parse(out, checkErrors)
+  const check = parse(out, checkErrors, { allowTrailingComma: true }) // 复审 P1-A：与预检选项对称（默认模板自带尾逗号，缺此选项必误判写坏→误回滚丢编辑）
   if (check === undefined || checkErrors.length > 0) {
     try {
       copyFileSync(bak, file)

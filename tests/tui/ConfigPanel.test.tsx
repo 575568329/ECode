@@ -91,6 +91,18 @@ describe('saveConfigKey（jsonc 非破坏，真文件）', () => {
     expect(bak).toContain('"model": "glm-4.6"')
     rmSync(dir, { recursive: true, force: true })
   })
+  it('复审 P1-A：默认 CONFIG_TEMPLATE（含尾逗号形态）落盘后可正常保存不误回滚', async () => {
+    const { CONFIG_TEMPLATE } = await import('../../src/services/config.js')
+    const dir = mkdtempSync(join(tmpdir(), 'ecode-cfg3-'))
+    const file = join(dir, 'config.json')
+    writeFileSync(file, CONFIG_TEMPLATE, 'utf8')
+    await saveConfigKey('maxIterations', 80, { configPath: file })
+    const out = readFileSync(file, 'utf8')
+    expect(out).toContain('"maxIterations": 80')
+    expect(out).toContain('// ') // 注释保留
+    rmSync(dir, { recursive: true, force: true })
+  })
+
   it('损坏 config → 抛错且文件不动', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ecode-cfg2-'))
     const file = join(dir, 'config.json')

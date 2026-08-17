@@ -98,7 +98,7 @@ export function defaultConfigPath(): string {
 }
 
 /** 首次运行自动生成的模板（JSONC，带注释引导；§4.4）。 */
-const CONFIG_TEMPLATE = `{
+export const CONFIG_TEMPLATE = `{
   // ECode 配置（首次启动自动生成）。编辑后重启生效，或运行时 /model 切换、/setup 重配。
   // 启动默认选中的 供应商+模型
   "default": { "provider": "astron", "model": "glm-5.2" },
@@ -151,7 +151,7 @@ const CONFIG_TEMPLATE = `{
   "sandbox": { "defaultMode": "default", "blockedCommands": ["git push --force*", "npm publish*"] },
   "autoCommit": false, // M9：编辑轮末自动 git commit（默认关；/undo 只退 ECode 提交）
   // M10：联网搜索（缺省 bing RSS 免费零配置；配了搜索类 MCP 可 preferMcp 声明其名；质量增强可切 zhipu）
-  "webSearch": { "provider": "bing" },
+  "webSearch": { "provider": "bing" }
   // "logLevel": "info",       // 日志级别：debug | info | warn | error
   // "maxInstructionsKB": 32,  // 指令/记忆注入单级上限 KB（ECODE.md/CLAUDE.md/MEMORY.md）
   // "webFetchMaxKB": 30,      // web_fetch 回喂内容上限 KB（头尾中截）

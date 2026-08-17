@@ -18,7 +18,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { isMessageLine, type BoundaryLine, type HistoryLine, type Message, type RewindLine, type ImageBlock, type ImageRefBlock } from '../core/types.js'
+import { isMessageLine, type BoundaryLine, type HistoryLine, type Message, type RewindLine, type ImageBlock, type DocumentBlock, type ImageRefBlock } from '../core/types.js'
 import { readFileSync } from 'node:fs'
 
 export interface SessionMeta {
@@ -258,12 +258,30 @@ function toStorableBlock(b: Message['content'][number]): StorableBlock {
 /** 恢复形态：ImageRef → ImageBlock（按路径重读 base64；失败降级 TextBlock 占位）。 */
 function fromStorableBlock(b: unknown): Message['content'][number] {
   const ref = b as Partial<ImageRefBlock>
-  // tool_result.blocks 内的 image_ref 递归恢复（终审 P1-1）
-  const maybeTR = b as { type?: string; blocks?: unknown[] }
+  // tool_result.blocks 内的 image_ref 递归恢复（终审 P1-1；复审 P2-6：降级文本并入 content
+  // 字符串而非塞进 blocks——blocks 类型只允图片/文档，OpenAI 翻译器会静默丢弃 blocks 内 text）
+  const maybeTR = b as { type?: string; blocks?: unknown[]; content?: string }
   if (maybeTR.type === 'tool_result' && Array.isArray(maybeTR.blocks)) {
-    const restored = maybeTR.blocks.map((m) => fromStorableBlock(m))
-    if (restored.some((m) => (m as { type?: string }).type === 'image' || (m as { type?: string }).type === 'text')) {
-      return { ...(b as object), blocks: restored } as Message['content'][number]
+    let degraded = ''
+    const restoredBlocks: Array<ImageBlock | DocumentBlock> = []
+    for (const m of maybeTR.blocks) {
+      const r = fromStorableBlock(m)
+      if ((r as { type?: string }).type === 'text') {
+        degraded += `${degraded === '' ? '' : '\n'}${(r as { text: string }).text}`
+      } else if ((r as { type?: string }).type === 'image' || (r as { type?: string }).type === 'document') {
+        restoredBlocks.push(r as ImageBlock | DocumentBlock)
+      }
+    }
+    const changed =
+      degraded !== '' ||
+      restoredBlocks.length !== maybeTR.blocks.length ||
+      maybeTR.blocks.some((m) => (m as { type?: string }).type === 'image_ref') // 全部成功转换时数量也相等——须显式看是否有 ref 被换掉
+    if (changed) {
+      const base = { ...(b as object) } as Record<string, unknown>
+      if (degraded !== '') base.content = `${maybeTR.content ?? ''}\n${degraded}`
+      if (restoredBlocks.length > 0) base.blocks = restoredBlocks
+      else delete base.blocks
+      return base as unknown as Message['content'][number]
     }
     return b as Message['content'][number]
   }

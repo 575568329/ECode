@@ -147,5 +147,10 @@ export const NO_VISION_MESSAGE =
 
 /** 模型视觉能力判定（名称后缀启发 + 常见视觉系名单——终审 P2-10：gpt-4o/gemini 系名不含 v/vl 后缀会误拦；models.dev 视觉标记通道后置）。 */
 export function isVisionModel(model: string): boolean {
-  return /[-_.]v$|[-_.]\d+v$|[-_.](vl|vision)([-_.]|$)|\b4o\b|gemini|claude-\d|glm-4v|qvq|internvl/i.test(model)
+  // 复审 P2-4：claude 现行命名（sonnet-4-5/opus-4-1）不含单 digit 后不匹配 \d——名单式收紧；gemini 排除 embedding
+  return (
+    /[-_.]v$|[-_.]\d+v$|[-_.](vl|vision)([-_.]|$)|\b4o\b|\bgpt-(4o|5|5\d)|glm-4v|qvq|internvl/i.test(model) ||
+    /claude-(3|opus|sonnet|haiku|\d)/i.test(model) ||
+    /gemini-(?!embedding)/i.test(model)
+  )
 }

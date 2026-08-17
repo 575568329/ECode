@@ -286,17 +286,20 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         blocks = detected.blocks
       }
     }
-    // M10-P2b：粘贴 pending 组装（Alt+V 暂存的图片随本条消息发送）
-    // 终审 P2-7：确认发送才清空暂存——hook 拦截/配置无效的早退路径图片不丢；跳过项提示
+    // M10-P2b：粘贴 pending 组装（Alt+V 暂存的图片随本条消息发送）。
+    // 复审 P2-2/3：只做构建与标注，**不清空暂存**——清空移到所有早退守卫之后（hook 拦截/配置无效
+    // /运行中早退路径图片不丢）；label 按实际构建成功的项对位（过滤式收集不假设前缀对应）
     if (blocks === undefined && pendingImagesRef.current.length > 0) {
       const pending = pendingImagesRef.current
       const built = await imageBlocksFromPaths(pending.map((p) => p.path))
+      const okLabels = pending
+        .filter((p) => built.blocks.some((b) => b._path === p.path))
+        .map((p) => p.label)
       const skipped = pending.length - built.blocks.length
-      if (skipped > 0) pushNoticeFn('warn', `${skipped} 张粘贴图片未发送（读取失败或超守卫上限）`)
+      if (skipped > 0) pushNoticeFn('warn', `${skipped} 张粘贴图片读取失败/超守卫被跳过（其余正常发送）`)
       if (built.blocks.length > 0) {
-        input = `${input}\n${pending.slice(0, built.blocks.length).map((p) => p.label).join('\n')}`
+        input = `${input}\n${okLabels.join('\n')}`
         blocks = built.blocks
-        pendingImagesRef.current = []
       }
     }
     if (runningRef.current) return
@@ -349,6 +352,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     // 新轮：userInput 乐观显示 + streaming=true（流式灰字）。
     // display（S4.4 最小 display/content 分离）：手动 skill 触发时输入框/转录显示原始
     // `/name args`，消息本体是展开全文（runLoop 的 userInput 必须传全文，防 alreadyUser 双推）
+    // M10-P2b 复审 P2-2：到此消息确认发送（所有早退守卫已过）——粘贴暂存此刻清空
+    pendingImagesRef.current = []
     setActive({ ...createActive(), userInput: display ?? input, streaming: true })
     setError(null)
     setActivity({ state: 'thinking' })

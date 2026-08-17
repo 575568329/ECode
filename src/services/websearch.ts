@@ -156,6 +156,24 @@ interface ZhipuResponse {
   search_result?: Array<{ title?: string; link?: string; content?: string; media?: string; publish_date?: string }>
 }
 
+/** 显式 zhipu 缺 key 的回落 bing（首搜 footer 提示一次——D5"回落并提示"的提示半边） */
+function makeFallbackNotifiedBing(): WebSearchProvider {
+  const inner = makeBingProvider()
+  let notified = false
+  return {
+    name: 'bing',
+    async search(params) {
+      const r = await inner.search(params)
+      if (!notified) {
+        notified = true
+        return { results: r.results, footer: `${r.footer}
+（提示：webSearch.provider=zhipu 未生效——缺 apiKey，已回落免费 bing 引擎；配置 webSearch.apiKey 后重启生效）` }
+      }
+      return r
+    },
+  }
+}
+
 /** zhipu provider（可选质量层；v1.1 已核实规格） */
 export function makeZhipuProvider(opts: ZhipuProviderOpts): WebSearchProvider {
   const doFetch = opts.fetchImpl ?? ((u: string, i?: RequestInit) => fetch(u, i))
@@ -230,12 +248,16 @@ export function resolveSearchProvider(config: {
   // ① 搜索 MCP 判定：preferMcp 显式声明 > server 名启发式（终审 P1-2：收紧为 search/searxng——
   //    裸 'web' 的假阳性方向是"非搜索 server 被判搜索→内置不注册→用户失去搜索"，害处大于收益）
   const explicit = ws?.preferMcp?.filter((n) => mcpNames.includes(n)) ?? []
-  const heuristic = mcpNames.filter((n) => /search|searxng/i.test(n))
+  const heuristic = mcpNames.filter((n) => /(^|[-_/.])(search|searxng)/i.test(n)) // 复审 P2-7：词首限定——research-* 类前缀名不误判
   if (explicit.length > 0 || heuristic.length > 0) return null
   // ③ zhipu 配置后（显式 provider，或 provider 缺省但配了 key）；终审 P1-3：无 key 回落 bing（D5 承诺）
   const wantsZhipu = ws?.provider === 'zhipu' || (ws?.provider === undefined && ws?.apiKey !== undefined && ws.apiKey !== '')
   if (wantsZhipu && ws?.apiKey !== undefined && ws.apiKey !== '') {
     return makeZhipuProvider({ apiKey: ws.apiKey, engine: ws.engine })
+  }
+  // 复审 P1-B：D5"回落并提示"的提示半边——显式选 zhipu 但缺 key 静默换引擎是预期错位
+  if (ws?.provider === 'zhipu') {
+    return makeFallbackNotifiedBing()
   }
   // ② 默认 bing（零配置零 key）
   return makeBingProvider()

@@ -34,7 +34,7 @@ export interface ToolContext {
   sandbox?: import('../services/sandbox.js').Sandbox
   /**
    * M10-P0：当前模型名（无视觉能力守卫——read_file 读图前查 isVisionModel）。
-   * 宿主装配注入；缺省 = 不拦截（向后兼容）。
+   * 宿主装配注入；缺省空串 = 拦截（fail-closed——无模型信息时不放行图片，宁拦勿错）。
    */
   model?: string
 }

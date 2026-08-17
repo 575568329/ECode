@@ -102,9 +102,22 @@ describe('resolveSearchProvider（三层判定）', () => {
     expect(resolveSearchProvider({ mcpServers: { 'webpack-build': {} } })?.name).toBe('bing')
     expect(resolveSearchProvider({ mcpServers: { 'web-fetch': {} } })?.name).toBe('bing')
   })
-  it('终审 P1-3：显式 zhipu 但无 apiKey → 回落 bing（D5）', () => {
+  it('终审 P1-3：显式 zhipu 但无 apiKey → 回落 bing（D5）', async () => {
     expect(resolveSearchProvider({ webSearch: { provider: 'zhipu' } })?.name).toBe('bing')
     expect(resolveSearchProvider({ webSearch: { provider: 'zhipu', apiKey: '' } })?.name).toBe('bing')
+    // 复审 P1-B：回落 bing 的首搜 footer 带一次性提示（D5"并提示"半边）
+    const p = resolveSearchProvider({ webSearch: { provider: 'zhipu' } })
+    expect(p).not.toBeNull()
+    if (p !== null) {
+      const r = await p.search({ query: 'x' })
+      expect(r.footer).toContain('未生效')
+      expect(r.footer).toContain('webSearch.apiKey')
+      const r2 = await p.search({ query: 'y' })
+      expect(r2.footer).not.toContain('未生效') // 只提示一次
+    }
+  })
+  it('复审 P2-7：research- 类前缀 server 名不误判（词首限定）', () => {
+    expect(resolveSearchProvider({ mcpServers: { 'research-index': {} } })?.name).toBe('bing')
   })
   it('默认零配置 → bing；显式 zhipu 或配了 key → zhipu', () => {
     expect(resolveSearchProvider({})?.name).toBe('bing')

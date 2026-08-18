@@ -204,19 +204,22 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   const pendingSessionCtxRef = useRef<string[]>([])
   // M9-P6：本轮编辑文件集（onBeforeWrite 收集；autoCommit 开启时轮末提交+清空）
   const editedFilesRef = useRef<Set<string>>(new Set())
-  // M10-P2b：待发送的粘贴图片（Alt+V 落盘后的路径；submit 时组装 blocks 并清空）
-  const pendingImagesRef = useRef<Array<{ path: string; label: string }>>([])
+  // M10-P2b：待发送的粘贴图片（Alt+V 落盘后的路径；submit 时组装 blocks 并清空）。
+  // 修复批 ref→state：附件行常驻输入区渲染（随粘贴出现随发送消失），取代原 systemMsgs 一次性
+  // 提示——后者发送后仍挂着"随下一条消息发送"的过期文案（生命周期与数据脱节）
+  const [pendingImages, setPendingImages] = useState<Array<{ path: string; label: string }>>([])
 
-  /** M10-P2b：Alt+V 粘贴——读剪贴板图落附件目录，占位符提示（无图静默一行提示） */
+  /** M10-P2b：Alt+V 粘贴——读剪贴板图落附件目录，附件行即时显示（无图一行提示） */
   const pasteImageFromClipboard = async (): Promise<void> => {
     const img = await readClipboardImage(deps.history.currentSessionId())
     if (img === null) {
       setSystemMsgs(['剪贴板无图片（或读取失败）'])
       return
     }
-    const label = `[图片#${pendingImagesRef.current.length + 1} PNG ${(img.bytes / 1024).toFixed(1)}KB]`
-    pendingImagesRef.current.push({ path: img.path, label })
-    setSystemMsgs([`已粘贴 ${label} —— 随下一条消息发送`])
+    setPendingImages((prev) => {
+      const label = `[图片#${prev.length + 1} PNG ${(img.bytes / 1024).toFixed(1)}KB]`
+      return [...prev, { path: img.path, label }]
+    })
   }
   // M9-P4：沙箱模式（会话级不落盘；初始取 config.sandbox.defaultMode，default=现状=关）
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>(
@@ -289,8 +292,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     // M10-P2b：粘贴 pending 组装（Alt+V 暂存的图片随本条消息发送）。
     // 复审 P2-2/3：只做构建与标注，**不清空暂存**——清空移到所有早退守卫之后（hook 拦截/配置无效
     // /运行中早退路径图片不丢）；label 按实际构建成功的项对位（过滤式收集不假设前缀对应）
-    if (blocks === undefined && pendingImagesRef.current.length > 0) {
-      const pending = pendingImagesRef.current
+    if (blocks === undefined && pendingImages.length > 0) {
+      const pending = pendingImages
       const built = await imageBlocksFromPaths(pending.map((p) => p.path))
       const okLabels = pending
         .filter((p) => built.blocks.some((b) => b._path === p.path))
@@ -298,7 +301,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       const skipped = pending.length - built.blocks.length
       if (skipped > 0) pushNoticeFn('warn', `${skipped} 张粘贴图片读取失败/超守卫被跳过（其余正常发送）`)
       if (built.blocks.length > 0) {
-        input = `${input}\n${okLabels.join('\n')}`
+        // 空文本（纯图发送）时标签即消息文本，避免开头空行；非空则标签拼在文末（转录可见）
+        input = input === '' ? okLabels.join('\n') : `${input}\n${okLabels.join('\n')}`
         blocks = built.blocks
       }
     }
@@ -352,8 +356,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     // 新轮：userInput 乐观显示 + streaming=true（流式灰字）。
     // display（S4.4 最小 display/content 分离）：手动 skill 触发时输入框/转录显示原始
     // `/name args`，消息本体是展开全文（runLoop 的 userInput 必须传全文，防 alreadyUser 双推）
-    // M10-P2b 复审 P2-2：到此消息确认发送（所有早退守卫已过）——粘贴暂存此刻清空
-    pendingImagesRef.current = []
+    // M10-P2b 复审 P2-2：到此消息确认发送（所有早退守卫已过）——粘贴暂存此刻清空（附件行随之消失）
+    setPendingImages([])
     setActive({ ...createActive(), userInput: display ?? input, streaming: true })
     setError(null)
     setActivity({ state: 'thinking' })
@@ -546,6 +550,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     }
     setActive(createActive())
     setSystemMsgs([])
+    setPendingImages([]) // M10 修复批：换会话不带旧会话的待发送附件
     setTokens(0)
     setSessionCost(0)
     setIter(undefined)
@@ -1173,6 +1178,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       )}
       <InputStream
         onSubmit={submit}
+        attachments={pendingImages.map((p) => p.label)}
         onPasteImage={() => {
           void pasteImageFromClipboard()
         }}

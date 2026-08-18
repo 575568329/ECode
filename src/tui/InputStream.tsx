@@ -88,6 +88,9 @@ interface InputStreamProps {
   onTabSandbox?: () => void
   /** M10-P2b：Alt+V 粘贴剪贴板图片（图片数据不走 stdin，须专用键位主动读系统剪贴板） */
   onPasteImage?: () => void
+  /** M10 修复批：待发送图片标签（Alt+V 暂存）——常驻输入区附件行，随粘贴出现随发送消失；
+   * 非空时空文本回车放行（图片本身即合法消息内容，不强制配文字） */
+  attachments?: string[]
 }
 
 /**
@@ -106,6 +109,7 @@ export function InputStream({
   insert,
   onTabSandbox,
   onPasteImage,
+  attachments,
 }: InputStreamProps): ReactElement {
   const [cur, setCur] = useState<CursorState>(() => createCursor(''))
   const [history, setHistory] = useState<string[]>([])
@@ -130,7 +134,8 @@ export function InputStream({
 
   const submit = (text: string): void => {
     const trimmed = text.trim()
-    if (trimmed === '') return
+    // 空文本拦截——除非有待发送附件（图片本身即消息内容，允许空文本+图直接回车）
+    if (trimmed === '' && (attachments === undefined || attachments.length === 0)) return
     if (trimmed.startsWith('/')) {
       const sp = trimmed.indexOf(' ')
       const name = sp === -1 ? trimmed.slice(1) : trimmed.slice(1, sp)
@@ -155,7 +160,8 @@ export function InputStream({
       }
     } else {
       onSubmit(trimmed)
-      setHistory((h) => [...h, trimmed])
+      // 空文本（纯附件发送）不进历史——↑ 翻出空条目没有意义
+      if (trimmed !== '') setHistory((h) => [...h, trimmed])
     }
     setCur(createCursor(''))
     setHistIdx(-1)
@@ -217,6 +223,13 @@ export function InputStream({
 
   return (
     <Box flexDirection="column">
+      {attachments !== undefined && attachments.length > 0 && (
+        <Box paddingLeft={2}>
+          <Text dimColor>
+            {attachments.join('  ')} <Text italic>（回车随消息发送）</Text>
+          </Text>
+        </Box>
+      )}
       <TextInput
         value={cur.text}
         caret={cur.caret}

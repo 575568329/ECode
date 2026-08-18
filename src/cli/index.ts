@@ -175,7 +175,9 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
       config.sandbox?.blockedCommands ?? [],
     ),
     cwd: process.cwd(),
-    registry: toolReg,
+    // 审阅 P1-3：传 hookedTools（HookedToolRegistry）——子代理工具调用过 PreToolUse/PostToolUse/
+    // 权限门（get 返回 hook 包装版；SubRegistry 是过滤视图不剥装饰）
+    registry: hookedTools,
     projectInstructions: loadInstructions()
       .filter((b) => b.source.startsWith('项目级'))
       .map((b) => b.content)

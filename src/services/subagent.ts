@@ -21,7 +21,6 @@ import { runLoop, type LoopRunOptions } from '../core/loop.js'
 import type { HistoryLine, ToolUseBlock } from '../core/types.js'
 import type { LLMProvider, ProviderReq } from '../providers/interface.js'
 import type { Tool, ToolContext, ToolRegistry } from '../tools/interface.js'
-import { ToolRegistryImpl } from '../tools/registry.js'
 import type { Logger } from './logger.js'
 import { NoopHistoryStore } from './history.js'
 import { CompactionOrchestrator } from './compaction/orchestrator.js'
@@ -35,8 +34,6 @@ const SUB_MAX_ITERATIONS = 25
 const SUB_TIMEOUT_MS = 10 * 60_000
 /** 返回结论截断（方案 D12；CC 100k 太宽） */
 const RESULT_MAX_BYTES = 16 * 1024
-/** 进度缓冲环形上限（UI 折叠行 + Ctrl+O 展开尾部窗数据源） */
-const PROGRESS_MAX = 50
 /** 子代理禁配清单（D3/D4/D20：递归封顶 + 交互权归主 + 清单主权归主） */
 const EXCLUDED_TOOLS = new Set(['task', 'ask_user', 'todo'])
 
@@ -65,6 +62,15 @@ export interface SubagentBridge {
   confirm: (use: ToolUseBlock) => Promise<boolean>
   warn?: (msg: string) => void
   usage?: (inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }) => void
+  /** 审阅 P0-2：写前钩子（TuiApp 版含 editedFilesRef 归主——父轮末 autoCommit 提交集；
+   * cli deps 的 onBeforeWrite 只做快照，够不到 TuiApp 闭包，故必经桥） */
+  onBeforeWrite?: (paths: string[], tool: string, toolUseId?: string) => Promise<void>
+  /** 审阅 P1-1/P1-2：运行态 getter——TuiApp 挂（/model·/config 运行中切换、Tab 切沙箱档后
+   * 子代理取新值；缺省回退 deps 静态值=argv 单次模式） */
+  getProviderReq?: () => ProviderReq
+  getProvider?: () => LLMProvider
+  getSandbox?: () => import('./sandbox.js').Sandbox
+  getModel?: () => string
 }
 
 let bridge: SubagentBridge | null = null
@@ -129,15 +135,48 @@ export function makeAgentLogger(base: Logger, agentId: string): Logger {
   }
 }
 
-/** 裁剪版 Registry：主 registry 现取现建，排除禁配清单（+explore 型再排非 readonly）。 */
-export function buildSubRegistry(parent: ToolRegistry, type: SubagentType): ToolRegistry {
-  const reg = new ToolRegistryImpl()
-  for (const t of parent.list()) {
-    if (EXCLUDED_TOOLS.has(t.name)) continue
-    if (type === 'explore' && !t.readonly) continue
-    reg.register(t)
+/**
+ * 裁剪 Registry：父表的**过滤视图**（审阅 P1-3——不是重注册裸工具的复制表）：
+ * get 走父 registry（HookedToolRegistry.get 返回 hook 包装版——子代理工具调用过
+ * PreToolUse/PostToolUse/权限门，与主循环一致）；禁配名单物理不可见（递归封顶）；
+ * MCP/plugin 运行期注册天然现取（视图无快照漂移）。
+ */
+export class SubRegistry implements ToolRegistry {
+  constructor(
+    private readonly parent: ToolRegistry,
+    private readonly type: SubagentType,
+  ) {}
+
+  register(): void {
+    // 视图只读——子代理不引入新工具
   }
-  return reg
+  unregister(): void {
+    // 同上
+  }
+  get(name: string): Tool | undefined {
+    if (EXCLUDED_TOOLS.has(name)) return undefined
+    const t = this.parent.get(name)
+    if (t === undefined) return undefined
+    if (this.type === 'explore' && !t.readonly) return undefined
+    return t
+  }
+  specs(): ReturnType<ToolRegistry['specs']> {
+    return this.list().map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema }))
+  }
+  list(): Tool[] {
+    return this.parent
+      .list()
+      .filter((t) => !EXCLUDED_TOOLS.has(t.name) && (this.type !== 'explore' || t.readonly))
+  }
+  validate(name: string, input: unknown): { ok: true } | { ok: false; error: string } {
+    if (EXCLUDED_TOOLS.has(name)) return { ok: false, error: `工具 ${name} 对子代理不可用` }
+    return this.parent.validate(name, input)
+  }
+}
+
+/** 兼容旧测试入口（视图别名）。 */
+export function buildSubRegistry(parent: ToolRegistry, type: SubagentType): ToolRegistry {
+  return new SubRegistry(parent, type)
 }
 
 /** optsB 构造（方案 §1.5 总表）。导出供单测断言隔离面。 */
@@ -148,8 +187,10 @@ export function makeSubagentOpts(
   type: SubagentType,
   signal: AbortSignal,
 ): LoopRunOptions {
-  const providerReq = deps.getProviderReq()
-  const provider = deps.getProvider()
+  // 审阅 P1-1/P1-2：桥 getter 优先（TuiApp 运行态：/model 切换、Tab 切沙箱档后取新值）；
+  // 构造时取一次=子代理生命周期内配置快照（中途切换影响下一批，优于 cli 静态闭包的永远旧值）
+  const providerReq = bridge?.getProviderReq !== undefined ? bridge.getProviderReq() : deps.getProviderReq()
+  const provider = bridge?.getProvider !== undefined ? bridge.getProvider() : deps.getProvider()
   const system = subagentSystem(type, deps.projectInstructions)
   const tools = buildSubRegistry(deps.registry, type)
   // 独立压缩链：boundary 只进子内存 messages（NoopHistory 不落盘，onCompacted 不配——无 UI 可重建）
@@ -161,7 +202,6 @@ export function makeSubagentOpts(
     tools: tools.specs(),
     onCompacted: async () => {}, // no-op：子代理无 committed 重建（boundary 在内存 messages 存活）
   })
-  const progress: string[] = []
   return {
     provider,
     tools,
@@ -171,8 +211,6 @@ export function makeSubagentOpts(
       // 进度缓冲与 UI 转发——绝不 setActive（不与父抢渲染）；onActivity/onIter 不配
       onText: () => {},
       onToolStart: (name) => {
-        progress.push(name)
-        if (progress.length > PROGRESS_MAX) progress.splice(0, progress.length - PROGRESS_MAX)
         const st = activeAgents.get(agentId)
         if (st !== undefined) {
           st.activity = name
@@ -188,9 +226,13 @@ export function makeSubagentOpts(
     toolCtx: {
       cwd: deps.cwd,
       signal,
-      onBeforeWrite: deps.onBeforeWrite,
-      ...(deps.sandbox !== undefined ? { sandbox: deps.sandbox } : {}),
-      ...(deps.getModel !== undefined ? { model: deps.getModel() } : {}),
+      onBeforeWrite: bridge?.onBeforeWrite ?? deps.onBeforeWrite,
+      ...((bridge?.getSandbox !== undefined ? bridge.getSandbox() : deps.sandbox) !== undefined
+        ? { sandbox: bridge?.getSandbox !== undefined ? bridge.getSandbox() : deps.sandbox }
+        : {}),
+      ...((bridge?.getModel?.() ?? deps.getModel?.()) !== undefined
+        ? { model: bridge?.getModel?.() ?? deps.getModel?.() }
+        : {}),
     },
     confirm: bridgeConfirm,
     signal,
@@ -267,7 +309,8 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
             is_error: true,
           }
         }
-        return { content: clampResult(text) }
+        return { content: `${clampResult(text)}
+（完整过程：~/.ecode/agents/${agentId}.jsonl）` }
       } catch (e) {
         // 双保险之一：子代理超窗/致命错误不上抛炸父循环（独立压缩链是第一道）
         const msg = e instanceof Error ? e.message : String(e)

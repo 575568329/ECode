@@ -88,7 +88,25 @@ export class CheckpointStore {
    * 读不到（文件将新建，无基线）/ 超限跳过的文件不入本点；全空返回 null。
    */
   async snapshot(sessionId: string, paths: string[], meta: { tool: string; messageId?: string }): Promise<number | null> {
-    const seq = await this.snapshotCore(sessionId, paths, meta)
+    // 审阅 P1-4：治理与快照同一链内排队——enforceLimits 在链外会与下一个并发快照交叠
+    //（B 的对象已写而 meta 未落时 GC 判孤儿删除 → 悬空快照）。失败不阻塞后续（finally 链接）。
+    const run = this.chain.then(
+      () => this.snapshotAndLimit(sessionId, paths, meta),
+      () => this.snapshotAndLimit(sessionId, paths, meta),
+    )
+    this.chain = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async snapshotAndLimit(
+    sessionId: string,
+    paths: string[],
+    meta: { tool: string; messageId?: string },
+  ): Promise<number | null> {
+    const seq = await this.snapshotCoreRun(sessionId, paths, meta)
     if (seq !== null) await this.enforceLimits(sessionId)
     return seq
   }

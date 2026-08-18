@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest'
 import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { makeTaskTool, makeSubagentOpts, buildSubRegistry, subagentSystem, makeAgentLogger, setSubagentProgressHandler } from '../../src/services/subagent.js'
+import { makeTaskTool, makeSubagentOpts, buildSubRegistry, SubRegistry, subagentSystem, makeAgentLogger, setSubagentProgressHandler, setSubagentBridge } from '../../src/services/subagent.js'
 import type { SubagentDeps } from '../../src/services/subagent.js'
 import type { LLMProvider, LLMProviderRunRequest } from '../../src/providers/interface.js'
 import type { Delta } from '../../src/core/types.js'
@@ -181,5 +181,51 @@ describe('makeTaskTool.execute（返回契约 + transcript）', () => {
     expect(snaps.some((l) => l.length === 1 && l[0].description === '调研' && l[0].activity === '启动中')).toBe(true)
     expect(snaps.some((l) => l.length === 1 && l[0].activity === 'read_file')).toBe(true)
     expect(snaps.at(-1)).toEqual([])
+  })
+})
+
+
+describe('M11 审阅修复批：桥优先与 SubRegistry 视图', () => {
+  it('P0-2/P1-1/P1-2：桥挂载时 onBeforeWrite/providerReq/sandbox/model 用桥现值，卸载回退 deps', () => {
+    const wrote: Array<string[]> = []
+    const sandboxFake = { checkWrite: () => undefined, checkBash: () => undefined }
+    setSubagentBridge({
+      confirm: async () => true,
+      onBeforeWrite: async (paths) => {
+        wrote.push(paths)
+      },
+      getProviderReq: () => ({ name: 'bridge', baseURL: 'http://b', apiKey: 'k', model: 'model-new' }),
+      getSandbox: () => sandboxFake as never,
+      getModel: () => 'm-bridge',
+    })
+    try {
+      const deps = makeDeps()
+      const opts = makeSubagentOpts(deps, 'a-b1', '桥测', 'general', ctx.signal)
+      expect(opts.providerReq.model).toBe('model-new')
+      expect(opts.toolCtx.model).toBe('m-bridge')
+      expect(opts.toolCtx.sandbox).toBe(sandboxFake)
+      void opts.toolCtx.onBeforeWrite?.(['/x'], 'edit_file')
+      expect(wrote).toEqual([['/x']])
+    } finally {
+      setSubagentBridge(null)
+    }
+    // 回退 deps 静态值
+    const deps2 = makeDeps()
+    const opts2 = makeSubagentOpts(deps2, 'a-b2', '回退', 'general', ctx.signal)
+    expect(opts2.providerReq.model).toBe('m')
+    expect(opts2.toolCtx.sandbox).toBeUndefined()
+  })
+
+  it('P1-3：SubRegistry 是过滤视图——get 返回父表对象（hook 装饰保留），非重注册副本', () => {
+    const parent = makeDeps().registry
+    const sub = new SubRegistry(parent, 'general')
+    const t = sub.get('read_file')
+    expect(t).toBe(parent.get('read_file')) // 同一引用（父是 Hooked 时即包装版）
+    expect(sub.get('task')).toBeUndefined()
+    expect(sub.get('ask_user')).toBeUndefined()
+    // explore 视图拒副作用工具
+    const exp = new SubRegistry(parent, 'explore')
+    expect(exp.get('bash')).toBeUndefined()
+    expect(exp.get('read_file')).toBeDefined()
   })
 })

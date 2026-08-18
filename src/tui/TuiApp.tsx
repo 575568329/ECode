@@ -200,10 +200,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   const interjectQueueRef = useRef<string[]>([])
   const [interjectPreview, setInterjectPreview] = useState<string | null>(null)
   const enqueueInterject = async (text: string): Promise<void> => {
-    if (text.startsWith('/')) {
-      setSystemMsgs(['运行中暂不能执行命令（空闲后再发；插话请直接输入文字）'])
-      return
-    }
+    // 斜杠拦截不在此（审阅 P0-1：InputStream 分流点已拦，这里收到的一定是普通文本；
+    // 曾在此挂 / 前缀守卫——不可达且会误杀以 / 开头的合法插话文本如粘贴路径，已删）
     // F2：入队时过 UserPromptSubmit hook（loop 内 append 会绕过 submit 内的分发——M9-P0 接线口子）
     let finalText = text
     if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
@@ -911,6 +909,18 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       confirm: queueConfirm(doConfirm),
       warn: (m) => pushNoticeFn('warn', m),
       usage: (inp, out, cache) => recordUsage(inp, out, cache),
+      // 审阅 P0-2：子代理写前走 TuiApp 版（editedFilesRef 归主——父轮末 autoCommit 提交集）
+      onBeforeWrite: async (paths, tool, toolUseId) => {
+        for (const p of paths) editedFilesRef.current.add(p)
+        await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
+      },
+      // 审阅 P1-1/P1-2：运行态 getter（/model·/config 切换、Tab 切沙箱档后子代理取新值——
+      // config 是 TuiApp state 天然新；cli deps 闭包是 makeDeps 时的旧对象）
+      getProviderReq: () => buildProviderReq(config),
+      getProvider: () => deps.providerRegistry.getByType(config.providers[config.current.name].type),
+      getSandbox: () =>
+        makeSandbox(sandboxModeRef.current, process.cwd(), config.sandbox?.blockedCommands ?? []),
+      getModel: () => config.current.model,
     })
     setSubagentProgressHandler(setSubagents)
     return () => {
@@ -1269,6 +1279,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           interjectQueueRef.current.length = 0
           setInterjectPreview(null)
         }}
+        busy={runningRef.current}
+        onSlashBusy={() => setSystemMsgs(['运行中暂不能执行命令（空闲后再发；插话请直接输入文字）'])}
         onTabSandbox={() => {
           // M9-D13：Tab 专职循环切档；D12：进 full-access 需确认——循环到该档时打开面板二级确认
           const next = nextSandboxMode(sandboxModeRef.current)

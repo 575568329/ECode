@@ -91,6 +91,11 @@ interface InputStreamProps {
   onPasteImage?: () => Promise<string | null>
   /** M11-P7：Ctrl+U 清空插话队列（readline 清行习惯键位；防「排了又后悔」） */
   onInterjectClear?: () => void
+  /** M11 审阅 P0-1：忙碌态（斜杠拦截必须在 InputStream 分流点——TuiApp.submit 里的守卫不可达，
+   * 因为本组件的 submit() 对 / 前缀文本直接走命令分流，不经 onSubmit） */
+  busy?: boolean
+  /** 忙碌态收到斜杠命令时的宿主提示回调（不执行不排队） */
+  onSlashBusy?: () => void
 }
 
 /**
@@ -110,6 +115,8 @@ export function InputStream({
   onTabSandbox,
   onInterjectClear,
   onPasteImage,
+  busy = false,
+  onSlashBusy,
 }: InputStreamProps): ReactElement {
   const [cur, setCur] = useState<CursorState>(() => createCursor(''))
   const [history, setHistory] = useState<string[]>([])
@@ -136,6 +143,13 @@ export function InputStream({
     const trimmed = text.trim()
     if (trimmed === '') return
     if (trimmed.startsWith('/')) {
+      // M11 审阅 P0-1：忙碌态斜杠在分流点拦截（/clear 等若立即执行会与 runLoop 竞态——
+      // messagesRef 被清而 loop 持旧数组引用继续跑 = 僵尸循环）
+      if (busy) {
+        onSlashBusy?.()
+        setCur(createCursor(''))
+        return
+      }
       const sp = trimmed.indexOf(' ')
       const name = sp === -1 ? trimmed.slice(1) : trimmed.slice(1, sp)
       const args = sp === -1 ? undefined : trimmed.slice(sp + 1).trim()

@@ -316,3 +316,34 @@ describe('M5 压缩集成（onBeforeRequest hook + 400 兜底）', () => {
     expect((lastMsg.content[0] as { text: string }).text).toBe('压缩后回复')
   })
 })
+
+
+describe('M11-P0：stop 谎报防御（provider 报 end 但有 tool_use → 按工具继续）', () => {
+  it('谎报 end + tool_use_end：工具照执行、循环不终止', async () => {
+    const echo: Tool = {
+      name: 'echo',
+      description: '回显',
+      input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+      readonly: true,
+      async execute(args) {
+        return { content: (args as { text: string }).text }
+      },
+    }
+    const provider = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 't1', name: 'echo' },
+        { type: 'tool_use_delta', id: 't1', partial_json: '{"text":"hi"}' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'end' }, // ← 谎报：有 tool_use 却报 end
+      ],
+      [{ type: 'text', text: '收到结果' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const messages = await runLoop([], 'go', makeOpts(provider, [echo]))
+    // 工具被执行（tool_result 在 messages）
+    const resultMsg = messages.find((m) => !('rewind' in m) && m.role === 'user' && Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result'))
+    expect(resultMsg).toBeDefined()
+    // 第二轮文本也在（循环没有在谎报处终止）
+    const textMsg = messages.find((m) => !('rewind' in m) && m.role === 'assistant' && m.content.some((b) => b.type === 'text' && (b as { text: string }).text === '收到结果'))
+    expect(textMsg).toBeDefined()
+  })
+})

@@ -280,7 +280,11 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     }
 
     // 停止判定
-    if (stopReason === 'end' || stopReason === 'aborted') {
+    // M11-P0：stop 谎报防御——部分 provider 报 done stop_reason:'end' 但本轮已有 tool_use
+    //（opencode 实证），按 tool_use 继续执行（不终止）；aborted 不在此列（signal 已断，工具不该跑）
+    if (stopReason === 'end' && newToolUses.length > 0) {
+      opts.logger.warn('loop', 'stop_lying_defense', { iter, toolUses: newToolUses.length }, iter)
+    } else if (stopReason === 'end' || stopReason === 'aborted') {
       opts.callbacks.onActivity?.(stopReason === 'aborted' ? 'aborted' : 'idle')
       opts.logger.info('loop', 'stop', { stopReason, iter })
       break

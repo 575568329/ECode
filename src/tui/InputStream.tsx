@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import type { ReactElement } from 'react'
 import { useInput, Text, Box } from 'ink'
 import { TextInput } from './TextInput.js'
-import { createCursor, type CursorState } from './cursor.js'
+import { createCursor, insert as insertAtCursor, type CursorState } from './cursor.js'
 import { commandRegistry, type Command, type CommandResult } from '../commands/registry.js'
 import { skillRegistry } from '../services/skill.js'
 
@@ -86,11 +86,9 @@ interface InputStreamProps {
   insert?: { text: string; seq: number }
   /** M9-P4/D13：Tab 专职沙箱模式循环（主输入空闲态；slash 补全态不拦截） */
   onTabSandbox?: () => void
-  /** M10-P2b：Alt+V 粘贴剪贴板图片（图片数据不走 stdin，须专用键位主动读系统剪贴板） */
-  onPasteImage?: () => void
-  /** M10 修复批：待发送图片标签（Alt+V 暂存）——常驻输入区附件行，随粘贴出现随发送消失；
-   * 非空时空文本回车放行（图片本身即合法消息内容，不强制配文字） */
-  attachments?: string[]
+  /** M10-P2b：Alt+V 粘贴剪贴板图片（图片数据不走 stdin，须专用键位主动读系统剪贴板）。
+   * 返回插入输入框的短标签（[图片#N]，无图 null）——标签即引用，删标签=删图（两家同款内嵌形态） */
+  onPasteImage?: () => Promise<string | null>
 }
 
 /**
@@ -109,7 +107,6 @@ export function InputStream({
   insert,
   onTabSandbox,
   onPasteImage,
-  attachments,
 }: InputStreamProps): ReactElement {
   const [cur, setCur] = useState<CursorState>(() => createCursor(''))
   const [history, setHistory] = useState<string[]>([])
@@ -134,8 +131,7 @@ export function InputStream({
 
   const submit = (text: string): void => {
     const trimmed = text.trim()
-    // 空文本拦截——除非有待发送附件（图片本身即消息内容，允许空文本+图直接回车）
-    if (trimmed === '' && (attachments === undefined || attachments.length === 0)) return
+    if (trimmed === '') return
     if (trimmed.startsWith('/')) {
       const sp = trimmed.indexOf(' ')
       const name = sp === -1 ? trimmed.slice(1) : trimmed.slice(1, sp)
@@ -160,8 +156,7 @@ export function InputStream({
       }
     } else {
       onSubmit(trimmed)
-      // 空文本（纯附件发送）不进历史——↑ 翻出空条目没有意义
-      if (trimmed !== '') setHistory((h) => [...h, trimmed])
+      setHistory((h) => [...h, trimmed])
     }
     setCur(createCursor(''))
     setHistIdx(-1)
@@ -189,9 +184,14 @@ export function InputStream({
       onTabSandbox()
       return
     }
-    // M10-P2b：Alt+V 读系统剪贴板图片（named meta 组合键；Ctrl+V 在 raw mode 是 0x16 字面字符不可用）
+    // M10-P2b：Alt+V 读系统剪贴板图片（named meta 组合键；Ctrl+V 在 raw mode 是 0x16 字面字符不可用）。
+    // 粘贴成功 → 短标签插入光标处（标签即引用，在输入框内可见可删——两家同款内嵌形态）
     if (input === 'v' && key.meta && onPasteImage !== undefined) {
-      onPasteImage()
+      void onPasteImage().then((label) => {
+        if (label === null || label === '') return
+        setCur((c) => insertAtCursor(c, `${label} `))
+        setHistIdx(-1)
+      })
       return
     }
     if (slashMode) {
@@ -223,13 +223,6 @@ export function InputStream({
 
   return (
     <Box flexDirection="column">
-      {attachments !== undefined && attachments.length > 0 && (
-        <Box paddingLeft={2}>
-          <Text dimColor>
-            {attachments.join('  ')} <Text italic>（回车随消息发送）</Text>
-          </Text>
-        </Box>
-      )}
       <TextInput
         value={cur.text}
         caret={cur.caret}

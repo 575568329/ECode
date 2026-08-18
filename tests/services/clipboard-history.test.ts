@@ -78,14 +78,26 @@ describe('history 图片双向转换', () => {
 })
 
 describe('InputStream Alt+V 键位', () => {
-  it('Alt+V 触发 onPasteImage（meta+v）', async () => {
-    const onPasteImage = vi.fn()
-    const { stdin } = render(
+  it('Alt+V 触发 onPasteImage（meta+v）；返回标签则插入输入框文本（v2 内嵌形态）', async () => {
+    const onPasteImage = vi.fn(async () => '[图片#1]')
+    const { stdin, lastFrame } = render(
       React.createElement(InputStream, { onSubmit: () => {}, onPasteImage }),
     )
     stdin.write('\x1bv') // ESC+v = Alt+v（meta 组合的终端编码）
     await new Promise((r) => setTimeout(r, 40))
     expect(onPasteImage).toHaveBeenCalled()
+    expect(lastFrame() ?? '').toContain('[图片#1]')
+  })
+
+  it('Alt+V 返回 null（无图）→ 不插入文本', async () => {
+    const onPasteImage = vi.fn(async () => null)
+    const { stdin, lastFrame } = render(
+      React.createElement(InputStream, { onSubmit: () => {}, onPasteImage }),
+    )
+    stdin.write('\x1bv')
+    await new Promise((r) => setTimeout(r, 40))
+    expect(onPasteImage).toHaveBeenCalled()
+    expect(lastFrame() ?? '').not.toContain('[图片#1]')
   })
 })
 

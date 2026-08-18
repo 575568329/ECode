@@ -329,25 +329,39 @@ describe('TuiApp /cost + 命令补全（M5）', () => {
 
 // ---------- M10 修复批：图片粘贴附件行（真机 UX 三问题：提示不消失/空文本发不出/不在输入区显示） ----------
 
-describe('TuiApp 图片粘贴附件行（M10 修复批）', () => {
+describe('TuiApp 图片粘贴标签内嵌（M10 真机修复批 v2）', () => {
   /** 1x1 PNG（真实字节——submit 组装走 imageBlocksFromPaths 真读文件） */
   const PNG_1x1 = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
     'base64',
   )
 
-  function setup(): { deps: ReturnType<typeof makeDeps>; getByType: ReturnType<typeof vi.spyOn> } {
+  /** stub provider 捕获 run 请求（断言最后 user 消息的 blocks 附着/剪枝） */
+  function setup(): { deps: ReturnType<typeof makeDeps>; getByType: ReturnType<typeof vi.spyOn>; lastUserBlocks: Array<{ type: string }> } {
+    const lastUserBlocks: Array<{ type: string }> = []
     const spyReg = new LLMProviderRegistryImpl()
-    spyReg.register({ type: 'anthropic', run: async function* () {} } as never)
+    spyReg.register({
+      type: 'anthropic',
+      run: async function* (req: { messages: Array<{ role: string; content: unknown }> }) {
+        const lastUser = [...req.messages].reverse().find((m) => m.role === 'user')
+        const content = lastUser?.content
+        lastUserBlocks.length = 0
+        if (Array.isArray(content)) {
+          lastUserBlocks.push(...content.map((c) => ({ type: (c as { type: string }).type })))
+        } else if (typeof content === 'string') {
+          lastUserBlocks.push({ type: 'text' })
+        }
+      },
+    } as never)
     const getByType = vi.spyOn(spyReg, 'getByType')
     const deps = { ...makeDeps(), providerRegistry: spyReg }
-    return { deps, getByType }
+    return { deps, getByType, lastUserBlocks }
   }
 
   /**
    * 重试型回车：ink-testing 偶发丢键（write 的 readable 事件在监听器挂载竞态下静默丢失，
    * 累积实例越多概率越高）。回车幂等——submit 成功后 busy 态 inactive 吞掉多余回车，
-   * 失败后空闲态空文本无附件也被空守卫拦住，重写安全。
+   * 失败后空闲态空文本也被空守卫拦住，重写安全。
    */
   async function pressEnterUntil(
     stdin: { write: (s: string) => void },
@@ -360,47 +374,51 @@ describe('TuiApp 图片粘贴附件行（M10 修复批）', () => {
     }
   }
 
-  it('Alt+V → 附件行常驻输入区（标签可见），不再走 systemMsgs 一次性提示', async () => {
-    const png = path.join(os.tmpdir(), `ecode-paste-${Date.now()}.png`)
+  /** 粘贴一张真实图（mock 剪贴板），返回附件 png 路径 */
+  function mockOnePaste(): string {
+    const png = path.join(os.tmpdir(), `ecode-paste-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.png`)
     fs.writeFileSync(png, PNG_1x1)
     vi.mocked(readClipboardImage).mockResolvedValue({ path: png, bytes: PNG_1x1.length })
+    return png
+  }
+
+  it('Alt+V → 短标签出现在输入框文本内（不在别处），旧 systemMsgs 提示退役', async () => {
+    mockOnePaste()
     const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: setup().deps }))
     await flush()
     stdin.write('\x1bv') // Alt+V（ESC+v 元序列）
     await flush()
+    await flush() // 剪贴板 mock 微任务 + 插入文本
     const f = lastFrame() ?? ''
-    expect(f).toContain('图片#1')
-    expect(f).toContain('回车随消息发送')
-    expect(f).not.toContain('已粘贴') // 旧 systemMsgs 提示退役（发送后仍挂着的根因）
+    expect(f).toContain('[图片#1]')
+    expect(f).not.toContain('已粘贴')
+    expect(f).not.toContain('回车随消息发送') // v1 附件行同样退役
   })
 
-  it('粘贴后空文本回车 → 纯图消息照发（标签即消息文本），发送后附件行消失', async () => {
-    const png = path.join(os.tmpdir(), `ecode-paste-${Date.now()}.png`)
-    fs.writeFileSync(png, PNG_1x1)
-    vi.mocked(readClipboardImage).mockResolvedValue({ path: png, bytes: PNG_1x1.length })
-    const { deps, getByType } = setup()
+  it('粘贴后直接回车 → 纯图消息（标签即文本）+ image block 附着', async () => {
+    mockOnePaste()
+    const { deps, getByType, lastUserBlocks } = setup()
     const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps }))
     await flush()
     stdin.write('\x1bv')
     await flush()
-    expect(lastFrame() ?? '').toContain('图片#1')
+    await flush()
+    expect(lastFrame() ?? '').toContain('[图片#1]')
     await pressEnterUntil(stdin, () => getByType.mock.calls.length > 0)
     await flush()
-    await flush() // runLoop 微任务（空 generator 立即完）
-    expect(getByType).toHaveBeenCalledWith('anthropic') // 消息真的进了 runLoop
-    const f = lastFrame() ?? ''
-    expect(f).not.toContain('回车随消息发送') // 附件行随发送消失
-    expect(f).toContain('图片#1') // 转录显示标签（标签即消息文本）
+    await flush() // runLoop 微任务（stub generator 立即完）
+    expect(getByType).toHaveBeenCalledWith('anthropic')
+    expect(lastUserBlocks).toContainEqual({ type: 'image' }) // blocks 真附着在 user 消息上
+    expect(lastFrame() ?? '').toContain('[图片#1]') // 转录显示标签
   })
 
-  it('粘贴后带文本回车 → 文本 + 标签同发', async () => {
-    const png = path.join(os.tmpdir(), `ecode-paste-${Date.now()}.png`)
-    fs.writeFileSync(png, PNG_1x1)
-    vi.mocked(readClipboardImage).mockResolvedValue({ path: png, bytes: PNG_1x1.length })
-    const { deps, getByType } = setup()
+  it('粘贴 + 文本 → 文本与标签同发（一条消息带图）', async () => {
+    mockOnePaste()
+    const { deps, getByType, lastUserBlocks } = setup()
     const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps }))
     await flush()
     stdin.write('\x1bv')
+    await flush()
     await flush()
     stdin.write('看下这张图')
     await flush()
@@ -408,20 +426,41 @@ describe('TuiApp 图片粘贴附件行（M10 修复批）', () => {
     await flush()
     await flush()
     expect(getByType).toHaveBeenCalledWith('anthropic')
-    const f = lastFrame() ?? ''
-    expect(f).toContain('看下这张图')
-    expect(f).toContain('图片#1')
-    expect(f).not.toContain('回车随消息发送')
+    expect(lastFrame() ?? '').toContain('看下这张图')
+    expect(lastUserBlocks).toContainEqual({ type: 'image' })
   })
 
-  it('剪贴板无图 → 一行提示（保留），无附件行', async () => {
+  it('删掉标签文本再提交 → 图不发送（剪枝：文本无引用则不组装 blocks）', async () => {
+    mockOnePaste()
+    const { deps, getByType, lastUserBlocks } = setup()
+    const { stdin } = render(React.createElement(TuiApp, { deps }))
+    await flush()
+    stdin.write('\x1bv')
+    await flush()
+    await flush()
+    // '[图片#1] ' 共 8 字素，逐个退格删净
+    for (let i = 0; i < 8; i++) {
+      stdin.write('\x7f')
+      await flush()
+    }
+    stdin.write('hi')
+    await flush()
+    await pressEnterUntil(stdin, () => getByType.mock.calls.length > 0)
+    await flush()
+    await flush()
+    expect(getByType).toHaveBeenCalledWith('anthropic')
+    expect(lastUserBlocks).not.toContainEqual({ type: 'image' }) // 引用没了 → 图剪掉
+  })
+
+  it('剪贴板无图 → 一行提示，输入框不插标签', async () => {
     vi.mocked(readClipboardImage).mockResolvedValue(null)
     const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: setup().deps }))
     await flush()
     stdin.write('\x1bv')
     await flush()
+    await flush()
     const f = lastFrame() ?? ''
     expect(f).toContain('剪贴板无图片')
-    expect(f).not.toContain('回车随消息发送')
+    expect(f).not.toContain('[图片#1]')
   })
 })

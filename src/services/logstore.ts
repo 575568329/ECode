@@ -25,6 +25,8 @@ export interface LogEntry {
   sessionId: string
   iterNum?: number
   payload?: Record<string, unknown>
+  /** M11：子代理轨迹隔离（grep agentId 即该代理全事件；主循环不带） */
+  agentId?: string
 }
 
 export class LogStore {
@@ -67,6 +69,7 @@ export class LogStore {
     event: string,
     payload?: unknown,
     iterNum?: number,
+    agentId?: string,
   ): void {
     if (this.closed) return
     const entry: LogEntry = {
@@ -76,6 +79,7 @@ export class LogStore {
       event,
       sessionId: this.sessionId,
       ...(iterNum !== undefined ? { iterNum } : {}),
+      ...(agentId !== undefined && agentId !== '' ? { agentId } : {}),
       ...(payload !== undefined ? { payload: redact(payload) as Record<string, unknown> } : {}),
     }
     this.buffer.push(entry)

@@ -55,3 +55,32 @@ describe('ToolRegistry', () => {
     if (!res.ok) expect(res.error).toMatch(/不存在/i)
   })
 })
+
+
+describe('M11-P1：list() 全量 Tool 对象', () => {
+  it('返回全部注册 Tool（含 readonly 元数据与 execute——specs 重建拿不到的）', () => {
+    const reg = new ToolRegistryImpl()
+    reg.register({
+      name: 't1',
+      description: 'd',
+      input_schema: { type: 'object', properties: {} },
+      readonly: true,
+      async execute() {
+        return { content: 'ok' }
+      },
+    })
+    reg.register({
+      name: 't2',
+      description: 'd2',
+      input_schema: { type: 'object', properties: {} },
+      readonly: false,
+      async execute() {
+        return { content: 'ok' }
+      },
+    })
+    const all = reg.list()
+    expect(all.map((t) => t.name)).toEqual(['t1', 't2'])
+    expect(all[0]?.readonly).toBe(true)
+    expect(typeof all[0]?.execute).toBe('function')
+  })
+})

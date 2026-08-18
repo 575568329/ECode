@@ -63,6 +63,11 @@ export interface ToolRegistry {
   get(name: string): Tool | undefined
   /** 导出给 LLMProvider 的 tools 参数 */
   specs(): ToolSpec[]
+  /**
+   * 全量 Tool 对象（M11-P2：子代理裁剪 Registry 现取现建用——specs 不含 readonly/execute
+   * 无法重建；快照与运行期注册的漂移可接受：下个子代理现取即收敛）
+   */
+  list(): Tool[]
   /** AJV 校验：不通过直接返回 ok:false（loop 转 is_error 的 ToolResult，根本不进 Tool） */
   validate(name: string, input: unknown): { ok: true } | { ok: false; error: string }
 }

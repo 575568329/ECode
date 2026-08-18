@@ -253,3 +253,20 @@ async function objectsDirOf(store: CheckpointStore, sessionId: string): Promise<
   const root = (store as unknown as { root: string }).root
   return join(root, sessionId, 'objects')
 }
+
+
+describe('M11-P1：快照操作串行化（并发 nextSeq 竞态）', () => {
+  it('并发 snapshot：seq 全部唯一递增（修复前读改写竞态可重号）', async () => {
+    const store = makeStore()
+    const a = await write('a.ts', 'A')
+    const b = await write('b.ts', 'B')
+    const c = await write('c.ts', 'C')
+    const seqs = await Promise.all([
+      store.snapshot('s1', [a], { tool: 'edit_file' }),
+      store.snapshot('s1', [b], { tool: 'edit_file' }),
+      store.snapshot('s1', [c], { tool: 'edit_file' }),
+    ])
+    expect(seqs.sort((x, y) => (x ?? 0) - (y ?? 0))).toEqual([1, 2, 3])
+    expect(new Set(seqs).size).toBe(3)
+  })
+})

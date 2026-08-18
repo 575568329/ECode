@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { LogStore } from '../../src/services/logstore.js'
@@ -95,5 +98,20 @@ describe('LogStore', () => {
     s.close()
     s.emit('info', 'loop', 'after-close')
     expect(s.written).toHaveLength(0)
+  })
+})
+
+
+describe('M11：agentId 轨迹隔离通道', () => {
+  it('emit 带尾参 agentId → 落盘条目含 agentId；不带的条目无该键', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ecode-agentid-'))
+    const store = new LogStore(join(dir, 'l.jsonl'), 'sess-agentid', 100, 10, true)
+    store.emit('info', 'loop', 'agent_event', { x: 1 }, 2, 'a-x7q2')
+    store.emit('info', 'loop', 'main_event', {})
+    await new Promise(r => setTimeout(r, 50))
+    const agentLine = store.written.find((l) => l.includes('agent_event'))
+    const mainLine = store.written.find((l) => l.includes('main_event'))
+    expect(agentLine).toContain('"agentId":"a-x7q2"')
+    expect(mainLine).not.toContain('agentId')
   })
 })

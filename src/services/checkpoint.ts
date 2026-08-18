@@ -60,6 +60,8 @@ function sha256(buf: Buffer): string {
 }
 
 export class CheckpointStore {
+  /** M11-P1：操作串行链——并发 snapshot（多子代理同时写前快照）下 nextSeq 读改写竞态会产生重复 seq */
+  private chain: Promise<unknown> = Promise.resolve()
   private readonly root: string
   private readonly cwd: string
   private readonly maxPerSession: number
@@ -96,7 +98,20 @@ export class CheckpointStore {
    * GC 其独占对象，而那可能正是本次 revert 即将写回的基线（终审 P1-3 竞态——还原不完整）。
    * 跳过的治理无害：点数暂时 +1，下次正常快照照常收口。
    */
-  private async snapshotCore(sessionId: string, paths: string[], meta: { tool: string; messageId?: string }): Promise<number | null> {
+  private snapshotCore(sessionId: string, paths: string[], meta: { tool: string; messageId?: string }): Promise<number | null> {
+    // 串行链排队：并发调用逐个执行（nextSeq/对象写入互斥）；失败不阻塞后续（finally 链接）
+    const run = this.chain.then(
+      () => this.snapshotCoreRun(sessionId, paths, meta),
+      () => this.snapshotCoreRun(sessionId, paths, meta),
+    )
+    this.chain = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async snapshotCoreRun(sessionId: string, paths: string[], meta: { tool: string; messageId?: string }): Promise<number | null> {
     const files = paths.length > 0 ? paths : await this.gitDirtyFiles()
     if (files.length === 0) return null
     const refs: CheckpointFileRef[] = []

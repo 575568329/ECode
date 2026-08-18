@@ -46,6 +46,11 @@ export class ToolRegistryImpl implements ToolRegistry {
     return this.tools.get(name)
   }
 
+  /** M11-P2：全量 Tool 对象（子代理裁剪现取现建）。 */
+  list(): Tool[] {
+    return [...this.tools.values()]
+  }
+
   specs(): ToolSpec[] {
     return [...this.tools.values()].map((t) => ({
       name: t.name,

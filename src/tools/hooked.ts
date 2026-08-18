@@ -43,6 +43,11 @@ export class HookedToolRegistry implements ToolRegistry {
     return this.inner.specs()
   }
 
+  /** M11-P2：直通（子代理裁剪现取经代理拿全量） */
+  list(): Tool[] {
+    return this.inner.list()
+  }
+
   validate(name: string, input: unknown): { ok: true } | { ok: false; error: string } {
     return this.inner.validate(name, input)
   }

@@ -43,6 +43,7 @@ import type { HistoryStore } from '../services/history.js'
 import { makeOnBeforeRequest } from '../services/compaction/hook.js'
 import { resolveContextWindow } from '../services/contextWindow.js'
 import { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
+import { makeTaskTool } from '../services/subagent.js'
 import { SummarizeStrategy } from '../services/compaction/summarize.js'
 import { skillRegistry, createSkillRegistry } from '../services/skill.js'
 import { setupMcp } from '../services/mcp/setup.js'
@@ -90,6 +91,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   for (const t of BUILTIN_TOOLS) toolReg.register(t) // 单一事实源（tools/builtin/index.ts）——防漂移测试同源断言
   const orchestrator = new CompactionOrchestrator()
   orchestrator.register(new SummarizeStrategy())
+
   // models.dev 预热（fire-and-forget）：进程首次无缓存时 resolveContextWindow 联网拉取（10s timeout），
   // 不预热会恰好卡在用户第一轮提问的压缩判定前——启动期提前拉，失败静默（走内置表兜底）
   void resolveContextWindow(config.current.model, config.providers[config.current.name]?.contextWindow).catch(() => {})
@@ -143,14 +145,49 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   setWebFetchLimits({ maxContentKB: config.webFetchMaxKB })
   // M10-P1：三层装配（搜索 MCP 命中→null 不注册内置；默认 bing RSS；配置后 zhipu）
   setWebSearchProvider(resolveSearchProvider(config))
+  // M11-P5：task 工具（装配期工厂——deps 全 getter/引用；UI 桥由 TuiApp 挂，argv 无 UI confirm fail-closed）
+  const history = new FileHistoryStore({ sessionId, model: config.current.model })
+  const checkpoint = new CheckpointStore(process.cwd(), {
+    warn: (m) => logger.warn('checkpoint', 'snapshot', { message: m }),
+  })
+  toolReg.register(makeTaskTool({
+    getProviderReq: () => buildProviderReq(config),
+    getProvider: () => providerReg.getByType(config.providers[config.current.name].type),
+    logger,
+    makeAfterTools: () => {
+      // 子代理独立 QualityGate（P1-2 熔断计数不互扰）+ 剥离 autoCommit/后台通知（提交只归父轮末）
+      const sub = new QualityGate({
+        commands: detectQualityCommands(process.cwd(), { lintCommand: config.lintCommand, testCommand: config.testCommand }),
+        run: makeShellRunner(process.cwd()),
+        warn: (m) => logger.warn('quality', 'subagent', { message: m }),
+      })
+      return async (round) => {
+        const fb = await sub.afterRound(round.tools)
+        return fb !== undefined ? { feedback: fb } : undefined
+      }
+    },
+    onBeforeWrite: async (paths, tool, toolUseId) => {
+      await checkpoint?.snapshot(history.currentSessionId(), paths, { tool, messageId: toolUseId })
+    },
+    sandbox: makeSandbox(
+      (config.sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default',
+      process.cwd(),
+      config.sandbox?.blockedCommands ?? [],
+    ),
+    cwd: process.cwd(),
+    registry: toolReg,
+    projectInstructions: loadInstructions()
+      .filter((b) => b.source.startsWith('项目级'))
+      .map((b) => b.content)
+      .join('\n'),
+    getModel: () => config.current.model,
+  }))
   return {
     providerRegistry: providerReg,
     tools: hookedTools,
     logger,
-    history: new FileHistoryStore({ sessionId, model: config.current.model }),
-    checkpoint: new CheckpointStore(process.cwd(), {
-      warn: (m) => logger.warn('checkpoint', 'snapshot', { message: m }),
-    }),
+    history,
+    checkpoint,
     quality: new QualityGate({
       commands: detectQualityCommands(process.cwd(), { lintCommand: config.lintCommand, testCommand: config.testCommand }),
       run: makeShellRunner(process.cwd()),

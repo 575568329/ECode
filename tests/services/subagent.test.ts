@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest'
 import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { makeTaskTool, makeSubagentOpts, buildSubRegistry, subagentSystem, makeAgentLogger } from '../../src/services/subagent.js'
+import { makeTaskTool, makeSubagentOpts, buildSubRegistry, subagentSystem, makeAgentLogger, setSubagentProgressHandler } from '../../src/services/subagent.js'
 import type { SubagentDeps } from '../../src/services/subagent.js'
 import type { LLMProvider, LLMProviderRunRequest } from '../../src/providers/interface.js'
 import type { Delta } from '../../src/core/types.js'
@@ -51,7 +51,6 @@ function makeDeps(over: Partial<SubagentDeps> = {}): SubagentDeps {
   return {
     getProviderReq: () => ({ name: 'test', baseURL: 'http://x', apiKey: 'sk', model: 'm' }),
     getProvider: () => new MockProvider([[{ type: 'text', text: '结论：完成' }, { type: 'done', stop_reason: 'end' }]]),
-    confirm: async () => true,
     logger: noopLogger,
     makeAfterTools: () => null,
     onBeforeWrite: async () => {},
@@ -109,7 +108,7 @@ describe('makeSubagentOpts（隔离面断言）', () => {
     const deps = makeDeps({ makeAfterTools: () => async () => ({ feedback: undefined }) })
     const opts = makeSubagentOpts(deps, 'a-x', '描述', 'general', ctx.signal)
     expect(opts.maxIterations).toBe(25)
-    expect(opts.confirm).toBe(deps.confirm)
+    expect(typeof opts.confirm).toBe('function')
     expect(opts.afterTools).toBeDefined()
     expect(opts.onBeforeRequest).toBeDefined()
     expect(opts.tools.list().map((t) => t.name)).not.toContain('task')
@@ -163,8 +162,9 @@ describe('makeTaskTool.execute（返回契约 + transcript）', () => {
     expect(r.content).toContain('子代理')
   })
 
-  it('进度事件转发（onProgress 回调带 agentId/description/活动）', async () => {
-    const events: Array<[string, string, string]> = []
+  it('进度桥：setSubagentProgressHandler 收运行中快照（onToolStart 更新活动，结束移除）', async () => {
+    const snaps: Array<Array<{ id: string; description: string; activity: string }>> = []
+    setSubagentProgressHandler((list) => snaps.push(list.map((x) => ({ ...x }))))
     const provider = new MockProvider([
       [
         { type: 'tool_use_start', id: 't1', name: 'read_file' },
@@ -173,13 +173,13 @@ describe('makeTaskTool.execute（返回契约 + transcript）', () => {
       ],
       [{ type: 'text', text: '查完' }, { type: 'done', stop_reason: 'end' }],
     ])
-    const deps = makeDeps({
-      getProvider: () => provider,
-      onProgress: (id, desc, act) => events.push([id, desc, act]),
-    })
-    // read_file 需真实可用——fakeTool 的 read_file 已注册（readonly → 子代理可用）
+    const deps = makeDeps({ getProvider: () => provider })
     const tool = makeTaskTool(deps)
     await tool.execute({ description: '调研', prompt: 'p' }, ctx)
-    expect(events.some(([, d, a]) => d === '调研' && a === 'read_file')).toBe(true)
+    setSubagentProgressHandler(null)
+    // 启动快照（activity=启动中）→ 工具活动快照 → 结束空快照
+    expect(snaps.some((l) => l.length === 1 && l[0].description === '调研' && l[0].activity === '启动中')).toBe(true)
+    expect(snaps.some((l) => l.length === 1 && l[0].activity === 'read_file')).toBe(true)
+    expect(snaps.at(-1)).toEqual([])
   })
 })

@@ -94,6 +94,12 @@ export interface LoopRunOptions {
    * （宿主检测编辑成功→跑 lint/test），返回 feedback 则追加为 user 消息——loop 不认识 lint。
    */
   afterTools?: (round: { tools: Array<{ name: string; isError: boolean }> }) => Promise<{ feedback?: string } | void>
+  /**
+   * M11-P7：主循环插话——迭代顶部拉取（iter≥2：首轮输入即 userInput，避免连续双 user）。
+   * 返回非空则追加为普通 user Message（落盘/恢复/rewind 零特殊处理）；多条由宿主合并。
+   * additive 可选回调（afterTools 同模式，无 feature 分支）；子代理 optsB 不配——插话目标是主循环。
+   */
+  pollUserInput?: () => string | null
 }
 
 /**
@@ -121,6 +127,16 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
 
   let retryCount = 0
   for (let iter = 1; iter <= opts.maxIterations; iter++) {
+    // M11-P7：插话步间注入——迭代顶部拉取（模型消化完上轮工具结果才见插话，非打断流中；
+    // 顺序天然在 tool_result→afterTools 回喂之后）
+    if (iter >= 2) {
+      const queued = opts.pollUserInput?.()
+      if (queued !== undefined && queued !== null && queued !== '') {
+        const interjectMsg: Message = { role: 'user', content: [{ type: 'text', text: queued }] }
+        messages.push(interjectMsg)
+        opts.history.append(interjectMsg)
+      }
+    }
     opts.callbacks.onIter?.(iter, opts.maxIterations)
     opts.callbacks.onActivity?.('thinking')
     opts.logger.info('loop', 'iter_start', { iter, max: opts.maxIterations, model: opts.providerReq.model }, iter)

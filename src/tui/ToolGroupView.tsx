@@ -82,13 +82,40 @@ export function ToolGroupView({ tools, expanded = false, done, onToggle }: ToolG
         // Static done=undefined → 展开（事后完整看）；Ctrl+O（expanded）强制全展
         const showFull = expanded || (isSideEffect && done !== false)
         const preview = previewLine(content)
+        // M11-P6 todo 特化：digest 显示完成度，展开态逐项 ASCII 状态符（[x]/[->]/[ ]——ambiguous 宽度教训只用 ASCII）
+        const isTodo = t.name === 'todo'
+        const todoItems =
+          isTodo && t.use
+            ? ((t.use.input as { todos?: Array<{ content: string; status: string }> }).todos ?? [])
+            : []
+        const todoDone = todoItems.filter((x) => x.status === 'completed').length
         return (
           <Box key={id} flexDirection="column" paddingLeft={3}>
             <Box>
               <Text dimColor>{t.name}</Text>
-              {digest !== '' && <Text dimColor> {digest}</Text>}
+              {isTodo ? (
+                <Text dimColor> {todoDone}/{todoItems.length} 完成</Text>
+              ) : (
+                digest !== '' && <Text dimColor> {digest}</Text>
+              )}
               {tail && <Text color={tail.color}> {tail.sym}</Text>}
             </Box>
+            {isTodo && showFull && todoItems.length > 0 && (
+              <Box flexDirection="column">
+                {todoItems.map((x, i) => (
+                  <Box key={i}>
+                    <Text
+                      color={x.status === 'in_progress' ? theme.info : undefined}
+                      bold={x.status === 'in_progress'}
+                    >
+                      {' '}
+                      {x.status === 'completed' ? '[x] ' : x.status === 'in_progress' ? '[->] ' : '[ ] '}
+                      {x.content}
+                    </Text>
+                  </Box>
+                ))}
+              </Box>
+            )}
             {hasOutput && (
               <Box flexDirection="column">
                 {showFull ? (

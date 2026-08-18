@@ -14,6 +14,7 @@ import { writeFileTool } from './write_file.js'
 import { editFileTool } from './edit_file.js'
 import { skillTool } from './skill.js'
 import { askUserTool } from './ask_user.js'
+import { todoTool } from './todo.js'
 import { webFetchTool } from './web_fetch.js'
 import { webSearchTool } from './web_search.js'
 import { taskOutputTool, taskStopTool } from './task_tools.js'
@@ -28,6 +29,7 @@ export const BUILTIN_TOOLS: Tool[] = [
   editFileTool,
   skillTool,
   askUserTool,
+  todoTool,
   webFetchTool,
   webSearchTool,
   taskOutputTool,

@@ -40,6 +40,8 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number, opts
 - bash run_in_background=true：长命令后台跑（npm test/build/dev server）——立即返回 task_id
 - task_output <task_id>：读后台任务增量输出（wait_ms 可短等新输出或退出）
 - task_stop <task_id>：终止后台任务（统一杀树，孙进程一并终止）
+- task <description> <prompt>：把独立子任务委派给并发子代理（大范围调研/互相独立的并行工作；prompt 必须自包含，阻塞至返回结论）
+- todo <todos>：维护多步任务清单（3 步以上才建；全量替换；完成一项立即更新）
 
 回复用中文。`
 

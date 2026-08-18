@@ -89,6 +89,8 @@ interface InputStreamProps {
   /** M10-P2b：Alt+V 粘贴剪贴板图片（图片数据不走 stdin，须专用键位主动读系统剪贴板）。
    * 返回插入输入框的短标签（[图片#N]，无图 null）——标签即引用，删标签=删图（两家同款内嵌形态） */
   onPasteImage?: () => Promise<string | null>
+  /** M11-P7：Ctrl+U 清空插话队列（readline 清行习惯键位；防「排了又后悔」） */
+  onInterjectClear?: () => void
 }
 
 /**
@@ -106,6 +108,7 @@ export function InputStream({
   inactive,
   insert,
   onTabSandbox,
+  onInterjectClear,
   onPasteImage,
 }: InputStreamProps): ReactElement {
   const [cur, setCur] = useState<CursorState>(() => createCursor(''))
@@ -180,6 +183,11 @@ export function InputStream({
   useInput((input, key) => {
     const slashMode = cur.text.startsWith('/')
     // M9-D13：Tab 专职沙箱模式循环——非 slash 补全态的空闲输入才拦截（面板内 Tab 由面板自处理）
+    // M11-P7：Ctrl+U 清空插话队列（readline 清行同键）
+    if (key.ctrl && input === 'u' && onInterjectClear !== undefined) {
+      onInterjectClear()
+      return
+    }
     if (key.tab && !key.shift && onTabSandbox !== undefined && !slashMode) {
       onTabSandbox()
       return

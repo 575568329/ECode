@@ -43,8 +43,6 @@ const EXCLUDED_TOOLS = new Set(['task', 'ask_user', 'todo'])
 export interface SubagentDeps {
   getProviderReq(): ProviderReq
   getProvider(): LLMProvider
-  /** 父 confirm——装配方传串行队列（makeConfirmQueue）包装后的版本 */
-  confirm: (use: ToolUseBlock) => Promise<boolean>
   logger: Logger
   /** 子代理 afterTools 构造器（剥离 autoCommit 的 quality 版）；null = 未启用质量回喂 */
   makeAfterTools: () => NonNullable<LoopRunOptions['afterTools']> | null
@@ -58,15 +56,48 @@ export interface SubagentDeps {
   projectInstructions: string
   /** 当前模型名（视觉守卫等 toolCtx.model；缺省不传） */
   getModel?: () => string
-  /** 进度事件转发（P4 UI 数据源：agentId + 最近活动行） */
-  onProgress?: (agentId: string, description: string, activity: string) => void
-  /** usage 归并转发（父 /cost 累计） */
-  onUsage?: (inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }) => void
-  /** 告警转发（带 description 前缀进告警中心） */
-  onWarn?: (msg: string) => void
+}
+
+// —— UI 桥（confirm/warn/usage 三合一）：cli 装配工具、TuiApp 挂回调（setPermissionAsker 同款）。
+// confirm 缺省 false（argv/未挂载 fail-closed——子代理副作用无 UI 即拒）；warn/usage 缺省丢弃。
+export interface SubagentBridge {
+  /** 父 confirm——TuiApp 必须挂串行队列包装版（makeConfirmQueue，方案 §1.3） */
+  confirm: (use: ToolUseBlock) => Promise<boolean>
+  warn?: (msg: string) => void
+  usage?: (inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }) => void
+}
+
+let bridge: SubagentBridge | null = null
+
+export function setSubagentBridge(b: SubagentBridge | null): void {
+  bridge = b
+}
+
+function bridgeConfirm(use: ToolUseBlock): Promise<boolean> {
+  return bridge !== null ? bridge.confirm(use) : Promise.resolve(false)
 }
 
 export type SubagentType = 'general' | 'explore'
+
+// —— 进度桥（P4 UI 数据源；askUserBridge 同款模块级模式：cli 装配工具、TuiApp 挂 handler） ——
+export interface SubagentStatus {
+  id: string
+  description: string
+  /** 最近工具活动（折叠行动态段） */
+  activity: string
+}
+
+const activeAgents = new Map<string, SubagentStatus>()
+let progressHandler: ((list: SubagentStatus[]) => void) | null = null
+
+/** TuiApp 挂载注入（卸载置 null）；每次状态变化推送全量快照 */
+export function setSubagentProgressHandler(h: ((list: SubagentStatus[]) => void) | null): void {
+  progressHandler = h
+}
+
+function notifyProgress(): void {
+  progressHandler?.([...activeAgents.values()])
+}
 
 /** agentId：时间序短段 + 内容短哈希（随机源；双协议 use.id 前缀固定必撞号，且 execute 拿不到 use.id） */
 function makeAgentId(): string {
@@ -142,10 +173,14 @@ export function makeSubagentOpts(
       onToolStart: (name) => {
         progress.push(name)
         if (progress.length > PROGRESS_MAX) progress.splice(0, progress.length - PROGRESS_MAX)
-        deps.onProgress?.(agentId, description, name)
+        const st = activeAgents.get(agentId)
+        if (st !== undefined) {
+          st.activity = name
+          notifyProgress()
+        }
       },
-      onUsage: (i, o, c) => deps.onUsage?.(i, o, c),
-      onWarn: (m) => deps.onWarn?.(`「${description}」${m}`),
+      onUsage: (i, o, c) => bridge?.usage?.(i, o, c),
+      onWarn: (m) => bridge?.warn?.(`「${description}」${m}`),
     },
     providerReq,
     system,
@@ -157,7 +192,7 @@ export function makeSubagentOpts(
       ...(deps.sandbox !== undefined ? { sandbox: deps.sandbox } : {}),
       ...(deps.getModel !== undefined ? { model: deps.getModel() } : {}),
     },
-    confirm: deps.confirm,
+    confirm: bridgeConfirm,
     signal,
     onBeforeRequest,
     afterTools: deps.makeAfterTools() ?? undefined,
@@ -216,6 +251,8 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
       const { description, prompt } = args as { description: string; prompt: string; type?: string }
       const type: SubagentType = (args as { type?: string }).type === 'explore' ? 'explore' : 'general'
       const agentId = makeAgentId()
+      activeAgents.set(agentId, { id: agentId, description, activity: '启动中' })
+      notifyProgress()
       // 硬超时与用户中断取或（Node 20+ AbortSignal.any）
       const timeout = AbortSignal.timeout(SUB_TIMEOUT_MS)
       const signal = AbortSignal.any([ctx.signal, timeout])
@@ -239,6 +276,8 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
           is_error: true,
         }
       } finally {
+        activeAgents.delete(agentId)
+        notifyProgress()
         // transcript 全量落盘（abort/超时路径也落；callbacks 逐条写缺入参与轮次边界——方案 P2-3）
         try {
           const dir = join(homedir(), '.ecode', 'agents')

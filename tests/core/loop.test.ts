@@ -347,3 +347,58 @@ describe('M11-P0：stop 谎报防御（provider 报 end 但有 tool_use → 按�
     expect(textMsg).toBeDefined()
   })
 })
+
+
+describe('M11-P7：插话步间注入（pollUserInput）', () => {
+  it('迭代顶部拉取（iter≥2）→ 追加 user 消息 → 下一轮请求可见（在 tool_result 之后）', async () => {
+    const requests: Message[][] = []
+    const echo: Tool = {
+      name: 'echo',
+      description: '回显',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: true,
+      async execute() {
+        interjectQueue.push('改用方案B')
+        return { content: 'ok' }
+      },
+    }
+    const interjectQueue: string[] = []
+    const provider = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 't1', name: 'echo' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: '收到插话' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const origRun = provider.run.bind(provider)
+    ;(provider as unknown as { run: typeof provider.run }).run = async function* (req) {
+      requests.push(req.messages as Message[])
+      yield* origRun(req)
+    }
+    const opts = makeOpts(provider, [echo])
+    opts.pollUserInput = () => interjectQueue.splice(0).join('\n\n') || null
+    const messages = await runLoop([], '开始', opts)
+    // 第二轮请求的 messages 含插话文本，且位于 tool_result 之后
+    const second = requests[1]
+    const texts = second.flatMap((m) => m.content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text))
+    expect(texts).toContain('改用方案B')
+    const resultIdx = second.findIndex((m) => m.content.some((b) => b.type === 'tool_result'))
+    const interjectIdx = second.findIndex((m) => m.content.some((b) => b.type === 'text' && (b as { text: string }).text === '改用方案B'))
+    expect(interjectIdx).toBeGreaterThan(resultIdx)
+    // 最终回复存在（循环未被插话打断）
+    expect(messages.some((m) => !('rewind' in m) && m.role === 'assistant' && m.content.some((b) => b.type === 'text' && (b as { text: string }).text === '收到插话'))).toBe(true)
+  })
+
+  it('iter=1 不拉取（首轮输入就是 userInput，避免连续双 user）；未配置回调零行为变化', async () => {
+    let polled = false
+    const provider = new MockProvider([[{ type: 'text', text: 'hi' }, { type: 'done', stop_reason: 'end' }]])
+    const opts = makeOpts(provider, [])
+    opts.pollUserInput = () => {
+      polled = true
+      return null
+    }
+    await runLoop([], 'q', opts)
+    expect(polled).toBe(false) // 单轮流，iter=1 从不拉取
+  })
+})

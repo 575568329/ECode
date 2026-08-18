@@ -55,6 +55,8 @@ import { ConfigPanel, type ConfigItem } from './ConfigPanel.js'
 import { saveConfigKey } from '../services/configFs.js'
 import { makeSandbox, nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
 import { setPermissionAsker } from '../services/permissions.js'
+import { setSubagentBridge, setSubagentProgressHandler, type SubagentStatus } from '../services/subagent.js'
+import { SubagentBar } from './SubagentBar.js'
 import { ecodeCommit, undoEcodeCommit } from '../services/git.js'
 import { readClipboardImage } from '../services/clipboard.js'
 import { buildMediaBlock } from '../services/media.js'
@@ -194,6 +196,93 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   const runningRef = useRef(false)
   // 同步 confirm 状态给 useInterrupt isActive（避免 stale closure；P0#1）
   const confirmRef = useRef(false)
+  // M11-P7：插话队列（ref 为消费源，state 只驱动显示；忙碌态 Enter 入队、步间/轮末投递）
+  const interjectQueueRef = useRef<string[]>([])
+  const [interjectPreview, setInterjectPreview] = useState<string | null>(null)
+  const enqueueInterject = async (text: string): Promise<void> => {
+    if (text.startsWith('/')) {
+      setSystemMsgs(['运行中暂不能执行命令（空闲后再发；插话请直接输入文字）'])
+      return
+    }
+    // F2：入队时过 UserPromptSubmit hook（loop 内 append 会绕过 submit 内的分发——M9-P0 接线口子）
+    let finalText = text
+    if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
+      const verdict = await deps.hookRunner.dispatch('UserPromptSubmit', { event: 'UserPromptSubmit', session_id: '', prompt: text })
+      if (verdict.block) {
+        setSystemMsgs([`✋ 插话被 hook 拦截${verdict.reason !== undefined && verdict.reason !== '' ? `：${verdict.reason}` : ''}`])
+        return
+      }
+      if (verdict.additionalContext.length > 0) finalText = `${finalText}\n\n[hook context]\n${verdict.additionalContext.join('\n')}`
+    }
+    interjectQueueRef.current.push(finalText)
+    setInterjectPreview(interjectQueueRef.current[0] ?? null)
+  }
+  // M11-P4：运行中子代理快照（进度桥推送）
+  const [subagents, setSubagents] = useState<SubagentStatus[]>([])
+  // M11 §1.3：confirm 串行队列（ActiveState.confirm 覆盖式单槽——并发子代理 confirm 后到覆盖前者，
+  // resolve 闭包丢失 → Promise 永挂 → 父死锁；父/子 confirm 全走此队列，单请求时深度 1 行为不变）
+  const confirmQueueRef = useRef(Promise.resolve())
+  const queueConfirm = (fn: (use: import('../core/types.js').ToolUseBlock) => Promise<boolean>) => {
+    return (use: import('../core/types.js').ToolUseBlock) => {
+      const run = confirmQueueRef.current.then(
+        () => fn(use),
+        () => fn(use),
+      )
+      confirmQueueRef.current = run.then(
+        () => undefined,
+        () => undefined,
+      )
+      return run
+    }
+  }
+  /** M9-P4 确认弹窗逻辑（组件级——submit 与子代理桥共用，经 queueConfirm 串行） */
+  const doConfirm = async (use: import('../core/types.js').ToolUseBlock): Promise<boolean> => {
+    // full-access 全免确认（deny 语义仍硬拒在工具层：内置黑名单 + blockedCommands）
+    if (sandboxModeRef.current === 'full-access') return true
+    // read-only 档——MCP 副作用工具整体拒绝（本地 write/edit/bash 在工具层拦，文案准确；
+    // MCP 经 server 无法工具层拦，此处 false + 用户提示，LLM 收到 is_error 自纠）
+    if (sandboxModeRef.current === 'read-only' && use.name.startsWith('mcp__')) {
+      setSystemMsgs([`read-only 模式：MCP 工具 ${use.name} 被拒绝`])
+      return false
+    }
+    // MCP「本会话记住」（M6 v3 P1-3）：server 级前缀放行（mcp__server__*），本会话不再逐次弹窗
+    const mcpPrefix = use.name.startsWith('mcp__') ? use.name.split('__').slice(0, 2).join('__') : null
+    if (mcpPrefix !== null && confirmAlwaysRef.current.has(mcpPrefix)) return true
+    // D5：callback 内部算预览（不污染 Tool 接口）；P1#3：catch 异常不杀 Loop
+    const preview = await buildPreview(use, process.cwd()).catch(
+      (e) => `⚠ 无法生成预览：${e instanceof Error ? e.message : String(e)}`,
+    )
+    confirmRef.current = true
+    return new Promise<boolean>((resolve) => {
+      setActive((a) => ({
+        ...a,
+        confirm: {
+          use,
+          preview,
+          resolve: (ok, always) => {
+            if (ok && always === true && mcpPrefix !== null) confirmAlwaysRef.current.add(mcpPrefix)
+            resolve(ok)
+          },
+        },
+      }))
+    })
+  }
+
+  /** usage 记录（submit 与子代理桥共用——成本归并；「本轮」语义被并发稀释为最后到达者，文档化） */
+  const recordUsage = (inp: number, out: number, cache?: { read?: number; creation?: number }) => {
+    deps.lastUsage.input = inp
+    deps.lastUsage.output = out
+    deps.lastUsage.cacheRead = cache?.read ?? 0
+    deps.lastUsage.cacheCreation = cache?.creation ?? 0
+    setTokens((n) => n + inp + out)
+    const c = tokensToCost(config.current.model, {
+      input: inp,
+      output: out,
+      cacheRead: cache?.read ?? 0,
+      cacheCreation: cache?.creation ?? 0,
+    }, config.providers[config.current.name]?.pricing)
+    if (c != null) setSessionCost((sc) => sc + c)
+  }
   // 同步 picker 覆盖状态给 useInterrupt（同 confirm：覆盖期间 Ctrl+C 由 picker 处理，不中断 loop）
   const pickerRef = useRef(false)
   // ctxWindow 缓存（S-P4：submit 热路径同步用，启动解析一次 + 切模型刷新；默认 200k 兜底）
@@ -303,7 +392,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         if (okCount > 0) blocks = built.blocks
       }
     }
-    if (runningRef.current) return
+    if (runningRef.current) {
+      // M11-P7：忙碌态插话——入队（含图片 [图片#N] 标签：续投走同一 submit 组装 blocks，F1）
+      await enqueueInterject(input)
+      return
+    }
     // 配置无效态（空壳 Config）：不 runLoop，提示 /setup；/setup /history /clear 等命令不受影响
     if (!config.providers[config.current.name]) {
       setBanner('配置不完整，输入 /setup 配置')
@@ -423,19 +516,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
             })
             setActivity({ state: 'thinking' })
           },
-          onUsage: (inp, out, cache) => {
-            deps.lastUsage.input = inp
-            deps.lastUsage.output = out
-            deps.lastUsage.cacheRead = cache?.read ?? 0
-            deps.lastUsage.cacheCreation = cache?.creation ?? 0
-            setTokens((n) => n + inp + out)
-            // M5：累加本轮成本（cache 四维拆分；未命中模型跳过不累加）
-            const c = tokensToCost(config.current.model, {
-              input: inp, output: out,
-              cacheRead: cache?.read ?? 0, cacheCreation: cache?.creation ?? 0,
-            }, config.providers[config.current.name]?.pricing)
-            if (c != null) setSessionCost((s) => s + c)
-          },
+          onUsage: recordUsage,
           onIter: (i, m) => {
             setIter(i)
             setMaxIter(m)
@@ -470,36 +551,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         signal: abortRef.current.signal,
         onBeforeRequest,
         onCompacted,
-        confirm: async (use) => {
-          // M9-P4：full-access 全免确认（deny 语义仍硬拒在工具层：内置黑名单 + blockedCommands）
-          if (sandboxModeRef.current === 'full-access') return true
-          // M9-P4：read-only 档——MCP 副作用工具整体拒绝（本地 write/edit/bash 在工具层拦，文案准确；
-          // MCP 经 server 无法工具层拦，此处 false + 用户提示，LLM 收到 is_error 自纠）
-          if (sandboxModeRef.current === 'read-only' && use.name.startsWith('mcp__')) {
-            setSystemMsgs([`read-only 模式：MCP 工具 ${use.name} 被拒绝`])
-            return false
-          }
-          // MCP「本会话记住」（M6 v3 P1-3）：server 级前缀放行（mcp__server__*），本会话不再逐次弹窗
-          const mcpPrefix = use.name.startsWith('mcp__') ? use.name.split('__').slice(0, 2).join('__') : null
-          if (mcpPrefix !== null && confirmAlwaysRef.current.has(mcpPrefix)) return true
-          // D5：callback 内部算预览（不污染 Tool 接口）；P1#3：catch 异常不杀 Loop
-          const preview = await buildPreview(use, process.cwd()).catch(
-            (e) => `⚠ 无法生成预览：${e instanceof Error ? e.message : String(e)}`,
-          )
-          confirmRef.current = true
-          return new Promise<boolean>((resolve) => {
-            setActive((a) => ({
-              ...a,
-              confirm: {
-                use,
-                preview,
-                resolve: (ok, always) => {
-                  if (ok && always === true && mcpPrefix !== null) confirmAlwaysRef.current.add(mcpPrefix)
-                  resolve(ok)
-                },
-              },
-            }))
-          })
+        confirm: queueConfirm(doConfirm),
+        // M11-P7：步间注入拉取（多条合并一条换行拼接；拉走即清显示）
+        pollUserInput: () => {
+          const q = interjectQueueRef.current
+          if (q.length === 0) return null
+          const text = q.splice(0).join('\n\n')
+          setInterjectPreview(null)
+          return text
         },
       })
       // 不立即 commit：本轮保留在动态区（当前轮可 Ctrl+O 展开）；streaming=false 转 Markdown 显示
@@ -517,6 +576,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       }
     } finally {
       runningRef.current = false
+      // M11-P7：轮末兜底——settle 后队列有剩余自动续投（Ctrl+C 中断同样走此路径：停当前不停插话）
+      const pending = interjectQueueRef.current.splice(0)
+      if (pending.length > 0) {
+        setInterjectPreview(null)
+        void submit(pending.join('\n\n'))
+      }
       // Stop hook（H-P4）：一轮结束即触发，fire（async hook 本就不等；systemMessage 到达后展示）
       // M9-P0：中断路径 stop_reason=aborted（hook 可区分「用户主动停」与「正常完成」）
       if (deps.hookRunner != null && deps.hookRunner.hasHandlers('Stop')) {
@@ -838,7 +903,21 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       }),
     )
     return () => setPermissionAsker(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载一次
+  }, [])
+
+  // M11-P4/P5：子代理桥——confirm 串行队列（单槽覆盖式并发必炸，方案 §1.3）+ warn/usage/progress 转发
+  useEffect(() => {
+    setSubagentBridge({
+      confirm: queueConfirm(doConfirm),
+      warn: (m) => pushNoticeFn('warn', m),
+      usage: (inp, out, cache) => recordUsage(inp, out, cache),
+    })
+    setSubagentProgressHandler(setSubagents)
+    return () => {
+      setSubagentBridge(null)
+      setSubagentProgressHandler(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（pushNoticeFn/recordUsage 稳定引用）
   }, [])
 
   // M6 M-P7：MCP 状态订阅（onEvent → setState → StatusBar/面板读快照）+ 启动警告
@@ -975,6 +1054,16 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         })()
       }
     >
+      <SubagentBar agents={subagents} />
+      {interjectPreview !== null && (
+        <Box paddingLeft={1}>
+          <Text dimColor>
+            已排队：{interjectPreview.slice(0, 40)}
+            {interjectQueueRef.current.length > 1 ? `（共 ${interjectQueueRef.current.length} 条）` : ''}
+            （Ctrl+U 清空）
+          </Text>
+        </Box>
+      )}
       {error ? <ErrorBanner error={error} /> : null}
       {overlay?.kind === 'model-picker' && (
         <ModelPicker
@@ -1176,6 +1265,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       <InputStream
         onSubmit={submit}
         onPasteImage={() => pasteImageFromClipboard()}
+        onInterjectClear={() => {
+          interjectQueueRef.current.length = 0
+          setInterjectPreview(null)
+        }}
         onTabSandbox={() => {
           // M9-D13：Tab 专职循环切档；D12：进 full-access 需确认——循环到该档时打开面板二级确认
           const next = nextSandboxMode(sandboxModeRef.current)
@@ -1325,7 +1418,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           setCommitted([])
           resetTransient()
         }}
-        inactive={overlay !== null || active.confirm !== null || runningRef.current}
+        // M11-P7：忙碌态保持激活（插话 Enter 入队；overlay/confirm 仍独占）
+        inactive={overlay !== null || active.confirm !== null}
         insert={insert}
         placeholder={busy ? '（处理中，Ctrl+C 中断）...' : '输入消息，/help 查看命令...'}
       />

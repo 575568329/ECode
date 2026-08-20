@@ -405,8 +405,9 @@ describe('TuiApp 图片粘贴标签内嵌（M10 真机修复批 v2）', () => {
     await flush()
     expect(lastFrame() ?? '').toContain('[图片#1]')
     await pressEnterUntil(stdin, () => getByType.mock.calls.length > 0)
-    await flush()
-    await flush() // runLoop 微任务（stub generator 立即完）
+    // runLoop 消费流与 getByType 之间有异步间隙（getByType 在 doSubmit 内、blocks 在流消费后
+    // 填充）：全量负载下两次 flush 不够（复审 P1 负载 flake），轮询等 lastUserBlocks 填充
+    for (let i = 0; i < 100 && lastUserBlocks.length === 0; i++) await flush()
     expect(getByType).toHaveBeenCalledWith('anthropic')
     expect(lastUserBlocks).toContainEqual({ type: 'image' }) // blocks 真附着在 user 消息上
     expect(lastFrame() ?? '').toContain('[图片#1]') // 转录显示标签
@@ -423,8 +424,8 @@ describe('TuiApp 图片粘贴标签内嵌（M10 真机修复批 v2）', () => {
     stdin.write('看下这张图')
     await flush()
     await pressEnterUntil(stdin, () => getByType.mock.calls.length > 0)
-    await flush()
-    await flush()
+    // 同上：轮询等 blocks 填充（负载下的时序间隙）
+    for (let i = 0; i < 100 && lastUserBlocks.length === 0; i++) await flush()
     expect(getByType).toHaveBeenCalledWith('anthropic')
     expect(lastFrame() ?? '').toContain('看下这张图')
     expect(lastUserBlocks).toContainEqual({ type: 'image' })

@@ -39,7 +39,7 @@ import {
   renderCreatePreview,
   renderUpgradePreview,
 } from '../services/skill/distill.js'
-import { buildPreview } from '../services/preview.js'
+import { buildPreview, sanitizePreview } from '../services/preview.js'
 import { buildProviderReq, loadConfig, writeWizardConfig, type Config } from '../services/config.js'
 import { ModelPicker, type ModelEntry } from './ModelPicker.js'
 import { HistoryPicker } from './HistoryPicker.js'
@@ -54,7 +54,7 @@ import { SandboxPanel } from './SandboxPanel.js'
 import { ConfigPanel, type ConfigItem } from './ConfigPanel.js'
 import { saveConfigKey } from '../services/configFs.js'
 import { makeSandbox, nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
-import { setPermissionAsker } from '../services/permissions.js'
+import { setPermissionAsker, type PermissionAnswer } from '../services/permissions.js'
 import { setSubagentBridge, setSubagentProgressHandler, type SubagentStatus } from '../services/subagent.js'
 import { SubagentBar } from './SubagentBar.js'
 import { ecodeCommit, undoEcodeCommit } from '../services/git.js'
@@ -205,7 +205,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     // F2：入队时过 UserPromptSubmit hook（loop 内 append 会绕过 submit 内的分发——M9-P0 接线口子）
     let finalText = text
     if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
-      const verdict = await deps.hookRunner.dispatch('UserPromptSubmit', { event: 'UserPromptSubmit', session_id: '', prompt: text })
+      // 对齐主路径：dispatch 透传 AbortSignal——hook 等待期 Ctrl+C 可中断 hook 子进程（M9-P0）
+      const verdict = await deps.hookRunner.dispatch(
+        'UserPromptSubmit',
+        { event: 'UserPromptSubmit', session_id: '', prompt: text },
+        { signal: abortRef.current.signal },
+      )
       if (verdict.block) {
         setSystemMsgs([`✋ 插话被 hook 拦截${verdict.reason !== undefined && verdict.reason !== '' ? `：${verdict.reason}` : ''}`])
         return
@@ -220,8 +225,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   // M11 §1.3：confirm 串行队列（ActiveState.confirm 覆盖式单槽——并发子代理 confirm 后到覆盖前者，
   // resolve 闭包丢失 → Promise 永挂 → 父死锁；父/子 confirm 全走此队列，单请求时深度 1 行为不变）
   const confirmQueueRef = useRef(Promise.resolve())
-  const queueConfirm = (fn: (use: import('../core/types.js').ToolUseBlock) => Promise<boolean>) => {
-    return (use: import('../core/types.js').ToolUseBlock) => {
+  // 泛型 T：工具确认 resolve boolean，权限/预览确认各有自己的 resolve 值——同一条串行队列复用
+  const queueConfirm = <T,>(fn: (use: import('../core/types.js').ToolUseBlock) => Promise<T>) => {
+    return (use: import('../core/types.js').ToolUseBlock): Promise<T> => {
       const run = confirmQueueRef.current.then(
         () => fn(use),
         () => fn(use),
@@ -273,12 +279,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     deps.lastUsage.cacheRead = cache?.read ?? 0
     deps.lastUsage.cacheCreation = cache?.creation ?? 0
     setTokens((n) => n + inp + out)
-    const c = tokensToCost(config.current.model, {
+    // P0 连带：定价读 configRef——本函数被挂载期子代理桥长期持有，闭包捕获的 config 是首次
+    // 渲染值（/model 切换后仍按旧模型计价）
+    const c = tokensToCost(configRef.current.current.model, {
       input: inp,
       output: out,
       cacheRead: cache?.read ?? 0,
       cacheCreation: cache?.creation ?? 0,
-    }, config.providers[config.current.name]?.pricing)
+    }, configRef.current.providers[configRef.current.current.name]?.pricing)
     if (c != null) setSessionCost((sc) => sc + c)
   }
   // 同步 picker 覆盖状态给 useInterrupt（同 confirm：覆盖期间 Ctrl+C 由 picker 处理，不中断 loop）
@@ -294,7 +302,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   // M10-P2b：待发送的粘贴图片（Alt+V 落盘后的路径；submit 时按文本引用组装 blocks 并清空）。
   // 真机修复批 v2（两家同款内嵌形态）：粘贴把短标签 [图片#N] 插入输入框文本，标签即引用——
   // 删标签=删图（提交剪枝），无独立附件行（v1 的输入框上方行已退役）
-  const [pendingImages, setPendingImages] = useState<Array<{ path: string; label: string }>>([])
+  // 值不读：v2 内嵌标签形态后 UI 不再渲染附件行（标签在输入框文本里，InputStream 自驱）；
+  // setter 保留触发重渲染（粘贴/清空的 UI 时序与旧版一致）。数组权威源在下方 ref。
+  const [, setPendingImages] = useState<Array<{ path: string; label: string }>>([])
+  // P1 闭包竞态（全量测试 flake 根因）：Alt+V 粘贴后立刻 Enter 且 React 渲染未提交时，渲染闭包里
+  // 的 pendingImages state 还是旧空数组——标签已进文本但图片块静默不附着。ref 为权威源（粘贴
+  // 序号/submit 组装/清空点全读它），state 只是 UI 渲染镜像；两处同步双写。
+  const pendingImagesRef = useRef<Array<{ path: string; label: string }>>([])
 
   /** M10-P2b：Alt+V 粘贴——读剪贴板图落附件目录，返回插入输入框的短标签（无图 null） */
   const pasteImageFromClipboard = async (): Promise<string | null> => {
@@ -303,9 +317,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       setSystemMsgs(['剪贴板无图片（或读取失败）'])
       return null
     }
-    // 序号取自当前渲染闭包（Alt+V 是离散用户事件，闭包即最新；数组本体仍走函数式 append 保正确）
-    const label = `[图片#${pendingImages.length + 1}]`
-    setPendingImages((prev) => [...prev, { path: img.path, label }])
+    // 序号读 ref（state 渲染闭包在快速连击 Alt+V 未提交时取旧 length，产生重复 [图片#N]）
+    const label = `[图片#${pendingImagesRef.current.length + 1}]`
+    pendingImagesRef.current = [...pendingImagesRef.current, { path: img.path, label }]
+    setPendingImages(pendingImagesRef.current)
     return label
   }
   // M9-P4：沙箱模式（会话级不落盘；初始取 config.sandbox.defaultMode，default=现状=关）
@@ -339,6 +354,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   const [clearKey, setClearKey] = useState(0)
   // config 是 state 不是 props（§8.1.1）：/model 改 current → setConfig → 重渲染，下次 submit 用新 current
   const [config, setConfig] = useState<Config>(() => deps.config)
+  // P0：configRef 双轨——挂载期 effect（子代理桥/权限桥等）与 recordUsage 闭包捕获首次渲染的 config
+  // state，/model·/setup·/config 切换后 setConfig 换新对象但挂载期 effect 不重跑 → 桥上 getter
+  // 永远返回旧值。ref 由 [config] effect 同步，跨渲染读最新；submit 等每次渲染新建的闭包不必须，
+  // 但统一读 ref 免分叉。
+  const configRef = useRef(config)
+  useEffect(() => {
+    configRef.current = config
+  }, [config])
   // 覆盖层（/model·/history·/setup 等）：非 null 时独占输入（picker 渲染 + InputStream inactive）
   const [overlay, setOverlay] = useState<
     | { kind: 'model-picker' }
@@ -367,7 +390,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   // /restart 句柄经 ref（deps 闭包稳定，setTimeout 回调取最新）
   const onRestartRef = useRef(onRestart)
 
-  const submit = async (input: string, display?: string, blocks?: ContentBlock[]): Promise<void> => {
+  const doSubmit = async (input: string, display?: string, blocks?: ContentBlock[]): Promise<void> => {
     // M10-P2b：零键位增强——提交文本恰好是存在的图片路径 → 转图片输入（display 保持原文）
     if (blocks === undefined && display === undefined && /^\s*[^\n]+\.(png|jpe?g|webp|gif)\s*$/i.test(input)) {
       const detected = await imageBlocksFromPaths([input.trim()])
@@ -379,9 +402,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     // M10-P2b 真机修复批 v2：粘贴 pending 按文本引用组装——输入框内 [图片#N] 标签即引用，
     // 文本里没引用的（用户删了标签）不发送（两家同款剪枝语义）；引用了但读取/守卫失败的跳过并 warn。
     // 早退守卫路径（hook 拦截/配置无效/运行中）不清空暂存——消息没发出去图片不丢。
-    if (blocks === undefined && pendingImages.length > 0) {
+    if (blocks === undefined && pendingImagesRef.current.length > 0) {
       const referenced = [...input.matchAll(/\[图片#(\d+)\]/g)].map((m) => Number(m[1]))
-      const referencedPending = pendingImages.filter((_, i) => referenced.includes(i + 1))
+      const referencedPending = pendingImagesRef.current.filter((_, i) => referenced.includes(i + 1))
       if (referencedPending.length > 0) {
         const built = await imageBlocksFromPaths(referencedPending.map((p) => p.path))
         const okCount = built.blocks.length
@@ -445,6 +468,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     // display（S4.4 最小 display/content 分离）：手动 skill 触发时输入框/转录显示原始
     // `/name args`，消息本体是展开全文（runLoop 的 userInput 必须传全文，防 alreadyUser 双推）
     // M10-P2b 复审 P2-2：到此消息确认发送（所有早退守卫已过）——粘贴暂存此刻清空（附件行随之消失）
+    pendingImagesRef.current = []
     setPendingImages([])
     setActive({ ...createActive(), userInput: display ?? input, streaming: true })
     setError(null)
@@ -550,6 +574,29 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         onBeforeRequest,
         onCompacted,
         confirm: queueConfirm(doConfirm),
+        // 审阅 P0-2：敏感路径读取确认（read_file 判定敏感后经 loop 透传到此处；串行队列防并发覆盖单槽。
+        // argv 模式不接线 → read_file 侧 fail-closed）
+        onSensitiveAccess: (description) => {
+          const placeholder = {
+            type: 'tool_use' as const,
+            id: 'sensitive-access',
+            name: 'read_file（敏感路径）',
+            input: {},
+          }
+          return queueConfirm((): Promise<boolean> => {
+            confirmRef.current = true
+            return new Promise<boolean>((resolve) => {
+              setActive((a) => ({
+                ...a,
+                confirm: {
+                  use: placeholder,
+                  preview: sanitizePreview(description),
+                  resolve: (ok) => resolve(ok),
+                },
+              }))
+            })
+          })(placeholder)
+        },
         // M11-P7：步间注入拉取（多条合并一条换行拼接；拉走即清显示）
         pollUserInput: () => {
           const q = interjectQueueRef.current
@@ -593,6 +640,20 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     }
   }
 
+  // P1 闪退面：doSubmit 前半段（图片组装/hook dispatch/getByType 等）在内部 try 之外，任一
+  // reject → void submit(...) 成 unhandledRejection → cli 顶层 handler exit(1) 杀掉整个 TUI。
+  // 包装层整体兜底（含 runningRef 复位——hook dispatch 抛出时已置 true，不复位则 TUI 永久 busy）。
+  const submit = async (input: string, display?: string, blocks?: ContentBlock[]): Promise<void> => {
+    try {
+      await doSubmit(input, display, blocks)
+    } catch (e) {
+      runningRef.current = false
+      setActivity({ state: 'idle' })
+      deps.logger.error('tui', 'submit_failed', { message: e instanceof Error ? e.message : String(e) })
+      setSystemMsgs(['提交失败：' + (e instanceof Error ? e.message : String(e))])
+    }
+  }
+
   // 清 confirm（ConfirmPrompt 内先 resolve 再调它）
   const clearConfirm = () => {
     confirmRef.current = false
@@ -610,7 +671,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     }
     setActive(createActive())
     setSystemMsgs([])
-    setPendingImages([]) // M10 修复批：换会话不带旧会话的待发送附件
+    pendingImagesRef.current = [] // M10 修复批：换会话不带旧会话的待发送附件
+    setPendingImages([])
     setTokens(0)
     setSessionCost(0)
     setIter(undefined)
@@ -669,17 +731,22 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
 
   /** 蒸馏预览确认（复用 active.confirm 通道；合成 use 走 ConfirmPrompt 默认渲染分支） */
   const askPreviewConfirm = (preview: string, what: string): Promise<boolean> => {
-    return new Promise((resolve) => {
-      confirmRef.current = true
-      setActive((a) => ({
-        ...a,
-        confirm: {
-          use: { type: 'tool_use', id: `skill-create-${Date.now()}`, name: what, input: {} },
-          preview,
-          resolve,
-        },
-      }))
-    })
+    // P1：走 confirm 串行队列——直写单槽会覆盖并发 confirm 的 resolve（Promise 永挂）；
+    // queueConfirm 内部链式排队，任意渲染期实例都安全。fn 忽略 use（合成占位透传）
+    const queued = queueConfirm((): Promise<boolean> =>
+      new Promise<boolean>((resolve) => {
+        confirmRef.current = true
+        setActive((a) => ({
+          ...a,
+          confirm: {
+            use: { type: 'tool_use', id: `skill-create-${Date.now()}`, name: what, input: {} },
+            preview,
+            resolve,
+          },
+        }))
+      }),
+    )
+    return queued({ type: 'tool_use', id: `skill-preview-${Date.now()}`, name: what, input: {} })
   }
 
   /** M6 M-P6：/mcp reconnect 直达（面板外子命令） */
@@ -808,20 +875,27 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
 
   /** M5：切换 model 后检测 context 是否超新窗口（只提示风险，不自动压缩；用户主动 /compact） */
   const checkModelWindow = async (model: string, providerName: string): Promise<void> => {
-    const ctxTokens = estimateContextTokens(
-      buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindowRef.current),
-      buildContextMessages(messagesRef.current),
-      deps.tools.specs(), // MCP 工具 schema 同样计入（v6 修复记录「两个调用点」的第二处，审阅补漏）
-    )
-    const newWindow = await resolveContextWindow(model, config.providers[providerName]?.contextWindow)
-    ctxWindowRef.current = newWindow // S-P4：切模型刷新缓存（后续 submit 的 skill 清单预算随之适配）
-    const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(0)}k`)
-    if (ctxTokens > newWindow) {
-      setBanner(
-        `当前对话（约 ${fmt(ctxTokens)} tokens）超出 ${model} 窗口（${fmt(newWindow)}）。建议 /compact 压缩后继续（注意：压缩有损，可能丢失细节），或 /clear 起新会话。`,
+    // P1：整体兜底——resolveContextWindow 联网查 models.dev 可能 reject，而调用点是
+    // void checkModelWindow(...)，不兜会成 unhandledRejection 杀 TUI（与 submit 同款闪退面）
+    try {
+      const ctxTokens = estimateContextTokens(
+        buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindowRef.current),
+        buildContextMessages(messagesRef.current),
+        deps.tools.specs(), // MCP 工具 schema 同样计入（v6 修复记录「两个调用点」的第二处，审阅补漏）
       )
-    } else {
-      setBanner(undefined)
+      const newWindow = await resolveContextWindow(model, config.providers[providerName]?.contextWindow)
+      ctxWindowRef.current = newWindow // S-P4：切模型刷新缓存（后续 submit 的 skill 清单预算随之适配）
+      const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(0)}k`)
+      if (ctxTokens > newWindow) {
+        setBanner(
+          `当前对话（约 ${fmt(ctxTokens)} tokens）超出 ${model} 窗口（${fmt(newWindow)}）。建议 /compact 压缩后继续（注意：压缩有损，可能丢失细节），或 /clear 起新会话。`,
+        )
+      } else {
+        setBanner(undefined)
+      }
+    } catch (e) {
+      // 失败保持旧窗口缓存（默认 200k 兜底），不刷 banner 不影响流程
+      deps.logger.warn('tui', 'check_model_window_failed', { message: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -886,21 +960,27 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
 
   // M9-P5：权限 ask 桥（扩展源 hook 首次执行前的确认弹窗；卸载置 null——argv/测试 ask 默认拒绝）
   useEffect(() => {
-    setPermissionAsker((owner, event) =>
-      new Promise((resolveAsk) => {
-        confirmRef.current = true
-        setActive((a) => ({
-          ...a,
-          confirm: {
-            use: { type: 'tool_use', id: `perm-${owner}`, name: `hook:${owner}`, input: {} },
-            preview: `扩展 ${owner} 申请在 ${event} 事件执行 hook（首次）`,
-            rememberLabel: '永久记住（写入 settings.local.json）',
-            resolve: (ok, always) => resolveAsk({ allow: ok, remember: always === true }),
-          },
-        }))
-      }),
-    )
+    setPermissionAsker((owner, event) => {
+      // P1：走 confirm 串行队列（同 askPreviewConfirm——直写单槽覆盖并发 confirm 的 resolve，
+      // 并行子代理场景 Promise 永挂）；fn 忽略 use（合成占位透传）
+      const queued = queueConfirm((): Promise<PermissionAnswer> =>
+        new Promise<PermissionAnswer>((resolveAsk) => {
+          confirmRef.current = true
+          setActive((a) => ({
+            ...a,
+            confirm: {
+              use: { type: 'tool_use', id: `perm-${owner}`, name: `hook:${owner}`, input: {} },
+              preview: `扩展 ${owner} 申请在 ${event} 事件执行 hook（首次）`,
+              rememberLabel: '永久记住（写入 settings.local.json）',
+              resolve: (ok, always) => resolveAsk({ allow: ok, remember: always === true }),
+            },
+          }))
+        }),
+      )
+      return queued({ type: 'tool_use', id: `perm-${owner}`, name: `hook:${owner}`, input: {} })
+    })
     return () => setPermissionAsker(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（queueConfirm/confirmRef 均 ref 闭包）
   }, [])
 
   // M11-P4/P5：子代理桥——confirm 串行队列（单槽覆盖式并发必炸，方案 §1.3）+ warn/usage/progress 转发
@@ -915,12 +995,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
       },
       // 审阅 P1-1/P1-2：运行态 getter（/model·/config 切换、Tab 切沙箱档后子代理取新值——
-      // config 是 TuiApp state 天然新；cli deps 闭包是 makeDeps 时的旧对象）
-      getProviderReq: () => buildProviderReq(config),
-      getProvider: () => deps.providerRegistry.getByType(config.providers[config.current.name].type),
+      // cli deps 闭包是 makeDeps 时的旧对象）。P0：config 一律读 configRef——本 effect 挂载期
+      // 一次，直接闭包 config state 会拿到首次渲染值，切配置后不重挂永远是旧值
+      getProviderReq: () => buildProviderReq(configRef.current),
+      getProvider: () => deps.providerRegistry.getByType(configRef.current.providers[configRef.current.current.name].type),
       getSandbox: () =>
-        makeSandbox(sandboxModeRef.current, process.cwd(), config.sandbox?.blockedCommands ?? []),
-      getModel: () => config.current.model,
+        makeSandbox(sandboxModeRef.current, process.cwd(), configRef.current.sandbox?.blockedCommands ?? []),
+      getModel: () => configRef.current.current.model,
     })
     setSubagentProgressHandler(setSubagents)
     return () => {

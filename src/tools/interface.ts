@@ -37,6 +37,12 @@ export interface ToolContext {
    * 宿主装配注入；缺省空串 = 拦截（fail-closed——无模型信息时不放行图片，宁拦勿错）。
    */
   model?: string
+  /**
+   * 敏感访问确认（安全审阅 P0）：工具自行判断何时调用（如 read_file 命中密钥类路径），
+   * 返回 true 才放行。由上层注入（TUI 弹窗）；无此回调 = 当前模式无法确认
+   * （argv 无头等）→ 工具侧 fail-closed 拒绝（宁拦勿泄）。心脏只透传不认识「敏感」。
+   */
+  confirmSensitive?: (description: string) => Promise<boolean>
 }
 
 export interface Tool {
@@ -46,7 +52,10 @@ export interface Tool {
   input_schema: object
   /** true=只读（可并行、免确认）/ false=有副作用（串行、需确认） */
   readonly: boolean
-  /** 执行超时（默认 30s），超时转 recoverable 错误 */
+  /**
+   * 可选：执行超时（毫秒）。声明了才由循环统一强制（软超时——超时放弃等待转
+   * recoverable 错误，不强杀后台 execute）；未声明则不设限（bash/task 等长任务自管超时）。
+   */
   timeout_ms?: number
   /**
    * 外部工具（MCP）：跳过本地 AJV 校验/预编译，参数透传给 server 校验（M6-D13）。

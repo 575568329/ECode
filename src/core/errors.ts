@@ -1,7 +1,8 @@
 /**
  * 错误归一化：把任意异常翻译成统一 AppError，并按 §6.2 分类判定
  * recoverable（转 tool_result 交 LLM 自纠）/ fatal（抛顶层中断 Loop）
- * 以及 retryable（Provider 层指数退避）。
+ * 以及 retryable（loop 侧指数退避重试；客户端错 400/401/403/404/422 为 false——
+ * 同请求重试必同错，退避是纯空转）。
  *
  * 二分契约（详设 §6.1）：
  *   recoverable:true  → 转 tool_result(is_error:true)，Loop 继续
@@ -42,12 +43,14 @@ export function toAppError(e: unknown): AppError {
     }
   }
 
-  // 5) 普通 Error：默认 recoverable（能让 LLM 处理的尽量交 LLM）
+  // 5) 普通 Error：默认 recoverable（能让 LLM 处理的尽量交 LLM）。
+  //    网络类（连接失败/超时，无 HTTP status）显式 retryable:true——退避后大概率自愈
   if (e instanceof Error) {
     return {
       code: 'INTERNAL',
       message: e.message,
       recoverable: true,
+      ...(isNetworkError(e) ? { retryable: true } : {}),
       context: { name: e.name, stack: e.stack },
     }
   }
@@ -70,6 +73,19 @@ export function toFatal(stopReason: 'error'): AppError {
 }
 
 // —— 辅助 —— //
+
+/** 网络类错误特征（无 status 的连接层失败）：Node errno / fetch 话术 / SDK 连接错。
+ *  Why：这类错退避后大概率自愈（retryable:true）；其余普通 Error 不显式标记，
+ *  由 loop 按 retryable !== false 默认放行重试。 */
+const NETWORK_ERROR_RE =
+  /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|fetch failed|network error|socket hang up|connection (error|reset|refused|closed)/i
+
+function isNetworkError(e: Error): boolean {
+  if (NETWORK_ERROR_RE.test(e.message) || NETWORK_ERROR_RE.test(e.name)) return true
+  // fetch 失败常把真因放 cause（TypeError: fetch failed → cause: Error connect ECONNREFUSED）
+  const cause = (e as { cause?: unknown }).cause
+  return cause instanceof Error && NETWORK_ERROR_RE.test(cause.message)
+}
 
 function isAppError(e: unknown): e is AppError {
   return (
@@ -101,10 +117,22 @@ function fromHttpStatus(status: number, e: unknown): AppError {
   const brief = briefHttpMessage(e, raw)
 
   if (status === 401 || status === 403) {
-    return { code: 'AUTH_ERROR', message: `认证失败（${status}）：${brief}`, recoverable: false, context: { status, raw } }
+    return {
+      code: 'AUTH_ERROR',
+      message: `认证失败（${status}）：${brief}`,
+      recoverable: false,
+      retryable: false,
+      context: { status, raw },
+    }
   }
   if (status === 404) {
-    return { code: 'MODEL_NOT_FOUND', message: `模型/资源不存在（404）：${brief}`, recoverable: false, context: { status, raw } }
+    return {
+      code: 'MODEL_NOT_FOUND',
+      message: `模型/资源不存在（404）：${brief}`,
+      recoverable: false,
+      retryable: false,
+      context: { status, raw },
+    }
   }
   if (status === 429) {
     return { code: 'RATE_LIMIT', message: `限流（429）：${brief}`, recoverable: true, retryable: true, context: { status, raw } }
@@ -115,12 +143,14 @@ function fromHttpStatus(status: number, e: unknown): AppError {
   if (status >= 500) {
     return { code: 'UPSTREAM_ERROR', message: `上游错误（${status}）：${brief}`, recoverable: true, retryable: true, context: { status, raw } }
   }
-  // 400：区分上下文超限（压缩兜底，recoverable:false 跳过退避走 M5 §6.3）vs 其它参数错误（交 LLM 自纠）
-  if (status === 400) {
+  // 400：区分上下文超限（压缩兜底，recoverable:false 跳过退避走 M5 §6.3）vs 其它参数错误（交 LLM 自纠）。
+  // 400/422 客户端错：同请求重试必同错（纯空转）——retryable:false，loop 不退避直接终止
+  if (status === 400 || status === 422) {
     const bodyMsg = extractErrorMessage(e)
-    if (bodyMsg && CONTEXT_TOO_LONG_RE.test(bodyMsg)) {
+    if (status === 400 && bodyMsg && CONTEXT_TOO_LONG_RE.test(bodyMsg)) {
       return { code: 'CONTEXT_TOO_LONG', message: `上下文超限: ${bodyMsg}`, recoverable: false, context: { status, raw } }
     }
+    return { code: 'HTTP_ERROR', message: brief, recoverable: true, retryable: false, context: { status, raw } }
   }
   // 其它 4xx 等：默认 recoverable
   return { code: 'HTTP_ERROR', message: brief, recoverable: true, context: { status, raw } }

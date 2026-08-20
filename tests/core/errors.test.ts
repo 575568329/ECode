@@ -20,7 +20,16 @@ describe('toAppError', () => {
     const e = Object.assign(new Error('not found'), { status: 404 })
     const err = toAppError(e)
     expect(err.recoverable).toBe(false)
+    expect(err.retryable).toBe(false)
     expect(err.code).toMatch(/MODEL|NOT_FOUND/i)
+  })
+
+  it('403 → fatal + 不可重试（认证/权限错重试必同错）', () => {
+    const e = Object.assign(new Error('forbidden'), { status: 403 })
+    const err = toAppError(e)
+    expect(err.recoverable).toBe(false)
+    expect(err.retryable).toBe(false)
+    expect(err.code).toBe('AUTH_ERROR')
   })
 
   it('429 → recoverable + retryable（限流，指数退避）', () => {
@@ -48,6 +57,21 @@ describe('toAppError', () => {
     const err = toAppError(new Error('boom'))
     expect(err.recoverable).toBe(true)
     expect(err.message).toBe('boom')
+    // 非网络类普通错误不显式标记 retryable（undefined → loop 默认放行重试）
+    expect(err.retryable).toBeUndefined()
+  })
+
+  it('网络类 Error（ECONNREFUSED）→ retryable:true（退避后大概率自愈）', () => {
+    const err = toAppError(new Error('connect ECONNREFUSED 127.0.0.1:3000'))
+    expect(err.recoverable).toBe(true)
+    expect(err.retryable).toBe(true)
+  })
+
+  it('fetch failed（真因在 cause 链）→ retryable:true', () => {
+    const e = new TypeError('fetch failed')
+    ;(e as { cause?: unknown }).cause = new Error('connect ECONNREFUSED example.com:443')
+    const err = toAppError(e)
+    expect(err.retryable).toBe(true)
   })
 
   it('AbortError → recoverable ABORTED（用户中断）', () => {
@@ -102,7 +126,7 @@ describe('CONTEXT_TOO_LONG（400 上下文超限分类，M5 §6.5）', () => {
     expect(err.code).toBe('CONTEXT_TOO_LONG')
   })
 
-  it('非 context 的 400（参数错误）→ HTTP_ERROR，不误判', () => {
+  it('非 context 的 400（参数错误）→ HTTP_ERROR，不误判；retryable:false（重试纯空转）', () => {
     const e = Object.assign(new Error('Request failed'), {
       status: 400,
       error: { message: 'temperature must be between 0 and 2' },
@@ -111,6 +135,15 @@ describe('CONTEXT_TOO_LONG（400 上下文超限分类，M5 §6.5）', () => {
     expect(err.code).not.toBe('CONTEXT_TOO_LONG')
     expect(err.code).toBe('HTTP_ERROR')
     expect(err.recoverable).toBe(true)
+    expect(err.retryable).toBe(false)
+  })
+
+  it('422 参数校验错 → recoverable 但 retryable:false（同请求重试必同错）', () => {
+    const e = Object.assign(new Error('Unprocessable Entity'), { status: 422 })
+    const err = toAppError(e)
+    expect(err.code).toBe('HTTP_ERROR')
+    expect(err.recoverable).toBe(true)
+    expect(err.retryable).toBe(false)
   })
 })
 

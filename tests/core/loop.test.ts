@@ -402,3 +402,117 @@ describe('M11-P7：插话步间注入（pollUserInput）', () => {
     expect(polled).toBe(false) // 单轮流，iter=1 从不拉取
   })
 })
+
+describe('安全审阅修复：timeout_ms 强制 + retryable 消费', () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+  it('声明 timeout_ms 的工具超时 → recoverable 超时 is_error（文案含工具名与毫秒数）', async () => {
+    const slowTool: Tool = {
+      name: 'slow_tool',
+      description: '慢工具',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: true,
+      timeout_ms: 100,
+      async execute() {
+        await sleep(500)
+        return { content: 'late' }
+      },
+    }
+    const p = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 't1', name: 'slow_tool' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: 'done' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const messages = await runLoop([], 'go', makeOpts(p, [slowTool]))
+    const tr = messages[2].content[0] as Record<string, unknown>
+    expect(tr.is_error).toBe(true)
+    expect(tr.content).toContain('slow_tool')
+    expect(tr.content).toContain('100')
+    expect(tr.content).toContain('超时')
+  })
+
+  it('未声明 timeout_ms 的慢工具不受影响（照常完成）', async () => {
+    const slowTool: Tool = {
+      name: 'no_limit_tool',
+      description: '未声明超时的慢工具',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: true,
+      async execute() {
+        await sleep(80)
+        return { content: 'slow but ok' }
+      },
+    }
+    const p = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 't1', name: 'no_limit_tool' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: 'done' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const messages = await runLoop([], 'go', makeOpts(p, [slowTool]))
+    const tr = messages[2].content[0] as Record<string, unknown>
+    expect(tr.is_error).toBeFalsy()
+    expect(tr.content).toBe('slow but ok')
+  })
+
+  it('recoverable + retryable:false（400 客户端错）→ 不退避重试，只请求 1 次即终止', async () => {
+    let calls = 0
+    const p: LLMProvider = {
+      type: 'mock',
+      async *run() {
+        calls++
+        yield {
+          type: 'error',
+          error: { code: 'HTTP_ERROR', message: '参数错误（400）', recoverable: true, retryable: false },
+        }
+      },
+    }
+    const onWarn = vi.fn()
+    const messages = await runLoop([], '问', {
+      ...makeOpts(p, []),
+      callbacks: { onText: vi.fn(), onWarn },
+    })
+    expect(calls).toBe(1) // 不空转：没退避重试 3 次
+    expect(onWarn).toHaveBeenCalledWith('参数错误（400）')
+    expect(messages[0].role).toBe('user') // 温和终止（非 fatal throw）
+  })
+
+  it('429（retryable:true）→ 仍退避重试至成功', async () => {
+    const p = new MockProvider([
+      [{ type: 'error', error: { code: 'RATE_LIMIT', message: '限流', recoverable: true, retryable: true } }],
+      [{ type: 'text', text: 'ok' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const messages = await runLoop([], '问', makeOpts(p, []))
+    expect(last(messages)).toMatchObject({ type: 'text', text: 'ok' })
+  })
+
+  it('onSensitiveAccess 透传为 toolCtx.confirmSensitive（工具可拿到确认通路）', async () => {
+    let received = ''
+    const probeTool: Tool = {
+      name: 'probe',
+      description: '探测工具',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: true,
+      async execute(_args, ctx) {
+        received = typeof ctx.confirmSensitive === 'function' ? 'has' : 'missing'
+        return { content: 'ok' }
+      },
+    }
+    const p = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 't1', name: 'probe' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: 'done' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const opts = makeOpts(p, [probeTool])
+    opts.onSensitiveAccess = async () => true
+    await runLoop([], 'go', opts)
+    expect(received).toBe('has')
+  })
+})

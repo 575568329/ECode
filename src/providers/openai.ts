@@ -6,7 +6,7 @@
  *   - toOpenaiMsgs：规范 Message → OpenAI 协议 messages（system 注入首条；tool_use→tool_calls；tool_result→role:tool）
  *   - thinkingToOpenai：thinking 枚举 → reasoning_effort（D9/P0-5）
  *
- * client 按 name 缓存（同一配置实例复用）。
+ * client 按 name+baseURL+apiKey 组合键缓存（同一凭据复用；换凭据即换实例）。
  * 铁律：心脏只按 type 找实现（registry.getByType('openai')），不认识具体厂商。
  */
 
@@ -213,8 +213,11 @@ export class OpenaiProvider implements LLMProvider {
   private readonly clients = new Map<string, OpenAI>()
 
   async *run(req: LLMProviderRunRequest): AsyncIterable<Delta> {
-    const client = this.clients.get(req.name) ?? new OpenAI({ baseURL: req.baseURL, apiKey: req.apiKey })
-    if (!this.clients.has(req.name)) this.clients.set(req.name, client)
+    // 缓存键含 baseURL/apiKey（纯内存组合键，不落日志不打印）：改同名 provider 凭据后
+    // 若仍按 name 命中，会沿用旧 client 的旧凭据 → 持续 401 直到重启（anthropic.ts 同款）
+    const cacheKey = `${req.name}|${req.baseURL}|${req.apiKey}`
+    const client = this.clients.get(cacheKey) ?? new OpenAI({ baseURL: req.baseURL, apiKey: req.apiKey })
+    if (!this.clients.has(cacheKey)) this.clients.set(cacheKey, client)
 
     const stream = await client.chat.completions.create({
       model: req.model,

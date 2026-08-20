@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { translateAnthropicStream, thinkingToAnthropic, resolveMaxTokens } from '../../src/providers/anthropic.js'
+import { translateAnthropicStream, thinkingToAnthropic, resolveMaxTokens, toAnthropicMsgs } from '../../src/providers/anthropic.js'
+import type { Message } from '../../src/core/types.js'
 
 /**
  * translateAnthropicStream：把 Anthropic 协议事件序列翻译成统一 Delta 序列。
@@ -198,5 +199,64 @@ describe('resolveMaxTokens', () => {
 
   it('maxTokens 已 > budget → 不变', () => {
     expect(resolveMaxTokens(20000, 'high')).toBe(20000)
+  })
+})
+
+describe('toAnthropicMsgs · 相邻同 role 规整', () => {
+  /**
+   * 场景（P1）：loop recoverable/超限重试时内存 messages.pop() 但半截 assistant 已落盘，
+   * /history restore 后磁盘出现两条连续 assistant——Anthropic 端点要求 role 严格交替，不合并会 400。
+   */
+  it('连续 assistant（半截 + 完整）→ 合并成一条，块顺序保留（前条块在前）', () => {
+    const messages: Message[] = [
+      { role: 'user', content: [{ type: 'text', text: '问题' }] },
+      { role: 'assistant', content: [{ type: 'text', text: '半截回答' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '完整回答' },
+          { type: 'tool_use', id: 't1', name: 'ls', input: {} },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] },
+    ]
+    const out = toAnthropicMsgs(messages) as Array<{
+      role: string
+      content: Array<{ type: string; text?: string; id?: string }>
+    }>
+    expect(out.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
+    // 块顺序：半截 text → 完整 text → tool_use（前条块在前、后条块在后）
+    expect(out[1].content.map((b) => b.text ?? b.id)).toEqual(['半截回答', '完整回答', 't1'])
+  })
+
+  it('连续 user（重试边界等）→ 同样合并', () => {
+    const messages: Message[] = [
+      { role: 'user', content: [{ type: 'text', text: '第一条' }] },
+      { role: 'user', content: [{ type: 'text', text: '第二条' }] },
+      { role: 'assistant', content: [{ type: 'text', text: '回复' }] },
+    ]
+    const out = toAnthropicMsgs(messages) as Array<{ role: string; content: unknown[] }>
+    expect(out.map((m) => m.role)).toEqual(['user', 'assistant'])
+    expect(out[0].content).toHaveLength(2)
+  })
+
+  it('正常交替 → 不合并（透传不变）', () => {
+    const messages: Message[] = [
+      { role: 'user', content: [{ type: 'text', text: '问' }] },
+      { role: 'assistant', content: [{ type: 'text', text: '答' }] },
+    ]
+    const out = toAnthropicMsgs(messages) as Array<{ role: string; content: unknown[] }>
+    expect(out).toHaveLength(2)
+  })
+
+  it('空 content 消息 → 跳过丢弃（不产生空 content 合并残留）', () => {
+    const messages: Message[] = [
+      { role: 'user', content: [{ type: 'text', text: '问' }] },
+      { role: 'assistant', content: [] },
+      { role: 'assistant', content: [{ type: 'text', text: '答' }] },
+    ]
+    const out = toAnthropicMsgs(messages) as Array<{ role: string; content: unknown[] }>
+    expect(out).toHaveLength(2)
+    expect(out[1].content).toHaveLength(1)
   })
 })

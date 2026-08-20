@@ -6,7 +6,7 @@
  *   - Translator：有状态翻译器（index → block 映射），run 用它逐事件 yield
  *   - toAnthropicMsgs：规范 Message → Anthropic 协议 messages（结构贴近，基本透传）
  *
- * client 按 name 缓存（同一配置实例复用，避免每轮 new）。
+ * client 按 name+baseURL+apiKey 组合键缓存（同一凭据复用避免每轮 new；换凭据即换实例）。
  */
 
 import Anthropic from '@anthropic-ai/sdk'
@@ -186,7 +186,7 @@ export function translateAnthropicStream(events: Iterable<RawEvent>): Delta[] {
 export function toAnthropicMsgs(messages: Message[]): unknown[] {
   // M10-P0：tool_result 带 blocks 时 content 组数组（text + image/document——协议原生形态）；
   // user 消息的 ImageBlock/DocumentBlock 形态与协议完全一致，透传即可（内部元信息 _w/_h 需剥）
-  return messages.map((m) => ({
+  const mapped = messages.map((m) => ({
     role: m.role,
     content: m.content.map((b) => {
       if (b.type === 'tool_result') {
@@ -202,6 +202,21 @@ export function toAnthropicMsgs(messages: Message[]): unknown[] {
       return b
     }),
   }))
+  // 规整：相邻同 role 合并——loop recoverable/超限重试时内存 messages.pop() 但半截 assistant
+  // 已落盘（history.append），/history restore 后磁盘出现两条连续 assistant；Anthropic 端点要求
+  // role 严格交替，不合并会 400。块顺序保留（前条块在前）；空 content 的消息跳过丢弃。
+  // （OpenAI 兼容端点普遍容忍连续同 role，openai provider 不做——协议差异封在各自 provider 内）
+  const out: Array<{ role: 'user' | 'assistant'; content: unknown[] }> = []
+  for (const m of mapped) {
+    if (m.content.length === 0) continue
+    const last = out[out.length - 1]
+    if (last !== undefined && last.role === m.role) {
+      last.content.push(...m.content)
+    } else {
+      out.push({ role: m.role, content: [...m.content] })
+    }
+  }
+  return out
 }
 
 /** 剥多模态块的内部元信息（_w/_h 非协议字段）。 */
@@ -216,8 +231,11 @@ export class AnthropicProvider implements LLMProvider {
   private readonly clients = new Map<string, Anthropic>()
 
   async *run(req: LLMProviderRunRequest): AsyncIterable<Delta> {
-    const client = this.clients.get(req.name) ?? new Anthropic({ baseURL: req.baseURL, apiKey: req.apiKey })
-    if (!this.clients.has(req.name)) this.clients.set(req.name, client)
+    // 缓存键含 baseURL/apiKey（纯内存组合键，不落日志不打印）：/setup·/config 改同名 provider
+    // 凭据后若仍按 name 命中，会沿用旧 client 的旧凭据 → 持续 401 直到重启
+    const cacheKey = `${req.name}|${req.baseURL}|${req.apiKey}`
+    const client = this.clients.get(cacheKey) ?? new Anthropic({ baseURL: req.baseURL, apiKey: req.apiKey })
+    if (!this.clients.has(cacheKey)) this.clients.set(cacheKey, client)
 
     const thinkingField = thinkingToAnthropic(req.thinking)
     const isThinking = (thinkingField.thinking as { type?: string } | undefined)?.type === 'enabled'

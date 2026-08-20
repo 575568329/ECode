@@ -6,7 +6,8 @@
  *   - try/finally 固化（无论正常/错误/中断，已生成内容都进 messages + history）
  *   - 工具执行（§3.2）：readonly 并行 / 副作用串行 + AJV 校验 + 确认 + 错误兜底
  *   - 停止判定 + 空 tool_use 防护
- *   - recoverable 错误指数退避重试（§6.3，上限 MAX_RETRIES，避免无限重试）
+ *   - recoverable 错误指数退避重试（§6.3，上限 MAX_RETRIES，避免无限重试；
+ *     retryable:false 的客户端错如 400/422 不空转重试，直接终止——errors.toAppError 分类）
  *
  * 心脏永不出现 `if provider === 'xxx'`（铁律）—— 只通过 opts.provider.run 调用。
  */
@@ -23,7 +24,7 @@ import type {
 } from './types.js'
 import { toAppError, toFatal } from './errors.js'
 import type { LLMProvider, ProviderReq } from '../providers/interface.js'
-import type { ToolContext, ToolRegistry, ToolResult } from '../tools/interface.js'
+import type { Tool, ToolContext, ToolRegistry, ToolResult } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
 
@@ -100,6 +101,12 @@ export interface LoopRunOptions {
    * additive 可选回调（afterTools 同模式，无 feature 分支）；子代理 optsB 不配——插话目标是主循环。
    */
   pollUserInput?: () => string | null
+  /**
+   * 敏感访问确认通路（安全审阅 P0）：invokeTool 构造 toolCtx 时透传为 confirmSensitive，
+   * TuiApp 注入 UI 弹窗；argv 无头模式不传即工具侧 fail-closed。
+   * loop 只做数据转发——何时算敏感由工具自判（心脏不特判工具，铁律不破）。
+   */
+  onSensitiveAccess?: (description: string) => Promise<boolean>
 }
 
 /**
@@ -267,6 +274,19 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         continue
       }
       if (streamError.recoverable) {
+        // retryable:false（400/422 等客户端错）：同请求重试必同错，退避重试是纯空转——
+        // 直接终止本轮（保留已固化内容，onWarn 告知；与 MAX_RETRIES 耗尽同款温和终止）
+        if (streamError.retryable === false) {
+          opts.callbacks.onActivity?.('idle')
+          opts.callbacks.onWarn?.(streamError.message)
+          opts.logger.warn(
+            'provider',
+            'no_retry',
+            { code: streamError.code, message: streamError.message, retryable: false },
+            iter,
+          )
+          break
+        }
         // P1-9：回滚本轮半截 assistant（history 已落盘保留作 trace），避免下轮
         //   [user, assistant(半截), assistant(重试)] 连续 assistant → Anthropic 400 重试注定失败
         if (pushedThisRound) messages.pop()
@@ -368,6 +388,34 @@ async function executeTools(uses: ToolUseBlock[], opts: LoopRunOptions): Promise
   return results
 }
 
+/** timeout_ms 软超时哨兵：resolve 而非 reject——Promise.race 输家的 reject 无人接会成 unhandledRejection */
+const TOOL_TIMEOUT = Symbol('tool_timeout')
+
+/**
+ * timeout_ms 兑现（安全审阅 P1 死契约修复）：仅工具声明了 timeout_ms 才由循环统一强制——
+ * Promise.race 软超时（超时放弃等待，不强杀后台 execute；进程清理由工具自身的 signal/kill 逻辑负责）。
+ * 未声明则不设限（bash/task 等长任务自管超时）。finally 清定时器防泄漏。
+ */
+async function executeWithTimeout(
+  tool: Tool,
+  input: unknown,
+  ctx: ToolContext,
+): Promise<{ timedOut: true; timeoutMs: number } | { timedOut: false; result: ToolResult }> {
+  if (tool.timeout_ms === undefined) return { timedOut: false, result: await tool.execute(input, ctx) }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const r = await Promise.race([
+      tool.execute(input, ctx),
+      new Promise<typeof TOOL_TIMEOUT>((resolve) => {
+        timer = setTimeout(() => resolve(TOOL_TIMEOUT), tool.timeout_ms)
+      }),
+    ])
+    return r === TOOL_TIMEOUT ? { timedOut: true, timeoutMs: tool.timeout_ms } : { timedOut: false, result: r }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 /** 执行单个工具：get → AJV 校验 → 副作用确认 → execute，异常二分（fatal 抛 / recoverable 转 is_error）。 */
 async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<ToolResultBlock> {
   const tool = opts.tools.get(use.name)
@@ -394,16 +442,27 @@ async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<Tool
   }
 
   try {
-    // M9-P2：包装透传 use.id 给 onBeforeWrite（快照 meta 的投影锚；纯数据转发，心脏不认识 checkpoint）
-    const ctxForCall = opts.toolCtx.onBeforeWrite
-      ? {
-          ...opts.toolCtx,
-          onBeforeWrite: async (paths: string[], tool: string) => {
-            await opts.toolCtx.onBeforeWrite?.(paths, tool, use.id)
-          },
-        }
-      : opts.toolCtx
-    const r = await tool.execute(use.input, ctxForCall)
+    // M9-P2：包装透传 use.id 给 onBeforeWrite（快照 meta 的投影锚；纯数据转发，心脏不认识 checkpoint）。
+    // 敏感访问确认同层透传（数据非逻辑——何时算敏感由工具自判）
+    const ctxForCall: ToolContext = {
+      ...opts.toolCtx,
+      ...(opts.onSensitiveAccess !== undefined ? { confirmSensitive: opts.onSensitiveAccess } : {}),
+      ...(opts.toolCtx.onBeforeWrite !== undefined
+        ? {
+            onBeforeWrite: async (paths: string[], toolName: string) => {
+              await opts.toolCtx.onBeforeWrite?.(paths, toolName, use.id)
+            },
+          }
+        : {}),
+    }
+    const outcome = await executeWithTimeout(tool, use.input, ctxForCall)
+    if (outcome.timedOut) {
+      const msg = `工具 ${use.name} 执行超时（${outcome.timeoutMs}ms），本轮已放弃等待（后台可能仍在执行，如需终止请用对应工具的停止机制）`
+      opts.callbacks.onToolResult?.(use.id, use.name, { content: msg, is_error: true })
+      opts.logger.warn('tool', 'timeout', { id: use.id, name: use.name, timeout_ms: outcome.timeoutMs })
+      return { type: 'tool_result', tool_use_id: use.id, content: msg, is_error: true }
+    }
+    const r = outcome.result
     opts.callbacks.onToolResult?.(use.id, use.name, r)
     opts.logger.info('tool', 'result', {
       id: use.id,

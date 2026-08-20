@@ -226,6 +226,18 @@ describe('CheckpointStore：还原', () => {
     expect(r.restored).toEqual([])
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('对象缺失'))
   })
+
+  it('安全审阅 P2-a：对象被篡改（内容 ≠ 哈希）→ 拒绝还原（throw），目标文件零写入', async () => {
+    const store = makeStore()
+    const a = await write('a.ts', 'v1')
+    await store.snapshot('s1', [a], { tool: 'edit_file' })
+    await writeFile(a, 'v2')
+    const objDir = await objectsDirOf(store, 's1')
+    const obj = (await readdir(objDir))[0]!
+    await writeFile(join(objDir, obj), 'tampered content')
+    await expect(store.revert('s1', 1)).rejects.toThrow('哈希不符')
+    expect(await readFile(a, 'utf8')).toBe('v2') // 篡改数据未写回
+  })
 })
 
 describe('CheckpointStore：恢复会话跟随', () => {

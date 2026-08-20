@@ -15,9 +15,9 @@
 
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { access, cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { access, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -144,7 +144,8 @@ export class CheckpointStore {
         const hash = sha256(buf)
         const objFile = join(this.sessionDir(sessionId), 'objects', hash)
         if (!(await exists(objFile))) {
-          await mkdir(dirname(objFile), { recursive: true })
+          // 0700：快照含工作区文件内容，目录权限即安全边界（与会话/配置目录同款收口）
+          await mkdir(dirname(objFile), { recursive: true, mode: 0o700 })
           await writeFile(objFile, buf)
         }
         refs.push({ path: p, hash })
@@ -155,7 +156,7 @@ export class CheckpointStore {
     if (refs.length === 0) return null
     const seq = (await this.nextSeq(sessionId))
     const m: CheckpointMeta = { seq, time: new Date().toISOString(), tool: meta.tool, messageId: meta.messageId, files: refs }
-    await mkdir(join(this.sessionDir(sessionId), String(seq)), { recursive: true })
+    await mkdir(join(this.sessionDir(sessionId), String(seq)), { recursive: true, mode: 0o700 })
     await writeFile(join(this.sessionDir(sessionId), String(seq), 'meta.json'), JSON.stringify(m, null, 2), 'utf8')
     return seq
   }
@@ -207,6 +208,27 @@ export class CheckpointStore {
     const externalChanged = await this.detectExternalChanges(sessionId, seq)
     const fileSet = new Set<string>()
     for (const m of metas) for (const f of m.files) fileSet.add(f.path)
+    // 第一阶段（安全审阅 P2-a）：全量读对象 + 哈希复验后才动任何文件——content-addressed 的
+    // 意义就在哈希即身份，对象被篡改/位腐后直接写回即静默写坏数据；且逐文件边验边写会在中途
+    // 失败时留下半还原状态。任一哈希不符 → 整体拒绝（写回零执行）。对象缺失保持既有语义
+    // （warn 跳过——快照治理边界情况，非篡改特征）。
+    const plans: Array<{ path: string; buf: Buffer }> = []
+    for (const m of [...metas].reverse()) {
+      for (const f of m.files) {
+        let buf: Buffer
+        try {
+          buf = await readFile(join(this.sessionDir(sessionId), 'objects', f.hash))
+        } catch {
+          this.warn(`还原跳过（对象缺失）：${f.path}`)
+          continue
+        }
+        const actual = sha256(buf)
+        if (actual !== f.hash) {
+          throw new Error(`还原中止：对象内容与哈希不符（疑被篡改或损坏），拒绝写回——${f.path} 期望 ${f.hash}，实际 ${actual}（本次还原未执行任何写入）`)
+        }
+        plans.push({ path: f.path, buf })
+      }
+    }
     // 还原前自动快照当前状态（含外部改动后的现状——回错了可再 revert 回来）。
     // 走 snapshotCore：此时治理会淘汰最旧点/GC 对象，可能删掉本次正要写回的基线（终审 P1-3）。
     // 刻意不带 messageId 锚：选 rewind-auto 点回退 = 撤销回退，投影侧靠「缺锚→全量」防御路径
@@ -214,17 +236,21 @@ export class CheckpointStore {
     // 截掉，文件已还原回改后状态而模型只记得一半（终审 P1-4 声称的修法有此缺陷，测试已锁定）。
     await this.snapshotCore(sessionId, [...fileSet], { tool: 'rewind-auto' })
     const restored: string[] = []
-    for (const m of [...metas].reverse()) {
-      for (const f of m.files) {
-        try {
-          const buf = await readFile(join(this.sessionDir(sessionId), 'objects', f.hash))
-          await mkdir(dirname(f.path), { recursive: true })
-          await writeFile(f.path, buf)
-          if (!restored.includes(f.path)) restored.push(f.path)
-        } catch {
-          this.warn(`还原跳过（对象缺失）：${f.path}`)
-        }
+    // 第二阶段：写回（逆序 metas 顺序——同文件多版本时最后写的生效 = 范围内最早基线）。
+    // tmp+rename 原子替换（安全审阅 P2-b）：writeFile 直接开目标路径会**跟随 symlink**——
+    // 攻击者预先在目标路径放 symlink 指向敏感文件（如 ~/.ssh/authorized_keys），还原写入即
+    // 穿透。write/edit 工具是 tmp+rename 替换链接本身，还原保持同款行为；tmp 放同目录保证
+    // rename 同分区原子性，名带 pid+时间戳防并发互踩。
+    for (const p of plans) {
+      await mkdir(dirname(p.path), { recursive: true, mode: 0o700 })
+      const tmp = join(dirname(p.path), `.${basename(p.path)}.ecode-restore-${process.pid}-${Date.now()}`)
+      try {
+        await writeFile(tmp, p.buf)
+        await rename(tmp, p.path)
+      } finally {
+        await rm(tmp, { force: true }) // rename 成功后 tmp 已不存在，force 静默清理
       }
+      if (!restored.includes(p.path)) restored.push(p.path)
     }
     return { restored, externalChanged }
   }

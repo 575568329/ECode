@@ -53,11 +53,14 @@ const entrySchema = {
         },
         {
           type: 'object',
-          required: ['source', 'url'],
+          // sha256 必填（安全审阅 P2）：url 源直接 fetch 远端 zip，无完整性校验 = 供应链投毒面
+          // （市场清单被劫持/CDN 被篡改时静默装恶意代码）。缺失 → 解析失败拒装。git 源不受限
+          // （git 协议自身有 commit 哈希链，且 sha 校验为增量加固）。
+          required: ['source', 'url', 'sha256'],
           properties: {
             source: { const: 'url' },
             url: { type: 'string', pattern: '^https?://' },
-            sha256: { type: 'string' },
+            sha256: { type: 'string', pattern: '^[0-9a-fA-F]{64}$' },
           },
         },
         {

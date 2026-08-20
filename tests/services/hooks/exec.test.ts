@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { runCommandHook } from '../../../src/services/hooks/exec.js'
+import { describe, expect, it, afterEach } from 'vitest'
+import { runCommandHook, __setHookBlockedForTest } from '../../../src/services/hooks/exec.js'
 import type { HookInput, HookSpec } from '../../../src/services/hooks/types.js'
 
 function spec(command: string, timeout_ms?: number): HookSpec {
@@ -61,5 +61,31 @@ blocked reason here' >&2; exit 2`), input)
   it('非 command 形态 → throw（未实现）', async () => {
     const bad = { event: 'Stop' as const, handler: { kind: 'mcp_tool' as const, server: 's', tool: 't', input: {} } }
     await expect(runCommandHook(bad, input)).rejects.toThrow('未实现')
+  })
+})
+
+describe('runCommandHook blockedCommands（P1：deny 清单同过，不只在 bash 工具生效）', () => {
+  afterEach(() => {
+    __setHookBlockedForTest(null)
+  })
+
+  it('命中 blockedCommands → throw 拒绝执行（不 spawn）', async () => {
+    __setHookBlockedForTest(['npm publish*'])
+    await expect(runCommandHook(spec('npm publish --access public'), input)).rejects.toThrow('blockedCommands')
+  })
+
+  it('变体绕过同样命中（归一化分词：引号/路径/大小写）', async () => {
+    __setHookBlockedForTest(['git push --force*'])
+    await expect(runCommandHook(spec('"git" push --force origin main'), input)).rejects.toThrow('blockedCommands')
+  })
+
+  it('git push 强推特判：空清单也拦', async () => {
+    __setHookBlockedForTest([])
+    await expect(runCommandHook(spec('git push -f origin main'), input)).rejects.toThrow('blockedCommands')
+  })
+
+  it('未命中 → 正常执行（echo 非 JSON → null）', async () => {
+    __setHookBlockedForTest(['npm publish*'])
+    expect(await runCommandHook(spec('echo hook-ok'), input)).toBeNull()
   })
 })

@@ -9,10 +9,24 @@
 import { spawn, execSync, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 
-/** Windows 下解析 Git Bash 路径：SHELL → 常见安装路径 → where bash 探测 PATH → 回退。 */
+/** resolveGitBash 模块级缓存（含"未找到"负缓存——回退值也缓存，避免每次 spawn 重复探测） */
+let gitBashCache: string | undefined
+
+/** 测试重置缓存（改 env/文件系统后重新探测用；对齐 clock.ts 的 __reset 模式） */
+export function __resetGitBashCacheForTest(): void {
+  gitBashCache = undefined
+}
+
+/** Windows 下解析 Git Bash 路径：SHELL → 常见安装路径 → where bash 探测 PATH → 回退。
+ *  结果模块级缓存（P1 修复：每次 spawnShellCommand 重复 4 次 existsSync + 可能一次
+ *  execSync('where bash')，请求路径同步阻塞——探测一次进程内不变，缓存零失效场景）。 */
 export function resolveGitBash(): string {
+  if (gitBashCache !== undefined) return gitBashCache
   const shell = process.env.SHELL
-  if (shell && shell.includes('bash') && existsSync(shell)) return shell
+  if (shell && shell.includes('bash') && existsSync(shell)) {
+    gitBashCache = shell
+    return shell
+  }
   const candidates = [
     'C:\\Program Files\\Git\\bin\\bash.exe',
     'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
@@ -20,7 +34,10 @@ export function resolveGitBash(): string {
     'C:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe',
   ]
   for (const p of candidates) {
-    if (existsSync(p)) return p
+    if (existsSync(p)) {
+      gitBashCache = p
+      return p
+    }
   }
   // where bash 探测 PATH（Git for Windows 常把 bin 加进 PATH）
   try {
@@ -32,10 +49,14 @@ export function resolveGitBash(): string {
       .split('\n')
       .map((s) => s.trim())
       .find((p) => p !== '' && existsSync(p))
-    if (found) return found
+    if (found) {
+      gitBashCache = found
+      return found
+    }
   } catch {
     // where 不可用或未找到
   }
+  gitBashCache = candidates[0]
   return candidates[0]
 }
 
@@ -121,10 +142,13 @@ export async function killTree(child: ChildProcess, gracefulMs: number = TREE_KI
 const DANGEROUS_PATTERNS = [
   /rm\s+-\w*r\w*f?\s+\/(\s|$)/, // rm -rf /
   /rm\s+-\w*r\w*f?\s+--no-preserve-root/, // rm -rf --no-preserve-root
-  /\bsudo\b/, // sudo（提权）
+  /\b(sudo|doas|su)\b/, // 提权类：sudo/doas/su（\bsu\b 有把正文里的 "su" 误判的代价，换取 su root/doas 覆盖——黑名单取向选覆盖面）
   />\s*\/dev\/sd[a-z]/, // 写裸盘
   /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\};\s*:/, // fork bomb :(){:|:&};:
-  /\|\s*(sh|bash)\b/, // curl|sh
+  // 管道进任意 shell（curl|sh 家族）：可带绝对路径前缀（| /bin/sh）与包裹引号
+  // （| "/bin/sh"，与 sandbox 分词口径对齐）、覆盖常见 shell 名（旧正则只认 sh|bash，
+  // | zsh、| /bin/dash 全漏）
+  /\|\s*["']?(\/\S*\/)?(sh|bash|zsh|dash|ksh|fish|csh|tcsh)\b/,
   /\bmkfs\b/, // 格式化
   /dd\s+.*of=\/dev\/disc/, // dd 写盘
 ]

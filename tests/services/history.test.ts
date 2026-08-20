@@ -41,6 +41,13 @@ describe('FileHistoryStore', () => {
     expect(content).toContain('sk-abc1234567890') // 原文，没变 [REDACTED]
   })
 
+  it.skipIf(process.platform === 'win32')('安全审阅 P1：sessions 目录 0700（会话文件不脱敏，权限是安全边界；Windows chmod 近似 no-op 跳过）', () => {
+    const dir = path.join(tmp, `perm-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'sess-p', model: 'm', dir })
+    store.append(userMsg('x'))
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700)
+  })
+
   it('loadAll 读首行 meta（按 createdAt 倒序）', () => {
     const dir = path.join(tmp, `load-${Date.now()}`)
     const s1 = new FileHistoryStore({ sessionId: 'old', model: 'm1', dir })

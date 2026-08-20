@@ -13,7 +13,7 @@
  * UI 后置（M8 §11.4 分阶段）。用户源 hooks（config.json）不问——所有者侧非被管控对象。
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -51,12 +51,23 @@ export function ruleMatches(rule: string, resource: string): boolean {
 
 /** 求值：deny 任一层终局；否则 local > project > user 首个命中；无规则默认 ask。 */
 export function evalPermission(resource: string, layers: PermissionLayers): PermissionBehavior {
-  const order: Array<PermissionRules | undefined> = [layers.local, layers.project, layers.user]
-  if (order.some((l) => l !== undefined && l.deny.some((r) => ruleMatches(r, resource)))) return 'deny'
+  const order: Array<{ id: 'local' | 'project' | 'user'; rules: PermissionRules | undefined }> = [
+    { id: 'local', rules: layers.local },
+    { id: 'project', rules: layers.project },
+    { id: 'user', rules: layers.user },
+  ]
+  if (order.some((l) => l.rules !== undefined && l.rules.deny.some((r) => ruleMatches(r, resource)))) return 'deny'
   for (const layer of order) {
-    if (layer === undefined) continue
+    if (layer.rules === undefined) continue
     for (const behavior of ['allow', 'ask'] as const) {
-      if (layer[behavior].some((r) => ruleMatches(r, resource))) return behavior
+      const hit = layer.rules[behavior].find((r) => ruleMatches(r, resource))
+      if (hit === undefined) continue
+      // 安全审阅 P1：project 层（<proj>/.ecode/settings.json 随仓库分发）的 Hook allow 不可信——
+      // clone 恶意仓库打开即自动预授权其 hook 执行，用户层无法预先知晓。降级为 ask（显式每次问）；
+      // allow 仅 user/local 层可信（用户亲手配置 / 交互式"记住"）。规则类型相同时才可能命中资源，
+      // 故以规则自身的 `Hook(` 前缀判定即可覆盖精确与通配两种形态。
+      if (behavior === 'allow' && layer.id === 'project' && hit.startsWith('Hook(')) return 'ask'
+      return behavior
     }
   }
   return 'ask'
@@ -92,8 +103,13 @@ export function saveLocalPermission(cwd: string, behavior: 'allow' | 'deny', rul
   let doc: { permissions?: Partial<PermissionRules> } = {}
   try {
     doc = JSON.parse(readFileSync(file, 'utf8')) as typeof doc
-  } catch {
-    // 不存在/损坏 → 新建
+  } catch (e) {
+    // 安全审阅 P2：只有 ENOENT（不存在 → 正常新建）可继续；损坏文件（非法 JSON）禁止静默覆写——
+    // 损坏文件里可能还有其他键，覆写即无迹丢数据。本模块无 LogStore 注入通路（services 层无
+    // UI/日志宿主依赖，与 askUserBridge 同款按需注入模式，MVP 未引入），带上下文重抛给调用方处理。
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(`settings.local.json 读取失败（已保留原文件，请手动修复后重试）：${file}：${e instanceof Error ? e.message : String(e)}`)
+    }
   }
   const perms = doc.permissions ?? {}
   const list = Array.isArray(perms[behavior]) ? [...(perms[behavior] as string[])] : []
@@ -101,7 +117,16 @@ export function saveLocalPermission(cwd: string, behavior: 'allow' | 'deny', rul
   perms[behavior] = list
   doc.permissions = perms
   mkdirSync(join(cwd, '.ecode'), { recursive: true })
-  writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`, 'utf8')
+  // 原子替换（安全审阅 P2）：tmp + rename——直接 writeFileSync 在并发确认（两窗口同时"记住"）
+  // 下有丢规则窗口（后写整文件覆盖前写）。tmp 名带 pid+时间戳防两个进程互踩同一 tmp。
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
+  try {
+    writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`, 'utf8')
+    renameSync(tmp, file)
+  } catch (e) {
+    rmSync(tmp, { force: true }) // 半写 tmp 不残留
+    throw new Error(`settings.local.json 写入失败：${file}：${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 /** local 层文件是否存在（UI 提示用；MVP 未用，接口位留） */

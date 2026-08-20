@@ -38,7 +38,7 @@ export interface Config {
   current: { name: string; model: string } // 当前激活（/model 改这个）
   maxIterations: number
   bashMaxOutputBytes: number
-  /** M9-P3：编辑后自动 lint/test（undefined=自动探测 package.json；''=关闭） */
+  /** M9-P3：编辑后自动 lint/test（仅认显式配置；undefined/''=关闭，不自动探测——安全默认） */
   lintCommand?: string
   testCommand?: string
   /** M9-P4：沙箱（defaultMode 缺省 default=现状=关；blockedCommands 全档硬拒） */
@@ -69,7 +69,7 @@ interface ConfigFile {
   providers?: Record<string, Partial<ProviderCfg>>
   maxIterations?: number
   bashMaxOutputBytes?: number
-  /** M9-P3：编辑后自动 lint/test 命令（缺省自动探测 package.json scripts；空串=关闭） */
+  /** M9-P3：编辑后自动 lint/test 命令（仅认显式配置；空串/缺省=关闭，不自动探测 package.json） */
   lintCommand?: string
   testCommand?: string
   /** M10-P1：联网搜索（provider 缺省 bing；preferMcp 声明搜索 MCP server 名） */
@@ -144,7 +144,7 @@ export const CONFIG_TEMPLATE = `{
 
   "maxIterations": 50,        // Agent 循环最大轮数
   "bashMaxOutputBytes": 30720, // bash 输出截断阈值（30KB 头尾中截）
-  // M9：编辑后自动 lint/test（缺省自动探测 package.json scripts；空串=关闭）
+  // M9：编辑后自动 lint/test（仅认此处显式配置；空串/缺省=关闭，不自动探测 package.json——安全默认）
   "lintCommand": "",
   "testCommand": "",
   // M9：沙箱（default=现状=关；blockedCommands 通配全档硬拒，full-access 也不放行）
@@ -164,8 +164,19 @@ export const CONFIG_TEMPLATE = `{
 
 /** 自动生成模板 config（含目录创建）。创建失败抛错。 */
 function writeDefaultConfig(cfgPath: string): void {
-  fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
+  // 目录 0o700：config 含 apiKey，目录权限收口（POSIX 生效；Windows 近似 no-op，直接调不分平台）
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true, mode: 0o700 })
   fs.writeFileSync(cfgPath, CONFIG_TEMPLATE, 'utf8')
+  restrictFileMode(cfgPath)
+}
+
+/**
+ * 显式收紧文件权限到 0o600（安全审阅 P1）：writeFileSync 的 mode 只对**新建**文件生效，
+ * 对已存在文件是 no-op——而模板流程首次就创建过文件（实际 0644），后续写入必须显式 chmod
+ * （chmodSync 幂等，POSIX 生效；Windows 上仅影响只读位，近似 no-op，无需分平台）。
+ */
+function restrictFileMode(filePath: string): void {
+  fs.chmodSync(filePath, 0o600)
 }
 
 export function loadConfig(opts: LoadConfigOpts = {}): Config {
@@ -354,11 +365,12 @@ export function writeWizardConfig(values: WizardValues, opts: { configPath?: str
     fileExists = false
   }
 
-  fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true, mode: 0o700 })
   // P1-5：写前备份现有 config（modify 算错可从 .bak 恢复）
   if (fileExists) {
     try {
       fs.copyFileSync(cfgPath, cfgPath + '.bak')
+      restrictFileMode(cfgPath + '.bak') // .bak 同样含 apiKey，权限必须跟上（安全审阅 P1）
     } catch {
       // 备份失败不阻断写入（只读 fs 等极端情况，尽力）
     }
@@ -372,6 +384,7 @@ export function writeWizardConfig(values: WizardValues, opts: { configPath?: str
     result = applyEdits(result, modify(result, ['default'], { provider: values.providerName, model: models[0] ?? '' }, { formattingOptions: fmt }))
   }
   fs.writeFileSync(cfgPath, result, { mode: 0o600 })
+  restrictFileMode(cfgPath) // mode 对已存在文件不生效（安全审阅 P1），显式 chmod 兜底
 }
 
 /** 配置无效态空壳（P0-4）：cli catch loadConfig 失败时构造，TuiApp 仍能渲染（banner + /setup 可用）。 */

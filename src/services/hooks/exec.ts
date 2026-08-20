@@ -11,11 +11,42 @@
  */
 
 import { isDangerousCommand, killTree, spawnShellCommand } from '../proc.js'
+import { matchesBlocked } from '../sandbox.js'
+import { loadConfig } from '../config.js'
 import type { HookExecutor, HookOutput } from './types.js'
 
 export const DEFAULT_HOOK_TIMEOUT_MS = 60_000
 /** stderr 进错误信息的摘要上限（防巨量输出撑爆日志）。 */
 const STDERR_EXCERPT_LIMIT = 2_000
+
+/**
+ * blockedCommands 快照（模块级懒加载，读一次 config）。
+ *
+ * Why 快照而非每次读：hook 触发频率高（每次工具调用），loadConfig 是重操作（读盘+解析+校验，
+ * 还可能写模板）；且用户源 hooks 本就是启动期一次性快照（getUserHooks 闭包），blocked 清单
+ * 与之间生命周期一致才不自相矛盾。executor 签名无 config 通路（cli 装配处只传 execute），
+ * 故走 config 读取现有通路自取；配置无效按空清单（与空壳配置同语义）。
+ */
+let blockedCache: string[] | undefined
+let blockedTestOverride: string[] | undefined
+
+function hookBlocked(): string[] {
+  if (blockedTestOverride !== undefined) return blockedTestOverride
+  if (blockedCache === undefined) {
+    try {
+      blockedCache = loadConfig().sandbox?.blockedCommands ?? []
+    } catch {
+      blockedCache = []
+    }
+  }
+  return blockedCache
+}
+
+/** 测试注入 blockedCommands（null=恢复读 config；免依赖真实 ~/.ecode/config.json） */
+export function __setHookBlockedForTest(patterns: string[] | null): void {
+  blockedCache = undefined
+  blockedTestOverride = patterns === null ? undefined : patterns
+}
 
 export const runCommandHook: HookExecutor = async (spec, input, opts) => {
   if (spec.handler.kind !== 'command') {
@@ -27,6 +58,11 @@ export const runCommandHook: HookExecutor = async (spec, input, opts) => {
       : spec.handler.command
   if (isDangerousCommand(command)) {
     throw new Error(`hook 命令命中危险黑名单，拒绝执行：${command}`)
+  }
+  // blockedCommands 同过（P1 修复：hook = 第三方命令执行，deny 清单不能只在 bash 工具生效；
+  // 命中即 throw 不 spawn——runner 侧 fail-open 只影响事件放行，命令本身不会被执行）
+  if (matchesBlocked(command, hookBlocked())) {
+    throw new Error(`hook 命令命中 blockedCommands 硬拒清单，拒绝执行：${command}`)
   }
   const timeoutMs = Math.min(
     spec.timeout_ms ?? DEFAULT_HOOK_TIMEOUT_MS,

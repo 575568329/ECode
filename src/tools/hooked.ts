@@ -36,7 +36,9 @@ export class HookedToolRegistry implements ToolRegistry {
   get(name: string): Tool | undefined {
     const tool = this.inner.get(name)
     if (tool === undefined) return undefined
-    return wrapTool(tool, this.getRunner)
+    // 重校验通路（安全审阅 P1）：PreToolUse 的 updatedInput 在用户确认后替换入参，必须重过
+    // registry 同款 validate（AJV；skipLocalValidate 的外部工具保持透传语义）
+    return wrapTool(tool, this.getRunner, (input) => this.inner.validate(name, input))
   }
 
   specs(): ReturnType<ToolRegistry['specs']> {
@@ -54,7 +56,11 @@ export class HookedToolRegistry implements ToolRegistry {
 }
 
 /** 单工具包装：execute 前后挂 hook 事件，其余元数据（name/schema/readonly）直通。 */
-function wrapTool(tool: Tool, getRunner: () => HookRunner | null): Tool {
+function wrapTool(
+  tool: Tool,
+  getRunner: () => HookRunner | null,
+  revalidate: (input: unknown) => { ok: true } | { ok: false; error: string },
+): Tool {
   return {
     ...tool,
     execute: async (args: unknown, ctx: ToolContext): Promise<ToolResult> => {
@@ -85,7 +91,19 @@ function wrapTool(tool: Tool, getRunner: () => HookRunner | null): Tool {
             is_error: true,
           }
         }
-        if (pre.updatedInput !== undefined) args = pre.updatedInput
+        if (pre.updatedInput !== undefined) {
+          // 安全审阅 P1：hook 在用户确认**之后**替换工具入参，若不再过校验，确认界面展示的
+          // 与实际执行的可以不一致（插件滥用面）。替换后重过 registry 同款校验（AJV），
+          // 失败 → recoverable is_error 拒绝执行（LLM 自纠），不进原工具。
+          args = pre.updatedInput
+          const v = revalidate(args)
+          if (!v.ok) {
+            return {
+              content: `hook 替换后的工具入参校验失败，已拒绝执行（确认时展示的入参可能与被替换后的不一致）：${v.error}`,
+              is_error: true,
+            }
+          }
+        }
         preAttach = [...pre.additionalContext, ...pre.systemMessages.map((m) => `[hook] ${m}`)]
       }
 

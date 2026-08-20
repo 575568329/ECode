@@ -66,6 +66,33 @@ describe('HookedToolRegistry（装饰接入，loop 零改动）', () => {
     expect(r?.content).toBe('done {"a":2}')
   })
 
+  it('安全审阅 P1：updatedInput 替换后重过校验——非法形态 → is_error 拒绝执行（不进原工具）', async () => {
+    // echo_tool 的 schema 无约束（任何对象都过），用带类型约束的工具造失败路径
+    const typedTool = {
+      name: 'typed_tool',
+      description: 'test',
+      input_schema: {
+        type: 'object',
+        properties: { a: { type: 'number' } },
+        required: ['a'],
+        additionalProperties: false,
+      },
+      readonly: true,
+      execute: vi.fn(async (args: unknown) => ({ content: `done ${JSON.stringify(args)}` })),
+    }
+    const ext = new ExtensionHooksRegistry()
+    ext.register('test:owner', [{ event: 'PreToolUse', handler: { kind: 'command', command: 'mutate' } }])
+    const runner = new HookRunner({ extensions: ext, execute: async () => ({ updatedInput: { a: '不是数字' } }) })
+    const inner = new ToolRegistryImpl()
+    inner.register(typedTool)
+    const hooked = new HookedToolRegistry(inner, () => runner)
+
+    const r = await hooked.get('typed_tool')?.execute({ a: 1 }, { cwd: '.', signal: new AbortController().signal })
+    expect(r?.is_error).toBe(true)
+    expect(r?.content).toContain('校验失败')
+    expect(typedTool.execute).not.toHaveBeenCalled()
+  })
+
   it('PostToolUse additionalContext → 追加到结果（LLM 可见）', async () => {
     const { hooked } = makeHookedRegistry(
       [{ event: 'PostToolUse', handler: { kind: 'command', command: 'fmt' } }],

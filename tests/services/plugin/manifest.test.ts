@@ -171,7 +171,7 @@ describe('parseMarketplaceManifest', () => {
         name: 'mkt',
         plugins: [
           { name: 'a', source: { source: 'github', repo: 'upstash/context7-mcp', ref: 'v0.1.0' } },
-          { name: 'b', source: { source: 'url', url: 'https://x/y.zip' } },
+          { name: 'b', source: { source: 'url', url: 'https://x/y.zip', sha256: 'ab'.repeat(32) } },
           { name: 'c', source: { source: 'local', path: './plugins/c' } },
         ],
       }),
@@ -190,6 +190,15 @@ describe('parseMarketplaceManifest', () => {
     ).toThrow()
     expect(() =>
       parseMarketplaceManifest(JSON.stringify({ name: 'm', plugins: [{ name: 'x', source: { source: 'url', url: 'ftp://x' } }] }), 't'),
+    ).toThrow()
+  })
+
+  it('安全审阅 P2：url 源缺 sha256 或非 64hex → throw（拒装，无完整性校验不可装）', () => {
+    expect(() =>
+      parseMarketplaceManifest(JSON.stringify({ name: 'm', plugins: [{ name: 'x', source: { source: 'url', url: 'https://x/y.zip' } }] }), 't'),
+    ).toThrow()
+    expect(() =>
+      parseMarketplaceManifest(JSON.stringify({ name: 'm', plugins: [{ name: 'x', source: { source: 'url', url: 'https://x/y.zip', sha256: 'deadbeef' } }] }), 't'),
     ).toThrow()
   })
 })

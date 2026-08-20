@@ -74,7 +74,9 @@ export class FileHistoryStore implements HistoryStore {
 
   private ensureDir(): void {
     try {
-      fs.mkdirSync(this.dir, { recursive: true })
+      // 0o700：会话文件有意不脱敏（P0-6），安全边界就是文件/目录权限——目录默认权限
+      // 会让同机其他用户可列读（POSIX 生效；Windows 近似 no-op，不分平台直接设）
+      fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 })
     } catch (e) {
       process.stderr.write(
         `[HistoryStore] sessions 目录创建失败（只读/无权限？）: ${e instanceof Error ? e.message : String(e)}\n`,

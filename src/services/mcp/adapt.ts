@@ -30,6 +30,35 @@ export function spawnSpec(cfg: McpServerConfig): { command: string; args: string
   return { command: cfg.command ?? '', args }
 }
 
+/** 密钥形态环境变量 deny-list（安全审阅 P1）：stdio MCP server 可能来自项目级 .mcp.json 的
+ *  第三方代码，不该整份继承宿主 env——dotenv 注入的 ANTHROPIC_API_KEY 等会原样透传给任意
+ *  server 进程。选 deny-list 而非白名单：各 server 对环境变量的依赖无法穷举（PATH/SSL/locale/
+ *  语言运行时…），白名单对各 server 依赖太脆；deny-list 封密钥外泄为主，普通变量保留。
+ *  按下划线分段匹配（(^|_)KEY(_|$)）：AWS_ACCESS_KEY_ID（_KEY_ 段）、GH_PAT、MYSQL_PASS、
+ *  DB_PW 这类不含完整关键词的变体也命中；PUBLIC_KEY 类公钥变量会被一并剔除——公钥非密钥，
+ *  但 server 确需时可在 cfg.env 显式配置（显式配置不受过滤且优先覆盖）。
+ *  cfg.env 是用户显式配置（含 ${ENV_VAR} 占位符展开后的值），不受过滤且优先覆盖。 */
+const SECRET_ENV_KEY_RE = /(^|_)(API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASS|PW|PAT|CRED(S|ENTIAL)?S?|COOKIE)(_|$)/i
+
+/** 单键判定：snake_case 直接分段匹配；camelCase（MyToken/myApiKey 类）先折算成
+ *  下划线分段再匹配——Windows env 键风格不定，两种边界都吃。 */
+function isSecretEnvKey(key: string): boolean {
+  if (SECRET_ENV_KEY_RE.test(key)) return true
+  const camelSplit = key.replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+  return SECRET_ENV_KEY_RE.test(camelSplit)
+}
+
+/** 过滤后的继承环境（导出供单测，spawnSpec 同款惯例）。 */
+export function sanitizedProcessEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) continue
+    if (isSecretEnvKey(k)) continue
+    out[k] = v
+  }
+  return out
+}
+
 /** SDK Client → ClientLike（callTool 的 signal/timeout 透传 + resetTimeoutOnProgress）。 */
 function wrapSdkClient(client: Client, transport: StdioClientTransport | StreamableHTTPClientTransport, defaultTimeoutMs: number): McpClientLike {
   return {
@@ -71,7 +100,7 @@ export function createSdkConnectFn(): (name: string, cfg: McpServerConfig, signa
         command: spec.command,
         args: spec.args,
         ...(cfg.cwd !== undefined ? { cwd: cfg.cwd } : {}),
-        env: { ...process.env, ...(cfg.env ?? {}) } as Record<string, string>,
+        env: { ...sanitizedProcessEnv(), ...(cfg.env ?? {}) } as Record<string, string>,
         stderr: 'pipe', // 不静默吞子进程 stderr（调试通道；MVP 不转发，后续接 LogStore）
         ...(signal !== undefined ? { signal } : {}),
       })

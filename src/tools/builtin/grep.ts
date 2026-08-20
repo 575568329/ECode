@@ -11,6 +11,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type { Tool } from '../interface.js'
 import { loadEcodeIgnore } from '../../services/ignore.js'
+import { isSensitivePath, sensitiveGate } from '../sensitive.js'
 
 /** 匹配截断阈值（防巨量匹配刷屏） */
 const MAX_MATCHES = 100
@@ -52,6 +53,9 @@ export const grepTool: Tool = {
       // path 是文件 → 只搜该文件（避免 fast-glob 把文件当目录 scandir → ENOTDIR）
       const stat = await fs.stat(cwd).catch(() => null)
       if (stat?.isFile()) {
+        // 敏感门与 read_file 同款（复审 P0：本工具曾可旁路 read_file 的门直读密钥文件）
+        const denied = await sensitiveGate(cwd, ctx, 'grep')
+        if (denied !== undefined) return denied
         const content = await fs.readFile(cwd, 'utf8')
         const fileLines = content.split('\n')
         const matched: string[] = []
@@ -71,9 +75,16 @@ export const grepTool: Tool = {
       })
       const lines: string[] = []
       let total = 0
+      let skippedSensitive = 0
       for (const file of files) {
         if (total >= MAX_MATCHES) break
         if (ig.ignores(file)) continue
+        // 目录游走逐文件过滤敏感路径（游走中途逐文件弹确认太吵——跳过并在结果尾注明；
+        // 用户确需搜某个敏感文件可单独指定 path 让 sensitiveGate 弹确认）
+        if (isSensitivePath(path.join(cwd, file))) {
+          skippedSensitive++
+          continue
+        }
         try {
           const content = await fs.readFile(path.join(cwd, file), 'utf8')
           const fileLines = content.split('\n')
@@ -88,9 +99,10 @@ export const grepTool: Tool = {
           // 读失败（二进制/权限）跳过该文件
         }
       }
-      if (lines.length === 0) return { content: '(无匹配)' }
+      if (lines.length === 0 && skippedSensitive === 0) return { content: '(无匹配)' }
       if (total >= MAX_MATCHES) lines.push(`…（达上限 ${MAX_MATCHES}，可能还有更多）`)
-      return { content: lines.join('\n') }
+      if (skippedSensitive > 0) lines.push(`（已跳过 ${skippedSensitive} 个敏感文件；如确需搜索请单独指定该文件路径触发用户确认）`)
+      return { content: lines.length > 0 ? lines.join('\n') : '(无匹配)' }
     } catch (e) {
       return {
         content: `grep 失败: ${e instanceof Error ? e.message : String(e)}`,

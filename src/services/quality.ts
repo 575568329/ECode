@@ -9,10 +9,10 @@
  * 全绿静默（不打扰）。
  */
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { spawnShellCommand } from './proc.js'
+import { isDangerousCommand, killTree, spawnShellCommand } from './proc.js'
+import { matchesBlocked } from './sandbox.js'
+import { loadConfig } from './config.js'
 
 /** 触发回喂的编辑类工具 */
 const EDIT_TOOLS = new Set(['write_file', 'edit_file'])
@@ -38,24 +38,20 @@ export interface QualityGateOpts {
 }
 
 /**
- * 探测 lint/test 命令：config 显式覆盖 > package.json scripts 的 lint/test > 关闭（undefined）。
+ * 解析 lint/test 命令：**仅认用户显式配置**（lintCommand/testCommand）——undefined 与空串一律视为关闭。
+ *
+ * Why 安全默认（P0 修复）：旧实现会对 package.json scripts 做自动探测并在轮末自动执行
+ * `npm run lint/test`——clone 一个恶意仓库（scripts.lint 写下载执行）再让 ECode 改个 typo，
+ * 就能在无确认、不过危险黑名单、不过沙箱的前提下于轮末自动 RCE。自动探测路径已整体删除；
+ * lint/test 自动回喂只信任用户自己写在 config 里的命令。
  */
 export function detectQualityCommands(
-  cwd: string,
+  _cwd: string,
   override?: { lintCommand?: string; testCommand?: string },
 ): QualityCommands {
   const commands: QualityCommands = {}
   if (override?.lintCommand !== undefined && override.lintCommand !== '') commands.lint = override.lintCommand
   if (override?.testCommand !== undefined && override.testCommand !== '') commands.test = override.testCommand
-  if (commands.lint !== undefined && commands.test !== undefined) return commands
-  try {
-    const pkg = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')) as { scripts?: Record<string, string> }
-    const scripts = pkg.scripts ?? {}
-    if (commands.lint === undefined && typeof scripts.lint === 'string' && scripts.lint !== '') commands.lint = `npm run lint`
-    if (commands.test === undefined && typeof scripts.test === 'string' && scripts.test !== '') commands.test = `npm run test`
-  } catch {
-    // 无 package.json / 解析失败：未探测到的即关闭
-  }
   return commands
 }
 
@@ -150,10 +146,42 @@ function truncateFeedback(s: string): string {
   return `${s.slice(0, half)}\n…（中间已截断）\n${s.slice(-half)}`
 }
 
-/** 默认 runner：shell 执行 + 60s 超时杀进程（cli/TuiApp 装配用；测试注入 mock runner） */
-export function makeShellRunner(cwd: string, timeoutMs = 60_000): (command: string) => Promise<QualityRunOutcome> {
-  return (command) =>
-    new Promise((resolve) => {
+/**
+ * 默认 runner：shell 执行 + 60s 超时杀进程（cli/TuiApp 装配用；测试注入 mock runner）。
+ *
+ * 安全加固（P0 修复）：
+ * - 执行前过 isDangerousCommand 与 matchesBlocked——命中即拒绝执行并给 notice 说明
+ *   （自动回喂是免确认通道，必须与 bash 工具同标准；配置读不到 deny 清单时按空清单处理）。
+ * - 超时用 killTree 树杀——npm run 类命令起孙进程，child.kill() 单点杀会泄漏孤儿。
+ * blockedCommands 缺省读用户 config（cli 两处调用点不传参，保持签名兼容）；测试可显式注入。
+ */
+export function makeShellRunner(
+  cwd: string,
+  timeoutMs = 60_000,
+  blockedCommands?: string[],
+): (command: string) => Promise<QualityRunOutcome> {
+  let blocked: string[]
+  if (blockedCommands !== undefined) {
+    blocked = blockedCommands
+  } else {
+    try {
+      blocked = loadConfig().sandbox?.blockedCommands ?? []
+    } catch {
+      // 配置无效/读失败：与空壳配置同语义（无 deny 清单），不因此关闭 lint/test
+      blocked = []
+    }
+  }
+  return (command) => {
+    // 危险命令 / blockedCommands 命中 → 拒绝 spawn，给可读 notice（exit 1 会走回喂/熔断链，
+    // 用户最多看到两次提示后熔断告警——比静默跳过更诚实）
+    if (isDangerousCommand(command) || matchesBlocked(command, blocked)) {
+      return Promise.resolve({
+        command,
+        exitCode: 1,
+        output: '[quality] 命令命中危险黑名单或 sandbox.blockedCommands，已拒绝自动执行——请检查 lintCommand/testCommand 配置是否指向了不受信任的命令',
+      })
+    }
+    return new Promise((resolve) => {
       let child
       try {
         child = spawnShellCommand(command, cwd)
@@ -169,7 +197,8 @@ export function makeShellRunner(cwd: string, timeoutMs = 60_000): (command: stri
         out += d.toString()
       })
       const timer = setTimeout(() => {
-        child.kill()
+        // 树杀（孙进程一并终止），不阻塞结果返回；已退出幂等
+        void killTree(child)
         resolve({ command, exitCode: 124, output: `${out}
 [quality] 超时（${Math.round(timeoutMs / 1000)}s）被终止` })
       }, timeoutMs)
@@ -178,6 +207,7 @@ export function makeShellRunner(cwd: string, timeoutMs = 60_000): (command: stri
         resolve({ command, exitCode: code ?? 0, output: out })
       })
     })
+  }
 }
 
 // —— M9-P7：LSP 诊断回喂接口位（占牌，实现视余量或 M10——依赖子进程/语言服务管理，重） ——

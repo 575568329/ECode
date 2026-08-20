@@ -34,6 +34,14 @@ describe('isPrivateIp（SSRF 核心判定）', () => {
       expect(isPrivateIp(ip), ip).toBe(false)
     }
   })
+  it('安全审阅 P1-a：CGNAT 100.64.0.0/10 拒绝（含云 metadata 100.100.100.200），段外放行', () => {
+    for (const ip of ['100.64.0.1', '100.100.100.200', '100.127.255.255']) {
+      expect(isPrivateIp(ip), ip).toBe(true)
+    }
+    for (const ip of ['100.63.0.1', '100.128.0.1', '100.1.2.3']) {
+      expect(isPrivateIp(ip), ip).toBe(false)
+    }
+  })
 })
 
 describe('htmlToText', () => {
@@ -116,6 +124,16 @@ describe('web_fetch execute（mock fetch + mock DNS）', () => {
     const r = await tool.execute({ url: 'https://example.com/r0' }, ctx)
     expect(r.is_error).toBe(true)
     expect(r.content).toContain('重定向超限')
+  })
+
+  it('安全审阅 P1-b：重定向 Location: file:// → 每跳协议断言拒绝（不发起后续请求）', async () => {
+    const tool = createWebFetchTool((async (url: string) => {
+      if (url === 'https://example.com/redir') return res(302, '', { location: 'file:///etc/passwd' })
+      throw new Error('不应请求非 http 目标：' + url)
+    }) as unknown as FetchLike)
+    const r = await tool.execute({ url: 'https://example.com/redir' }, ctx)
+    expect(r.is_error).toBe(true)
+    expect(r.content).toContain('非 http/https 协议')
   })
 
   it('HTTP 404 → is_error 带状态码', async () => {

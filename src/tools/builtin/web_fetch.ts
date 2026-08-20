@@ -51,6 +51,7 @@ export function isPrivateIp(ip: string): boolean {
     if (a === 172 && b >= 16 && b <= 31) return true
     if (a === 192 && b === 168) return true
     if (a === 169 && b === 254) return true // 链路本地
+    if (a === 100 && b >= 64 && b <= 127) return true // CGNAT 100.64.0.0/10（含云 metadata 100.100.100.200，安全审阅 P1-a）
     if (a >= 224) return true // 组播/保留
     return false
   }
@@ -166,6 +167,11 @@ export function createWebFetchTool(fetchImpl: FetchLike = fetch as unknown as Fe
       try {
         let current = parsed
         for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+          // 每跳断言协议（安全审阅 P1-b）：协议校验若只在首跳，重定向 Location: file:// 之类
+          // 只靠 undici 兜底不稳——逐跳显式拒绝。
+          if (current.protocol !== 'http:' && current.protocol !== 'https:') {
+            return { content: `重定向跳转至非 http/https 协议（${current.protocol}），已拒绝：${current.toString()}`, is_error: true }
+          }
           await assertPublicHost(current.hostname) // 每跳复检（重定向可能引向内网）
           const res = await fetchImpl(current.toString(), {
             redirect: 'manual',

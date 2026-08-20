@@ -6,7 +6,8 @@
  * - write_file：content 片段（超 40 行截断）
  * - bash：完整命令字符串
  *
- * 返回纯 string（着色由 ConfirmPrompt 渲染层负责）。异常抛出（confirm callback 内 catch，P1#3）。
+ * 返回纯 string（着色由 ConfirmPrompt 渲染层负责）；出口统一消毒——剥 ANSI ESC 序列与
+ * C0 控制符（防确认弹窗视觉伪装，见 sanitizePreview）。异常抛出（confirm callback 内 catch，P1#3）。
  */
 
 import { readFileSync } from 'node:fs'
@@ -17,7 +18,28 @@ import type { ToolUseBlock } from '../core/types.js'
 /** write_file 预览截断（详设 §4.4） */
 const WRITE_PREVIEW_MAX_LINES = 40
 
+/**
+ * 确认预览消毒：剥 ANSI ESC 序列与 C0 控制字符（保留 \n\t）。
+ * Why（P2 修复）：预览产物含 bash 命令原文/外部工具入参，攻击者可用 ESC 转义序列或
+ * \r 等控制符做视觉伪装——终端里看到的"echo hi"与实际执行的命令不一致。确认弹窗是
+ * 用户放行副作用的最后一道闸，必须所见即所执行。
+ */
+// eslint-disable-next-line no-control-regex
+const ANSI_ESC_SEQUENCE = /\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])/g
+// C0 控制符 + DEL：剔掉 \n(0x0A) \t(0x09) 与 \r(0x0D——\r 回车覆写是经典伪装手段，必须剥)
+// eslint-disable-next-line no-control-regex
+const C0_CONTROL = /[\x00-\x08\x0B\x0C\x0D\x0E-\x1F\x7F]/g
+
+export function sanitizePreview(text: string): string {
+  return text.replace(ANSI_ESC_SEQUENCE, '').replace(C0_CONTROL, '')
+}
+
 export async function buildPreview(use: ToolUseBlock, cwd: string): Promise<string> {
+  return sanitizePreview(await buildPreviewRaw(use, cwd))
+}
+
+/** 各工具的原始预览（消毒前）——分流逻辑与 buildPreview 历史行为一致。 */
+async function buildPreviewRaw(use: ToolUseBlock, cwd: string): Promise<string> {
   switch (use.name) {
     case 'edit_file': {
       return buildEditPreview(use, cwd)

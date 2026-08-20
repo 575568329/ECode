@@ -161,8 +161,8 @@ describe('PluginLoader：安装（local source 主路径）', () => {
     // 剥根：清单直接在 cache 根（而非 zipped-main/ 子目录下）
     expect(findManifestFile(r.path)).not.toBeNull()
 
-    // 坏 sha → 拒绝
-    mkt.plugins[0]!.source = { source: 'url', url: 'https://example.com/zipped.zip', sha256: 'deadbeef' }
+    // 坏 sha → 拒绝（64hex 合法形态但与 zip 内容不符——走 fetchZip 运行时校验路径）
+    mkt.plugins[0]!.source = { source: 'url', url: 'https://example.com/zipped.zip', sha256: '00'.repeat(32) }
     await writeFile(mktFile, JSON.stringify(mkt), 'utf8')
     await expect(loader.install('zipped', 'team3')).rejects.toThrow('sha256')
   })
@@ -177,7 +177,9 @@ describe('PluginLoader：安装（local source 主路径）', () => {
       '.ecode-plugin/plugin.json': strToU8(JSON.stringify({ name: 'slip', version: '1.0.0' })),
       '../escape.txt': strToU8('pwned'),
     }))
-    mkt.plugins[0]!.source = { source: 'url', url: 'https://example.com/slip.zip' }
+    // 安全审阅 P2：url 源 sha256 必填（marketplace schema 收紧），fixture 用 zip 真实哈希过门
+    const { createHash } = await import('node:crypto')
+    mkt.plugins[0]!.source = { source: 'url', url: 'https://example.com/slip.zip', sha256: createHash('sha256').update(evilBuf).digest('hex') }
     await writeFile(mktFile, JSON.stringify(mkt), 'utf8')
     const fetchImpl = (async () => ({ ok: true, status: 200, arrayBuffer: async () => evilBuf.slice().buffer.slice(evilBuf.byteOffset, evilBuf.byteOffset + evilBuf.byteLength) })) as unknown as PluginLoaderDeps['fetchImpl']
     const loader = makeLoader({ fetchImpl })
@@ -195,7 +197,9 @@ describe('PluginLoader：安装（local source 主路径）', () => {
     // 4MB 全零：压缩后 ~4KB，比率 ~1000:1（正常包 < 20:1）
     const bombBuf = Buffer.from(zipSync({ '.ecode-plugin/plugin.json': strToU8(JSON.stringify({ name: 'bomb' })), 'zeros.bin': strToU8('0'.repeat(4 * 1024 * 1024)) }))
     expect(bombBuf.length).toBeLessThan(64 * 1024) // 本体很小——正是 bomb 特征
-    mkt.plugins[0]!.source = { source: 'url', url: 'https://example.com/bomb.zip' }
+    // 安全审阅 P2：url 源 sha256 必填（同上）
+    const { createHash: createHash2 } = await import('node:crypto')
+    mkt.plugins[0]!.source = { source: 'url', url: 'https://example.com/bomb.zip', sha256: createHash2('sha256').update(bombBuf).digest('hex') }
     await writeFile(mktFile, JSON.stringify(mkt), 'utf8')
     const fetchImpl = (async () => ({ ok: true, status: 200, arrayBuffer: async () => bombBuf.slice().buffer.slice(bombBuf.byteOffset, bombBuf.byteOffset + bombBuf.byteLength) })) as unknown as PluginLoaderDeps['fetchImpl']
     const loader = makeLoader({ fetchImpl })

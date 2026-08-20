@@ -15,6 +15,27 @@ const execFileAsync = promisify(execFile)
 
 export const ECODE_TRAILER_PREFIX = 'Ecode-Commit: '
 
+/** sessionId 形态（cli 生成处 = `new Date().toISOString().replace(/[:.]/g, '-')`）：
+ *  形如 2026-08-20T12-34-56-789Z。trailer 值合法性校验用——防提交正文恰好出现
+ *  "Ecode-Commit: " 字样被误判（安全审阅 P2：误判即 /undo reset 用户提交）。 */
+const SESSION_ID_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/
+
+/**
+ * trailer 段判定（导出供单测）：提交信息**最后一个段落**中存在整行
+ * `Ecode-Commit: <合法 sessionId 形态>` 才算 ECode 提交。
+ * 三重收紧：① 只看最后段落（git trailer 惯例——ecodeCommit 用第二个 -m 生成独立段落）；
+ * ② 整行精确前缀匹配（正文行内夹带字样不算）；③ 值必须匹配 sessionId 形态。
+ */
+export function hasEcodeTrailer(body: string): boolean {
+  const paragraphs = body.replace(/\r\n/g, '\n').trimEnd().split(/\n[ \t]*\n/)
+  const last = paragraphs[paragraphs.length - 1] ?? ''
+  for (const line of last.split('\n')) {
+    const m = /^Ecode-Commit:[ \t](\S+)$/.exec(line.trim())
+    if (m !== null && SESSION_ID_RE.test(m[1] as string)) return true
+  }
+  return false
+}
+
 async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
   const { stdout } = await execFileAsync('git', args, { cwd, env: env ? { ...process.env, ...env } : process.env })
   return stdout
@@ -42,6 +63,10 @@ export interface CommitOutcome {
 export async function ecodeCommit(cwd: string, sessionId: string, files: string[], subject: string): Promise<CommitOutcome> {
   if (files.length === 0) return { committed: false, reason: '本轮无文件改动' }
   if (!(await isGitRepo(cwd))) return { committed: false, reason: '非 git 仓库' }
+  // 写入侧卫语句：trailer 值非法（/undo 读取侧只认合法形态）会产生无法识别的提交——读写对称
+  if (!SESSION_ID_RE.test(sessionId)) {
+    throw new TypeError(`ecodeCommit: sessionId 形态非法（应为 ISO 时间戳变换形态）：${sessionId}`)
+  }
   try {
     await git(cwd, ['add', '--', ...files])
     // 终审 P1-2：pathspec --only——只提交指定路径。裸 commit 提交整个 index，会混入用户
@@ -56,12 +81,12 @@ export async function ecodeCommit(cwd: string, sessionId: string, files: string[
   }
 }
 
-/** 最近一次提交是否 ECode 提交（trailer 校验）；顺带返回 subject。 */
+/** 最近一次提交是否 ECode 提交（trailer 段精确校验，hasEcodeTrailer）；顺带返回 subject。 */
 export async function lastCommitIsEcode(cwd: string): Promise<{ isEcode: boolean; subject: string }> {
   try {
     const body = await git(cwd, ['log', '-1', '--format=%B'])
     const subject = body.split('\n')[0] ?? ''
-    return { isEcode: body.includes(ECODE_TRAILER_PREFIX), subject }
+    return { isEcode: hasEcodeTrailer(body), subject }
   } catch {
     return { isEcode: false, subject: '' }
   }

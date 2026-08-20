@@ -317,3 +317,31 @@ describe('buildProviderReq', () => {
     expect(fs.readFileSync(cfgPath, 'utf8')).toBe(before)
   })
 })
+
+describe('文件权限（安全审阅 P1：chmod 显式兑现，POSIX 才可断言）', () => {
+  it.skipIf(process.platform === 'win32')('loadConfig 首次生成模板 → 文件 0600 + 目录 0700', () => {
+    const fresh = path.join(tmp, `fresh-${Date.now()}`, 'config.json')
+    try {
+      loadConfig({ configPath: fresh, loadDotenv: false })
+    } catch {
+      // NO_API_KEY 预期抛出——模板文件已生成，权限断言照做
+    }
+    expect(fs.statSync(fresh).mode & 0o777).toBe(0o600)
+    expect(fs.statSync(path.dirname(fresh)).mode & 0o777).toBe(0o700)
+  })
+
+  it.skipIf(process.platform === 'win32')('writeWizardConfig → 文件 0600 + .bak 同样 0600', () => {
+    writeConfig(
+      JSON.stringify({
+        default: { provider: 'a', model: 'm' },
+        providers: { a: { type: 'anthropic', baseURL: 'http://a', apiKey: 'sk-a', models: ['m'] } },
+      }),
+    )
+    writeWizardConfig(
+      { mode: 'edit', providerName: 'a', type: 'anthropic', baseURL: 'http://a2', apiKey: 'sk-a2', models: 'm', thinking: 'off' },
+      { configPath: cfgPath },
+    )
+    expect(fs.statSync(cfgPath).mode & 0o777).toBe(0o600)
+    expect(fs.statSync(cfgPath + '.bak').mode & 0o777).toBe(0o600)
+  })
+})

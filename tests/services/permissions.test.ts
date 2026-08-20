@@ -1,5 +1,5 @@
 /** 权限规则引擎测（M9-P5）：匹配/求值/三层加载与写入（tmpdir 真文件）。 */
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -41,19 +41,46 @@ describe('evalPermission（求值）', () => {
     ).toBe('deny')
   })
 
-  it('层序 local > project > user（高层 ask 覆盖低层 allow）', () => {
-    expect(
-      evalPermission('Hook(skill:foo)', layers({
-        project: { allow: ['Hook(skill:*)'], ask: [], deny: [] },
-        user: { allow: ['Hook(skill:foo)'], ask: [], deny: [] },
-      })),
-    ).toBe('allow')
+  it('层序 local > project > user（高层命中覆盖低层）', () => {
     expect(
       evalPermission('Hook(skill:foo)', layers({
         local: { allow: [], ask: ['Hook(skill:*)'], deny: [] },
-        project: { allow: ['Hook(skill:*)'], ask: [], deny: [] },
+        project: { allow: [], ask: [], deny: [] },
+        user: { allow: ['Hook(skill:foo)'], ask: [], deny: [] },
       })),
     ).toBe('ask')
+    expect(
+      evalPermission('Hook(skill:foo)', layers({
+        local: { allow: ['Hook(skill:foo)'], ask: [], deny: [] },
+        project: { allow: ['Hook(skill:*)'], ask: [], deny: [] }, // project allow 已降级（见下），但 local 先命中
+      })),
+    ).toBe('allow')
+  })
+
+  it('安全审阅 P1：project 层 Hook allow 降级 ask（仓库分发的预授权不可信）', () => {
+    // 精确与通配两种形态都降级
+    expect(
+      evalPermission('Hook(skill:foo)', layers({ project: { allow: ['Hook(skill:foo)'], ask: [], deny: [] } })),
+    ).toBe('ask')
+    expect(
+      evalPermission('Hook(skill:foo)', layers({ project: { allow: ['Hook(skill:*)'], ask: [], deny: [] } })),
+    ).toBe('ask')
+    // 恶意仓库 project 预授权 + 用户层不知情：仍 ask（不再被 project 层 allow 短路）
+    expect(
+      evalPermission('Hook(skill:evil)', layers({
+        project: { allow: ['Hook(skill:*)'], ask: [], deny: [] },
+        user: { allow: [], ask: [], deny: [] },
+      })),
+    ).toBe('ask')
+  })
+
+  it('user/local 层 Hook allow 不受降级影响（用户亲手配置/交互式记住，可信）', () => {
+    expect(
+      evalPermission('Hook(skill:foo)', layers({ user: { allow: ['Hook(skill:*)'], ask: [], deny: [] } })),
+    ).toBe('allow')
+    expect(
+      evalPermission('Hook(skill:foo)', layers({ local: { allow: ['Hook(skill:foo)'], ask: [], deny: [] } })),
+    ).toBe('allow')
   })
 })
 
@@ -86,5 +113,19 @@ describe('三层存储（真实文件）', () => {
     saveLocalPermission(dir, 'allow', 'Hook(plugin:p1)')
     const doc2 = JSON.parse(readFileSync(join(dir, '.ecode', 'settings.local.json'), 'utf8'))
     expect(doc2.permissions.allow).toEqual(['Hook(skill:foo)', 'Hook(plugin:p1)'])
+  })
+
+  it('安全审阅 P2：文件损坏（非法 JSON）→ throw 且原内容不被覆写', () => {
+    mkdirSync(join(dir, '.ecode'), { recursive: true })
+    const file = join(dir, '.ecode', 'settings.local.json')
+    writeFileSync(file, '{broken json')
+    expect(() => saveLocalPermission(dir, 'allow', 'Hook(skill:x)')).toThrow('settings.local.json')
+    expect(readFileSync(file, 'utf8')).toBe('{broken json') // 损坏文件原样保留
+  })
+
+  it('安全审阅 P2：原子替换——写入后目录内无 .tmp 残留', () => {
+    saveLocalPermission(dir, 'allow', 'Hook(skill:x)')
+    const files = readdirSync(join(dir, '.ecode'))
+    expect(files).toEqual(['settings.local.json'])
   })
 })

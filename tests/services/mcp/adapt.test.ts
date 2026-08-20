@@ -4,6 +4,7 @@ import {
   normalizeSchema,
   renderContent,
   sanitizeToolName,
+  sanitizedProcessEnv,
   spawnSpec,
 } from '../../../src/services/mcp/adapt.js'
 import type { McpManager, McpContentItem } from '../../../src/services/mcp/manager.js'
@@ -43,6 +44,47 @@ describe('spawnSpec（win32 npx 包 cmd /c，审阅补测）', () => {
     const node = spawnSpec({ type: 'stdio', command: 'node', args: ['s.js'] })
     expect(node.command).toBe('node')
     expect(node.args).toEqual(['s.js'])
+  })
+})
+
+describe('sanitizedProcessEnv（安全审阅 P1：密钥 deny-list，不整份继承宿主 env）', () => {
+  it('密钥形态变量被剔除，普通变量保留', () => {
+    const env = sanitizedProcessEnv({
+      ANTHROPIC_API_KEY: 'sk-x',
+      OPENAI_API_KEY: 'sk-y',
+      APIKEY: 'k',
+      FOO_TOKEN: 't',
+      MY_SECRET: 's',
+      PASSWORD: 'p',
+      DB_CREDENTIALS: 'c',
+      SESSION_COOKIE: 'ck',
+      PATH: 'p',
+      HOME: 'h',
+      LANG: 'zh_CN.UTF-8',
+      SSL_CERT_DIR: 'd',
+    })
+    expect(env).toEqual({ PATH: 'p', HOME: 'h', LANG: 'zh_CN.UTF-8', SSL_CERT_DIR: 'd' })
+  })
+
+  it('大小写不敏感匹配（Windows env 键大小写不定）', () => {
+    const env = sanitizedProcessEnv({ anthropic_api_key: 'sk', MyToken: 't' })
+    expect(env).toEqual({})
+  })
+
+  it('复审补充：分段式匹配兜住不含完整关键词的密钥变体', () => {
+    const env = sanitizedProcessEnv({
+      AWS_ACCESS_KEY_ID: 'ak', // _KEY_ 段（旧 API_?KEY 漏）
+      GH_PAT: 't', // 个人访问令牌缩写
+      MYSQL_PASS: 'p', // PASS 段
+      DB_PW: 'pw', // PW 段
+      SSH_PRIVATE_KEY: 'k', // _KEY$ 段
+      // 公钥类变量会被一并剔除（从紧取向；server 需要时 cfg.env 显式配置覆盖）
+      PUBLIC_KEY: 'pub',
+    })
+    expect(env).toEqual({})
+    // 普通变量不误伤：分段边界（KEYCLOAK 整段 ≠ KEY 段）
+    const keep = sanitizedProcessEnv({ KEYCLOAK_URL: 'u', PATH: 'p', MONKEY_COUNT: '1' })
+    expect(keep).toEqual({ KEYCLOAK_URL: 'u', PATH: 'p', MONKEY_COUNT: '1' })
   })
 })
 

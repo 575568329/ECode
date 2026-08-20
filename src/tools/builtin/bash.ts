@@ -101,10 +101,14 @@ export const bashTool: Tool = {
       let stderr = ''
       let settled = false
 
+      // 中断：abort 杀进程（P2 修复：done 里摘除监听器——命令正常结束后 ctx.signal 仍长生命周期，
+      // 残留监听器会让信号持有闭包引用、长会话下逐次累积泄漏）
+      const onAbort = (): void => done({ content: '命令被中断', is_error: true })
       const done = (res: ExecResult) => {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        ctx.signal.removeEventListener('abort', onAbort)
         // 杀整树（孙进程一并终止——npm 类命令的子进程不再泄漏；已退出幂等）。不阻塞返回
         void killTree(child)
         resolve(res)
@@ -128,12 +132,7 @@ export const bashTool: Tool = {
         done({ content: truncateOutput(parts.join('\n') || '(无输出)') })
       })
 
-      // 中断：abort 杀进程
-      ctx.signal.addEventListener(
-        'abort',
-        () => done({ content: '命令被中断', is_error: true }),
-        { once: true },
-      )
+      ctx.signal.addEventListener('abort', onAbort, { once: true })
     })
   },
 }

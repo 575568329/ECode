@@ -305,7 +305,8 @@ async function main(): Promise<void> {
       sessionEndHook?.dispatch('SessionEnd', { event: 'SessionEnd', session_id: '' }) ?? Promise.resolve(),
     stopMcp: () => mcpManagerRef?.stop() ?? Promise.resolve(),
     stopTasks: () => {
-      taskRegistry.cleanup()
+      // dispose：杀树 + 清理本会话 task-*.log（P2：输出含命令原文不脱敏，不留残骸）
+      taskRegistry.dispose()
       return Promise.resolve()
     },
   })

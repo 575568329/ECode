@@ -13,7 +13,7 @@
  * confirm 走 deps.confirm——装配方必须传串行队列包装后的父回调（方案 §1.3）。
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -30,7 +30,7 @@ import type { Sandbox } from './sandbox.js'
 
 /** 子代理默认迭代上限（方案 D6：钳 min(父,25) 的常数半边；跑飞防御） */
 const SUB_MAX_ITERATIONS = 25
-/** 单子代理硬超时（方案 D6：execute 自实现，loop 层不做 timeout_ms） */
+/** 单子代理硬超时（方案 D6：execute 自实现——task 未声明 timeout_ms，loop 层软超时对内嵌 runLoop 不适用） */
 const SUB_TIMEOUT_MS = 10 * 60_000
 /** 返回结论截断（方案 D12；CC 100k 太宽） */
 const RESULT_MAX_BYTES = 16 * 1024
@@ -322,12 +322,19 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
         activeAgents.delete(agentId)
         notifyProgress()
         // transcript 全量落盘（abort/超时路径也落；callbacks 逐条写缺入参与轮次边界——方案 P2-3）
+        // 异步 IO（P2 修复：execute 在主循环事件循环上跑，同步 mkdir/write 冻结渲染）；
+        // 0700：transcript 含任务原文，目录不给同机其他账户读
         try {
           const dir = join(homedir(), '.ecode', 'agents')
-          mkdirSync(dir, { recursive: true })
-          writeFileSync(join(dir, `${agentId}.jsonl`), messages.map((m) => JSON.stringify(m)).join('\n'), 'utf8')
-        } catch {
-          // 落盘失败不掩盖主结果（transcript 是辅助通道）
+          await mkdir(dir, { recursive: true, mode: 0o700 })
+          await writeFile(join(dir, `${agentId}.jsonl`), messages.map((m) => JSON.stringify(m)).join('\n'), 'utf8')
+        } catch (e) {
+          // 落盘失败不掩盖主结果（transcript 是辅助通道），但留日志可排查（不空吞；
+          // category 用 'tool'——LogCategory 无 subagent 专属类目，此处属 task 工具执行期 IO）
+          deps.logger.warn('tool', 'subagent_transcript_write_failed', {
+            agentId,
+            message: e instanceof Error ? e.message : String(e),
+          })
         }
       }
     },

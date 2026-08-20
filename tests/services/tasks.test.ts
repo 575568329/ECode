@@ -1,6 +1,6 @@
-/** 后台任务测（M10-P3）：真子进程（echo/sleep）+ 增量读 + 杀树 + 通知去重 + bash 分流。 */
+/** 后台任务测（M10-P3）：真子进程（echo/sleep）+ 增量读 + 杀树 + 通知去重 + bash 分流 + dispose。 */
 import { describe, expect, it, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { TaskRegistry } from '../../src/services/tasks.js'
@@ -73,6 +73,28 @@ describe('TaskRegistry', () => {
     if (!ninth.ok) expect(ninth.reason).toContain('8')
     reg.cleanup()
   }, 15_000)
+
+  it('指定 offset 的部分读：只返回增量且不推进 consumedOffset', async () => {
+    const reg = new TaskRegistry(dir)
+    const r = reg.start('echo partial-read', process.cwd())
+    if (!r.ok) return
+    await waitFor(async () => (await reg.output(r.task.id, 0)).status !== 'running', 5000)
+    const mid = await reg.output(r.task.id, 0)
+    if ('output' in mid) expect(mid.output).toContain('partial-read')
+    const again = await reg.output(r.task.id, mid.newOffset)
+    if ('output' in again) expect(again.output).toBe('') // 从已读 offset 续读 → 无增量
+  })
+
+  it('dispose：unlink 本会话输出文件 + 清空任务表（gracefulShutdown 接线语义）', async () => {
+    const reg = new TaskRegistry(dir)
+    const r = reg.start('echo dispose-me', process.cwd())
+    if (!r.ok) return
+    await waitFor(async () => (await reg.output(r.task.id, 0)).status !== 'running', 5000)
+    expect(existsSync(r.task.outputFile)).toBe(true)
+    reg.dispose()
+    expect(existsSync(r.task.outputFile)).toBe(false)
+    expect('error' in (await reg.output(r.task.id))).toBe(true) // 表已清空
+  })
 })
 
 describe('bash run_in_background 分流', () => {

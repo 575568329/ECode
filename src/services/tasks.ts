@@ -9,7 +9,8 @@
  */
 
 import { spawn } from 'node:child_process'
-import { createWriteStream, mkdirSync, readFileSync } from 'node:fs'
+import { createWriteStream, mkdirSync, unlinkSync } from 'node:fs'
+import { open as openFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { killTree, spawnShellCommand } from './proc.js'
@@ -51,7 +52,8 @@ export class TaskRegistry {
   constructor(outDir?: string) {
     this.outDir = outDir ?? join(homedir(), '.ecode', 'tmp')
     try {
-      mkdirSync(this.outDir, { recursive: true })
+      // 0700：输出日志含命令原文（不脱敏落盘），目录不给同机其他账户读
+      mkdirSync(this.outDir, { recursive: true, mode: 0o700 })
     } catch {
       // 无权限等：启动任务时报错
     }
@@ -125,29 +127,43 @@ export class TaskRegistry {
   /**
    * 增量读取：从 consumedOffset（或指定字节 offset）到文件末尾。
    * async + setTimeout 轮询（终审 P1-4：Atomics.wait 同步阻塞会冻结 Ink 渲染与 Ctrl+C 最长 10s）。
-   * newOffset = 文件末尾（终审 P2-3：多字节 UTF-8 中间截断按字符数回算会漂移——按字节末尾对齐，
+   * 句柄定位部分读（P1 修复：旧实现每次轮询 readFileSync 整文件 O(filesize)，长跑大输出
+   * 任务的等待窗口内反复全量同步读，冻结 Ink 渲染与 Ctrl+C——现在只从 offset 读增量）。
+   * newOffset = 实读末尾（终审 P2-3：多字节 UTF-8 中间截断按字符数回算会漂移——按字节对齐，
    * 多字节字符跨读边界会产替换符（解码文本失真但文件字节不丢，日志场景容忍））。
    */
   async output(id: string, offset?: number, waitMs?: number): Promise<TaskOutputResult | { error: string }> {
     const task = this.tasks.get(id)
     if (task === undefined) return { error: `任务 ${id} 不存在` }
-    const read = (): TaskOutputResult => {
+    const read = async (): Promise<TaskOutputResult> => {
       const start = offset ?? task.consumedOffset
-      let buf = Buffer.alloc(0)
+      let text = ''
+      let newOffset = start
       try {
-        buf = readFileSync(task.outputFile)
+        const fh = await openFile(task.outputFile, 'r')
+        try {
+          const size = (await fh.stat()).size
+          if (size > start) {
+            const buf = Buffer.alloc(size - start)
+            const { bytesRead } = await fh.read(buf, 0, buf.length, start)
+            newOffset = start + bytesRead
+            text = buf.subarray(0, bytesRead).toString('utf8')
+          } else {
+            newOffset = size
+          }
+        } finally {
+          await fh.close()
+        }
       } catch {
         // 文件暂不可读：空输出
       }
-      const text = buf.length > start ? buf.subarray(start).toString('utf8') : ''
-      const newOffset = buf.length
       if (offset === undefined) task.consumedOffset = newOffset
       return { output: text, newOffset, status: task.status, exitCode: task.exitCode }
     }
     if (waitMs !== undefined && waitMs > 0 && task.status === 'running') {
       const deadline = Date.now() + waitMs
       while (Date.now() < deadline && task.status === 'running') {
-        const r = read()
+        const r = await read()
         if (r.output.length > 0) return r
         await sleep(50)
       }
@@ -187,6 +203,23 @@ export class TaskRegistry {
   cleanup(): void {
     for (const t of this.tasks.values()) {
       if (t.status === 'running') void killTree(t.child)
+    }
+    this.tasks.clear()
+  }
+
+  /**
+   * 终局清理：杀运行中任务 + unlink 本会话产生的输出日志（gracefulShutdown 接线）。
+   * Why：~/.ecode/tmp/task-*.log 原先永久残留，且内容含命令原文/输出（不脱敏落盘，P2）；
+   * best-effort（已删/被占用跳过），幂等可重入。
+   */
+  dispose(): void {
+    for (const t of this.tasks.values()) {
+      if (t.status === 'running') void killTree(t.child)
+      try {
+        unlinkSync(t.outputFile)
+      } catch {
+        // 已删除/被占用：best-effort
+      }
     }
     this.tasks.clear()
   }

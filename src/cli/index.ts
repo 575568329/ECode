@@ -206,7 +206,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
 }
 
 /** argv 单次模式：M1 stdout 输出（流式打印 + 工具摘要）。 */
-async function runOnce(input: string, deps: Deps): Promise<void> {
+async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-approve' = 'ask'): Promise<void> {
   // M12-B1：argv 切换为宿主消费方（同进程 InMemoryChannel + stdout 适配器）——
   // 与 TUI 走同一套装配/事件翻译（原内联装配退役）；行为增强：Stop hook/插话队列/轮末兜底随宿主获得
   const host = new HostSession({
@@ -220,6 +220,7 @@ async function runOnce(input: string, deps: Deps): Promise<void> {
     hookRunner: deps.hookRunner,
     checkpoint: deps.checkpoint,
     quality: deps.quality,
+    approvalPolicy,
   })
   host.subscribe((ev) => {
     switch (ev.type) {
@@ -373,12 +374,18 @@ async function main(): Promise<void> {
   }
 
   // argv 单次模式：M1 stdout 输出 → 跑一次退出（graceful：SessionEnd/MCP 清理走预算窗口）
-  const initialInput = process.argv.slice(2).join(' ').trim()
+  // D1（B2）：--yes 显式放行 tool-confirm 类审批（sensitive/mcp-permission 不豁免）；缺省 fail-closed
+  const autoYes = process.argv.includes('--yes')
+  const initialInput = process.argv
+    .slice(2)
+    .filter((a) => a !== '--yes')
+    .join(' ')
+    .trim()
   if (initialInput) {
     for (const w of deps.instructionWarnings) process.stderr.write(`⚠ ${w}
 `)
     try {
-      await runOnce(initialInput, deps)
+      await runOnce(initialInput, deps, autoYes ? 'auto-approve' : 'ask')
     } catch (e) {
       process.stderr.write(`✗ ${e instanceof Error ? e.message : String(e)}\n`)
       gracefulShutdown(1)

@@ -162,4 +162,57 @@ describe('HostSession（B1 宿主会话）', () => {
     const r = await host.send({ op: 'session/list' })
     expect(r).toMatchObject({ ok: false, code: 'NOT_IMPLEMENTED' })
   })
+
+  it('B2 集成：非 readonly 工具经 Broker——订阅者 respond once 放行；零订阅者 fail-closed 拒绝', async () => {
+    const writeTool: Tool = {
+      name: 'write_file',
+      description: 'write',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: false,
+      async execute() {
+        return { content: 'wrote' }
+      },
+    }
+    const script: Delta[][] = [
+      [
+        { type: 'tool_use_start', id: 't1', name: 'write_file' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: 'done' }, { type: 'done', stop_reason: 'end' }],
+    ]
+    // 场景 1：订阅者自动应答 once → 工具执行成功
+    {
+      const reg = new ToolRegistryImpl()
+      reg.register(writeTool)
+      const deps = { ...makeDeps(new MockProvider(script)), tools: reg }
+      const host = new HostSession(deps)
+      const events: ProtocolEvent[] = []
+      host.subscribe((e) => {
+        events.push(e)
+        if (e.type === 'approval/requested') void host.send({ op: 'approval/respond', requestId: e.requestId, decision: 'once' })
+      })
+      await host.send({ op: 'prompt', text: '写', mode: 'StartOrSteer' })
+      await host.whenIdle()
+      const done = events.find((e) => e.type === 'item/completed' && e.name === 'write_file')
+      expect(done).toMatchObject({ isError: false, summary: 'wrote' })
+    }
+    // 场景 2：订阅者 respond reject → 工具被拒（is_error，'用户已取消'）
+    {
+      const reg = new ToolRegistryImpl()
+      reg.register(writeTool)
+      const host = new HostSession({ ...makeDeps(new MockProvider(script)), tools: reg })
+      const events: ProtocolEvent[] = []
+      host.subscribe((e) => {
+        events.push(e)
+        if (e.type === 'approval/requested') void host.send({ op: 'approval/respond', requestId: e.requestId, decision: 'reject' })
+      })
+      await host.send({ op: 'prompt', text: '写', mode: 'StartOrSteer' })
+      await host.whenIdle()
+      const done = events.find((e) => e.type === 'item/completed' && e.name === 'write_file')
+      expect(done).toMatchObject({ isError: true })
+      host.dispose()
+    }
+    // 零订阅者 fail-closed 的 Broker 单元语义已由 approval.test 覆盖（confirm → false）
+  })
 })

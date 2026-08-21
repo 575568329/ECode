@@ -1,0 +1,233 @@
+/**
+ * M12-B2 审批中介（方案 §3.3 + D6 分策略表）：一切「要客户端作答」的交互统一走挂起式可答帧。
+ *
+ * 语义四支柱：
+ * - **可答帧**：approval/askUser/askSelect requested 带 randomUUID 的 requestId；应答走统一
+ *   respond 命令；权威结果经 resolved 广播（多订阅者收敛，HTTP 形态断线重放 pending）。
+ * - **fail-closed**：零订阅者=无应答渠道，一律拒绝（auto-approve 策略只豁免 tool-confirm，
+ *   sensitive/mcp-permission 永不豁免——D6：--yes 不放开密钥外泄面）。
+ * - **级联**：always 仅 MCP server 前缀粒度（对齐 TuiApp confirmAlwaysRef 语义，不扩工具类）；
+ *   reject 级联拒绝本会话全部 pending tool-confirm（opencode 同款）。
+ * - **消毒**：所有随帧下发的 preview 统一过 sanitizePreview（P1-3：preview 宿主侧生成即消毒）。
+ */
+
+import { randomUUID } from 'node:crypto'
+import type { InMemoryChannel } from '../protocol/channel.js'
+import { sanitizePreview } from '../services/preview.js'
+import type { ApprovalDecision, ApprovalKind, ProtocolEvent, PublishableEvent } from '../protocol/types.js'
+import type { ToolUseBlock } from '../core/types.js'
+
+/** argv 审批策略（D1）：ask=默认（无订阅者 fail-closed）；auto-approve=--yes（仅 tool-confirm 豁免） */
+export type ApprovalPolicy = 'ask' | 'auto-approve'
+
+interface PendingEntry {
+  requestId: string
+  kind: ApprovalKind
+  frame: ProtocolEvent
+  resolve: (value: unknown) => void
+}
+
+/** 可答帧的构造形态（不含 seq——通道分配；requestId 为公共字段） */
+type AnswerableFrame = PublishableEvent & { requestId: string; kind?: ApprovalKind }
+
+export interface PermissionAnswer {
+  allow: boolean
+  remember: boolean
+}
+
+export class ApprovalBroker {
+  private readonly pending = new Map<string, PendingEntry>()
+  private readonly confirmAlways = new Set<string>()
+
+  constructor(
+    private readonly channel: InMemoryChannel,
+    private readonly policy: ApprovalPolicy = 'ask',
+  ) {}
+
+  get pendingCount(): number {
+    return this.pending.size
+  }
+
+  private get hasSubscriber(): boolean {
+    return this.channel.subscriberCount > 0
+  }
+
+  private publish(frame: AnswerableFrame): ProtocolEvent {
+    return this.channel.publish(frame)
+  }
+
+  /** 工具副作用确认（tool-confirm）。preview 由宿主生成（buildPreview；此处出口再消毒兜底）。 */
+  confirm(use: ToolUseBlock, preview: string): Promise<boolean> {
+    const mcpPrefix = use.name.startsWith('mcp__') ? use.name.split('__').slice(0, 2).join('__') : null
+    if (mcpPrefix !== null && this.confirmAlways.has(mcpPrefix)) return Promise.resolve(true)
+    if (!this.hasSubscriber && this.policy === 'auto-approve') return Promise.resolve(true)
+    const requestId = randomUUID()
+    const decisions: ApprovalDecision[] = mcpPrefix !== null ? ['once', 'always', 'reject'] : ['once', 'reject']
+    const frame: AnswerableFrame = {
+      type: 'approval/requested',
+      requestId,
+      kind: 'tool-confirm',
+      tool: use.name,
+      preview: sanitizePreview(preview),
+      decisions,
+    }
+    if (!this.hasSubscriber) {
+      // fail-closed：无应答渠道。仍留事件轨迹（requested+cancelled）供日志与迟到的重放审计
+      this.publish(frame)
+      this.publish({ type: 'approval/resolved', requestId, outcome: 'cancelled' })
+      return Promise.resolve(false)
+    }
+    return this.suspendOnce(frame, (v) => v === true)
+  }
+
+  /** 敏感路径读取确认（sensitive）：永远要求交互，auto-approve 不豁免（D6）。 */
+  sensitive(tool: string, description: string): Promise<boolean> {
+    const requestId = randomUUID()
+    const frame: AnswerableFrame = {
+      type: 'approval/requested',
+      requestId,
+      kind: 'sensitive',
+      tool,
+      preview: sanitizePreview(description),
+      decisions: ['once', 'reject'],
+    }
+    if (!this.hasSubscriber) {
+      this.publish(frame)
+      this.publish({ type: 'approval/resolved', requestId, outcome: 'cancelled' })
+      return Promise.resolve(false)
+    }
+    return this.suspendOnce(frame, (v) => v === true)
+  }
+
+  /** 扩展 hook 首次执行授权（mcp-permission）：auto-approve 不豁免（第三方面不可控）。 */
+  permission(owner: string, event: string): Promise<PermissionAnswer> {
+    const requestId = randomUUID()
+    const frame: AnswerableFrame = {
+      type: 'approval/requested',
+      requestId,
+      kind: 'mcp-permission',
+      tool: `hook:${owner}`,
+      preview: `扩展 ${owner} 申请在 ${event} 事件执行 hook（首次）`,
+      decisions: ['once', 'always', 'reject'],
+    }
+    if (!this.hasSubscriber) {
+      this.publish(frame)
+      this.publish({ type: 'approval/resolved', requestId, outcome: 'cancelled' })
+      return Promise.resolve({ allow: false, remember: false })
+    }
+    return this.suspendOnce(frame, (v) => v as PermissionAnswer)
+  }
+
+  /** ask_user 问询（B3b 接线）：无订阅者回 null（工具侧已有非交互守卫文案） */
+  askUser(questions: unknown[]): Promise<unknown> {
+    const requestId = randomUUID()
+    const frame: AnswerableFrame = { type: 'askUser/requested', requestId, questions }
+    if (!this.hasSubscriber) {
+      this.publish(frame)
+      this.publish({ type: 'askUser/resolved', requestId, answers: null })
+      return Promise.resolve(null)
+    }
+    return this.suspendOnce(frame, (v) => v)
+  }
+
+  /** 通用单选（B5 /skill-create 等）：choice=null 表示取消 */
+  askSelect(title: string, options: string[]): Promise<string | null> {
+    const requestId = randomUUID()
+    const frame: AnswerableFrame = { type: 'askSelect/requested', requestId, title, options }
+    if (!this.hasSubscriber) {
+      this.publish(frame)
+      this.publish({ type: 'askSelect/resolved', requestId, choice: null })
+      return Promise.resolve(null)
+    }
+    return this.suspendOnce(frame, (v) => v as string | null)
+  }
+
+  /** 挂起并登记（respond 侧触发 resolve）：**先登记后广播**——订阅者可能在同步回调里立刻
+   *  respond，登记晚一步就会 not-pending 丢失应答（集成测试实测死锁教训） */
+  private suspendOnce<T>(frame: AnswerableFrame, adapt: (v: unknown) => T): Promise<T> {
+    const requestId = frame.requestId
+    return new Promise<T>((resolve) => {
+      const entry: PendingEntry = {
+        requestId,
+        kind: frame.kind ?? 'ask-user',
+        frame: frame as ProtocolEvent,
+        resolve: (v) => resolve(adapt(v)),
+      }
+      this.pending.set(requestId, entry)
+      entry.frame = this.publish(frame) // 广播后回填带 seq 的完整帧（重放源）
+    })
+  }
+
+  /** approval/respond 命令处理：回执 accepted；权威结果经 resolved 广播 */
+  respondApproval(requestId: string, decision: ApprovalDecision): { accepted: boolean; reason?: string } {
+    const entry = this.pending.get(requestId)
+    if (entry === undefined) return { accepted: false, reason: 'not-pending' }
+    const tool = (entry.frame as { tool: string }).tool
+    const mcpPrefix = tool.startsWith('mcp__') ? tool.split('__').slice(0, 2).join('__') : null
+    this.pending.delete(requestId)
+    if (decision === 'always') {
+      if (mcpPrefix !== null) this.confirmAlways.add(mcpPrefix)
+      entry.resolve(true)
+      // 级联：同前缀的其余 pending 自动放行
+      if (mcpPrefix !== null) {
+        for (const [id, p] of [...this.pending]) {
+          const f = p.frame as { tool: string }
+          if (p.kind === 'tool-confirm' && f.tool.startsWith(`${mcpPrefix}__`)) {
+            this.pending.delete(id)
+            p.resolve(true)
+            this.publish({ type: 'approval/resolved', requestId: id, outcome: 'once' })
+          }
+        }
+      }
+    } else if (decision === 'reject') {
+      entry.resolve(false)
+      // 级联：本会话全部 pending tool-confirm 一并拒绝（opencode 同款语义）
+      for (const [id, p] of [...this.pending]) {
+        if (p.kind === 'tool-confirm') {
+          this.pending.delete(id)
+          p.resolve(false)
+          this.publish({ type: 'approval/resolved', requestId: id, outcome: 'reject' })
+        }
+      }
+    } else {
+      entry.resolve(true)
+    }
+    this.publish({ type: 'approval/resolved', requestId, outcome: decision })
+    return { accepted: true }
+  }
+
+  respondAskUser(requestId: string, answers: unknown): { accepted: boolean; reason?: string } {
+    const entry = this.pending.get(requestId)
+    if (entry === undefined) return { accepted: false, reason: 'not-pending' }
+    this.pending.delete(requestId)
+    entry.resolve(answers)
+    this.publish({ type: 'askUser/resolved', requestId, answers })
+    return { accepted: true }
+  }
+
+  respondAskSelect(requestId: string, choice: string | null): { accepted: boolean; reason?: string } {
+    const entry = this.pending.get(requestId)
+    if (entry === undefined) return { accepted: false, reason: 'not-pending' }
+    this.pending.delete(requestId)
+    entry.resolve(choice)
+    this.publish({ type: 'askSelect/resolved', requestId, choice })
+    return { accepted: true }
+  }
+
+  /** 重连重放：把仍 pending 的可答帧原样（含 requestId）重投给新订阅者（SSE 场景） */
+  replayPending(handler: (ev: ProtocolEvent) => void): void {
+    for (const p of this.pending.values()) handler(p.frame)
+  }
+
+  /** 实例销毁：全部 pending fail-closed 收敛（不留悬挂 Promise——opencode finalizer 同款） */
+  dispose(): void {
+    for (const [id, p] of [...this.pending]) {
+      this.pending.delete(id)
+      if (p.kind === 'mcp-permission') p.resolve({ allow: false, remember: false })
+      else if (p.kind === 'ask-select') p.resolve(null)
+      else if (p.kind === 'ask-user') p.resolve(null)
+      else p.resolve(false)
+      this.publish({ type: 'approval/resolved', requestId: id, outcome: 'cancelled' })
+    }
+  }
+}

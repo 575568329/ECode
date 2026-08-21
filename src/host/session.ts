@@ -37,6 +37,8 @@ import type { HookRunner } from '../services/hooks/runner.js'
 import { readFile } from 'node:fs/promises'
 import { InMemoryChannel } from '../protocol/channel.js'
 import type { CommandResult, ImagePayload, ProtocolCommand, ProtocolEvent } from '../protocol/types.js'
+import { ApprovalBroker, type ApprovalPolicy } from './approval.js'
+import { buildPreview } from '../services/preview.js'
 
 /** buildSystemPrompt 的技能清单入参形态（结构化取参，避免依赖 skill 具体类型） */
 type SkillPromptSource = Parameters<typeof buildSystemPrompt>[0]
@@ -52,9 +54,10 @@ export interface HostDeps {
   hookRunner?: HookRunner | null
   checkpoint?: { snapshot(sessionId: string, paths: string[], meta: { tool: string; messageId?: string }): Promise<unknown> } | null
   quality?: { afterRound(tools: { name: string; isError: boolean }[]): Promise<string | undefined>; lastRoundFailed?: boolean; tripped?: boolean } | null
-  /** B1 过渡 confirm（B2 换 ApprovalBroker 后移除）——argv 不传=loop 缺省放行，维持现状 */
-  confirm?: (use: import('../core/types.js').ToolUseBlock) => Promise<boolean>
+  /** B1 过渡 confirm（B2 换 ApprovalBroker 后移除）——argv 不传=broker 策略接管 */
   cwd?: string
+  /** D1：审批策略（ask=默认 fail-closed；auto-approve=argv --yes，仅 tool-confirm 豁免） */
+  approvalPolicy?: ApprovalPolicy
 }
 
 interface QueueEntry {
@@ -67,6 +70,9 @@ interface QueueEntry {
 
 export class HostSession {
   readonly channel = new InMemoryChannel()
+  private readonly broker: ApprovalBroker
+  /** 运行态沙箱档（Tab 切档经 sandbox/set 命令改此字段——B5 接线；confirm 策略消费） */
+  private sandboxMode: 'default' | 'read-only' | 'workspace-write' | 'full-access'
   private readonly messages: HistoryLine[] = []
   private readonly editedFiles = new Set<string>()
   private readonly queue: QueueEntry[] = []
@@ -79,11 +85,23 @@ export class HostSession {
 
   constructor(private readonly deps: HostDeps) {
     this.channel.bind((cmd) => this.dispatch(cmd))
+    this.broker = new ApprovalBroker(this.channel, deps.approvalPolicy ?? 'ask')
+    this.sandboxMode =
+      (deps.config.sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default'
   }
 
-  /** 客户端订阅事件流的便捷出口 */
+  /** 客户端订阅事件流（B2：订阅即重放 pending 可答帧——重连/换端恢复确认上下文） */
   subscribe(handler: (ev: ProtocolEvent) => void): () => void {
-    return this.channel.subscribe(handler)
+    const unsub = this.channel.subscribe(handler)
+    this.broker.replayPending(handler)
+    return unsub
+  }
+
+  /** 会话销毁：pending 审批 fail-closed 收敛 + 通道关闭 */
+  dispose(): void {
+    this.broker.dispose()
+    this.abort.abort()
+    this.channel.dispose()
   }
 
   send(cmd: ProtocolCommand): Promise<CommandResult> {
@@ -135,9 +153,35 @@ export class HostSession {
         this.queue.length = 0
         this.publish('queue/snapshot', { items: [] })
         return { ok: true }
+      case 'approval/respond': {
+        const r = this.broker.respondApproval(cmd.requestId, cmd.decision)
+        return r.accepted ? { ok: true } : { ok: false, error: r.reason ?? 'not-pending', code: 'NOT_PENDING' }
+      }
+      case 'askUser/respond': {
+        const r = this.broker.respondAskUser(cmd.requestId, cmd.answers)
+        return r.accepted ? { ok: true } : { ok: false, error: r.reason ?? 'not-pending', code: 'NOT_PENDING' }
+      }
+      case 'askSelect/respond': {
+        const r = this.broker.respondAskSelect(cmd.requestId, cmd.choice)
+        return r.accepted ? { ok: true } : { ok: false, error: r.reason ?? 'not-pending', code: 'NOT_PENDING' }
+      }
+      case 'sandbox/set':
+        // 提权门槛（v1.2 P1-4）：提档 full-access 需经审批（有订阅者）；降档直接生效
+        if (cmd.mode === 'full-access' && cmd.mode !== this.sandboxMode) {
+          if (this.channel.subscriberCount === 0) {
+            return { ok: false, error: '提档 full-access 需要客户端确认（当前无订阅者）', code: 'NEED_CLIENT' }
+          }
+          const ok = await this.broker.confirm(
+            { type: 'tool_use', id: `sandbox-set-${Date.now()}`, name: 'sandbox/set', input: { mode: cmd.mode } },
+            `沙箱提档 → full-access（确认后本会话副作用工具免确认）`,
+          )
+          if (!ok) return { ok: false, error: '用户拒绝提档', code: 'REJECTED' }
+        }
+        this.sandboxMode = cmd.mode
+        return { ok: true }
       default:
-        // B2（respond 族）/B5（命令·会话·面板族）逐批接线
-        return { ok: false, error: `命令 ${cmd.op} 尚未接线（B2/B5 批次）`, code: 'NOT_IMPLEMENTED' }
+        // B5（命令·会话·面板族）逐批接线
+        return { ok: false, error: `命令 ${cmd.op} 尚未接线（B5 批次）`, code: 'NOT_IMPLEMENTED' }
     }
   }
 
@@ -261,7 +305,9 @@ export class HostSession {
         },
         onBeforeRequest,
         onCompacted: () => this.publish('compacted', {}),
-        ...(deps.confirm !== undefined ? { confirm: deps.confirm } : {}),
+        // B2：审批经 Broker（doConfirm 的 full-access 跳过/read-only MCP 拒绝/预览生成在宿主侧策略）
+        confirm: (use) => this.hostConfirm(use),
+        onSensitiveAccess: (description: string) => this.broker.sensitive('read_file', description),
         ...(blocks !== undefined ? { userBlocks: blocks } : {}),
         afterTools: this.makeAfterTools(),
         signal: this.abort.signal,
@@ -295,6 +341,19 @@ export class HostSession {
       }
       this.finishTurn(turnId)
     }
+  }
+
+  /** B2 宿主侧确认策略（doConfirm 语义迁入：full-access 跳过 / read-only MCP 拒绝 / 其余过 Broker） */
+  private async hostConfirm(use: import('../core/types.js').ToolUseBlock): Promise<boolean> {
+    if (this.sandboxMode === 'full-access') return true
+    if (this.sandboxMode === 'read-only' && use.name.startsWith('mcp__')) {
+      this.publish('systemMsg', { text: `read-only 模式：MCP 工具 ${use.name} 被拒绝` })
+      return false
+    }
+    const preview = await buildPreview(use, this.deps.cwd ?? process.cwd()).catch(
+      (e: unknown) => `⚠ 无法生成预览：${e instanceof Error ? e.message : String(e)}`,
+    )
+    return this.broker.confirm(use, preview)
   }
 
   private finishTurn(turnId: string): void {

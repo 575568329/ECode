@@ -426,17 +426,22 @@ async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<Tool
     readonly: tool?.readonly,
   })
   if (!tool) {
+    // M12-B2：三类早退（不存在/校验失败/确认拒绝）统一触发 onToolResult——
+    // 事件面完整性（宿主 item/completed）依赖；此前静默早退是协议化实测出的回调盲区
+    opts.callbacks.onToolResult?.(use.id, use.name, { content: `工具 ${use.name} 不存在`, is_error: true })
     return { type: 'tool_result', tool_use_id: use.id, content: `工具 ${use.name} 不存在`, is_error: true }
   }
 
   const v = opts.tools.validate(use.name, use.input)
   if (!v.ok) {
+    opts.callbacks.onToolResult?.(use.id, use.name, { content: v.error, is_error: true })
     return { type: 'tool_result', tool_use_id: use.id, content: v.error, is_error: true }
   }
 
   if (!tool.readonly) {
     const confirmed = opts.confirm ? await opts.confirm(use) : true
     if (!confirmed) {
+      opts.callbacks.onToolResult?.(use.id, use.name, { content: '用户已取消', is_error: true })
       return { type: 'tool_result', tool_use_id: use.id, content: '用户已取消', is_error: true }
     }
   }

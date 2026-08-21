@@ -51,6 +51,11 @@ export class InMemoryChannel implements ClientTransport {
     return this.seq
   }
 
+  /** 订阅者数（B2 审批 fail-closed 判定：零订阅者=无应答渠道） */
+  get subscriberCount(): number {
+    return this.handlers.size
+  }
+
   send(cmd: ProtocolCommand): Promise<CommandResult> {
     if (this.disposed) {
       return Promise.resolve({ ok: false, error: '通道已销毁', code: 'DISPOSED' })

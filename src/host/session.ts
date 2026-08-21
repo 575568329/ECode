@@ -275,6 +275,16 @@ export class HostSession {
         const r = this.broker.respondAskSelect(cmd.requestId, cmd.choice)
         return r.accepted ? { ok: true } : { ok: false, error: r.reason ?? 'not-pending', code: 'NOT_PENDING' }
       }
+      case 'session/clear':
+        // 宿主权威 messages 清空（客户端镜像/UI 瞬态由客户端自行重置——skill hooks 仍是模块级，B8a 会话化）
+        this.messages.length = 0
+        this.queue.length = 0
+        this.editedFiles.clear()
+        return { ok: true }
+      case 'session/list':
+        return { ok: true, value: this.deps.history.loadAll() }
+      case 'session/read':
+        return { ok: true, value: this.deps.history.restoreFull(cmd.sessionId) }
       case 'sandbox/set':
         // 提权门槛（v1.2 P1-4）：提档 full-access 需经审批（有订阅者）；降档直接生效
         if (cmd.mode === 'full-access' && cmd.mode !== this.sandboxMode) {

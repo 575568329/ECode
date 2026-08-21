@@ -1245,6 +1245,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           setSystemMsgs(result.output ? [result.output as string] : [])
         }}
         onClear={() => {
+          // B5：宿主权威 messages 同步清（session/clear）；客户端镜像与瞬态 UI 本地重置
+          void host.send({ op: 'session/clear' })
           messagesRef.current = []
           setCommitted([])
           resetTransient()

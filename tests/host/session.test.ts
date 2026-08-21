@@ -159,7 +159,7 @@ describe('HostSession（B1 宿主会话）', () => {
 
   it('未接线命令回执 NOT_IMPLEMENTED（B2/B5 接线前不装死）', async () => {
     const host = new HostSession(makeDeps(new MockProvider([])))
-    const r = await host.send({ op: 'session/list' })
+    const r = await host.send({ op: 'command/exec', name: '不存在' })
     expect(r).toMatchObject({ ok: false, code: 'NOT_IMPLEMENTED' })
   })
 
@@ -270,6 +270,25 @@ describe('B4 验收：双 HostSession 互不串台（D5 会话级状态）', () 
     await h.whenIdle()
     expect(seen).toEqual({ tasks: true, session: true })
     h.dispose()
+    host.dispose()
+  })
+})
+
+describe('B5：session 命令面', () => {
+  it('session/clear 清宿主 messages；session/list·read 经 history', async () => {
+    const deps = makeDeps(new MockProvider([[{ type: 'text', text: '一轮' }, { type: 'done', stop_reason: 'end' }]]))
+    const host = new HostSession(deps)
+    await host.send({ op: 'prompt', text: 'hi', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    expect(host.transcript.length).toBeGreaterThan(0)
+    const c = await host.send({ op: 'session/clear' })
+    expect(c).toMatchObject({ ok: true })
+    expect(host.transcript).toHaveLength(0)
+    // list/read 走 deps.history（fake noopHistory：loadAll 返回 []——真实 FileHistoryStore 行为由既有 history 测试锁定）
+    const l = await host.send({ op: 'session/list' })
+    expect(l).toMatchObject({ ok: true })
+    const r = await host.send({ op: 'session/read', sessionId: 'x' })
+    expect(r).toMatchObject({ ok: true })
     host.dispose()
   })
 })

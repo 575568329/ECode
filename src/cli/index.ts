@@ -28,8 +28,6 @@ import { resolveSearchProvider } from '../services/websearch.js'
 import { setWebSearchProvider } from '../tools/builtin/web_search.js'
 import { taskRegistry } from '../services/tasks.js'
 import { evalPermission, loadPermissionLayers, saveLocalPermission, askPermissionInteractive } from '../services/permissions.js'
-import { runLoop } from '../core/loop.js'
-import { buildSystemPrompt } from '../core/system.js'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { render } from 'ink'
@@ -40,7 +38,6 @@ import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
-import { makeOnBeforeRequest } from '../services/compaction/hook.js'
 import { resolveContextWindow } from '../services/contextWindow.js'
 import { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import { makeTaskTool } from '../services/subagent.js'
@@ -59,7 +56,7 @@ import { HookedToolRegistry } from '../tools/hooked.js'
 import { setWebFetchLimits } from '../tools/builtin/web_fetch.js'
 import { BUILTIN_TOOLS } from '../tools/builtin/index.js'
 import { PluginLoader } from '../services/plugin/loader.js'
-import type { HistoryLine } from '../core/types.js'
+import { HostSession } from '../host/session.js'
 
 interface Deps {
   providerRegistry: LLMProviderRegistry
@@ -209,75 +206,63 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
 }
 
 /** argv 单次模式：M1 stdout 输出（流式打印 + 工具摘要）。 */
-/** buildSystemPrompt 的上限透传（config maxInstructionsKB → 字节）。 */
-function buildPromptOpts(config: Config): { maxInstructionBytes?: number } | undefined {
-  return config.maxInstructionsKB !== undefined ? { maxInstructionBytes: config.maxInstructionsKB * 1024 } : undefined
-}
-
-async function runOnce(messages: HistoryLine[], input: string, deps: Deps): Promise<void> {
-  const provider = deps.providerRegistry.getByType(deps.config.providers[deps.config.current.name].type)
-  const providerReq = buildProviderReq(deps.config)
-  const ctxWindow = await resolveContextWindow(
-    deps.config.current.model,
-    deps.config.providers[deps.config.current.name]?.contextWindow,
-  )
-  const system = buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindow, buildPromptOpts(deps.config))
-  const onCompacted = (_messages: HistoryLine[]) => process.stdout.write('\n[已压缩对话]\n')
-  const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, {
-    onCompacted,
-    history: deps.history,
-    tools: deps.tools.specs(),
-  })
-  await runLoop(messages, input, {
-    provider,
+async function runOnce(input: string, deps: Deps): Promise<void> {
+  // M12-B1：argv 切换为宿主消费方（同进程 InMemoryChannel + stdout 适配器）——
+  // 与 TUI 走同一套装配/事件翻译（原内联装配退役）；行为增强：Stop hook/插话队列/轮末兜底随宿主获得
+  const host = new HostSession({
+    providerRegistry: deps.providerRegistry,
     tools: deps.tools,
     logger: deps.logger,
     history: deps.history,
-    callbacks: {
-      onText: (t) => process.stdout.write(t),
-      onToolStart: (name) => process.stdout.write(`\n⏺ ${name}\n`),
-      onToolResult: (_id, name, r) => {
-        const firstLine = r.content.split('\n')[0]?.slice(0, 80) ?? ''
-        process.stdout.write(`  ${name} ${r.is_error ? '✗' : '✓'} ${firstLine}\n`)
-      },
-      onUsage: (inp, out, cache) => {
-        deps.lastUsage.input = inp
-        deps.lastUsage.output = out
-        deps.lastUsage.cacheRead = cache?.read ?? 0
-        deps.lastUsage.cacheCreation = cache?.creation ?? 0
-        process.stdout.write(`\n[tokens: in ${inp} / out ${out}]\n`)
-      },
-      onWarn: (m) => process.stdout.write(`\n⚠ ${m}\n`),
-    },
-    providerReq,
-    system,
-    maxIterations: deps.config.maxIterations,
-    toolCtx: {
-      cwd: process.cwd(),
-      signal: new AbortController().signal,
-      // M9-P1：写前快照装配（argv 单次模式同款；快照失败工具侧已 catch）
-      onBeforeWrite: async (paths, tool, toolUseId) => {
-        await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
-      },
-      // M10-P0：无视觉能力守卫（argv 同款）
-      model: deps.config.current.model,
-      // M9-P4：argv 模式按 config 默认档装配（deny 校验仍拦；argv 本就无交互确认）
-      sandbox: makeSandbox(
-        (deps.config.sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default',
-        process.cwd(),
-        deps.config.sandbox?.blockedCommands ?? [],
-      ),
-    },
-    onBeforeRequest,
-    onCompacted,
-    // M9-P3：轮末质量回喂（argv 单次模式同款）
-    afterTools: deps.quality
-      ? async (round) => {
-          const fb = await deps.quality?.afterRound(round.tools)
-          return fb !== undefined ? { feedback: fb } : undefined
-        }
-      : undefined,
+    config: deps.config,
+    orchestrator: deps.orchestrator,
+    skillListForPrompt: () => deps.skillRegistry.listForPrompt(),
+    hookRunner: deps.hookRunner,
+    checkpoint: deps.checkpoint,
+    quality: deps.quality,
   })
+  host.subscribe((ev) => {
+    switch (ev.type) {
+      case 'delta':
+        process.stdout.write(ev.text)
+        break
+      case 'item/started':
+        process.stdout.write(`\n⏺ ${ev.name}\n`)
+        break
+      case 'item/completed':
+        process.stdout.write(`  ${ev.name} ${ev.isError ? '✗' : '✓'} ${ev.summary}\n`)
+        break
+      case 'usage':
+        deps.lastUsage.input = ev.input
+        deps.lastUsage.output = ev.output
+        deps.lastUsage.cacheRead = ev.cacheRead ?? 0
+        deps.lastUsage.cacheCreation = ev.cacheCreation ?? 0
+        process.stdout.write(`\n[tokens: in ${ev.input} / out ${ev.output}]\n`)
+        break
+      case 'warn':
+        process.stdout.write(`\n⚠ ${ev.text}\n`)
+        break
+      case 'notice':
+        process.stdout.write(`\n${ev.level === 'error' ? '✗' : ev.level === 'warn' ? '⚠' : 'ℹ'} ${ev.text}\n`)
+        break
+      case 'systemMsg':
+        process.stdout.write(`\n${ev.text}\n`)
+        break
+      case 'compacted':
+        process.stdout.write('\n[已压缩对话]\n')
+        break
+      case 'error':
+        process.stderr.write(`\n✗ ${ev.message}\n`)
+        break
+      default:
+        break
+    }
+  })
+  const r = await host.send({ op: 'prompt', text: input, mode: 'StartOrSteer' })
+  if (!r.ok) {
+    throw new Error(r.error)
+  }
+  await host.whenIdle()
   process.stdout.write('\n')
 }
 
@@ -392,9 +377,8 @@ async function main(): Promise<void> {
   if (initialInput) {
     for (const w of deps.instructionWarnings) process.stderr.write(`⚠ ${w}
 `)
-    const messages: HistoryLine[] = []
     try {
-      await runOnce(messages, initialInput, deps)
+      await runOnce(initialInput, deps)
     } catch (e) {
       process.stderr.write(`✗ ${e instanceof Error ? e.message : String(e)}\n`)
       gracefulShutdown(1)

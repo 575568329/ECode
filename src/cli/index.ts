@@ -83,7 +83,10 @@ interface Deps {
   quality?: QualityGate | null
 }
 
-function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
+/** M12-B8a：cwd 参数化（多项目 makeDeps(cwd) 可重入）；sessionId 会话层（B8 ProjectHost 每会话新 id）。
+ *  挂账：setWebFetchLimits/setWebSearchProvider/skillRegistry/globalExtensionHooks 仍全局（同值覆写无害；
+ *  项目级不同值需 tools 层工厂化——B8 实际撞到再做） */
+function makeDeps(config: Config, logger: Logger, sessionId: string, dir: string = process.cwd()): Deps {
   const providerReg = new LLMProviderRegistryImpl()
   providerReg.register(new AnthropicProvider())
   providerReg.register(new OpenaiProvider())
@@ -116,7 +119,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
       const key = `${owner}:${event}`
       if (permSessionAllowed.has(key)) return true
       const resource = `Hook(${owner})`
-      const behavior = evalPermission(resource, loadPermissionLayers(process.cwd()))
+      const behavior = evalPermission(resource, loadPermissionLayers(dir))
       if (behavior === 'allow') return true
       if (behavior === 'deny') return false
       const answer = await askPermissionInteractive(owner, event)
@@ -126,7 +129,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
       }
       if (answer.allow) {
         permSessionAllowed.add(key)
-        if (answer.remember) saveLocalPermission(process.cwd(), 'allow', resource)
+        if (answer.remember) saveLocalPermission(dir, 'allow', resource)
       }
       return answer.allow
     },
@@ -147,7 +150,7 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
   setWebSearchProvider(resolveSearchProvider(config))
   // M11-P5：task 工具（装配期工厂——deps 全 getter/引用；UI 桥由 TuiApp 挂，argv 无 UI confirm fail-closed）
   const history = new FileHistoryStore({ sessionId, model: config.current.model })
-  const checkpoint = new CheckpointStore(process.cwd(), {
+  const checkpoint = new CheckpointStore(dir, {
     warn: (m) => logger.warn('checkpoint', 'snapshot', { message: m }),
   })
   toolReg.register(makeTaskTool({
@@ -157,8 +160,8 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
     makeAfterTools: () => {
       // 子代理独立 QualityGate（P1-2 熔断计数不互扰）+ 剥离 autoCommit/后台通知（提交只归父轮末）
       const sub = new QualityGate({
-        commands: detectQualityCommands(process.cwd(), { lintCommand: config.lintCommand, testCommand: config.testCommand }),
-        run: makeShellRunner(process.cwd()),
+        commands: detectQualityCommands(dir, { lintCommand: config.lintCommand, testCommand: config.testCommand }),
+        run: makeShellRunner(dir),
         warn: (m) => logger.warn('quality', 'subagent', { message: m }),
       })
       return async (round) => {
@@ -171,10 +174,10 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
     },
     sandbox: makeSandbox(
       (config.sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default',
-      process.cwd(),
+      dir,
       config.sandbox?.blockedCommands ?? [],
     ),
-    cwd: process.cwd(),
+    cwd: dir,
     // 审阅 P1-3：传 hookedTools（HookedToolRegistry）——子代理工具调用过 PreToolUse/PostToolUse/
     // 权限门（get 返回 hook 包装版；SubRegistry 是过滤视图不剥装饰）
     registry: hookedTools,
@@ -191,8 +194,8 @@ function makeDeps(config: Config, logger: Logger, sessionId: string): Deps {
     history,
     checkpoint,
     quality: new QualityGate({
-      commands: detectQualityCommands(process.cwd(), { lintCommand: config.lintCommand, testCommand: config.testCommand }),
-      run: makeShellRunner(process.cwd()),
+      commands: detectQualityCommands(dir, { lintCommand: config.lintCommand, testCommand: config.testCommand }),
+      run: makeShellRunner(dir),
       warn: (m) => logger.warn('quality', 'gate', { message: m }),
     }),
     config,

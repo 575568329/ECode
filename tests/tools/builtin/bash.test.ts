@@ -105,10 +105,11 @@ describe('bashTool.execute 进程树终止（孙进程泄漏修复，M10 v1.3）
       const r = await tool.execute({ command: cmd }, ctx)
       expect(r.is_error).toBe(true)
       expect(r.content).toContain('超时')
-      await new Promise((res) => setTimeout(res, 800)) // 给 taskkill /T 异步完成留时间
       expect(existsSync(marker)).toBe(true)
       grandPid = Number(readFileSync(marker, 'utf8'))
       expect(Number.isFinite(grandPid)).toBe(true)
+      // 轮询等孙进程消失（上限 4s）——固定等待在持续负载下反复翻红（taskkill 复查补杀窗口）
+      for (let i = 0; i < 40 && alive(grandPid); i++) await new Promise((res) => setTimeout(res, 100))
       expect(alive(grandPid)).toBe(false) // 修复前 true —— 孙进程泄漏
     } finally {
       cleanup(grandPid)
@@ -133,8 +134,10 @@ describe('bashTool.execute 进程树终止（孙进程泄漏修复，M10 v1.3）
       controller.abort()
       const r = await p
       expect(r.content).toContain('中断')
-      await new Promise((res) => setTimeout(res, 800))
+      // 轮询等孙进程消失（上限 4s）：固定 800ms 在持续测试负载下反复出现 taskkill
+      // 复查补杀窗口超时（今天第 4 次翻红，隔离运行恒绿——负载相关；Job Object 正解仍在挂账）
       grandPid = Number(readFileSync(marker, 'utf8'))
+      for (let i = 0; i < 40 && alive(grandPid); i++) await new Promise((res) => setTimeout(res, 100))
       expect(alive(grandPid)).toBe(false) // 修复前 true
     } finally {
       cleanup(grandPid)

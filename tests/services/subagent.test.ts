@@ -123,11 +123,12 @@ describe('makeTaskTool.execute（返回契约 + transcript）', () => {
     const r = await tool.execute({ description: '查目录', prompt: '查 src 结构' }, ctx)
     expect(r.is_error).toBeFalsy()
     expect(r.content).toContain('结论：完成')
-    // transcript：本例 agentId 随机——扫目录里最新的文件含 prompt 与结论
-    const files = require('node:fs').readdirSync(transcriptDir) as string[]
-    expect(files.length).toBeGreaterThan(0)
-    const latest = files[files.length - 1]
-    const body = readFileSync(join(transcriptDir, latest), 'utf8')
+    // transcript 路径从返回值解析（agentId 唯一定位）——不扫目录猜「最新文件」：
+    // 真实 agents 目录会被并行/历史用例同毫秒写入抢序（挂账「transcript 测试污染真实目录」读取侧收口）
+    const m = /（完整过程：(.+\.jsonl)）/.exec(String(r.content))
+    expect(m).not.toBeNull()
+    // 返回文案是展示路径（~/ 字面量），实际落盘在（本测试已 mock 的）homedir 下
+    const body = readFileSync((m?.[1] as string).replace(/^~/, homedir()), 'utf8')
     expect(body).toContain('查 src 结构')
   })
 

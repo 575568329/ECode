@@ -5,10 +5,11 @@ import { InputStream } from './InputStream.js'
 import { ErrorBanner } from './ErrorBanner.js'
 import { useInput, Text, Box } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
-import { runLoop, type ActivityState } from '../core/loop.js'
+import { HostSession } from '../host/session.js'
+import type { ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
-import { isMessageLine, type AppError, type ContentBlock, type HistoryLine, type ImageBlock, type Message, type RewindLine } from '../core/types.js'
-import { makeOnBeforeRequest } from '../services/compaction/hook.js'
+import type { AppError, ContentBlock, HistoryLine, ImageBlock, Message, RewindLine } from '../core/types.js' 
+import type { ToolUseBlock } from '../core/types.js'
 import { tokensToCost } from '../services/pricing.js'
 import { buildContextMessages } from '../core/context.js'
 import { estimateContextTokens } from '../services/tokenizer.js'
@@ -19,7 +20,7 @@ import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
 import { createActive, type CommittedItem, type ActiveState } from './types.js'
-import { messagesToCommitted, findUse } from './commit.js'
+import { messagesToCommitted } from './commit.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { expandSkill, type SkillRegistry } from '../services/skill.js'
 import { registerSkillHooks, unregisterAllSkillHooks } from '../services/hooks/global.js'
@@ -39,7 +40,6 @@ import {
   renderCreatePreview,
   renderUpgradePreview,
 } from '../services/skill/distill.js'
-import { buildPreview, sanitizePreview } from '../services/preview.js'
 import { buildProviderReq, loadConfig, writeWizardConfig, type Config } from '../services/config.js'
 import { ModelPicker, type ModelEntry } from './ModelPicker.js'
 import { HistoryPicker } from './HistoryPicker.js'
@@ -53,16 +53,12 @@ import { RewindPanel } from './RewindPanel.js'
 import { SandboxPanel } from './SandboxPanel.js'
 import { ConfigPanel, type ConfigItem } from './ConfigPanel.js'
 import { saveConfigKey } from '../services/configFs.js'
-import { makeSandbox, nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
-import { setPermissionAsker, type PermissionAnswer } from '../services/permissions.js'
-import { setSubagentBridge, setSubagentProgressHandler, type SubagentStatus } from '../services/subagent.js'
+import { nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
+import type { SubagentStatus } from '../services/subagent.js'
 import { SubagentBar } from './SubagentBar.js'
-import { ecodeCommit, undoEcodeCommit } from '../services/git.js'
+import { undoEcodeCommit } from '../services/git.js'
 import { readClipboardImage } from '../services/clipboard.js'
-import { buildMediaBlock } from '../services/media.js'
-import { taskRegistry } from '../services/tasks.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
-import { setAskUserHandler } from '../tools/builtin/askUserBridge.js'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
 import { Select } from './Select.js'
 import type { McpManager, McpServerSnapshot } from '../services/mcp/manager.js'
@@ -101,54 +97,6 @@ export interface TuiAppDeps {
   onRestart?: () => void
 }
 
-/** M10-P3：afterTools 工厂（quality 回喂 + autoCommit 轮末 + 后台任务 turn 内通知）。 */
-function makeAfterTools(
-  deps: TuiAppDeps,
-  config: import('../services/config.js').Config,
-  pushNoticeFn: (level: 'error' | 'warn' | 'info', text: string) => void,
-  editedFilesRef: { current: Set<string> },
-  messagesRef: { current: HistoryLine[] },
-): NonNullable<import('../core/loop.js').LoopRunOptions['afterTools']> {
-  return async (round) => {
-    let feedback: string | undefined
-    if (deps.quality) {
-      const fb = await deps.quality.afterRound(round.tools)
-      if (fb !== undefined) {
-        pushNoticeFn('warn', 'lint/test 有失败，已回喂模型自纠')
-        feedback = fb
-      }
-    }
-    // M10-P3：后台任务 turn 内通知（独立于 quality feedback——终审 P1-5：通知并入 feedback 会
-    // 抑制 autoCommit 并清空文件集，模型编辑恰逢任务完成时提交永久丢失；autoCommit 只看 quality 结果）
-    const notes = taskRegistry.collectNotifications()
-    const qualityBlocked = feedback !== undefined || deps.quality?.lastRoundFailed === true || deps.quality?.tripped === true
-    if (config.autoCommit === true && !qualityBlocked) {
-      const files = [...editedFilesRef.current]
-      editedFilesRef.current.clear()
-      if (files.length > 0) {
-        const lastAsst = [...messagesRef.current].reverse().find((l): l is Message => isMessageLine(l) && l.role === 'assistant')
-        const textBlock = lastAsst?.content.find((b) => b.type === 'text')
-        const subject =
-          textBlock !== undefined && 'text' in textBlock && textBlock.text.trim() !== ''
-            ? `ecode: ${textBlock.text.trim().split('\n')[0]?.slice(0, 60)}`
-            : `ecode: 修改 ${files.length} 个文件`
-        const r = await ecodeCommit(process.cwd(), deps.history.currentSessionId(), files, subject)
-        pushNoticeFn(r.committed ? 'info' : 'warn', r.committed ? `已自动提交：${subject}` : `自动提交未完成——${r.reason ?? ''}`)
-      }
-    } else {
-      editedFilesRef.current.clear()
-    }
-    const combined =
-      feedback !== undefined
-        ? notes.length > 0
-          ? `${feedback}\n${notes.join('\n')}`
-          : feedback
-        : notes.length > 0
-          ? notes.join('\n')
-          : undefined
-    return combined !== undefined ? { feedback: combined } : undefined
-  }
-}
 
 /** M10-P2：常规页可编辑项（从 config 派生；值展示 + 档位循环） */
 function generalConfigItems(config: import('../services/config.js').Config): ConfigItem[] {
@@ -160,28 +108,7 @@ function generalConfigItems(config: import('../services/config.js').Config): Con
   ]
 }
 
-/** M10-P2b：磁盘图片路径 → ImageBlock[]（守卫失败降级文本提示，不阻断提交） */
-async function imageBlocksFromPaths(paths: string[]): Promise<{ blocks: ImageBlock[] }> {
-  const blocks: ImageBlock[] = []
-  for (const p of paths) {
-    try {
-      const { readFile } = await import('node:fs/promises')
-      const buf = await readFile(p)
-      const ext = p.slice(p.lastIndexOf('.')).toLowerCase()
-      const guard = buildMediaBlock(buf, ext, p)
-      if (guard.ok && guard.block.type === 'image') {
-        blocks.push({ ...guard.block, _path: p })
-      }
-    } catch {
-      // 读取失败跳过（粘贴文件被删等）
-    }
-  }
-  return { blocks }
-}
 
-function isAbortError(e: unknown): boolean {
-  return e instanceof Error && (e.name === 'AbortError' || 'aborted' in e)
-}
 
 /**
  * TuiApp：连接 AgentLoop 与 TUI（最小 Static 方案）。
@@ -191,21 +118,19 @@ function isAbortError(e: unknown): boolean {
  * - 一轮一 commit：runLoop 结束 → messagesToCommitted → setCommitted；active 清空
  */
 export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { deps: TuiAppDeps; banner?: string; onRestart?: () => void; onExit?: () => void }): ReactElement {
-  const messagesRef = useRef<HistoryLine[]>([])
   const abortRef = useRef<AbortController>(new AbortController())
+  // M12-B3 中间态：客户端消息镜像（宿主 transcript 权威；轮末/压缩/恢复同步——B5 退役）
+  const messagesRef = useRef<HistoryLine[]>([])
   const runningRef = useRef(false)
   // 同步 confirm 状态给 useInterrupt isActive（避免 stale closure；P0#1）
   const confirmRef = useRef(false)
-  // M11-P7：插话队列（ref 为消费源，state 只驱动显示；忙碌态 Enter 入队、步间/轮末投递）
-  const interjectQueueRef = useRef<string[]>([])
+  // M12-B3：插话预览由宿主 queue/snapshot 事件镜像（队列权威在宿主，D2）
   const [interjectPreview, setInterjectPreview] = useState<string | null>(null)
-  const enqueueInterject = async (text: string): Promise<void> => {
-    // 斜杠拦截不在此（审阅 P0-1：InputStream 分流点已拦，这里收到的一定是普通文本；
-    // 曾在此挂 / 前缀守卫——不可达且会误杀以 / 开头的合法插话文本如粘贴路径，已删）
-    // F2：入队时过 UserPromptSubmit hook（loop 内 append 会绕过 submit 内的分发——M9-P0 接线口子）
+  const enqueueInterject = async (text: string, images?: { path: string; mime: string; label?: string }[]): Promise<void> => {
+    // 斜杠拦截不在此（InputStream 分流点已拦）；F2：入队时过 UserPromptSubmit hook
+    // （宿主仅新轮 dispatch——插话注入不走宿主 hook，此处保留客户端 dispatch 维持旧行为）
     let finalText = text
     if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
-      // 对齐主路径：dispatch 透传 AbortSignal——hook 等待期 Ctrl+C 可中断 hook 子进程（M9-P0）
       const verdict = await deps.hookRunner.dispatch(
         'UserPromptSubmit',
         { event: 'UserPromptSubmit', session_id: '', prompt: text },
@@ -217,60 +142,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       }
       if (verdict.additionalContext.length > 0) finalText = `${finalText}\n\n[hook context]\n${verdict.additionalContext.join('\n')}`
     }
-    interjectQueueRef.current.push(finalText)
-    setInterjectPreview(interjectQueueRef.current[0] ?? null)
+    const r = await host.send({ op: 'prompt', text: finalText, mode: 'StartOrSteer', ...(images !== undefined && images.length > 0 ? { images } : {}) })
+    if (!r.ok) setSystemMsgs([`插话失败：${r.error}`])
   }
-  // M11-P4：运行中子代理快照（进度桥推送）
+  // M11-P4：运行中子代理快照（进度事件驱动）
   const [subagents, setSubagents] = useState<SubagentStatus[]>([])
-  // M11 §1.3：confirm 串行队列（ActiveState.confirm 覆盖式单槽——并发子代理 confirm 后到覆盖前者，
-  // resolve 闭包丢失 → Promise 永挂 → 父死锁；父/子 confirm 全走此队列，单请求时深度 1 行为不变）
-  const confirmQueueRef = useRef(Promise.resolve())
-  // 泛型 T：工具确认 resolve boolean，权限/预览确认各有自己的 resolve 值——同一条串行队列复用
-  const queueConfirm = <T,>(fn: (use: import('../core/types.js').ToolUseBlock) => Promise<T>) => {
-    return (use: import('../core/types.js').ToolUseBlock): Promise<T> => {
-      const run = confirmQueueRef.current.then(
-        () => fn(use),
-        () => fn(use),
-      )
-      confirmQueueRef.current = run.then(
-        () => undefined,
-        () => undefined,
-      )
-      return run
-    }
-  }
-  /** M9-P4 确认弹窗逻辑（组件级——submit 与子代理桥共用，经 queueConfirm 串行） */
-  const doConfirm = async (use: import('../core/types.js').ToolUseBlock): Promise<boolean> => {
-    // full-access 全免确认（deny 语义仍硬拒在工具层：内置黑名单 + blockedCommands）
-    if (sandboxModeRef.current === 'full-access') return true
-    // read-only 档——MCP 副作用工具整体拒绝（本地 write/edit/bash 在工具层拦，文案准确；
-    // MCP 经 server 无法工具层拦，此处 false + 用户提示，LLM 收到 is_error 自纠）
-    if (sandboxModeRef.current === 'read-only' && use.name.startsWith('mcp__')) {
-      setSystemMsgs([`read-only 模式：MCP 工具 ${use.name} 被拒绝`])
-      return false
-    }
-    // MCP「本会话记住」（M6 v3 P1-3）：server 级前缀放行（mcp__server__*），本会话不再逐次弹窗
-    const mcpPrefix = use.name.startsWith('mcp__') ? use.name.split('__').slice(0, 2).join('__') : null
-    if (mcpPrefix !== null && confirmAlwaysRef.current.has(mcpPrefix)) return true
-    // D5：callback 内部算预览（不污染 Tool 接口）；P1#3：catch 异常不杀 Loop
-    const preview = await buildPreview(use, process.cwd()).catch(
-      (e) => `⚠ 无法生成预览：${e instanceof Error ? e.message : String(e)}`,
-    )
-    confirmRef.current = true
-    return new Promise<boolean>((resolve) => {
-      setActive((a) => ({
-        ...a,
-        confirm: {
-          use,
-          preview,
-          resolve: (ok, always) => {
-            if (ok && always === true && mcpPrefix !== null) confirmAlwaysRef.current.add(mcpPrefix)
-            resolve(ok)
-          },
-        },
-      }))
-    })
-  }
 
   /** usage 记录（submit 与子代理桥共用——成本归并；「本轮」语义被并发稀释为最后到达者，文档化） */
   const recordUsage = (inp: number, out: number, cache?: { read?: number; creation?: number }) => {
@@ -293,12 +169,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   const pickerRef = useRef(false)
   // ctxWindow 缓存（S-P4：submit 热路径同步用，启动解析一次 + 切模型刷新；默认 200k 兜底）
   const ctxWindowRef = useRef(200_000)
-  // MCP 确认「本会话记住」前缀表（mcp__server；v3 P1-3，会话级不落盘）
-  const confirmAlwaysRef = useRef(new Set<string>())
   // SessionStart 的 additionalContext 暂存（M9-P0）：注入启动/恢复后首轮 user 消息，一次性消费
   const pendingSessionCtxRef = useRef<string[]>([])
   // M9-P6：本轮编辑文件集（onBeforeWrite 收集；autoCommit 开启时轮末提交+清空）
-  const editedFilesRef = useRef<Set<string>>(new Set())
   // M10-P2b：待发送的粘贴图片（Alt+V 落盘后的路径；submit 时按文本引用组装 blocks 并清空）。
   // 真机修复批 v2（两家同款内嵌形态）：粘贴把短标签 [图片#N] 插入输入框文本，标签即引用——
   // 删标签=删图（提交剪枝），无独立附件行（v1 的输入框上方行已退役）
@@ -390,253 +263,214 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   // /restart 句柄经 ref（deps 闭包稳定，setTimeout 回调取最新）
   const onRestartRef = useRef(onRestart)
 
+  // —— M12-B3：宿主会话（数据/执行/审批全权在宿主；TuiApp 只是协议客户端）——
+  const hostRef = useRef<HostSession | null>(null)
+  if (hostRef.current === null) {
+    hostRef.current = new HostSession({
+      providerRegistry: deps.providerRegistry,
+      tools: deps.tools,
+      logger: deps.logger,
+      history: deps.history,
+      getConfig: () => configRef.current,
+      orchestrator: deps.orchestrator,
+      skillListForPrompt: () => deps.skillRegistry.listForPrompt(),
+      ...(deps.hookRunner != null ? { hookRunner: deps.hookRunner } : {}),
+      ...(deps.checkpoint != null && deps.checkpoint !== undefined ? { checkpoint: deps.checkpoint } : {}),
+      ...(deps.quality != null && deps.quality !== undefined ? { quality: deps.quality } : {}),
+      ctxWindowHint: () => ctxWindowRef.current,
+    })
+  }
+  const host = hostRef.current
+
+  // 事件→UI 映射（渲染/审批/插话/进度全事件驱动；回调直驱 setState 的旧路径退役）
+  useEffect(() => {
+    host.mountBridges()
+    const unsub = host.subscribe((ev) => {
+      switch (ev.type) {
+        case 'delta':
+          setActive((a) => ({ ...a, streamingText: a.streamingText + ev.text }))
+          break
+        case 'item/started':
+          setActive((a) => ({ ...a, tools: [...a.tools, { name: ev.name, status: 'running' }] }))
+          setActivity({ state: 'tool', text: ev.name })
+          break
+        case 'item/completed': {
+          setActive((a) => {
+            const tools = [...a.tools]
+            const idx = tools.findIndex((t) => t.status === 'running' && t.name === ev.name)
+            const use = ev.use as ToolUseBlock | undefined
+            const done = {
+              name: ev.name,
+              use,
+              result: { type: 'tool_result' as const, tool_use_id: ev.itemId, content: ev.content, is_error: ev.isError },
+              status: (ev.isError ? 'error' : 'done') as 'error' | 'done',
+            }
+            if (idx >= 0) tools[idx] = done
+            else tools.push(done)
+            return { ...a, tools }
+          })
+          setActivity({ state: 'thinking' })
+          break
+        }
+        case 'usage':
+          recordUsage(ev.input, ev.output, { read: ev.cacheRead, creation: ev.cacheCreation })
+          break
+        case 'thread/status':
+          runningRef.current = ev.busy
+          setIter(ev.iter)
+          if (ev.maxIter !== undefined) setMaxIter(ev.maxIter)
+          break
+        case 'activity':
+          setActivity({ state: ev.state as ActivityState, text: ev.text })
+          break
+        case 'turn/completed':
+          messagesRef.current = [...host.transcript]
+          setActive((a) => ({ ...a, streaming: false }))
+          setActivity({ state: 'idle' })
+          break
+        case 'warn':
+          pushNoticeFn('warn', ev.text)
+          break
+        case 'notice':
+          pushNoticeFn(ev.level, ev.text)
+          break
+        case 'systemMsg':
+          setSystemMsgs([ev.text])
+          break
+        case 'error':
+          setActive((a) => ({ ...a, streaming: false }))
+          setError(toAppError(new Error(ev.message)))
+          setActivity({ state: 'idle' })
+          break
+        case 'compacted':
+          messagesRef.current = [...host.transcript]
+          setCommitted(messagesToCommitted([...host.transcript]))
+          setSystemMsgs(['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）'])
+          break
+        case 'compacting':
+          setSystemMsgs(['正在压缩对话...'])
+          break
+        case 'compactFailed':
+          setSystemMsgs(['（压缩未完成——对话太短或摘要失败，稍后自动重试）'])
+          break
+        case 'approval/requested': {
+          confirmRef.current = true
+          const remember = ev.decisions.includes('always')
+          setActive((a) => ({
+            ...a,
+            confirm: {
+              use: { type: 'tool_use', id: ev.requestId, name: ev.tool, input: {} },
+              preview: ev.preview,
+              ...(remember
+                ? {
+                    rememberLabel:
+                      ev.kind === 'mcp-permission'
+                        ? '永久记住（写入 settings.local.json）'
+                        : '本会话记住此 MCP server 的工具',
+                  }
+                : {}),
+              resolve: (ok: boolean, always?: boolean) => {
+                confirmRef.current = false
+                void host.send({
+                  op: 'approval/respond',
+                  requestId: ev.requestId,
+                  decision: ok ? (always === true ? 'always' : 'once') : 'reject',
+                })
+              },
+            },
+          }))
+          break
+        }
+        case 'approval/resolved':
+          confirmRef.current = false
+          setActive((a) => (a.confirm !== null && a.confirm !== undefined ? { ...a, confirm: null } : a))
+          break
+        case 'askUser/requested':
+          pickerRef.current = true
+          setOverlay({
+            kind: 'question-panel',
+            questions: ev.questions as AskUserQuestion[],
+            resolve: (r) => {
+              pickerRef.current = false
+              setOverlay(null)
+              void host.send({ op: 'askUser/respond', requestId: ev.requestId, answers: r })
+            },
+          })
+          break
+        case 'subagent/progress':
+          setSubagents(ev.agents as SubagentStatus[])
+          break
+        case 'queue/snapshot':
+          setInterjectPreview(ev.items.length > 0 ? ev.items.join(' / ') : null)
+          break
+        case 'interjection/injected':
+          setInterjectPreview(null)
+          break
+        default:
+          break // 其余事件 B5 消费或无需 UI
+      }
+    })
+    return () => {
+      unsub()
+      host.dispose()
+      hostRef.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（host/recordUsage/pushNoticeFn 均稳定引用或 ref 闭包）
+  }, [])
+
   const doSubmit = async (input: string, display?: string, blocks?: ContentBlock[]): Promise<void> => {
-    // M10-P2b：零键位增强——提交文本恰好是存在的图片路径 → 转图片输入（display 保持原文）
-    if (blocks === undefined && display === undefined && /^\s*[^\n]+\.(png|jpe?g|webp|gif)\s*$/i.test(input)) {
-      const detected = await imageBlocksFromPaths([input.trim()])
-      if (detected.blocks.length > 0) {
-        input = `${input.trim()}（已作为图片输入）`
-        blocks = detected.blocks
-      }
+    // —— 客户端预处理：图片载荷（路径引用；块组装在宿主 buildBlocks）——
+    let images: { path: string; mime: string; label?: string }[] | undefined
+    if (blocks !== undefined) {
+      const imgs = blocks.filter((b): b is ImageBlock => b.type === 'image' && '_path' in b)
+      if (imgs.length > 0) images = imgs.map((b) => ({ path: (b as ImageBlock & { _path: string })._path, mime: '' }))
     }
-    // M10-P2b 真机修复批 v2：粘贴 pending 按文本引用组装——输入框内 [图片#N] 标签即引用，
-    // 文本里没引用的（用户删了标签）不发送（两家同款剪枝语义）；引用了但读取/守卫失败的跳过并 warn。
-    // 早退守卫路径（hook 拦截/配置无效/运行中）不清空暂存——消息没发出去图片不丢。
-    if (blocks === undefined && pendingImagesRef.current.length > 0) {
+    // M10-P2b 零键位：提交文本恰好是图片路径 → 图片输入（display 保持原文）
+    if (images === undefined && display === undefined && /^\s\n[^\n]+\.(png|jpe?g|webp|gif)\s$/i.test(input)) {
+      images = [{ path: input.trim(), mime: '' }]
+      input = `${input.trim()}（已作为图片输入）`
+    }
+    // 粘贴标签引用：文本里引用了 [图片#N] 的才发送（删标签=删图，两家同款剪枝）
+    if (images === undefined && pendingImagesRef.current.length > 0) {
       const referenced = [...input.matchAll(/\[图片#(\d+)\]/g)].map((m) => Number(m[1]))
-      const referencedPending = pendingImagesRef.current.filter((_, i) => referenced.includes(i + 1))
-      if (referencedPending.length > 0) {
-        const built = await imageBlocksFromPaths(referencedPending.map((p) => p.path))
-        const okCount = built.blocks.length
-        const skipped = referencedPending.length - okCount
-        if (skipped > 0) pushNoticeFn('warn', `${skipped} 张粘贴图片读取失败/超守卫被跳过（其余正常发送）`)
-        if (okCount > 0) blocks = built.blocks
-      }
+      const refs = pendingImagesRef.current.filter((_, i) => referenced.includes(i + 1))
+      if (refs.length > 0) images = refs.map((img) => ({ path: img.path, mime: '' }))
     }
+    // 忙碌态：插话（hook 拦截/附加上下文在 enqueueInterject 客户端侧）
     if (runningRef.current) {
-      // M11-P7：忙碌态插话——入队（含图片 [图片#N] 标签：续投走同一 submit 组装 blocks，F1）
-      await enqueueInterject(input)
+      await enqueueInterject(input, images)
       return
     }
-    // 配置无效态（空壳 Config）：不 runLoop，提示 /setup；/setup /history /clear 等命令不受影响
+    // 配置无效态
     if (!config.providers[config.current.name]) {
       setBanner('配置不完整，输入 /setup 配置')
       return
     }
-    // 兑现上一轮的延迟 commit：当前轮在 runLoop 结束后保留在动态区（可 Ctrl+O 展开），
-    // 直到下次 submit 才 commit 进 Static（收起固化）。符合「当前轮不固定 / 进入下一轮自动收起」。
-    if (messagesRef.current.length > 0) {
-      setCommitted(messagesToCommitted(messagesRef.current))
+    // 兑现上一轮延迟 commit（宿主持有全量 messages）
+    if (host.transcript.length > 0) {
+      setCommitted(messagesToCommitted([...host.transcript]))
     }
-    runningRef.current = true
-    abortRef.current = new AbortController()
-    // UserPromptSubmit hook（H-P4：分流后、runLoop 前）：block 拦截本轮输入；additionalContext 拼接进消息
-    // M9-P0：controller 前置 + dispatch 透传 AbortSignal——hook 等待期 Ctrl+C 可中断 hook 子进程（此前仅超时兜底）
-    if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
-      const verdict = await deps.hookRunner.dispatch(
-        'UserPromptSubmit',
-        {
-          event: 'UserPromptSubmit',
-          session_id: '',
-          prompt: input,
-        },
-        { signal: abortRef.current.signal },
-      )
-      if (verdict.block) {
-        runningRef.current = false
-        setSystemMsgs([`✋ 输入被 hook 拦截${verdict.reason !== undefined && verdict.reason !== '' ? `：${verdict.reason}` : ''}`])
-        setActivity({ state: 'idle' })
-        return
-      }
-      if (verdict.additionalContext.length > 0) {
-        input = `${input}\n\n[hook context]\n${verdict.additionalContext.join('\n')}`
-      }
-      if (verdict.systemMessages.length > 0) setSystemMsgs(verdict.systemMessages)
-    }
-    // M10-P3：后台任务跨 turn 通知（双时点之二——turn 结束后完成的任务在下次 submit 前注入）
-    const pendingNotes = taskRegistry.collectNotifications()
-    for (const n of pendingNotes) {
-      input = `${input}\n${n}`
-    }
-    // M9-P0：SessionStart 的 additionalContext 注入启动/恢复后首轮 user 消息（环境信息进上下文一次；
-    // 在 UserPromptSubmit 之后拼接——hook 收到的 prompt 保持用户原文）
+    // SessionStart additionalContext（客户端持有状态）随首轮注入
     if (pendingSessionCtxRef.current.length > 0) {
       input = `${input}\n\n[hook context]\n${pendingSessionCtxRef.current.join('\n')}`
       pendingSessionCtxRef.current = []
     }
-    // 新轮：userInput 乐观显示 + streaming=true（流式灰字）。
-    // display（S4.4 最小 display/content 分离）：手动 skill 触发时输入框/转录显示原始
-    // `/name args`，消息本体是展开全文（runLoop 的 userInput 必须传全文，防 alreadyUser 双推）
-    // M10-P2b 复审 P2-2：到此消息确认发送（所有早退守卫已过）——粘贴暂存此刻清空（附件行随之消失）
+    // 消息确认发送：粘贴暂存此刻清空（早退路径均不清——图片不丢）
     pendingImagesRef.current = []
     setPendingImages([])
     setActive({ ...createActive(), userInput: display ?? input, streaming: true })
     setError(null)
     setActivity({ state: 'thinking' })
-    const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
-    const providerReq = buildProviderReq(config)
-    const system = buildSystemPrompt(
-      deps.skillRegistry.listForPrompt(),
-      ctxWindowRef.current,
-      config.maxInstructionsKB !== undefined ? { maxInstructionBytes: config.maxInstructionsKB * 1024 } : undefined,
-    )
-    const onCompacted = (m: HistoryLine[]) => {
-      setCommitted(messagesToCommitted(m))
-      setSystemMsgs(['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）'])
-    }
-    const onCompacting = () => setSystemMsgs(['正在压缩对话...'])
-    const onCompactFail = () => setSystemMsgs(['（压缩未完成——对话太短或摘要失败，稍后自动重试）'])
-    const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, {
-      onCompacted,
-      history: deps.history,
-      signal: abortRef.current.signal,
-      onCompacting,
-      onCompactFail,
-      tools: deps.tools.specs(), // M6：MCP 工具 schema 计入压缩估算（v3 P1-1）
+    const r = await host.send({
+      op: 'prompt',
+      text: input,
+      mode: 'StartOrSteer',
+      ...(images !== undefined && images.length > 0 ? { images } : {}),
     })
-
-    let aborted = false
-    try {
-      await runLoop(messagesRef.current, input, {
-        provider,
-        tools: deps.tools,
-        logger: deps.logger,
-        history: deps.history,
-        callbacks: {
-          onText: (t) => {
-            setActive((a) => ({ ...a, streamingText: a.streamingText + t }))
-          },
-          onToolStart: (name) => {
-            // P1-2：onToolStart 只给 name（use 此时未解析）；onToolResult 后填入
-            setActive((a) => ({
-              ...a,
-              tools: [...a.tools, { name, status: 'running' }],
-            }))
-            setActivity({ state: 'tool', text: name })
-          },
-          onToolResult: (id, name, r) => {
-            // use 此刻已在 messages（finally 先于 executeTools），反查配对 active.tools
-            const use = findUse(messagesRef.current, id)
-            setActive((a) => {
-              const tools = [...a.tools]
-              // 配对：找第一个同名 running 项替换为 done
-              const idx = tools.findIndex((t) => t.status === 'running' && t.name === name)
-              const done = {
-                name,
-                use,
-                result: {
-                  type: 'tool_result' as const,
-                  tool_use_id: id,
-                  content: r.content,
-                  is_error: r.is_error,
-                },
-                status: (r.is_error ? 'error' : 'done') as 'error' | 'done',
-              }
-              if (idx >= 0) tools[idx] = done
-              else tools.push(done)
-              return { ...a, tools }
-            })
-            setActivity({ state: 'thinking' })
-          },
-          onUsage: recordUsage,
-          onIter: (i, m) => {
-            setIter(i)
-            setMaxIter(m)
-          },
-          onActivity: (state, text) => {
-            // M9-P0：loop 内部消化 AbortError 正常返回（不抛出），中断信号经此回调传回——Stop 区分 aborted 用
-            if (state === 'aborted') aborted = true
-            setActivity({ state, text })
-          },
-          onWarn: (m) => pushNoticeFn('warn', m),
-        },
-        providerReq,
-        system,
-        maxIterations: config.maxIterations,
-        toolCtx: {
-          cwd: process.cwd(),
-          signal: abortRef.current.signal,
-          // M9-P1：写前快照装配（心脏零改动——loop 只透传 toolCtx；快照失败工具侧已 catch）
-          onBeforeWrite: async (paths, tool, toolUseId) => {
-            for (const p of paths) editedFilesRef.current.add(p) // M9-P6：autoCommit 文件集
-            await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
-          },
-          // M9-P4：沙箱装配（read-only/workspace-write 拦截 + blockedCommands 全档硬拒在 bash 工具内）
-          sandbox: makeSandbox(sandboxModeRef.current, process.cwd(), config.sandbox?.blockedCommands ?? []),
-          // M10-P0：无视觉能力守卫判定用（读图前 isVisionModel）
-          model: config.current.model,
-        },
-        // M10-P2b：附着块（图片粘贴/路径检测）进首条 user 消息
-        ...(blocks !== undefined && blocks.length > 0 ? { userBlocks: blocks } : {}),
-        // M9-P3 轮末质量回喂 + M9-P6 autoCommit + M10-P3 后台任务通知（工厂：见 makeAfterTools）
-        afterTools: makeAfterTools(deps, config, pushNoticeFn, editedFilesRef, messagesRef),
-        signal: abortRef.current.signal,
-        onBeforeRequest,
-        onCompacted,
-        confirm: queueConfirm(doConfirm),
-        // 审阅 P0-2：敏感路径读取确认（read_file 判定敏感后经 loop 透传到此处；串行队列防并发覆盖单槽。
-        // argv 模式不接线 → read_file 侧 fail-closed）
-        onSensitiveAccess: (description) => {
-          const placeholder = {
-            type: 'tool_use' as const,
-            id: 'sensitive-access',
-            name: 'read_file（敏感路径）',
-            input: {},
-          }
-          return queueConfirm((): Promise<boolean> => {
-            confirmRef.current = true
-            return new Promise<boolean>((resolve) => {
-              setActive((a) => ({
-                ...a,
-                confirm: {
-                  use: placeholder,
-                  preview: sanitizePreview(description),
-                  resolve: (ok) => resolve(ok),
-                },
-              }))
-            })
-          })(placeholder)
-        },
-        // M11-P7：步间注入拉取（多条合并一条换行拼接；拉走即清显示）
-        pollUserInput: () => {
-          const q = interjectQueueRef.current
-          if (q.length === 0) return null
-          const text = q.splice(0).join('\n\n')
-          setInterjectPreview(null)
-          return text
-        },
-      })
-      // 不立即 commit：本轮保留在动态区（当前轮可 Ctrl+O 展开）；streaming=false 转 Markdown 显示
+    if (!r.ok) {
       setActive((a) => ({ ...a, streaming: false }))
+      setSystemMsgs([`发送失败：${r.error}`])
       setActivity({ state: 'idle' })
-    } catch (e) {
-      // 中断/错误：同样保留动态区（用户看中断内容），下次 submit 才 commit
-      setActive((a) => ({ ...a, streaming: false }))
-      if (isAbortError(e)) {
-        aborted = true
-        setActivity({ state: 'aborted' })
-      } else {
-        setError(toAppError(e))
-        setActivity({ state: 'idle' })
-      }
-    } finally {
-      runningRef.current = false
-      // M11-P7：轮末兜底——settle 后队列有剩余自动续投（Ctrl+C 中断同样走此路径：停当前不停插话）
-      const pending = interjectQueueRef.current.splice(0)
-      if (pending.length > 0) {
-        setInterjectPreview(null)
-        void submit(pending.join('\n\n'))
-      }
-      // Stop hook（H-P4）：一轮结束即触发，fire（async hook 本就不等；systemMessage 到达后展示）
-      // M9-P0：中断路径 stop_reason=aborted（hook 可区分「用户主动停」与「正常完成」）
-      if (deps.hookRunner != null && deps.hookRunner.hasHandlers('Stop')) {
-        void deps.hookRunner
-          .dispatch('Stop', { event: 'Stop', session_id: '', stop_reason: aborted ? 'aborted' : 'turn-complete' })
-          .then((v) => {
-            if (v.systemMessages.length > 0) setSystemMsgs(v.systemMessages)
-          })
-          .catch(() => {})
-      }
     }
   }
 
@@ -693,61 +527,23 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     })
   }
 
-  // M8 ask_user UI 桥注入：工具 execute → Promise → overlay 面板 → resolve 回工具
-  // （排队锁在 bridge 层——同轮多个 ask_user 串行弹，不抢 overlay）
-  useEffect(() => {
-    setAskUserHandler((questions) => {
-      return new Promise<AskUserResult>((resolve) => {
-        // 审阅 P2-2：中断当前轮（Ctrl+C abort）时取消挂起的提问——防 overlay 残留挡输入
-        const signal = abortRef.current.signal
-        const cleanup = (): void => {
-          signal.removeEventListener('abort', onAbort)
-          pickerRef.current = false
-          setOverlay(null)
-        }
-        const onAbort = (): void => {
-          cleanup()
-          resolve({ kind: 'cancel' })
-        }
-        if (signal.aborted) {
-          resolve({ kind: 'cancel' })
-          return
-        }
-        signal.addEventListener('abort', onAbort, { once: true })
-        pickerRef.current = true
-        setOverlay({
-          kind: 'question-panel',
-          questions,
-          resolve: (r) => {
-            cleanup()
-            resolve(r)
+  /** 蒸馏预览确认（复用 active.confirm 通道；合成 use 走 ConfirmPrompt 默认渲染分支）。
+ * B3：审批已走宿主 Broker，此纯客户端确认直写单槽（与本客户端并发概率低；confirmRef 同步中断判定） */
+  const askPreviewConfirm = (preview: string, what: string): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      confirmRef.current = true
+      setActive((a) => ({
+        ...a,
+        confirm: {
+          use: { type: 'tool_use', id: `skill-create-${Date.now()}`, name: what, input: {} },
+          preview,
+          resolve: (ok: boolean) => {
+            confirmRef.current = false
+            resolve(ok)
           },
-        })
-      })
+        },
+      }))
     })
-    return () => setAskUserHandler(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
-  }, [])
-
-  /** 蒸馏预览确认（复用 active.confirm 通道；合成 use 走 ConfirmPrompt 默认渲染分支） */
-  const askPreviewConfirm = (preview: string, what: string): Promise<boolean> => {
-    // P1：走 confirm 串行队列——直写单槽会覆盖并发 confirm 的 resolve（Promise 永挂）；
-    // queueConfirm 内部链式排队，任意渲染期实例都安全。fn 忽略 use（合成占位透传）
-    const queued = queueConfirm((): Promise<boolean> =>
-      new Promise<boolean>((resolve) => {
-        confirmRef.current = true
-        setActive((a) => ({
-          ...a,
-          confirm: {
-            use: { type: 'tool_use', id: `skill-create-${Date.now()}`, name: what, input: {} },
-            preview,
-            resolve,
-          },
-        }))
-      }),
-    )
-    return queued({ type: 'tool_use', id: `skill-preview-${Date.now()}`, name: what, input: {} })
-  }
 
   /** M6 M-P6：/mcp reconnect 直达（面板外子命令） */
   const mcpReconnect = async (name?: string): Promise<void> => {
@@ -845,31 +641,21 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     }
   }
 
-  /** M5：手动 /compact——触发编排器强制压缩 + 重建 committed（boundary 追加到 messagesRef） */
-  const compactManual = async (): Promise<void> => {    if (messagesRef.current.length === 0) {
+  /** M5：手动 /compact——宿主执行强制压缩（boundary 追加宿主 messages）+ 镜像同步 + 重建 committed */
+  const compactManual = async (): Promise<void> => {
+    if (host.transcript.length === 0) {
       setSystemMsgs(['（无可压缩对话）'])
       return
     }
     if (!config.providers[config.current.name]) return
     setSystemMsgs(['正在压缩对话...'])
     try {
-      const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
-      const providerReq = buildProviderReq(config)
-      const lenBefore = messagesRef.current.length
-      const onCompacted = (m: HistoryLine[]) => setCommitted(messagesToCommitted(m))
-      const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindowRef.current), {
-        onCompacted,
-        history: deps.history,
-        tools: deps.tools.specs(),
-      })
-      await hook(messagesRef.current, 'manual') // manual = 强制压缩 + 重置熔断（用户明确要求时给机会）
-      setSystemMsgs(
-        messagesRef.current.length > lenBefore
-          ? ['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）']
-          : ['（未压缩——对话太短或摘要失败）'],
-      )
+      const r = await host.compactManual()
+      messagesRef.current = [...host.transcript]
+      setCommitted(messagesToCommitted([...host.transcript]))
+      setSystemMsgs([r.ok ? '✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）' : `（压缩未完成——${r.reason ?? '对话太短或摘要失败'}）`])
     } catch (e) {
-      setSystemMsgs(['压缩失败：' + (e instanceof Error ? e.message : String(e))])
+      setSystemMsgs([`压缩异常：${e instanceof Error ? e.message : String(e)}`])
     }
   }
 
@@ -907,7 +693,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       setSystemMsgs(['⚠ 恢复失败：该会话为空或已损坏（文件缺失/无消息），未切换'])
       return
     }
-    messagesRef.current = messages
+    host.restoreFrom(messages)
+    messagesRef.current = [...host.transcript]
     setCommitted(messagesToCommitted(messages))
     resetTransient()
     // 续写进新文件（起新 sessionId）；model 用当前 config（用户可能已 /model 切过）
@@ -931,7 +718,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       .catch(() => {})
   }
   const { warning } = useInterrupt({
-    onInterrupt: () => abortRef.current.abort(),
+    onInterrupt: () => {
+      // 本地 abort（hook 子进程中断）+ 宿主 interrupt（loop 的 signal 在宿主）
+      abortRef.current.abort()
+      void host.send({ op: 'interrupt' })
+    },
     // P0#1：confirm/picker 覆盖期间不 abort（由覆盖组件独占 Ctrl+C）
     isActive: () => confirmRef.current || pickerRef.current,
     // 双击退出走 cli 的优雅关闭（SessionEnd hooks / MCP stop 预算内完成后才退）；
@@ -958,58 +749,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅启动一次
   }, [])
 
-  // M9-P5：权限 ask 桥（扩展源 hook 首次执行前的确认弹窗；卸载置 null——argv/测试 ask 默认拒绝）
-  useEffect(() => {
-    setPermissionAsker((owner, event) => {
-      // P1：走 confirm 串行队列（同 askPreviewConfirm——直写单槽覆盖并发 confirm 的 resolve，
-      // 并行子代理场景 Promise 永挂）；fn 忽略 use（合成占位透传）
-      const queued = queueConfirm((): Promise<PermissionAnswer> =>
-        new Promise<PermissionAnswer>((resolveAsk) => {
-          confirmRef.current = true
-          setActive((a) => ({
-            ...a,
-            confirm: {
-              use: { type: 'tool_use', id: `perm-${owner}`, name: `hook:${owner}`, input: {} },
-              preview: `扩展 ${owner} 申请在 ${event} 事件执行 hook（首次）`,
-              rememberLabel: '永久记住（写入 settings.local.json）',
-              resolve: (ok, always) => resolveAsk({ allow: ok, remember: always === true }),
-            },
-          }))
-        }),
-      )
-      return queued({ type: 'tool_use', id: `perm-${owner}`, name: `hook:${owner}`, input: {} })
-    })
-    return () => setPermissionAsker(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（queueConfirm/confirmRef 均 ref 闭包）
-  }, [])
 
-  // M11-P4/P5：子代理桥——confirm 串行队列（单槽覆盖式并发必炸，方案 §1.3）+ warn/usage/progress 转发
-  useEffect(() => {
-    setSubagentBridge({
-      confirm: queueConfirm(doConfirm),
-      warn: (m) => pushNoticeFn('warn', m),
-      usage: (inp, out, cache) => recordUsage(inp, out, cache),
-      // 审阅 P0-2：子代理写前走 TuiApp 版（editedFilesRef 归主——父轮末 autoCommit 提交集）
-      onBeforeWrite: async (paths, tool, toolUseId) => {
-        for (const p of paths) editedFilesRef.current.add(p)
-        await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
-      },
-      // 审阅 P1-1/P1-2：运行态 getter（/model·/config 切换、Tab 切沙箱档后子代理取新值——
-      // cli deps 闭包是 makeDeps 时的旧对象）。P0：config 一律读 configRef——本 effect 挂载期
-      // 一次，直接闭包 config state 会拿到首次渲染值，切配置后不重挂永远是旧值
-      getProviderReq: () => buildProviderReq(configRef.current),
-      getProvider: () => deps.providerRegistry.getByType(configRef.current.providers[configRef.current.current.name].type),
-      getSandbox: () =>
-        makeSandbox(sandboxModeRef.current, process.cwd(), configRef.current.sandbox?.blockedCommands ?? []),
-      getModel: () => configRef.current.current.model,
-    })
-    setSubagentProgressHandler(setSubagents)
-    return () => {
-      setSubagentBridge(null)
-      setSubagentProgressHandler(null)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（pushNoticeFn/recordUsage 稳定引用）
-  }, [])
+
 
   // M6 M-P7：MCP 状态订阅（onEvent → setState → StatusBar/面板读快照）+ 启动警告
   const [mcpSnapshots, setMcpSnapshots] = useState<McpServerSnapshot[]>(() => deps.mcpManager?.status() ?? [])
@@ -1149,9 +890,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       {interjectPreview !== null && (
         <Box paddingLeft={1}>
           <Text dimColor>
-            已排队：{interjectPreview.slice(0, 40)}
-            {interjectQueueRef.current.length > 1 ? `（共 ${interjectQueueRef.current.length} 条）` : ''}
-            （Ctrl+U 清空）
+            已排队：{interjectPreview.slice(0, 40)}（Ctrl+U 清空）
           </Text>
         </Box>
       )}
@@ -1357,8 +1096,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         onSubmit={submit}
         onPasteImage={() => pasteImageFromClipboard()}
         onInterjectClear={() => {
-          interjectQueueRef.current.length = 0
-          setInterjectPreview(null)
+          void host.send({ op: 'interjection/clear' })
         }}
         busy={runningRef.current}
         onSlashBusy={() => setSystemMsgs(['运行中暂不能执行命令（空闲后再发；插话请直接输入文字）'])}

@@ -41,6 +41,7 @@ const noopHistory = {
   restore() { return [] },
   restoreFull() { return [] },
   setSessionId() {},
+  currentSessionId() { return 'test' },
 } as unknown as HistoryStore
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 60))

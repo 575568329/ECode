@@ -50,11 +50,11 @@ export interface McpServerStatusView {
 export type ProtocolEvent =
   | { type: 'delta'; seq: number; turnId: string; text: string }
   | { type: 'item/started'; seq: number; itemId: string; name: string }
-  | { type: 'item/completed'; seq: number; itemId: string; name: string; isError: boolean; summary: string }
+  | { type: 'item/completed'; seq: number; itemId: string; name: string; isError: boolean; summary: string; content: string; use?: unknown }
   | { type: 'usage'; seq: number; input: number; output: number; cacheRead?: number; cacheCreation?: number; costUsd?: number }
   | { type: 'turn/started'; seq: number; turnId: string }
   | { type: 'turn/completed'; seq: number; turnId: string }
-  | { type: 'thread/status'; seq: number; busy: boolean; waitingOn: 'approval' | 'userInput' | null; iter: number }
+  | { type: 'thread/status'; seq: number; busy: boolean; waitingOn: 'approval' | 'userInput' | null; iter: number; maxIter?: number }
   | { type: 'approval/requested'; seq: number; requestId: string; kind: ApprovalKind; tool: string; preview: string; decisions: ApprovalDecision[] }
   | { type: 'approval/resolved'; seq: number; requestId: string; outcome: ApprovalOutcome }
   | { type: 'askUser/requested'; seq: number; requestId: string; questions: unknown[] } // B2 迁 AskUserQuestion 时收紧

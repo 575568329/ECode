@@ -62,6 +62,8 @@ export interface HostDeps {
   cwd?: string
   /** D1：审批策略（ask=默认 fail-closed；auto-approve=argv --yes，仅 tool-confirm 豁免） */
   approvalPolicy?: ApprovalPolicy
+  /** 上下文窗口提示（TUI 传启动预热情；缺省走 resolveContextWindow 联网/内置表） */
+  ctxWindowHint?: () => number | null
 }
 
 interface QueueEntry {
@@ -149,6 +151,38 @@ export class HostSession {
     )
   }
 
+  /** B3：客户端恢复历史会话（宿主 messages 替换为载入内容；history 由调用方先行切 sessionId） */
+  restoreFrom(lines: HistoryLine[]): void {
+    this.messages.length = 0
+    this.messages.push(...lines)
+  }
+
+  /** B3：手动强制压缩（/compact——客户端命令面中间态实现；B5 升格为宿主命令） */
+  async compactManual(): Promise<{ ok: boolean; reason?: string }> {
+    const deps = this.deps
+    const cfg = this.cfg()
+    if (this.messages.length === 0) return { ok: false, reason: '无可压缩对话' }
+    if (cfg.providers[cfg.current.name] === undefined) return { ok: false, reason: '配置无效' }
+    const provider = deps.providerRegistry.getByType(cfg.providers[cfg.current.name].type)
+    const providerReq = buildProviderReq(cfg)
+    const maxKB = cfg.maxInstructionsKB
+    const ctxWindow = this.ctxWindowCache ?? this.deps.ctxWindowHint?.() ?? 200_000
+    const system = buildSystemPrompt(deps.skillListForPrompt(), ctxWindow, maxKB !== undefined ? { maxInstructionBytes: maxKB * 1024 } : undefined)
+    const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, {
+      onCompacted: () => this.publish('compacted', {}),
+      history: deps.history,
+      tools: deps.tools.specs(),
+    })
+    try {
+      await hook(this.messages, 'manual')
+      this.publish('compacted', {})
+      return { ok: true }
+    } catch (e) {
+      this.publish('compactFailed', { detail: e instanceof Error ? e.message : String(e) })
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
   /** B3：同进程客户端重建转录用（TuiApp messagesToCommitted；B7 起换 session/read 命令） */
   get transcript(): readonly HistoryLine[] {
     return this.messages
@@ -200,7 +234,11 @@ export class HostSession {
           this.publish('queue/snapshot', { items: this.queue.map((q) => q.text) })
           return { ok: true, routed: 'Steered' }
         }
-        void this.startTurn(cmd.text, blocks).catch(() => {})
+        void this.startTurn(cmd.text, blocks).catch((e: unknown) => {
+          // 不静默吞（本轮实测：fake deps 缺方法时 TypeError 被吞成无响应）
+          this.publish('error', { message: e instanceof Error ? e.message : String(e) })
+          this.deps.logger.error('system', 'start_turn_failed', { message: e instanceof Error ? e.message : String(e) })
+        })
         return { ok: true, routed: 'Started' }
       }
       case 'interrupt':
@@ -292,6 +330,7 @@ export class HostSession {
       // 局部量承接（属性跨 await 的窄化会丢）
       const ctxWindow =
         this.ctxWindowCache ??
+        this.deps.ctxWindowHint?.() ??
         (this.ctxWindowCache = await resolveContextWindow(
           this.cfg().current.model,
           this.cfg().providers[this.cfg().current.name]?.contextWindow,
@@ -319,13 +358,21 @@ export class HostSession {
         callbacks: {
           onText: (t) => this.publish('delta', { turnId, text: t }),
           onToolStart: (name) => this.publish('item/started', { itemId: `${turnId}-${++this.itemSeq}`, name }),
-          onToolResult: (id, name, r) =>
+          onToolResult: (id, name, r) => {
+            const use = this.messages
+              .filter(isMessageLine)
+              .filter((l) => l.role === 'assistant')
+              .flatMap((l) => l.content)
+              .find((b) => b.type === 'tool_use' && b.id === id)
             this.publish('item/completed', {
               itemId: id,
               name,
               isError: r.is_error === true,
               summary: (r.content as string).split('\n')[0]?.slice(0, 80) ?? '',
-            }),
+              content: r.content as string,
+              ...(use !== undefined ? { use: use as unknown } : {}),
+            })
+          },
           onUsage: (inp, out, cache) => {
             const cost = tokensToCost(this.cfg().current.model, {
               input: inp,
@@ -392,7 +439,7 @@ export class HostSession {
           await deps.hookRunner.dispatch('Stop', {
             event: 'Stop',
             session_id: deps.history.currentSessionId(),
-            stop_reason: this.abort.signal.aborted ? 'aborted' : 'end',
+            stop_reason: this.abort.signal.aborted ? 'aborted' : 'turn-complete',
           })
         }
       } catch {

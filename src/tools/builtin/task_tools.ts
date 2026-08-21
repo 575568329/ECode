@@ -19,9 +19,9 @@ export const taskOutputTool: Tool = {
   },
   readonly: true,
 
-  async execute(args) {
+  async execute(args, ctx) {
     const { task_id, offset, wait_ms } = args as { task_id: string; offset?: number; wait_ms?: number }
-    const r = await taskRegistry.output(task_id, offset, wait_ms !== undefined ? Math.min(wait_ms, 10_000) : undefined)
+    const r = await (ctx.tasks ?? taskRegistry).output(task_id, offset, wait_ms !== undefined ? Math.min(wait_ms, 10_000) : undefined)
     if ('error' in r) return { content: r.error, is_error: true }
     const tail = r.output.length > 20_000 ? `${r.output.slice(0, 10_000)}\n…（中间截断，完整用 offset 重读或看输出文件）\n${r.output.slice(-8_000)}` : r.output
     return {
@@ -42,9 +42,9 @@ export const taskStopTool: Tool = {
   },
   readonly: false,
 
-  async execute(args) {
+  async execute(args, ctx) {
     const { task_id } = args as { task_id: string }
-    const r = taskRegistry.stop(task_id)
+    const r = (ctx?.tasks ?? taskRegistry).stop(task_id)
     if ('error' in r) return { content: r.error, is_error: true }
     return { content: `已发送终止信号（进程树）：#${task_id}` }
   },

@@ -216,3 +216,60 @@ describe('HostSession（B1 宿主会话）', () => {
     // 零订阅者 fail-closed 的 Broker 单元语义已由 approval.test 覆盖（confirm → false）
   })
 })
+
+describe('B4 验收：双 HostSession 互不串台（D5 会话级状态）', () => {
+  it('子代理进度按会话隔离：各自 updateSubagent 只进自己的事件流', () => {
+    const h1 = new HostSession(makeDeps(new MockProvider([])))
+    const h2 = new HostSession(makeDeps(new MockProvider([])))
+    const e1: ProtocolEvent[] = []
+    const e2: ProtocolEvent[] = []
+    h1.subscribe((e) => e1.push(e))
+    h2.subscribe((e) => e2.push(e))
+    h1.updateSubagent({ id: 'a1', description: '会话一任务', activity: '启动中' })
+    h2.updateSubagent({ id: 'a2', description: '会话二任务', activity: '启动中' })
+    const p1 = e1.filter((e) => e.type === 'subagent/progress')
+    const p2 = e2.filter((e) => e.type === 'subagent/progress')
+    expect(p1.every((e) => (e as { agents: { id: string }[] }).agents.every((a) => a.id === 'a1'))).toBe(true)
+    expect(p2.every((e) => (e as { agents: { id: string }[] }).agents.every((a) => a.id === 'a2'))).toBe(true)
+    h1.removeSubagent('a1')
+    const last1 = e1.filter((e) => e.type === 'subagent/progress').at(-1) as { agents: { id: string }[] }
+    expect(last1.agents).toHaveLength(0)
+    h1.dispose()
+    h2.dispose()
+  })
+
+  it('toolCtx 携带会话级 tasks（bash run_in_background 类任务表隔离；结构存在性断言）', async () => {
+    const host = new HostSession(makeDeps(new MockProvider([])))
+    let seen: unknown = null
+    ;(host as unknown as { channel: { bind(d: unknown): void } }).channel // channel 私有——经公开路径验证：
+    // 用一个非 readonly 探针工具走完整轮，execute 里断言 ctx.tasks/ctx.session 存在
+    const probe: Tool = {
+      name: 'write_probe',
+      description: 'probe',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: false,
+      async execute(_args, ctx) {
+        seen = { tasks: ctx.tasks !== undefined, session: ctx.session !== undefined }
+        return { content: 'ok' }
+      },
+    }
+    const reg = new ToolRegistryImpl()
+    reg.register(probe)
+    const h = new HostSession({ ...makeDeps(new MockProvider([
+      [
+        { type: 'tool_use_start', id: 't9', name: 'write_probe' },
+        { type: 'tool_use_end', id: 't9' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: '完成' }, { type: 'done', stop_reason: 'end' }],
+    ])), tools: reg })
+    h.subscribe((e) => {
+      if (e.type === 'approval/requested') void h.send({ op: 'approval/respond', requestId: e.requestId, decision: 'once' })
+    })
+    await h.send({ op: 'prompt', text: '跑探针', mode: 'StartOrSteer' })
+    await h.whenIdle()
+    expect(seen).toEqual({ tasks: true, session: true })
+    h.dispose()
+    host.dispose()
+  })
+})

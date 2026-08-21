@@ -30,7 +30,7 @@ import { ecodeCommit } from '../services/git.js'
 import { makeSandbox } from '../services/sandbox.js'
 import { buildMediaBlock } from '../services/media.js'
 import { tokensToCost } from '../services/pricing.js'
-import { taskRegistry } from '../services/tasks.js'
+import { TaskRegistry } from '../services/tasks.js'
 import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { HookRunner } from '../services/hooks/runner.js'
@@ -76,6 +76,9 @@ interface QueueEntry {
 
 export class HostSession {
   readonly channel = new InMemoryChannel()
+  /** B4：会话级后台任务表（ctx.tasks/ctx.session.tasks——多会话不串台；模块级全局仅兜底） */
+  private readonly tasks = new TaskRegistry()
+  private readonly subagentView = new Map<string, { id: string; description: string; activity: string }>()
   private readonly broker: ApprovalBroker
   /** 运行态沙箱档（Tab 切档经 sandbox/set 命令改此字段——B5 接线；confirm 策略消费） */
   private sandboxMode: 'default' | 'read-only' | 'workspace-write' | 'full-access'
@@ -105,6 +108,7 @@ export class HostSession {
 
   /** 会话销毁：pending 审批 fail-closed 收敛 + 桥卸载 + 通道关闭 */
   dispose(): void {
+    this.tasks.dispose()
     this.broker.dispose()
     this.abort.abort()
     if (this.bridgesMounted) {
@@ -149,6 +153,17 @@ export class HostSession {
     setSubagentProgressHandler((agents) =>
       this.publish('subagent/progress', { agents: agents.map((a) => ({ id: a.id, description: a.description, activity: a.activity })) }),
     )
+  }
+
+  /** B4（D5）：会话级子代理进度上报（task 工具经 ctx.session 调用；发布 subagent/progress 事件） */
+  updateSubagent(st: { id: string; description: string; activity: string }): void {
+    this.subagentView.set(st.id, st)
+    this.publish('subagent/progress', { agents: [...this.subagentView.values()] })
+  }
+
+  removeSubagent(id: string): void {
+    this.subagentView.delete(id)
+    this.publish('subagent/progress', { agents: [...this.subagentView.values()] })
   }
 
   /** B3：客户端恢复历史会话（宿主 messages 替换为载入内容；history 由调用方先行切 sessionId） */
@@ -320,7 +335,7 @@ export class HostSession {
       if (verdict.additionalContext.length > 0) input = `${input}\n\n[hook context]\n${verdict.additionalContext.join('\n')}`
     }
     // M10-P3 双时点之二：跨 turn 后台任务通知随首轮输入注入
-    for (const n of taskRegistry.collectNotifications()) input = `${input}\n${n}`
+    for (const n of this.tasks.collectNotifications()) input = `${input}\n${n}`
 
     this.publish('turn/started', { turnId })
     this.publish('thread/status', { busy: true, waitingOn: null, iter: 0 })
@@ -397,6 +412,8 @@ export class HostSession {
         maxIterations: this.cfg().maxIterations,
         toolCtx: {
           cwd,
+          session: { tasks: this.tasks, updateSubagent: (st) => this.updateSubagent(st), removeSubagent: (id) => this.removeSubagent(id) },
+          tasks: this.tasks,
           signal: this.abort.signal,
           onBeforeWrite: async (paths, tool, toolUseId) => {
             for (const p of paths) this.editedFiles.add(p)
@@ -489,7 +506,7 @@ export class HostSession {
           feedback = fb
         }
       }
-      const notes = taskRegistry.collectNotifications()
+      const notes = this.tasks.collectNotifications()
       const qualityBlocked = feedback !== undefined || deps.quality?.lastRoundFailed === true || deps.quality?.tripped === true
       if (this.cfg().autoCommit === true && !qualityBlocked) {
         const files = [...this.editedFiles]

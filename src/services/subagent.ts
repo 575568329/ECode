@@ -34,6 +34,14 @@ const SUB_MAX_ITERATIONS = 25
 const SUB_TIMEOUT_MS = 10 * 60_000
 /** 返回结论截断（方案 D12；CC 100k 太宽） */
 const RESULT_MAX_BYTES = 16 * 1024
+/** D5：宿主会话窄端口（结构类型——HostSession 实现；缺省 undefined 走模块级兜底） */
+interface SessionPort {
+  session?: {
+    updateSubagent?(st: SubagentStatus): void
+    removeSubagent?(id: string): void
+  }
+}
+
 /** 子代理禁配清单（D3/D4/D20：递归封顶 + 交互权归主 + 清单主权归主） */
 const EXCLUDED_TOOLS = new Set(['task', 'ask_user', 'todo'])
 
@@ -186,6 +194,7 @@ export function makeSubagentOpts(
   description: string,
   type: SubagentType,
   signal: AbortSignal,
+  onActivity?: (name: string) => void,
 ): LoopRunOptions {
   // 审阅 P1-1/P1-2：桥 getter 优先（TuiApp 运行态：/model 切换、Tab 切沙箱档后取新值）；
   // 构造时取一次=子代理生命周期内配置快照（中途切换影响下一批，优于 cli 静态闭包的永远旧值）
@@ -216,6 +225,7 @@ export function makeSubagentOpts(
           st.activity = name
           notifyProgress()
         }
+        onActivity?.(name)
       },
       onUsage: (i, o, c) => bridge?.usage?.(i, o, c),
       onWarn: (m) => bridge?.warn?.(`「${description}」${m}`),
@@ -293,12 +303,36 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
       const { description, prompt } = args as { description: string; prompt: string; type?: string }
       const type: SubagentType = (args as { type?: string }).type === 'explore' ? 'explore' : 'general'
       const agentId = makeAgentId()
-      activeAgents.set(agentId, { id: agentId, description, activity: '启动中' })
-      notifyProgress()
+      const sess = (ctx as SessionPort).session
+      const up = (st: SubagentStatus): void => {
+        if (sess?.updateSubagent !== undefined) sess.updateSubagent(st)
+        else {
+          activeAgents.set(st.id, st)
+          notifyProgress()
+        }
+      }
+      const bye = (): void => {
+        if (sess?.removeSubagent !== undefined) sess.removeSubagent(agentId)
+        else {
+          activeAgents.delete(agentId)
+          notifyProgress()
+        }
+      }
+      up({ id: agentId, description, activity: '启动中' })
       // 硬超时与用户中断取或（Node 20+ AbortSignal.any）
       const timeout = AbortSignal.timeout(SUB_TIMEOUT_MS)
       const signal = AbortSignal.any([ctx.signal, timeout])
-      const opts = makeSubagentOpts(deps, agentId, description, type, signal)
+      const opts = makeSubagentOpts(deps, agentId, description, type, signal, (name) => {
+        if (sess?.updateSubagent !== undefined) {
+          sess.updateSubagent({ id: agentId, description, activity: name })
+        } else {
+          const st = activeAgents.get(agentId)
+          if (st !== undefined) {
+            st.activity = name
+            notifyProgress()
+          }
+        }
+      })
       const messages: HistoryLine[] = []
       try {
         await runLoop(messages, prompt, opts)
@@ -319,8 +353,7 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
           is_error: true,
         }
       } finally {
-        activeAgents.delete(agentId)
-        notifyProgress()
+        bye()
         // transcript 全量落盘（abort/超时路径也落；callbacks 逐条写缺入参与轮次边界——方案 P2-3）
         // 异步 IO（P2 修复：execute 在主循环事件循环上跑，同步 mkdir/write 冻结渲染）；
         // 0700：transcript 含任务原文，目录不给同机其他账户读

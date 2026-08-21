@@ -28,6 +28,21 @@ export interface ToolContext {
    */
   onBeforeWrite?: (paths: string[], tool: string, toolUseId?: string) => Promise<void>
   /**
+   * M12-B4（D5）：宿主会话引用（HostSession 窄接口——结构类型，工具侧按需判读）。
+   * 多会话并发（serve 多项目/双 HostSession）时，会话级状态（后台任务表/子代理进度）经此解析；
+   * 缺省 undefined=单会话兜底走模块级（argv/旧测试路径），心脏只透传不认识会话。
+   */
+  session?: {
+    /** 会话级后台任务表（bash run_in_background/task_output/task_stop） */
+    tasks?: import('../services/tasks.js').TaskRegistry
+    /** 会话级子代理进度（task 工具执行期上报） */
+    updateSubagent?(st: { id: string; description: string; activity: string }): void
+    removeSubagent?(id: string): void
+  }
+  /** M12-B4：会话级后台任务表快捷位（ctx.session.tasks 的平铺——工具侧免嵌套判空） */
+  tasks?: import('../services/tasks.js').TaskRegistry
+
+  /**
    * M9-P4：沙箱（undefined=未装配如测试；工具 execute 前置校验——心脏只透传不认识模式）。
    * write/edit 用 checkWrite；bash 用 checkBash（deny 才拦，confirm/allow 由 loop confirm 层处理）。
    */

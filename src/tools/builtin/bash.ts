@@ -74,7 +74,7 @@ export const bashTool: Tool = {
     }
     // M10-P3：后台分流（危险命令与沙箱校验照走——黑名单不因后台豁免）
     if (run_in_background === true) {
-      const started = taskRegistry.start(command, ctx.cwd)
+      const started = (ctx.tasks ?? taskRegistry).start(command, ctx.cwd)
       if (!started.ok) return { content: started.reason, is_error: true }
       return {
         content: `后台任务已启动：#${started.task.id}（输出文件 ${started.task.outputFile}）——用 task_output("${started.task.id}") 读增量输出；完成时会在下轮通知`,

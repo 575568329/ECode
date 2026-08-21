@@ -39,6 +39,9 @@ import { InMemoryChannel } from '../protocol/channel.js'
 import type { CommandResult, ImagePayload, ProtocolCommand, ProtocolEvent } from '../protocol/types.js'
 import { ApprovalBroker, type ApprovalPolicy } from './approval.js'
 import { buildPreview } from '../services/preview.js'
+import { setSubagentBridge, setSubagentProgressHandler } from '../services/subagent.js'
+import { setPermissionAsker } from '../services/permissions.js'
+import { setAskUserHandler, type AskUserHandler } from '../tools/builtin/askUserBridge.js'
 
 /** buildSystemPrompt 的技能清单入参形态（结构化取参，避免依赖 skill 具体类型） */
 type SkillPromptSource = Parameters<typeof buildSystemPrompt>[0]
@@ -98,12 +101,60 @@ export class HostSession {
     return unsub
   }
 
-  /** 会话销毁：pending 审批 fail-closed 收敛 + 通道关闭 */
+  /** 会话销毁：pending 审批 fail-closed 收敛 + 桥卸载 + 通道关闭 */
   dispose(): void {
     this.broker.dispose()
     this.abort.abort()
+    if (this.bridgesMounted) {
+      setSubagentBridge(null)
+      setSubagentProgressHandler(null)
+      setPermissionAsker(null)
+      setAskUserHandler(null)
+      this.bridgesMounted = false
+    }
     this.channel.dispose()
   }
+
+  /**
+   * B3：三个模块级桥的宿主侧挂载（TuiApp/cli 调用；宿主测试不自动挂——避免模块单例串台）。
+   * 挂载后子代理 confirm/权限 ask/ask_user 全部经 Broker 走可答帧——TUI 客户端只消费事件。
+   */
+  mountBridges(): void {
+    if (this.bridgesMounted) return
+    this.bridgesMounted = true
+    setPermissionAsker(async (owner, event) => this.broker.permission(owner, event))
+    setAskUserHandler((async (questions: Parameters<AskUserHandler>[0]) => {
+      const r = await this.broker.askUser(questions)
+      return (r ?? { kind: 'cancel' }) as ReturnType<AskUserHandler>
+    }) as AskUserHandler)
+    setSubagentBridge({
+      confirm: (use) => this.hostConfirm(use),
+      warn: (m) => this.publish('notice', { level: 'warn', text: m }),
+      usage: (inp, out, cache) => {
+        const cost = tokensToCost(this.cfg().current.model, { input: inp, output: out, cacheRead: cache?.read ?? 0, cacheCreation: cache?.creation ?? 0 })
+        this.publish('usage', { input: inp, output: out, cacheRead: cache?.read, cacheCreation: cache?.creation, costUsd: cost ?? undefined })
+      },
+      onBeforeWrite: async (paths, tool, toolUseId) => {
+        for (const p of paths) this.editedFiles.add(p)
+        await this.deps.checkpoint?.snapshot(this.deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
+      },
+      getProviderReq: () => buildProviderReq(this.cfg()),
+      getProvider: () => this.deps.providerRegistry.getByType(this.cfg().providers[this.cfg().current.name].type),
+      getSandbox: () =>
+        makeSandbox(this.sandboxMode, this.deps.cwd ?? process.cwd(), this.cfg().sandbox?.blockedCommands ?? []),
+      getModel: () => this.cfg().current.model,
+    })
+    setSubagentProgressHandler((agents) =>
+      this.publish('subagent/progress', { agents: agents.map((a) => ({ id: a.id, description: a.description, activity: a.activity })) }),
+    )
+  }
+
+  /** B3：同进程客户端重建转录用（TuiApp messagesToCommitted；B7 起换 session/read 命令） */
+  get transcript(): readonly HistoryLine[] {
+    return this.messages
+  }
+
+  private bridgesMounted = false
 
   send(cmd: ProtocolCommand): Promise<CommandResult> {
     return this.channel.send(cmd)

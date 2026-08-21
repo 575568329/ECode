@@ -29,6 +29,8 @@ import { setWebSearchProvider } from '../tools/builtin/web_search.js'
 import { taskRegistry } from '../services/tasks.js'
 import { evalPermission, loadPermissionLayers, saveLocalPermission, askPermissionInteractive } from '../services/permissions.js'
 import { join } from 'node:path'
+import { writeFileSync, chmodSync } from 'node:fs'
+import * as os from 'node:os'
 import { spawn } from 'node:child_process'
 import { render } from 'ink'
 import React from 'react'
@@ -57,6 +59,7 @@ import { setWebFetchLimits } from '../tools/builtin/web_fetch.js'
 import { BUILTIN_TOOLS } from '../tools/builtin/index.js'
 import { PluginLoader } from '../services/plugin/loader.js'
 import { HostSession } from '../host/session.js'
+import { serveHost } from '../server/http.js'
 
 interface Deps {
   providerRegistry: LLMProviderRegistry
@@ -269,7 +272,43 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
   process.stdout.write('\n')
 }
 
+/**
+ * M12-B7：`ecode serve` 常驻模式——单会话宿主上 HTTP（多项目 ProjectRegistry 在 B8）。
+ * ready 单行 JSON 契约（orca 式）：stdout 只给端口与注册文件路径——**token 不打 stdout**（防本机进程读屏）。
+ */
+async function serveMode(): Promise<void> {
+  const sessionId = new Date().toISOString().replace(/[:.]/g, '-')
+  const logger = new JsonlLogger(new LogStore(join(process.cwd(), '.ecode', 'logs', `serve-${sessionId}.jsonl`), sessionId))
+  const config = loadConfig()
+  const deps = makeDeps(config, logger, sessionId)
+  const host = new HostSession({
+    providerRegistry: deps.providerRegistry,
+    tools: deps.tools,
+    logger: deps.logger,
+    history: deps.history,
+    getConfig: () => config,
+    orchestrator: deps.orchestrator,
+    skillListForPrompt: () => deps.skillRegistry.listForPrompt(),
+    ...(deps.hookRunner != null ? { hookRunner: deps.hookRunner } : {}),
+    ...(deps.checkpoint != null ? { checkpoint: deps.checkpoint } : {}),
+    ...(deps.quality != null ? { quality: deps.quality } : {}),
+  })
+  host.mountBridges()
+  const srv = await serveHost(host, { port: Number(process.env.ECODE_SERVE_PORT ?? 0) })
+  // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读
+  const regPath = join(os.homedir(), '.ecode', 'server.json')
+  writeFileSync(regPath, JSON.stringify({ id: sessionId, port: srv.port, token: srv.token, pid: process.pid }, null, 2), { mode: 0o600 })
+  chmodSync(regPath, 0o600)
+  console.log(JSON.stringify({ type: 'ready', schemaVersion: 1, bound: `127.0.0.1:${srv.port}`, register: regPath }))
+  await new Promise<never>(() => {}) // 常驻（SIGINT 走 main 已挂的 graceful 路径）
+}
+
 async function main(): Promise<void> {
+  // M12：`ecode serve` 分流（常驻宿主 HTTP——不初始化 Ink）
+  if (process.argv[2] === 'serve') {
+    await serveMode()
+    return
+  }
   // P1-16：logger + process handlers 提前到 loadConfig 前（配置失败也要记日志 + 全局兜底尽早挂）
   const sessionId = new Date().toISOString().replace(/[:.]/g, '-')
   const logPath = join(process.cwd(), '.ecode', 'logs', `${sessionId}.jsonl`)

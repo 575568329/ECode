@@ -70,7 +70,7 @@ function makeDeps(provider: LLMProvider): HostDeps {
     tools: reg,
     logger: noopLogger,
     history: new NoopHistoryStore(),
-    config,
+    getConfig: () => config,
     orchestrator,
     skillListForPrompt: () => [],
   }

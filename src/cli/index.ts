@@ -214,7 +214,7 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
     tools: deps.tools,
     logger: deps.logger,
     history: deps.history,
-    config: deps.config,
+    getConfig: () => deps.config,
     orchestrator: deps.orchestrator,
     skillListForPrompt: () => deps.skillRegistry.listForPrompt(),
     hookRunner: deps.hookRunner,

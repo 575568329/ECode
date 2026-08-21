@@ -48,7 +48,8 @@ export interface HostDeps {
   tools: ToolRegistry
   logger: Logger
   history: HistoryStore
-  config: Config
+  /** 运行态配置源（TUI /model·/config 切换后宿主取新值——getter 防陈旧闭包） */
+  getConfig: () => Config
   orchestrator: CompactionOrchestrator
   skillListForPrompt: () => SkillPromptSource
   hookRunner?: HookRunner | null
@@ -87,7 +88,7 @@ export class HostSession {
     this.channel.bind((cmd) => this.dispatch(cmd))
     this.broker = new ApprovalBroker(this.channel, deps.approvalPolicy ?? 'ask')
     this.sandboxMode =
-      (deps.config.sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default'
+      (this.cfg().sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default'
   }
 
   /** 客户端订阅事件流（B2：订阅即重放 pending 可答帧——重连/换端恢复确认上下文） */
@@ -106,6 +107,11 @@ export class HostSession {
 
   send(cmd: ProtocolCommand): Promise<CommandResult> {
     return this.channel.send(cmd)
+  }
+
+  /** 运行态配置（/model·/config 切换后取新值——B3 TUI 接线的前提） */
+  private cfg(): Config {
+    return this.deps.getConfig()
   }
 
   /** 等到空闲（argv 模式收尾用；含轮末兜底队列排空） */
@@ -202,7 +208,7 @@ export class HostSession {
 
   private async startTurn(input: string, blocks?: ImageBlock[]): Promise<void> {
     const deps = this.deps
-    if (deps.config.providers[deps.config.current.name] === undefined) {
+    if (this.cfg().providers[this.cfg().current.name] === undefined) {
       this.publish('systemMsg', { text: '配置不完整（/setup）' })
       return
     }
@@ -230,18 +236,20 @@ export class HostSession {
     this.publish('turn/started', { turnId })
     this.publish('thread/status', { busy: true, waitingOn: null, iter: 0 })
     try {
-      const provider = deps.providerRegistry.getByType(deps.config.providers[deps.config.current.name].type)
-      const providerReq = buildProviderReq(deps.config)
-      if (this.ctxWindowCache === null) {
-        this.ctxWindowCache = await resolveContextWindow(
-          deps.config.current.model,
-          deps.config.providers[deps.config.current.name]?.contextWindow,
-        )
-      }
+      const provider = deps.providerRegistry.getByType(this.cfg().providers[this.cfg().current.name].type)
+      const providerReq = buildProviderReq(this.cfg())
+      // 局部量承接（属性跨 await 的窄化会丢）
+      const ctxWindow =
+        this.ctxWindowCache ??
+        (this.ctxWindowCache = await resolveContextWindow(
+          this.cfg().current.model,
+          this.cfg().providers[this.cfg().current.name]?.contextWindow,
+        ))
+      const maxKB = this.cfg().maxInstructionsKB
       const system = buildSystemPrompt(
         deps.skillListForPrompt(),
-        this.ctxWindowCache,
-        deps.config.maxInstructionsKB !== undefined ? { maxInstructionBytes: deps.config.maxInstructionsKB * 1024 } : undefined,
+        ctxWindow,
+        maxKB !== undefined ? { maxInstructionBytes: maxKB * 1024 } : undefined,
       )
       const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, {
         onCompacted: () => this.publish('compacted', {}),
@@ -268,7 +276,7 @@ export class HostSession {
               summary: (r.content as string).split('\n')[0]?.slice(0, 80) ?? '',
             }),
           onUsage: (inp, out, cache) => {
-            const cost = tokensToCost(deps.config.current.model, {
+            const cost = tokensToCost(this.cfg().current.model, {
               input: inp,
               output: out,
               cacheRead: cache?.read ?? 0,
@@ -288,7 +296,7 @@ export class HostSession {
         },
         providerReq,
         system,
-        maxIterations: deps.config.maxIterations,
+        maxIterations: this.cfg().maxIterations,
         toolCtx: {
           cwd,
           signal: this.abort.signal,
@@ -296,11 +304,11 @@ export class HostSession {
             for (const p of paths) this.editedFiles.add(p)
             await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
           },
-          model: deps.config.current.model,
+          model: this.cfg().current.model,
           sandbox: makeSandbox(
-            (deps.config.sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default',
+            (this.cfg().sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default',
             cwd,
-            deps.config.sandbox?.blockedCommands ?? [],
+            this.cfg().sandbox?.blockedCommands ?? [],
           ),
         },
         onBeforeRequest,
@@ -385,7 +393,7 @@ export class HostSession {
       }
       const notes = taskRegistry.collectNotifications()
       const qualityBlocked = feedback !== undefined || deps.quality?.lastRoundFailed === true || deps.quality?.tripped === true
-      if (this.deps.config.autoCommit === true && !qualityBlocked) {
+      if (this.cfg().autoCommit === true && !qualityBlocked) {
         const files = [...this.editedFiles]
         this.editedFiles.clear()
         if (files.length > 0) {

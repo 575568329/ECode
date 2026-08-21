@@ -222,6 +222,8 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
     quality: deps.quality,
     approvalPolicy,
   })
+  // B3：三桥宿主侧挂载（argv 无订阅者 → ask_user/权限/子代理副作用全 fail-closed——D1 语义）
+  host.mountBridges()
   host.subscribe((ev) => {
     switch (ev.type) {
       case 'delta':

@@ -39,6 +39,7 @@ interface SessionPort {
   session?: {
     updateSubagent?(st: SubagentStatus): void
     removeSubagent?(id: string): void
+    confirmTool?(use: ToolUseBlock): Promise<boolean>
   }
 }
 
@@ -195,6 +196,7 @@ export function makeSubagentOpts(
   type: SubagentType,
   signal: AbortSignal,
   onActivity?: (name: string) => void,
+  sessionConfirm?: (use: ToolUseBlock) => Promise<boolean>,
 ): LoopRunOptions {
   // 审阅 P1-1/P1-2：桥 getter 优先（TuiApp 运行态：/model 切换、Tab 切沙箱档后取新值）；
   // 构造时取一次=子代理生命周期内配置快照（中途切换影响下一批，优于 cli 静态闭包的永远旧值）
@@ -244,7 +246,7 @@ export function makeSubagentOpts(
         ? { model: bridge?.getModel?.() ?? deps.getModel?.() }
         : {}),
     },
-    confirm: bridgeConfirm,
+    confirm: sessionConfirm ?? bridgeConfirm,
     signal,
     onBeforeRequest,
     afterTools: deps.makeAfterTools() ?? undefined,
@@ -332,7 +334,7 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
             notifyProgress()
           }
         }
-      })
+      }, sess?.confirmTool)
       const messages: HistoryLine[] = []
       try {
         await runLoop(messages, prompt, opts)

@@ -10,6 +10,7 @@
  */
 
 import { openSync, closeSync, existsSync, realpathSync, statSync, unlinkSync, mkdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { HostSession } from '../host/session.js'
@@ -61,16 +62,18 @@ export class ProjectRegistry {
   }
 
   private normalize(path: string): string {
+    // 统一正斜杠（HTTP 项目路径约定；Windows realpath 返回反斜杠——两端一致才可 Set 命中）
+    const fwd = (p: string): string => p.split(String.fromCharCode(92)).join('/')
     try {
-      return realpathSync(path)
+      return fwd(realpathSync(path))
     } catch {
-      return path
+      return fwd(path)
     }
   }
 
   private lockPath(cwd: string): string {
-    // 项目路径 hash 化文件名（防路径分隔符/非法字符；内容寻址非加密用途）
-    const key = Buffer.from(cwd).toString('base64url').slice(0, 40)
+    // 项目路径哈希文件名（sha1 40 hex——base64 截断 40 字符在长公共前缀（同 Temp 目录）下会碰撞，实测）
+    const key = createHash('sha1').update(cwd).digest('hex')
     return join(this.lockDir, `project-${key}.lock`)
   }
 

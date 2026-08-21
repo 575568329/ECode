@@ -38,6 +38,10 @@ export interface ToolContext {
     /** 会话级子代理进度（task 工具执行期上报） */
     updateSubagent?(st: { id: string; description: string; activity: string }): void
     removeSubagent?(id: string): void
+    /** B8.2：子代理 confirm 会话化（多宿主不串台——模块级桥降为单会话兜底） */
+    confirmTool?(use: import('../core/types.js').ToolUseBlock): Promise<boolean>
+    /** B8.2：ask_user 会话化（argv/多宿主 fail-closed 语义由宿主 broker 决定） */
+    askUser?(questions: unknown[]): Promise<unknown>
   }
   /** M12-B4：会话级后台任务表快捷位（ctx.session.tasks 的平铺——工具侧免嵌套判空） */
   tasks?: import('../services/tasks.js').TaskRegistry

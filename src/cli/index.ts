@@ -59,7 +59,8 @@ import { setWebFetchLimits } from '../tools/builtin/web_fetch.js'
 import { BUILTIN_TOOLS } from '../tools/builtin/index.js'
 import { PluginLoader } from '../services/plugin/loader.js'
 import { HostSession } from '../host/session.js'
-import { serveHost } from '../server/http.js'
+import { serveMulti } from '../server/multi.js'
+import { ProjectRegistry } from '../server/projects.js'
 
 interface Deps {
   providerRegistry: LLMProviderRegistry
@@ -297,12 +298,41 @@ async function serveMode(): Promise<void> {
     ...(deps.quality != null ? { quality: deps.quality } : {}),
   })
   host.mountBridges()
-  const srv = await serveHost(host, { port: Number(process.env.ECODE_SERVE_PORT ?? 0) })
+  const registry = new ProjectRegistry({
+    createSession: (cwd) => {
+      const sid = new Date().toISOString().replace(/[:.]/g, '-')
+      const projDeps = makeDeps(config, logger, sid, cwd)
+      const h = new HostSession({
+        providerRegistry: projDeps.providerRegistry,
+        tools: projDeps.tools,
+        logger: projDeps.logger,
+        history: projDeps.history,
+        getConfig: () => config,
+        orchestrator: projDeps.orchestrator,
+        skillListForPrompt: () => projDeps.skillRegistry.listForPrompt(),
+        ...(projDeps.hookRunner != null ? { hookRunner: projDeps.hookRunner } : {}),
+        ...(projDeps.checkpoint != null ? { checkpoint: projDeps.checkpoint } : {}),
+        ...(projDeps.quality != null ? { quality: projDeps.quality } : {}),
+      })
+      h.mountBridges() // 每项目宿主各挂三桥（B8.2 ctx 会话化后多宿主不串台；模块级为单会话兜底）
+      return h
+    },
+  })
+  registry.register(process.cwd())
+  // 多项目 serve（B8.2）：默认项目=启动 cwd；/api/projects 列表 + /api/p/<path>/ 项目路由
+  const srv = await serveMulti({ registry, defaultCwd: process.cwd() }, { port: Number(process.env.ECODE_SERVE_PORT ?? 0) })
   // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读
   const regPath = join(os.homedir(), '.ecode', 'server.json')
   writeFileSync(regPath, JSON.stringify({ id: sessionId, port: srv.port, token: srv.token, pid: process.pid }, null, 2), { mode: 0o600 })
   chmodSync(regPath, 0o600)
   console.log(JSON.stringify({ type: 'ready', schemaVersion: 1, bound: `127.0.0.1:${srv.port}`, register: regPath }))
+  // 空闲回收（30 分钟 sweep；审批/UI 挂起不回收）
+  const sweep = setInterval(() => void registry.sweepIdle(), 60_000)
+  void sweep
+  process.once('SIGINT', () => {
+    clearInterval(sweep)
+    registry.disposeAll()
+  })
   await new Promise<never>(() => {}) // 常驻（SIGINT 走 main 已挂的 graceful 路径）
 }
 

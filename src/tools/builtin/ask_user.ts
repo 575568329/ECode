@@ -89,11 +89,20 @@ export const askUserTool: Tool = {
   },
   readonly: true,
 
-  async execute(args) {
+  async execute(args, ctx) {
     const { questions } = args as { questions: AskUserQuestion[] }
     const invalid = validateAskUserInput(questions)
     if (invalid !== null) {
       return { content: `ask_user 入参校验失败：${invalid}。请修正后重试（每题选项不重复、问题文本不重复、header ≤12 字符）。`, is_error: true }
+    }
+    // B8.2：宿主会话端口优先（多宿主各自的 broker）；模块桥降为单会话兜底
+    const sessAsk = (ctx as { session?: { askUser?(q: unknown[]): Promise<unknown> } }).session?.askUser
+    if (sessAsk !== undefined) {
+      const r = await sessAsk(questions)
+      if (r === null || r === undefined) {
+        return { content: '当前为非交互环境，无法弹出选项面板。请基于上下文选择最合理的默认方案继续执行，并向用户说明你采用的假设。' }
+      }
+      return { content: `用户已作答：${JSON.stringify((r as { answers?: unknown }).answers ?? r)}` }
     }
     if (!askUserInteractive()) {
       // M8-D5：argv 单次模式/无 UI——返回提示让模型自行决策，不 is_error 挂死

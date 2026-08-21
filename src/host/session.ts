@@ -422,7 +422,16 @@ export class HostSession {
         maxIterations: this.cfg().maxIterations,
         toolCtx: {
           cwd,
-          session: { tasks: this.tasks, updateSubagent: (st) => this.updateSubagent(st), removeSubagent: (id) => this.removeSubagent(id) },
+          session: {
+            tasks: this.tasks,
+            updateSubagent: (st) => this.updateSubagent(st),
+            removeSubagent: (id) => this.removeSubagent(id),
+            confirmTool: (use) => this.hostConfirm(use),
+            askUser: async (qs) => {
+              const r = await this.broker.askUser(qs)
+              return (r ?? null) as unknown
+            },
+          },
           tasks: this.tasks,
           signal: this.abort.signal,
           onBeforeWrite: async (paths, tool, toolUseId) => {

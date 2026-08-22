@@ -125,6 +125,22 @@ describe('FileHistoryStore boundary 支持（M5 P6）', () => {
     expect(boundary.summary).toBe('摘要')
   })
 
+  it('M12-P0：appendUsageStats 落盘 + restoreFull/restore 跳过 stats 行（不进消息流）', () => {
+    const dir = path.join(tmp, `stats-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'sess-stats', model: 'm', dir })
+    store.append(userMsg('问'))
+    store.appendUsageStats({ stats: true, ts: 1700000000000, cwd: 'D:/p/x', model: 'm', input: 10, output: 2, cacheRead: 4, cacheCreation: 1, costUsd: 0.001, mcpCalls: 3 })
+    store.append(assistantMsg('答'))
+    const content = fs.readFileSync(path.join(dir, 'sess-stats.jsonl'), 'utf8')
+    const lines = content.trim().split('\n')
+    expect(lines.length).toBe(4) // meta + user + stats + assistant
+    expect(JSON.parse(lines[2])).toMatchObject({ stats: true, cwd: 'D:/p/x', mcpCalls: 3 })
+    const reader = new FileHistoryStore({ sessionId: 'reader', model: 'm', dir })
+    // restore 与 restoreFull 都不含 stats 行（投影/翻译/翻转零影响）
+    expect(reader.restore('sess-stats')).toHaveLength(2)
+    expect(reader.restoreFull('sess-stats')).toHaveLength(2)
+  })
+
   it('restoreFull 返回全量 HistoryLine（含 boundary，跳过 meta）', () => {
     const dir = path.join(tmp, `c-${Date.now()}`)
     const store = new FileHistoryStore({ sessionId: 'sess-c', model: 'm', dir })

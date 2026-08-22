@@ -28,6 +28,23 @@ export interface SessionMeta {
   firstUser: string // 首条 user 消息摘要（/history 列表显示）
 }
 
+/** M12-P0：会话用量统计行（追加进会话 JSONL；自包含 cwd/model/ts——聚合不依赖 meta）。
+ *  不属于 HistoryLine 联合——restoreFull 按 stats 标记跳过，永不进消息流（投影/翻译/rewind 零影响）。
+ *  mcpCalls 是会话累计值（聚合取每会话最后一条）；漏尾说明：MCP 调用后必有下一轮 LLM 调用
+ *  （工具结果回喂），usage 帧必到，纯 MCP 调用戛然而止的会话会低估。 */
+export interface UsageStatsRecord {
+  stats: true
+  ts: number
+  cwd: string
+  model: string
+  input: number
+  output: number
+  cacheRead: number
+  cacheCreation: number
+  costUsd: number
+  mcpCalls: number
+}
+
 export interface HistoryStore {
   /** 增量追加一条 message（loop finally 已调，M1 占位兑现） */
   append(msg: Message): void
@@ -41,6 +58,8 @@ export interface HistoryStore {
   appendCompactBoundary(boundary: BoundaryLine): void
   /** /rewind 追加回退行（append-only；M9-P2 投影截断锚，重启恢复后仍生效） */
   appendRewind(line: RewindLine): void
+  /** M12-P0：追加用量统计行（usage 帧驱动；聚合扫描用，不进消息流） */
+  appendUsageStats(record: UsageStatsRecord): void
   /** 切换 sessionId（/history 恢复后续写新文件；旧文件只读不破坏，D2） */
   setSessionId(id: string, model?: string): void
   /** 当前 sessionId（M9-P1：checkpoint 快照目录键控用；restore 后为新 id） */
@@ -125,6 +144,11 @@ export class FileHistoryStore implements HistoryStore {
     this.writeLine(JSON.stringify(boundary))
   }
 
+  /** M12-P0：用量统计行（append-only；读侧 restoreFull 按 stats 标记跳过） */
+  appendUsageStats(record: UsageStatsRecord): void {
+    this.writeLine(JSON.stringify(record))
+  }
+
   /** 切换 sessionId（/history 恢复后续写新文件；旧文件只读不破坏，D2） */
   setSessionId(id: string, model?: string): void {
     if (id === this.sessionId) return
@@ -202,6 +226,7 @@ export class FileHistoryStore implements HistoryStore {
       try {
         const parsed = JSON.parse(line) as { meta?: true; compact_boundary?: true; rewind?: true } & HistoryLine
         if (parsed.meta) continue // 跳过 meta 行
+        if ((parsed as { stats?: true }).stats === true) continue // M12-P0：跳过用量统计行（不进消息流）
         // 终审 P2-1：按标记字段三分发——rewind 行伪装成 Message 是类型谎言（下游守卫兜得住，但新消费点会踩）
         if (parsed.compact_boundary) lines.push(parsed as BoundaryLine)
         else if (parsed.rewind) lines.push(parsed as RewindLine)
@@ -310,6 +335,7 @@ export class NoopHistoryStore implements HistoryStore {
   append(_msg: Message): void {}
   appendCompactBoundary(_boundary: BoundaryLine): void {}
   appendRewind(_line: RewindLine): void {}
+  appendUsageStats(_record: UsageStatsRecord): void {}
   loadAll(): SessionMeta[] {
     return []
   }

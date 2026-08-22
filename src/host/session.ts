@@ -234,6 +234,9 @@ export class HostSession {
     for (const r of rs) r()
   }
 
+  /** M12-P0：会话累计器（四维 + 成本 + MCP 调用数）——/stats 聚合的数据源之一（stats 行落盘） */
+  private readonly usageTotals = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0, mcpCalls: 0 }
+
   private publish(type: ProtocolEvent['type'], data: Record<string, unknown> = {}): void {
     this.channel.publish({ type, ...data } as Parameters<InMemoryChannel['publish']>[0])
   }
@@ -249,12 +252,30 @@ export class HostSession {
       cacheRead: cache?.read ?? 0,
       cacheCreation: cache?.creation ?? 0,
     })
+    this.usageTotals.input += inputTokens
+    this.usageTotals.output += outputTokens
+    this.usageTotals.cacheRead += cache?.read ?? 0
+    this.usageTotals.cacheCreation += cache?.creation ?? 0
+    if (cost != null) this.usageTotals.costUsd += cost
     this.publish('usage', {
       input: inputTokens,
       output: outputTokens,
       cacheRead: cache?.read,
       cacheCreation: cache?.creation,
       costUsd: cost ?? undefined,
+    })
+    // M12-P0：stats 行落盘（自包含 cwd/model/ts；mcpCalls 为累计快照——聚合取每会话最后一条）
+    this.deps.history.appendUsageStats({
+      stats: true,
+      ts: Date.now(),
+      cwd: this.deps.cwd ?? process.cwd(),
+      model: this.cfg().current.model,
+      input: inputTokens,
+      output: outputTokens,
+      cacheRead: cache?.read ?? 0,
+      cacheCreation: cache?.creation ?? 0,
+      costUsd: cost ?? 0,
+      mcpCalls: this.usageTotals.mcpCalls,
     })
   }
 
@@ -413,6 +434,7 @@ export class HostSession {
           onText: (t) => this.publish('delta', { turnId, text: t }),
           onToolStart: (name) => this.publish('item/started', { itemId: `${turnId}-${++this.itemSeq}`, name }),
           onToolResult: (id, name, r) => {
+            if (name.startsWith('mcp__')) this.usageTotals.mcpCalls++ // M12-P0：MCP 调用计数（随下一条 stats 行落盘）
             const use = this.messages
               .filter(isMessageLine)
               .filter((l) => l.role === 'assistant')

@@ -170,3 +170,13 @@ describe('buildDoctorPrompt（审阅 P1-4 运行时构造）', () => {
     expect(prompt).not.toContain('~/.ecode/settings') // 同样按 homedir 展开
   })
 })
+
+describe('/stats（M12-P0 跨会话用量统计）', () => {
+  it('注册且返回文本（无数据分支也不炸）', () => {
+    const cmd = commandRegistry.get('stats')
+    expect(cmd).toBeDefined()
+    const r = cmd!.run()
+    expect(typeof r.output).toBe('string')
+    expect(r.output).toContain('用量统计')
+  })
+})

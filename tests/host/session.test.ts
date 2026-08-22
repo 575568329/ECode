@@ -10,7 +10,7 @@ import type { Delta } from '../../src/core/types.js'
 import { ToolRegistryImpl } from '../../src/tools/registry.js'
 import type { Tool } from '../../src/tools/interface.js'
 import type { Logger } from '../../src/services/logger.js'
-import { NoopHistoryStore } from '../../src/services/history.js'
+import { NoopHistoryStore, type HistoryStore } from '../../src/services/history.js'
 import { emptyShellConfig, type Config } from '../../src/services/config.js'
 import { CompactionOrchestrator } from '../../src/services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../../src/services/compaction/summarize.js'
@@ -214,6 +214,78 @@ describe('HostSession（B1 宿主会话）', () => {
       host.dispose()
     }
     // 零订阅者 fail-closed 的 Broker 单元语义已由 approval.test 覆盖（confirm → false）
+  })
+})
+
+describe('M12-P0：用量统计地基（累计器 + stats 行落盘 + MCP 计数）', () => {
+  /** 捕获 appendUsageStats 的 spy store（其余 Noop） */
+  function spyHistory(): { store: HistoryStore; records: Array<Record<string, unknown>> } {
+    const records: Array<Record<string, unknown>> = []
+    const base = new NoopHistoryStore()
+    return {
+      records,
+      store: {
+        append: (m) => base.append(m),
+        appendCompactBoundary: (b) => base.appendCompactBoundary(b),
+        appendRewind: (l) => base.appendRewind(l),
+        appendUsageStats: (r) => {
+          records.push({ ...r })
+        },
+        loadAll: () => base.loadAll(),
+        restore: (id) => base.restore(id),
+        restoreFull: (id) => base.restoreFull(id),
+        setSessionId: (id, m) => base.setSessionId(id, m),
+        currentSessionId: () => base.currentSessionId(),
+      } as unknown as HistoryStore,
+    }
+  }
+
+  it('usage 帧 → stats 行落盘（自包含 cwd/model/ts，累计器加总）', async () => {
+    const p = new MockProvider([
+      [
+        { type: 'usage', input_tokens: 100, output_tokens: 10, cache_read_tokens: 40, cache_creation_tokens: 5 },
+        { type: 'text', text: 'ok' },
+        { type: 'done', stop_reason: 'end' },
+      ],
+      [
+        { type: 'usage', input_tokens: 200, output_tokens: 20 },
+        { type: 'text', text: 'done' },
+        { type: 'done', stop_reason: 'end' },
+      ],
+    ])
+    const h = spyHistory()
+    const host = new HostSession({ ...makeDeps(p), history: h.store, cwd: 'D:/proj/x' })
+    await host.send({ op: 'prompt', text: 'a', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    expect(h.records.length).toBe(1)
+    expect(h.records[0]).toMatchObject({ stats: true, cwd: 'D:/proj/x', model: 'm', input: 100, output: 10, cacheRead: 40, cacheCreation: 5 })
+    await host.send({ op: 'prompt', text: 'b', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    expect(h.records.length).toBe(2)
+    expect(h.records[1]).toMatchObject({ input: 200, output: 20, cacheRead: 0 })
+  })
+
+  it('mcp__ 前缀工具调用计数（stats 行携带累计值）', async () => {
+    const reg = new ToolRegistryImpl()
+    reg.register({ ...echoTool, name: 'mcp__srv__search' })
+    const p = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 't1', name: 'mcp__srv__search' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [
+        { type: 'usage', input_tokens: 50, output_tokens: 5 },
+        { type: 'text', text: 'done' },
+        { type: 'done', stop_reason: 'end' },
+      ],
+    ])
+    const h = spyHistory()
+    const host = new HostSession({ ...makeDeps(p), tools: reg, history: h.store })
+    await host.send({ op: 'prompt', text: 'a', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    expect(h.records).toHaveLength(1)
+    expect(h.records[0]).toMatchObject({ input: 50, mcpCalls: 1 })
   })
 })
 

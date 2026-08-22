@@ -7,7 +7,8 @@
 
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { sep } from 'node:path'
+import { join as pathJoin, sep } from 'node:path'
+import { aggregateStats, formatStats } from '../services/stats.js'
 
 /** 命令执行结果：输出文本（给用户）+ 可选副作用 action */
 export interface CommandResult {
@@ -125,6 +126,19 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     name: 'cost',
     description: '查看 token 用量与成本',
     run: () => ({ action: 'cost' }),
+  })
+  registry.register({
+    name: 'stats',
+    description: '跨会话用量统计（按天/模型/项目/会话聚合 token·成本·命中率·MCP）',
+    run: () => {
+      // 统计是全局视角（默认会话目录，不随当前会话）；失败不隔断 TUI
+      try {
+        const agg = aggregateStats(pathJoin(homedir(), '.ecode', 'sessions'))
+        return { output: formatStats(agg) }
+      } catch (e) {
+        return { output: `统计不可用：${e instanceof Error ? e.message : String(e)}` }
+      }
+    },
   })
   registry.register({
     name: 'skill',

@@ -27,6 +27,17 @@ describe('translateOpenaiStream', () => {
     expect(deltas).toContainEqual({ type: 'usage', input_tokens: 20, output_tokens: 5, cache_read_tokens: 80 })
   })
 
+  it('审阅 P2-6：先带 cached 后无 details 的多 usage chunk——后者清掉旧 cacheRead 防 stale 组合重复计价', () => {
+    const chunks = [
+      { choices: [], usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 80 } } },
+      { choices: [], usage: { prompt_tokens: 50, completion_tokens: 3 } },
+    ]
+    const deltas = translateOpenaiStream(chunks as never)
+    const usageFrames = deltas.filter((d) => d.type === 'usage')
+    // 累计+单帧输出（flush 一帧）：第二帧无 details → 清掉旧 cacheRead=80，最终帧不带旧值（不然 50 全额+80 旧值双重计价）
+    expect(usageFrames).toEqual([{ type: 'usage', input_tokens: 50, output_tokens: 3 }])
+  })
+
   it('usage 无 cached_tokens → input 原值透传（去重分支不影响无缓存调用）', () => {
     const chunks = [{ choices: [], usage: { prompt_tokens: 50, completion_tokens: 5 } }]
     const deltas = translateOpenaiStream(chunks as never)

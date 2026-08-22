@@ -21,7 +21,8 @@ const statsLine = (over: Partial<Record<string, unknown>>): Record<string, unkno
   output: 10,
   cacheRead: 50,
   cacheCreation: 0,
-  costUsd: 0.01,
+  costCny: 0.01,
+  costKnown: true,
   mcpCalls: 0,
   ...over,
 })
@@ -68,13 +69,16 @@ describe('aggregateStats（含文件级 mtime 缓存）', () => {
       fs.writeFileSync(path.join(dir, `${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
     w('s1', [statsLine({ input: 100, output: 10, cacheRead: 100, costUsd: 0.02, mcpCalls: 2, ts: new Date(2026, 7, 17, 10, 0).getTime() })])
     w('s2', [
-      statsLine({ input: 300, output: 30, cacheRead: 0, costUsd: 0.03, mcpCalls: 0, ts: new Date(2026, 7, 18, 10, 0).getTime(), cwd: 'D:/other/projB', model: 'glm-4.6' }),
+      statsLine({ input: 300, output: 30, cacheRead: 0, costCny: 0.03, mcpCalls: 0, ts: new Date(2026, 7, 18, 10, 0).getTime(), cwd: 'D:/other/projB', model: 'glm-4.6' }),
     ])
     w('s-nostats', [{ role: 'user', content: [{ type: 'text', text: 'x' }] }]) // 无 stats 跳过
     const agg = aggregateStats(dir, path.join(dir, 'cache.json'))
     expect(agg.sessions).toBe(2)
     expect(agg.totals.input).toBe(400)
     expect(agg.totals.cacheRead).toBe(100)
+    // 审阅 P0-1：多模型会话 byModel 守恒（s2 双模型的行级归账求和 === 总计）
+    const modelSum = agg.byModel.reduce((n, m) => n + m.input, 0)
+    expect(modelSum).toBe(agg.totals.input)
     expect(agg.cacheHitRate).toBeCloseTo(100 / 500, 5) // cacheRead/(input+cacheRead) = 100/(400+100)
     expect(agg.mcpCalls).toBe(2)
     expect(agg.byDay.map((d) => d.date)).toEqual(['2026-08-18', '2026-08-17'])
@@ -115,15 +119,16 @@ describe('formatStats', () => {
     expect(formatStats(agg)).toContain('暂无数据')
     // 有数据形态由聚合用例保证，这里锁输出结构标签
     const fake = {
-      totals: { input: 1_500_000, output: 200_000, cacheRead: 900_000, cacheCreation: 100_000, costUsd: 1.234 },
+      totals: { input: 1_500_000, output: 200_000, cacheRead: 900_000, cacheCreation: 100_000, costCny: 1.234 },
       mcpCalls: 7,
       sessions: 3,
+      costUnknownSessions: 1,
       cacheHitRate: 0.375,
-      byDay: [{ date: '2026-08-18', sessions: 2, input: 100, output: 10, cacheRead: 50, cacheCreation: 0, costUsd: 0.01, mcpCalls: 0 }],
-      byModel: [{ model: 'glm-5.2', input: 100, output: 10, cacheRead: 50, cacheCreation: 0, costUsd: 0.01 }],
-      byProject: [{ project: 'ECode', input: 100, output: 10, cacheRead: 50, cacheCreation: 0, costUsd: 0.01, mcpCalls: 7 }],
+      byDay: [{ date: '2026-08-18', sessions: 2, input: 100, output: 10, cacheRead: 50, cacheCreation: 0, costCny: 0.01, mcpCalls: 0 }],
+      byModel: [{ model: 'glm-5.2', input: 100, output: 10, cacheRead: 50, cacheCreation: 0, costCny: 0.01 }],
+      byProject: [{ project: 'ECode', input: 100, output: 10, cacheRead: 50, cacheCreation: 0, costCny: 0.01, mcpCalls: 7 }],
       topSessions: [
-        { sessionId: 's1', firstTs: 1, lastTs: Date.now(), cwd: 'D:/w/ECode', models: ['glm-5.2'], mcpCalls: 7, days: {}, totals: { input: 1, output: 1, cacheRead: 1, cacheCreation: 0, costUsd: 0.5 }, firstUser: '修复统计' },
+        { sessionId: 's1', firstTs: 1, lastTs: Date.now(), cwd: 'D:/w/ECode', models: ['glm-5.2'], mcpCalls: 7, days: {}, byModel: {}, costUnknownLines: 0, totals: { input: 1, output: 1, cacheRead: 1, cacheCreation: 0, costCny: 0.5 }, firstUser: '修复统计' },
       ],
     }
     const out = formatStats(fake)
@@ -134,5 +139,8 @@ describe('formatStats', () => {
     expect(out).toContain('按项目')
     expect(out).toContain('最贵会话')
     expect(out).toContain('输入 1.5M')
+    expect(out).toContain('¥1.234') // 审阅 P0-2：人民币口径
+    expect(out).toContain('未收录定价') // 审阅 P1-5：未知成本提示
+    expect(out).toContain('最近 7 个有数据的天')
   })
 })

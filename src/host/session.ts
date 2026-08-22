@@ -178,6 +178,7 @@ export class HostSession {
   restoreFrom(lines: HistoryLine[]): void {
     this.messages.length = 0
     this.messages.push(...lines)
+    this.mcpCallCount = 0 // 审阅 P1-1：会话切换计数归零（防旧累计值写进新会话文件致全局双计）
   }
 
   /** B3：手动强制压缩（/compact——客户端命令面中间态实现；B5 升格为宿主命令） */
@@ -234,8 +235,12 @@ export class HostSession {
     for (const r of rs) r()
   }
 
-  /** M12-P0：会话累计器（四维 + 成本 + MCP 调用数）——/stats 聚合的数据源之一（stats 行落盘） */
-  private readonly usageTotals = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0, mcpCalls: 0 }
+  /**
+   * M12-P0：会话内 MCP 调用计数（stats 行随帧快照落盘，聚合取每会话最后一条）。
+   * 审阅 P2-5：四维/成本累计器是 write-only 死代码已删（stats 行写的是逐帧增量非累计值）。
+   * 审阅 P1-1：会话切换（restoreFrom/session/clear）必须归零——否则旧会话累计值写进新会话文件致全局双计。
+   */
+  private mcpCallCount = 0
 
   private publish(type: ProtocolEvent['type'], data: Record<string, unknown> = {}): void {
     this.channel.publish({ type, ...data } as Parameters<InMemoryChannel['publish']>[0])
@@ -246,37 +251,41 @@ export class HostSession {
    * 批2 将在此挂累计器与 stats 行落盘。
    */
   private recordUsage(inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }): void {
-    const cost = tokensToCost(this.cfg().current.model, {
+    // 审阅 P0-2：pricing.ts 口径是人民币元（不换算防失真）——字段与展示全链路改 costCny/¥
+    // 审阅 P2-4：透传 providers.pricing 配置覆盖（与 /cost 客户端重算同源）
+    const cur = this.cfg()
+    const cost = tokensToCost(cur.current.model, {
       input: inputTokens,
       output: outputTokens,
       cacheRead: cache?.read ?? 0,
       cacheCreation: cache?.creation ?? 0,
-    })
-    this.usageTotals.input += inputTokens
-    this.usageTotals.output += outputTokens
-    this.usageTotals.cacheRead += cache?.read ?? 0
-    this.usageTotals.cacheCreation += cache?.creation ?? 0
-    if (cost != null) this.usageTotals.costUsd += cost
+    }, cur.providers[cur.current.name]?.pricing)
     this.publish('usage', {
       input: inputTokens,
       output: outputTokens,
       cacheRead: cache?.read,
       cacheCreation: cache?.creation,
-      costUsd: cost ?? undefined,
+      costCny: cost ?? undefined,
     })
-    // M12-P0：stats 行落盘（自包含 cwd/model/ts；mcpCalls 为累计快照——聚合取每会话最后一条）
+    // M12-P0：stats 行落盘（逐帧增量；mcpCalls 为会话内累计快照——聚合取每会话最后一条）
     this.deps.history.appendUsageStats({
       stats: true,
       ts: Date.now(),
       cwd: this.deps.cwd ?? process.cwd(),
-      model: this.cfg().current.model,
+      model: cur.current.model,
       input: inputTokens,
       output: outputTokens,
       cacheRead: cache?.read ?? 0,
       cacheCreation: cache?.creation ?? 0,
-      costUsd: cost ?? 0,
-      mcpCalls: this.usageTotals.mcpCalls,
+      costCny: cost ?? 0,
+      costKnown: cost != null, // 审阅 P1-5：未收录定价不静默记 0
+      mcpCalls: this.mcpCallCount,
     })
+  }
+
+  /** 审阅 P1-2：MCP 调用计数（主循环与子代理共用——子代理经 SessionPort.countMcpCall 上报） */
+  private bumpMcp(): void {
+    this.mcpCallCount++
   }
 
   private async dispatch(cmd: ProtocolCommand): Promise<CommandResult> {
@@ -329,6 +338,7 @@ export class HostSession {
         this.messages.length = 0
         this.queue.length = 0
         this.editedFiles.clear()
+        this.mcpCallCount = 0 // 审阅 P1-1：与客户端 setSessionCost(0) 同语义
         return { ok: true }
       case 'session/list':
         return { ok: true, value: this.deps.history.loadAll() }
@@ -434,7 +444,7 @@ export class HostSession {
           onText: (t) => this.publish('delta', { turnId, text: t }),
           onToolStart: (name) => this.publish('item/started', { itemId: `${turnId}-${++this.itemSeq}`, name }),
           onToolResult: (id, name, r) => {
-            if (name.startsWith('mcp__')) this.usageTotals.mcpCalls++ // M12-P0：MCP 调用计数（随下一条 stats 行落盘）
+            if (name.startsWith('mcp__')) this.bumpMcp() // M12-P0：MCP 调用计数（随下一条 stats 行落盘）
             const use = this.messages
               .filter(isMessageLine)
               .filter((l) => l.role === 'assistant')
@@ -468,6 +478,9 @@ export class HostSession {
               const r = await this.broker.askUser(qs)
               return (r ?? null) as unknown
             },
+            // 审阅 P1-2/P1-4：子代理 usage 与 MCP 计数走会话窄端口（多宿主不串台）；模块桥降兜底
+            recordUsage: (i, o, c) => this.recordUsage(i, o, c),
+            countMcpCall: () => this.bumpMcp(),
           },
           tasks: this.tasks,
           signal: this.abort.signal,

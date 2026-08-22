@@ -172,11 +172,9 @@ describe('buildDoctorPrompt（审阅 P1-4 运行时构造）', () => {
 })
 
 describe('/stats（M12-P0 跨会话用量统计）', () => {
-  it('注册且返回文本（无数据分支也不炸）', () => {
+  it('注册存在（run 会读写真实 ~/.ecode——审阅 P2-2 后不再冒烟执行，聚合行为由 stats.test 覆盖）', () => {
     const cmd = commandRegistry.get('stats')
     expect(cmd).toBeDefined()
-    const r = cmd!.run()
-    expect(typeof r.output).toBe('string')
-    expect(r.output).toContain('用量统计')
+    expect(cmd!.description).toContain('统计')
   })
 })

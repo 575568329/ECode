@@ -41,7 +41,9 @@ export interface UsageStatsRecord {
   output: number
   cacheRead: number
   cacheCreation: number
-  costUsd: number
+  costCny: number
+  /** 审阅 P1-5：未收录定价的模型 costCny 记 0 且此标记 false——聚合侧提示"部分成本未知"而非静默低估 */
+  costKnown: boolean
   mcpCalls: number
 }
 

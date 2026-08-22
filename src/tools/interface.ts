@@ -40,6 +40,10 @@ export interface ToolContext {
     removeSubagent?(id: string): void
     /** B8.2：子代理 confirm 会话化（多宿主不串台——模块级桥降为单会话兜底） */
     confirmTool?(use: import('../core/types.js').ToolUseBlock): Promise<boolean>
+    /** M12-P0 审阅 P1-4：子代理 usage 经会话窄端口归账（多宿主不串台；模块桥降兜底） */
+    recordUsage?(inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }): void
+    /** M12-P0 审阅 P1-2：子代理发起的 mcp__ 调用计数 */
+    countMcpCall?(): void
     /** B8.2：ask_user 会话化（argv/多宿主 fail-closed 语义由宿主 broker 决定） */
     askUser?(questions: unknown[]): Promise<unknown>
   }

@@ -19,7 +19,7 @@ export interface StatsTotals {
   output: number
   cacheRead: number
   cacheCreation: number
-  costUsd: number
+  costCny: number
 }
 
 /** 单会话聚合（缓存的最小单元） */
@@ -34,6 +34,10 @@ export interface SessionAgg {
   totals: StatsTotals
   /** 按天分布（ts→日期键；多行同天累加） */
   days: Record<string, StatsTotals>
+  /** 按模型逐行累加（审阅 P0-1：多模型会话按行内 model 归账——会话级口径会重复计费） */
+  byModel: Record<string, StatsTotals>
+  /** 含未收录定价（costKnown=false）的行数——聚合侧提示"部分成本未知"（审阅 P1-5） */
+  costUnknownLines: number
   firstUser?: string
 }
 
@@ -41,6 +45,8 @@ export interface StatsAgg {
   totals: StatsTotals
   mcpCalls: number
   sessions: number
+  /** 含未收录定价的会话数（成本为已知部分之和——展示须提示） */
+  costUnknownSessions: number
   /** cacheRead / (input + cacheRead)——命中=输入侧走缓存的比例（cache 写入不算命中候选） */
   cacheHitRate: number
   byDay: Array<{ date: string; sessions: number } & StatsTotals & { mcpCalls: number }>
@@ -51,17 +57,18 @@ export interface StatsAgg {
 
 interface StatsCacheFile {
   version: 1
-  files: Record<string, { mtimeMs: number; agg: SessionAgg }>
+  /** agg: null = 负缓存（该文件无 stats 行且 mtime 未变——审阅 P1-6：旧会话文件不必每次重读） */
+  files: Record<string, { mtimeMs: number; agg: SessionAgg | null }>
 }
 
-const EMPTY_TOTALS = (): StatsTotals => ({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0 })
+const EMPTY_TOTALS = (): StatsTotals => ({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costCny: 0 })
 
 const addTotals = (a: StatsTotals, b: StatsTotals): StatsTotals => ({
   input: a.input + b.input,
   output: a.output + b.output,
   cacheRead: a.cacheRead + b.cacheRead,
   cacheCreation: a.cacheCreation + b.cacheCreation,
-  costUsd: a.costUsd + b.costUsd,
+  costCny: a.costCny + b.costCny,
 })
 
 /** ts(ms) → 本地日期键 YYYY-MM-DD（按本地时区分天——统计口径跟用户体感走） */
@@ -89,6 +96,8 @@ export function parseSessionFile(filePath: string, sessionId: string): SessionAg
     mcpCalls: 0,
     totals: EMPTY_TOTALS(),
     days: {},
+    byModel: {},
+    costUnknownLines: 0,
   }
   let sawStats = false
   for (const line of content.split('\n')) {
@@ -107,13 +116,19 @@ export function parseSessionFile(filePath: string, sessionId: string): SessionAg
     if (parsed.stats !== true) continue
     sawStats = true
     const ts = typeof parsed.ts === 'number' ? parsed.ts : Date.now()
+    // costCny 现行字段；costUsd 为批2 首日旧字段名（值同为人民币元——审阅 P0-2 勘误前误标 $）
+    const costCnyRaw = typeof parsed.costCny === 'number' ? parsed.costCny : typeof parsed.costUsd === 'number' ? parsed.costUsd : 0
+    const costKnown = parsed.costKnown !== false // 旧行无字段视为已知（首日数据均已知）
+    if (!costKnown) agg.costUnknownLines++
     const lineTotals: StatsTotals = {
       input: typeof parsed.input === 'number' ? parsed.input : 0,
       output: typeof parsed.output === 'number' ? parsed.output : 0,
       cacheRead: typeof parsed.cacheRead === 'number' ? parsed.cacheRead : 0,
       cacheCreation: typeof parsed.cacheCreation === 'number' ? parsed.cacheCreation : 0,
-      costUsd: typeof parsed.costUsd === 'number' ? parsed.costUsd : 0,
+      costCny: costCnyRaw,
     }
+    const lineModel = typeof parsed.model === 'string' && parsed.model !== '' ? parsed.model : '?'
+    agg.byModel[lineModel] = addTotals(agg.byModel[lineModel] ?? EMPTY_TOTALS(), lineTotals)
     agg.firstTs = agg.firstTs === 0 ? ts : Math.min(agg.firstTs, ts)
     agg.lastTs = Math.max(agg.lastTs, ts)
     agg.totals = addTotals(agg.totals, lineTotals)
@@ -124,9 +139,7 @@ export function parseSessionFile(filePath: string, sessionId: string): SessionAg
       if (agg.cwd === '') agg.cwd = cwd
       else if (agg.cwd !== cwd) agg.cwd = agg.cwd // 会话内换项目（罕见）：保首个
     }
-    if (typeof parsed.model === 'string' && parsed.model !== '' && !agg.models.includes(parsed.model)) {
-      agg.models.push(parsed.model)
-    }
+    if (!agg.models.includes(lineModel)) agg.models.push(lineModel)
     if (typeof parsed.mcpCalls === 'number') agg.mcpCalls = parsed.mcpCalls // 累计快照：最后一条生效
   }
   return sawStats ? agg : null
@@ -145,7 +158,8 @@ function loadCache(cachePath: string): StatsCacheFile {
 function saveCache(cachePath: string, cache: StatsCacheFile): void {
   try {
     const tmp = `${cachePath}.tmp`
-    fs.writeFileSync(tmp, JSON.stringify(cache))
+    // mode 0o600：缓存含 firstUser（用户 prompt 原文）且落在 ~/.ecode（sessions 0700 之外）——审阅 P2-3
+    fs.writeFileSync(tmp, JSON.stringify(cache), { mode: 0o600 })
     fs.renameSync(tmp, cachePath)
   } catch {
     // 缓存写失败不影响统计（下次重算）
@@ -170,6 +184,7 @@ export function aggregateStats(dir: string, cachePath = path.join(os.homedir(), 
       totals: EMPTY_TOTALS(),
       mcpCalls: 0,
       sessions: 0,
+      costUnknownSessions: 0,
       cacheHitRate: 0,
       byDay: [],
       byModel: [],
@@ -178,8 +193,10 @@ export function aggregateStats(dir: string, cachePath = path.join(os.homedir(), 
     }
   }
   const sessionAggs: SessionAgg[] = []
+  const seen = new Set<string>()
   for (const f of files) {
     const sessionId = f.slice(0, -'.jsonl'.length)
+    seen.add(sessionId)
     const filePath = path.join(dir, f)
     let mtimeMs = 0
     try {
@@ -189,16 +206,17 @@ export function aggregateStats(dir: string, cachePath = path.join(os.homedir(), 
     }
     const hit = cache.files[sessionId]
     if (hit !== undefined && hit.mtimeMs === mtimeMs) {
-      sessionAggs.push(hit.agg)
+      // 负缓存命中（agg:null，无 stats 行的旧会话）也跳过——审阅 P1-6
+      if (hit.agg !== null) sessionAggs.push(hit.agg)
       continue
     }
     const agg = parseSessionFile(filePath, sessionId)
-    if (agg === null) {
-      delete cache.files[sessionId]
-      continue
-    }
-    cache.files[sessionId] = { mtimeMs, agg }
-    sessionAggs.push(agg)
+    cache.files[sessionId] = { mtimeMs, agg } // null 也缓存（负缓存）
+    if (agg !== null) sessionAggs.push(agg)
+  }
+  // 审阅 P2-1：会话文件已被删除的缓存残留清理
+  for (const k of Object.keys(cache.files)) {
+    if (!seen.has(k)) delete cache.files[k]
   }
   saveCache(cachePath, cache)
 
@@ -212,8 +230,9 @@ export function aggregateStats(dir: string, cachePath = path.join(os.homedir(), 
       cur.sessions.add(s.sessionId)
       dayMap.set(day, { ...addTotals(cur, t), sessions: cur.sessions, mcpCalls: cur.mcpCalls })
     }
-    for (const m of s.models) {
-      modelMap.set(m, addTotals(modelMap.get(m) ?? EMPTY_TOTALS(), s.totals))
+    // 审阅 P0-1：按会话内逐行 byModel 合并（会话级口径对多模型会话重复计费）
+    for (const [m, t] of Object.entries(s.byModel)) {
+      modelMap.set(m, addTotals(modelMap.get(m) ?? EMPTY_TOTALS(), t))
     }
     const p = projectLabel(s.cwd)
     const pc = projMap.get(p) ?? { ...EMPTY_TOTALS(), mcpCalls: 0 }
@@ -224,18 +243,19 @@ export function aggregateStats(dir: string, cachePath = path.join(os.homedir(), 
     totals,
     mcpCalls: sessionAggs.reduce((n, s) => n + s.mcpCalls, 0),
     sessions: sessionAggs.length,
+    costUnknownSessions: sessionAggs.filter((s) => s.costUnknownLines > 0).length,
     cacheHitRate: hitDenominator > 0 ? totals.cacheRead / hitDenominator : 0,
     byDay: [...dayMap.entries()]
       .map(([date, v]) => ({ date, sessions: v.sessions.size, ...stripTotals(v), mcpCalls: 0 }))
       .sort((a, b) => (a.date < b.date ? 1 : -1)),
-    byModel: [...modelMap.entries()].map(([model, t]) => ({ model, ...t })).sort((a, b) => b.costUsd - a.costUsd),
-    byProject: [...projMap.entries()].map(([project, v]) => ({ project, ...stripTotals(v), mcpCalls: v.mcpCalls })).sort((a, b) => b.costUsd - a.costUsd),
-    topSessions: [...sessionAggs].sort((a, b) => b.totals.costUsd - a.totals.costUsd).slice(0, 3),
+    byModel: [...modelMap.entries()].map(([model, t]) => ({ model, ...t })).sort((a, b) => b.costCny - a.costCny),
+    byProject: [...projMap.entries()].map(([project, v]) => ({ project, ...stripTotals(v), mcpCalls: v.mcpCalls })).sort((a, b) => b.costCny - a.costCny),
+    topSessions: [...sessionAggs].sort((a, b) => b.totals.costCny - a.totals.costCny).slice(0, 3),
   }
 }
 
 function stripTotals(v: StatsTotals): StatsTotals {
-  return { input: v.input, output: v.output, cacheRead: v.cacheRead, cacheCreation: v.cacheCreation, costUsd: v.costUsd }
+  return { input: v.input, output: v.output, cacheRead: v.cacheRead, cacheCreation: v.cacheCreation, costCny: v.costCny }
 }
 
 // —— 格式化（/stats 输出；纯 ASCII 结构符，规避 ambiguous 宽度错位）——
@@ -246,7 +266,8 @@ export function fmtTokens(n: number): string {
   return String(n)
 }
 
-const fmtCost = (usd: number): string => `$${usd.toFixed(3)}`
+// 审阅 P0-2：pricing.ts 口径是人民币元（不换算防失真）——¥ 前缀
+const fmtCost = (cny: number): string => `¥${cny < 0.01 && cny > 0 ? cny.toFixed(4) : cny.toFixed(3)}`
 
 export function formatStats(agg: StatsAgg): string {
   const lines: string[] = []
@@ -256,31 +277,34 @@ export function formatStats(agg: StatsAgg): string {
   }
   lines.push(`用量统计 · ${agg.sessions} 个会话`)
   lines.push(
-    `总计：输入 ${fmtTokens(t.input)} · 输出 ${fmtTokens(t.output)} · 缓存读 ${fmtTokens(t.cacheRead)}（命中 ${(agg.cacheHitRate * 100).toFixed(1)}%）· 缓存写 ${fmtTokens(t.cacheCreation)} · ${fmtCost(t.costUsd)} · MCP ${agg.mcpCalls} 次`,
+    `总计：输入 ${fmtTokens(t.input)} · 输出 ${fmtTokens(t.output)} · 缓存读 ${fmtTokens(t.cacheRead)}（命中 ${(agg.cacheHitRate * 100).toFixed(1)}%）· 缓存写 ${fmtTokens(t.cacheCreation)} · ${fmtCost(t.costCny)} · MCP ${agg.mcpCalls} 次`,
   )
+  if (agg.costUnknownSessions > 0) {
+    lines.push(`（${agg.costUnknownSessions} 个会话含未收录定价的模型，其成本未计入——可在 config providers 配 pricing）`)
+  }
   if (agg.byDay.length > 0) {
-    lines.push('近 7 天（新在前）：')
+    lines.push('最近 7 个有数据的天（新在前）：')
     for (const d of agg.byDay.slice(0, 7)) {
-      lines.push(`  ${d.date}  输入 ${fmtTokens(d.input)} · 输出 ${fmtTokens(d.output)} · ${fmtCost(d.costUsd)} · ${d.sessions} 会话`)
+      lines.push(`  ${d.date}  输入 ${fmtTokens(d.input)} · 输出 ${fmtTokens(d.output)} · ${fmtCost(d.costCny)} · ${d.sessions} 会话`)
     }
   }
   if (agg.byModel.length > 0) {
     lines.push('按模型：')
     for (const m of agg.byModel.slice(0, 5)) {
-      lines.push(`  ${m.model}  输入 ${fmtTokens(m.input)} · 输出 ${fmtTokens(m.output)} · ${fmtCost(m.costUsd)}`)
+      lines.push(`  ${m.model}  输入 ${fmtTokens(m.input)} · 输出 ${fmtTokens(m.output)} · ${fmtCost(m.costCny)}`)
     }
   }
   if (agg.byProject.length > 0) {
     lines.push('按项目（前 5）：')
     for (const p of agg.byProject.slice(0, 5)) {
-      lines.push(`  ${p.project}  输入 ${fmtTokens(p.input)} · ${fmtCost(p.costUsd)} · MCP ${p.mcpCalls} 次`)
+      lines.push(`  ${p.project}  输入 ${fmtTokens(p.input)} · ${fmtCost(p.costCny)} · MCP ${p.mcpCalls} 次`)
     }
   }
   if (agg.topSessions.length > 0) {
     lines.push('最贵会话（前 3）：')
     for (const s of agg.topSessions) {
-      const head = s.firstUser !== undefined ? `「${s.firstUser.slice(0, 12)}」` : ''
-      lines.push(`  ${dateKey(s.lastTs).slice(5)} ${s.models.join('/') || '?'} ${fmtCost(s.totals.costUsd)} ${head}`)
+      const head = s.firstUser !== undefined ? `「${Array.from(s.firstUser).slice(0, 12).join('')}」` : ''
+      lines.push(`  ${dateKey(s.lastTs).slice(5)} ${s.models.join('/') || '?'} ${fmtCost(s.totals.costCny)} ${head}`)
     }
   }
   return lines.join('\n')

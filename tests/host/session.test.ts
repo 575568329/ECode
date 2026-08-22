@@ -265,6 +265,37 @@ describe('M12-P0：用量统计地基（累计器 + stats 行落盘 + MCP 计数
     expect(h.records[1]).toMatchObject({ input: 200, output: 20, cacheRead: 0 })
   })
 
+  it('审阅 P1-1：restoreFrom 会话切换后 mcpCalls 归零（防旧累计值写进新文件致全局双计）', async () => {
+    const reg = new ToolRegistryImpl()
+    reg.register({ ...echoTool, name: 'mcp__srv__search' })
+    const p = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 't1', name: 'mcp__srv__search' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [
+        { type: 'usage', input_tokens: 50, output_tokens: 5 },
+        { type: 'text', text: 'done' },
+        { type: 'done', stop_reason: 'end' },
+      ],
+      [
+        { type: 'usage', input_tokens: 10, output_tokens: 1 },
+        { type: 'text', text: 'after' },
+        { type: 'done', stop_reason: 'end' },
+      ],
+    ])
+    const h = spyHistory()
+    const host = new HostSession({ ...makeDeps(p), tools: reg, history: h.store })
+    await host.send({ op: 'prompt', text: 'a', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    expect(h.records[0]).toMatchObject({ mcpCalls: 1 })
+    host.restoreFrom([]) // 会话切换（/history 恢复链路）
+    await host.send({ op: 'prompt', text: 'b', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    expect(h.records[1]).toMatchObject({ input: 10, mcpCalls: 0 }) // 新会话从 0 起
+  })
+
   it('mcp__ 前缀工具调用计数（stats 行携带累计值）', async () => {
     const reg = new ToolRegistryImpl()
     reg.register({ ...echoTool, name: 'mcp__srv__search' })

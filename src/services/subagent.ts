@@ -40,6 +40,10 @@ interface SessionPort {
     updateSubagent?(st: SubagentStatus): void
     removeSubagent?(id: string): void
     confirmTool?(use: ToolUseBlock): Promise<boolean>
+    /** 审阅 P1-4：子代理 usage 经会话窄端口归账（多宿主不串台；缺省走模块桥兜底） */
+    recordUsage?(inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }): void
+    /** 审阅 P1-2：子代理发起的 mcp__ 调用计数（此前只计主循环——子代理是 MCP 搜索主力场景） */
+    countMcpCall?(): void
   }
 }
 
@@ -197,6 +201,7 @@ export function makeSubagentOpts(
   signal: AbortSignal,
   onActivity?: (name: string) => void,
   sessionConfirm?: (use: ToolUseBlock) => Promise<boolean>,
+  sessPort?: SessionPort['session'],
 ): LoopRunOptions {
   // 审阅 P1-1/P1-2：桥 getter 优先（TuiApp 运行态：/model 切换、Tab 切沙箱档后取新值）；
   // 构造时取一次=子代理生命周期内配置快照（中途切换影响下一批，优于 cli 静态闭包的永远旧值）
@@ -207,11 +212,17 @@ export function makeSubagentOpts(
   // 独立压缩链：boundary 只进子内存 messages（NoopHistory 不落盘，onCompacted 不配——无 UI 可重建）
   const orchestrator = new CompactionOrchestrator()
   orchestrator.register(new SummarizeStrategy())
+  // 审阅 P1-3/P1-4：子代理 usage（含独立压缩链摘要调用）经会话窄端口归账，模块桥降兜底（多宿主不串台）
+  const reportUsage = (i: number, o: number, c?: { read?: number; creation?: number }): void => {
+    if (sessPort?.recordUsage !== undefined) sessPort.recordUsage(i, o, c)
+    else bridge?.usage?.(i, o, c)
+  }
   const onBeforeRequest = makeOnBeforeRequest(orchestrator, provider, providerReq, system, {
     history: new NoopHistoryStore(),
     signal,
     tools: tools.specs(),
     onCompacted: async () => {}, // no-op：子代理无 committed 重建（boundary 在内存 messages 存活）
+    onUsage: reportUsage,
   })
   return {
     provider,
@@ -229,7 +240,11 @@ export function makeSubagentOpts(
         }
         onActivity?.(name)
       },
-      onUsage: (i, o, c) => bridge?.usage?.(i, o, c),
+      onUsage: (i, o, c) => reportUsage(i, o, c),
+      onToolResult: (_id, name) => {
+        // 审阅 P1-2：子代理的 mcp__ 调用计数（此前只计主循环）
+        if (name.startsWith('mcp__')) sessPort?.countMcpCall?.()
+      },
       onWarn: (m) => bridge?.warn?.(`「${description}」${m}`),
     },
     providerReq,
@@ -334,7 +349,7 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
             notifyProgress()
           }
         }
-      }, sess?.confirmTool)
+      }, sess?.confirmTool, sess)
       const messages: HistoryLine[] = []
       try {
         await runLoop(messages, prompt, opts)

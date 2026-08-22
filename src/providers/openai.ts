@@ -78,6 +78,7 @@ class OpenaiTranslator {
         this.usageInput = Math.max(0, (chunk.usage.prompt_tokens ?? 0) - this.cacheReadTokens)
       } else {
         this.usageInput = chunk.usage.prompt_tokens ?? 0
+        this.cacheReadTokens = undefined // 审阅 P2-6：多 usage chunk 逐条覆盖——无 cached 字段时清旧值防 stale 组合重复计价
       }
       this.sawUsage = true
     }

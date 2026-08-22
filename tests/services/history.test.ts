@@ -129,7 +129,7 @@ describe('FileHistoryStore boundary 支持（M5 P6）', () => {
     const dir = path.join(tmp, `stats-${Date.now()}`)
     const store = new FileHistoryStore({ sessionId: 'sess-stats', model: 'm', dir })
     store.append(userMsg('问'))
-    store.appendUsageStats({ stats: true, ts: 1700000000000, cwd: 'D:/p/x', model: 'm', input: 10, output: 2, cacheRead: 4, cacheCreation: 1, costUsd: 0.001, mcpCalls: 3 })
+    store.appendUsageStats({ stats: true, ts: 1700000000000, cwd: 'D:/p/x', model: 'm', input: 10, output: 2, cacheRead: 4, cacheCreation: 1, costCny: 0.001, costKnown: true, mcpCalls: 3 })
     store.append(assistantMsg('答'))
     const content = fs.readFileSync(path.join(dir, 'sess-stats.jsonl'), 'utf8')
     const lines = content.trim().split('\n')

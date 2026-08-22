@@ -6,6 +6,7 @@
 import http from 'node:http'
 import { randomBytes } from 'node:crypto'
 import type { HostSession } from '../host/session.js'
+import { LOOPBACK_ADDRS } from './loopback.js'
 import { serveHost, type ServeResult } from './http.js'
 import type { ProjectRegistry } from './projects.js'
 
@@ -15,7 +16,7 @@ export interface MultiServeDeps {
 }
 
 const MULTI_BODY_CAP = 1024 * 1024
-const MULTI_LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+
 
 /**
  * 多项目 serve：基于单会话 serveHost 的鉴权/工程细节之外，加项目维度路由与 acquire 栅栏语义。
@@ -46,7 +47,7 @@ export function serveMulti(deps: MultiServeDeps, opts: { port?: number } = {}): 
         res.end(JSON.stringify(obj))
       }
       const remote = req.socket.remoteAddress ?? ''
-      if (!MULTI_LOOPBACK.has(remote)) return json(403, { error: '非 loopback 连接被拒' })
+      if (!LOOPBACK_ADDRS.has(remote)) return json(403, { error: '非 loopback 连接被拒' })
       if (req.method === 'GET' && url.pathname === '/api/health') return json(200, { ok: true })
       const auth = req.headers.authorization ?? ''
       const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : auth.startsWith('Basic ') ? (Buffer.from(auth.slice(6), 'base64').toString('utf8').split(':').pop() ?? '') : ''

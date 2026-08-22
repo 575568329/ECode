@@ -48,6 +48,11 @@ export class ApprovalBroker {
     return this.pending.size
   }
 
+  /** sweepIdle Q12 消费：审批悬置数（>0 不回收） */
+  get approvalPendingCount(): number {
+    return this.pending.size
+  }
+
   private get hasSubscriber(): boolean {
     return this.channel.subscriberCount > 0
   }

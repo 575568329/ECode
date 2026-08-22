@@ -28,7 +28,9 @@ class P implements LLMProvider {
 }
 const noopLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
+const seenCwds: string[] = []
 const mk = (cwd: string): HostDeps => {
+  seenCwds.push(cwd)
   const reg = new ToolRegistryImpl()
   const orch = new CompactionOrchestrator()
   orch.register(new SummarizeStrategy())
@@ -38,7 +40,6 @@ const mk = (cwd: string): HostDeps => {
     current: { name: 'm', model: 'm' },
     maxIterations: 10,
   }
-  void cwd
   return {
     providerRegistry: { getByType: () => new P() } as HostDeps['providerRegistry'],
     tools: reg,
@@ -93,6 +94,8 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     const rB = await (await fetch(`${base}/api/p/${enc(dirB)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: 'session/clear' }) })).json()
     expect(rB).toMatchObject({ ok: true })
     expect(created.length).toBe(2) // 两项目各装配一个 HostSession
+    expect(seenCwds).toContain(dirA.split(String.fromCharCode(92)).join('/')) // cwd 真接线（审阅 P0-1：曾 void cwd 掩护断线）
+    expect(seenCwds).toContain(dirB.split(String.fromCharCode(92)).join('/'))
   })
 
   it('need-confirm 栅栏：未注册项目首次拉起 428；confirm 后放行', async () => {

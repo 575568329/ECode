@@ -49,6 +49,12 @@ export class HttpTransport implements ClientTransport {
     while (!this.aborted && this.handlers.size > 0) {
       try {
         const res = await fetch(`${this.baseUrl}/api/events`, { headers: this.headers })
+        if (res.status === 401) {
+          // 鉴权失败重连无意义（token 错不会自愈）——通知订阅者并停止泵
+          for (const h of [...this.handlers]) h({ type: 'error', seq: -1, message: 'SSE 401：token 无效或已轮换' } as never)
+          this.aborted = true
+          return
+        }
         if (!res.ok || res.body === null) throw new Error(`SSE ${res.status}`)
         backoff = 1000
         const reader = res.body.getReader() // 循环外取一次（锁定流再取会抛）

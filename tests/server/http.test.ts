@@ -101,7 +101,14 @@ describe('B7：HTTP transport + serve 骨架', () => {
     unsub()
   })
 
-  it('loopback 围栏：remoteAddress 白名单语义由 serveHost 侧强制（本测试全走 127.0.0.1 恒过）', () => {
-    expect(srv.token.length).toBeGreaterThanOrEqual(32) // randomBytes(24) hex=48——不可猜测
+  it('token 不可猜测性 + loopback 判定单测（抽函数直测——socket.remoteAddress 无法在回环测试中伪造）', async () => {
+    expect(srv.token.length).toBeGreaterThanOrEqual(32) // randomBytes(24) hex=48
+    // loopback 白名单语义（真实 403 路径无法用 127.0.0.1 客户端伪造——用判定逻辑直测锁定）
+    const { LOOPBACK_ADDRS } = await import('../../src/server/loopback.js')
+    expect(LOOPBACK_ADDRS.has('127.0.0.1')).toBe(true)
+    expect(LOOPBACK_ADDRS.has('::1')).toBe(true)
+    expect(LOOPBACK_ADDRS.has('::ffff:127.0.0.1')).toBe(true)
+    expect(LOOPBACK_ADDRS.has('192.168.1.5')).toBe(false)
+    expect(LOOPBACK_ADDRS.has('8.8.8.8')).toBe(false)
   })
 })

@@ -9,7 +9,7 @@
  * - 项目互斥标记：`~/.ecode/sessions/` 同目录 lock 文件（open 'wx' 原子占坑 + 0600——TOCTOU/预置 symlink 双防）
  */
 
-import { openSync, closeSync, existsSync, realpathSync, statSync, unlinkSync, mkdirSync } from 'node:fs'
+import { openSync, closeSync, writeSync, readFileSync, existsSync, realpathSync, statSync, unlinkSync, mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -77,20 +77,43 @@ export class ProjectRegistry {
     return join(this.lockDir, `project-${key}.lock`)
   }
 
-  /** 项目级互斥占坑（open 'wx' 原子；已存在读持有者 pid） */
+  /** 项目级互斥占坑（open 'wx' 原子；锁文件写 {pid,time}——stale 检测见 takeStale） */
   private tryLock(cwd: string): { ok: boolean; holder?: string } {
     mkdirSync(this.lockDir, { recursive: true })
     const lp = this.lockPath(cwd)
     try {
       const fd = openSync(lp, 'wx', 0o600)
+      writeSync(fd, JSON.stringify({ pid: process.pid, time: Date.now() }))
       closeSync(fd)
       return { ok: true }
     } catch {
+      // stale 恢复（审阅 P1-5）：持有进程已死则接管——否则崩溃一次该项目永久 locked
+      if (this.takeStale(lp)) return this.tryLock(cwd)
       try {
-        const holder = statSync(lp)
-        return { ok: false, holder: `pid 信息 mtime=${holder.mtime.toISOString()}` }
+        const raw = readFileSync(lp, 'utf8')
+        const pid = (JSON.parse(raw) as { pid?: number }).pid
+        return { ok: false, holder: pid !== undefined ? `pid ${pid}` : '未知持有者' }
       } catch {
         return { ok: false }
+      }
+    }
+  }
+
+  /** 持有进程已死 → 删锁返回 true（进程存活探测：Windows/POSIX 通用 process.kill(pid,0)） */
+  private takeStale(lp: string): boolean {
+    try {
+      const pid = (JSON.parse(readFileSync(lp, 'utf8')) as { pid?: number }).pid
+      if (pid === undefined || pid === process.pid) return false
+      process.kill(pid, 0) // 存活则抛 ESRCH 之外不抛——已死抛错
+      return false // 持有者活着
+    } catch (e) {
+      // EPERM=进程存在但无权限（仍算活着）；ESRCH=已死 → 接管
+      if ((e as { code?: string }).code === 'EPERM') return false
+      try {
+        unlinkSync(lp)
+        return true
+      } catch {
+        return false
       }
     }
   }
@@ -163,9 +186,9 @@ export class ProjectRegistry {
     for (const [cwd, host] of [...this.hosts]) {
       const active = this.lastActive.get(cwd) ?? Date.now()
       if (active > cutoff) continue
-      // confirm 悬置不回收：channel 有订阅者或 broker 有 pending 视为活跃
-      const busy = (host as unknown as { channel: { subscriberCount: number } }).channel.subscriberCount > 0
-      if (busy) continue
+      // confirm 悬置不回收（Q12）：有订阅者或 broker 有 pending 均视为活跃（审阅 P1-8：曾只查订阅者）
+      const h = host as unknown as { channel: { subscriberCount: number }; brokerPending: number }
+      if (h.channel.subscriberCount > 0 || h.brokerPending > 0) continue
       host.dispose()
       this.hosts.delete(cwd)
       this.lastActive.delete(cwd)

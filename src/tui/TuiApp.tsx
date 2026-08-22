@@ -133,7 +133,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
       const verdict = await deps.hookRunner.dispatch(
         'UserPromptSubmit',
-        { event: 'UserPromptSubmit', session_id: '', prompt: text },
+        { event: 'UserPromptSubmit', session_id: deps.history.currentSessionId(), prompt: text },
         { signal: abortRef.current.signal },
       )
       if (verdict.block) {
@@ -278,6 +278,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       ...(deps.checkpoint != null && deps.checkpoint !== undefined ? { checkpoint: deps.checkpoint } : {}),
       ...(deps.quality != null && deps.quality !== undefined ? { quality: deps.quality } : {}),
       ctxWindowHint: () => ctxWindowRef.current,
+      cwd: process.cwd(),
     })
   }
   const host = hostRef.current
@@ -1055,7 +1056,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
             setOverlay(null)
             if (r === null) return
             const line: RewindLine = { rewind: true, seq: r.seq, toolUseId: r.toolUseId, time: new Date().toISOString() }
-            messagesRef.current = [...messagesRef.current, line]
+            host.appendRewind(line) // 宿主权威（审阅 P0-3：只写客户端镜像时回退不进 LLM 上下文）
+            messagesRef.current = [...host.transcript]
             deps.history.appendRewind(line)
             setCommitted(messagesToCommitted(messagesRef.current))
             setSystemMsgs([`⇺ 已回退至快照点 ${r.seq}（还原 ${r.restoredCount} 个文件；该点之后的对话不再进入上下文，原文仍可回看）`])
@@ -1101,14 +1103,23 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
         busy={runningRef.current}
         onSlashBusy={() => setSystemMsgs(['运行中暂不能执行命令（空闲后再发；插话请直接输入文字）'])}
         onTabSandbox={() => {
-          // M9-D13：Tab 专职循环切档；D12：进 full-access 需确认——循环到该档时打开面板二级确认
+          // M12-B3（审阅 P0-2 修复）：档位权威在宿主（sandbox/set）；full-access 提档经宿主 Broker 审批帧确认
           const next = nextSandboxMode(sandboxModeRef.current)
           if (next === 'full-access') {
             pickerRef.current = true
-            setOverlay({ kind: 'sandbox-panel' })
+            void host.send({ op: 'sandbox/set', mode: 'full-access' }).then((r) => {
+              pickerRef.current = false
+              if (r.ok) {
+                applySandboxMode('full-access')
+                setSystemMsgs(['沙箱模式：full-access（本会话副作用免确认）'])
+              } else {
+                setSystemMsgs([`提档未生效：${r.error}`])
+              }
+            })
             return
           }
           applySandboxMode(next)
+          void host.send({ op: 'sandbox/set', mode: next })
           setSystemMsgs([`沙箱模式：${next}${next === 'default' ? '（写/bash 每次确认）' : ''}`])
         }}
         onSkillInvoke={(name, args) => {

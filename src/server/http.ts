@@ -14,9 +14,10 @@
 import http from 'node:http'
 import { randomBytes } from 'node:crypto'
 import type { HostSession } from '../host/session.js'
+import { LOOPBACK_ADDRS } from './loopback.js'
 
 const BODY_CAP = 1024 * 1024
-const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+
 
 export interface ServeResult {
   port: number
@@ -73,7 +74,7 @@ export function serveHost(host: HostSession, opts: { port?: number; hostname?: s
 
       // loopback 判定：逐请求 socket 地址（禁信 X-Forwarded-For/Host——伪造防线）
       const remote = req.socket.remoteAddress ?? ''
-      if (!LOOPBACK.has(remote)) {
+      if (!LOOPBACK_ADDRS.has(remote)) {
         json(403, { error: '非 loopback 连接被拒（远程访问需显式 --hostname + token 鉴权）' })
         return
       }

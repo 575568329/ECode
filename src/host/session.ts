@@ -155,6 +155,11 @@ export class HostSession {
     )
   }
 
+  /** sweepIdle 只读视图（Q12：审批悬置不回收——broker 私有，经此暴露计数） */
+  get brokerPending(): number {
+    return this.broker.approvalPendingCount
+  }
+
   /** B4（D5）：会话级子代理进度上报（task 工具经 ctx.session 调用；发布 subagent/progress 事件） */
   updateSubagent(st: { id: string; description: string; activity: string }): void {
     this.subagentView.set(st.id, st)
@@ -164,6 +169,12 @@ export class HostSession {
   removeSubagent(id: string): void {
     this.subagentView.delete(id)
     this.publish('subagent/progress', { agents: [...this.subagentView.values()] })
+  }
+
+  /** B3（审阅 P0-3 修复）：/rewind 标记线注入宿主权威 messages（投影层据 rewind_to 跳过区间——
+   *  客户端只写镜像时回退对 LLM 上下文不生效且下轮镜像覆盖丢失） */
+  appendRewind(line: HistoryLine): void {
+    this.messages.push(line)
   }
 
   /** B3：客户端恢复历史会话（宿主 messages 替换为载入内容；history 由调用方先行切 sessionId） */
@@ -190,7 +201,6 @@ export class HostSession {
     })
     try {
       await hook(this.messages, 'manual')
-      this.publish('compacted', {})
       return { ok: true }
     } catch (e) {
       this.publish('compactFailed', { detail: e instanceof Error ? e.message : String(e) })
@@ -439,11 +449,8 @@ export class HostSession {
             await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
           },
           model: this.cfg().current.model,
-          sandbox: makeSandbox(
-            (this.cfg().sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default',
-            cwd,
-            this.cfg().sandbox?.blockedCommands ?? [],
-          ),
+          // 运行态档位（sandbox/set 可切；config.defaultMode 仅初始值——审阅 P0-2：焊死 config 档致 Tab 切档失效）
+          sandbox: makeSandbox(this.sandboxMode, cwd, this.cfg().sandbox?.blockedCommands ?? []),
         },
         onBeforeRequest,
         onCompacted: () => this.publish('compacted', {}),
@@ -507,7 +514,12 @@ export class HostSession {
     const next = this.queue.shift()
     if (next !== undefined) {
       this.publish('queue/snapshot', { items: this.queue.map((q) => q.text) })
-      void this.startTurn(next.text, next.blocks).catch(() => {})
+      void this.startTurn(next.text, next.blocks).catch((e: unknown) => {
+        // 兜底续投失败不留哑轮（与首轮同款：发 error 事件 + 记日志）
+        this.publish('error', { message: e instanceof Error ? e.message : String(e) })
+        this.deps.logger.error('system', 'turn_failed', { message: e instanceof Error ? e.message : String(e) })
+        this.notifyIdle()
+      })
       return
     }
     this.notifyIdle()

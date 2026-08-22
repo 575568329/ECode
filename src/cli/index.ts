@@ -228,6 +228,7 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
     checkpoint: deps.checkpoint,
     quality: deps.quality,
     approvalPolicy,
+    cwd: process.cwd(),
   })
   // B3：三桥宿主侧挂载（argv 无订阅者 → ask_user/权限/子代理副作用全 fail-closed——D1 语义）
   host.mountBridges()
@@ -274,6 +275,7 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
   }
   await host.whenIdle()
   process.stdout.write('\n')
+  host.dispose() // 审阅 P1-7：会话级任务表/审批收敛（缺它 argv 后台任务孤儿化）
 }
 
 /**
@@ -284,20 +286,6 @@ async function serveMode(): Promise<void> {
   const sessionId = new Date().toISOString().replace(/[:.]/g, '-')
   const logger = new JsonlLogger(new LogStore(join(process.cwd(), '.ecode', 'logs', `serve-${sessionId}.jsonl`), sessionId))
   const config = loadConfig()
-  const deps = makeDeps(config, logger, sessionId)
-  const host = new HostSession({
-    providerRegistry: deps.providerRegistry,
-    tools: deps.tools,
-    logger: deps.logger,
-    history: deps.history,
-    getConfig: () => config,
-    orchestrator: deps.orchestrator,
-    skillListForPrompt: () => deps.skillRegistry.listForPrompt(),
-    ...(deps.hookRunner != null ? { hookRunner: deps.hookRunner } : {}),
-    ...(deps.checkpoint != null ? { checkpoint: deps.checkpoint } : {}),
-    ...(deps.quality != null ? { quality: deps.quality } : {}),
-  })
-  host.mountBridges()
   const registry = new ProjectRegistry({
     createSession: (cwd) => {
       const sid = new Date().toISOString().replace(/[:.]/g, '-')
@@ -313,6 +301,7 @@ async function serveMode(): Promise<void> {
         ...(projDeps.hookRunner != null ? { hookRunner: projDeps.hookRunner } : {}),
         ...(projDeps.checkpoint != null ? { checkpoint: projDeps.checkpoint } : {}),
         ...(projDeps.quality != null ? { quality: projDeps.quality } : {}),
+        cwd,
       })
       h.mountBridges() // 每项目宿主各挂三桥（B8.2 ctx 会话化后多宿主不串台；模块级为单会话兜底）
       return h
@@ -328,12 +317,25 @@ async function serveMode(): Promise<void> {
   console.log(JSON.stringify({ type: 'ready', schemaVersion: 1, bound: `127.0.0.1:${srv.port}`, register: regPath }))
   // 空闲回收（30 分钟 sweep；审批/UI 挂起不回收）
   const sweep = setInterval(() => void registry.sweepIdle(), 60_000)
-  void sweep
-  process.once('SIGINT', () => {
+  // 审阅 P1-4：serve 分流先于 main 的 handler 注册——此处自管生命周期：
+  // 一次信号 = 全量清理后退出（server.close 断流 → registry.disposeAll（锁释放/审批收敛）→ exit）
+  const shutdown = (code: number): void => {
     clearInterval(sweep)
-    registry.disposeAll()
+    void (async () => {
+      await srv.close()
+      registry.disposeAll()
+      process.exit(code)
+    })()
+  }
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as const) {
+    process.once(sig, () => shutdown(0))
+  }
+  process.on('uncaughtException', (e) => {
+    process.stderr.write(`serve 崩溃：${e instanceof Error ? e.message : String(e)}
+`)
+    shutdown(1)
   })
-  await new Promise<never>(() => {}) // 常驻（SIGINT 走 main 已挂的 graceful 路径）
+  await new Promise<never>(() => {}) // 常驻（无客户端不退——生命周期由上方 handler 管）
 }
 
 async function main(): Promise<void> {

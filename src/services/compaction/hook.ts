@@ -10,6 +10,7 @@
  */
 
 import type { LLMProvider, ProviderReq } from '../../providers/interface.js'
+import type { CompactionContext } from './strategy.js'
 import type { HistoryLine, Message, ToolSpec } from '../../core/types.js'
 import { buildContextMessages } from '../../core/context.js'
 import { estimateContextTokens } from '../tokenizer.js'
@@ -39,6 +40,8 @@ export interface OnBeforeRequestOpts {
    * 不计入估算则压到 summary 仍可能 400）。传 toolReg.specs()。
    */
   tools?: ToolSpec[]
+  /** M12-P0：摘要调用 usage 上报（透传到策略 ctx——压缩漏账修复） */
+  onUsage?: CompactionContext['onUsage']
 }
 
 /**
@@ -71,6 +74,7 @@ export function makeOnBeforeRequest(
         providerReq,
         history: opts.history,
         signal: opts.signal,
+        onUsage: opts.onUsage,
       })
       if (compacted) {
         opts.onCompacted(messages) // boundary 已追加，通知 UI 重建 committed

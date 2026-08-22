@@ -32,6 +32,11 @@ export interface CompactionContext {
   previousSummary?: string
   /** AbortSignal（P1-5：摘要 LLM 调用可中断，透传 loop 的 signal） */
   signal?: AbortSignal
+  /**
+   * M12-P0：摘要 LLM 调用的 usage 上报——压缩是真金白银的 LLM 调用（分批 map-reduce 可能多批），
+   * 此前直接消费流不上报，token 消耗漏账。装配层（HostSession）接到后并入会话 usage 流。
+   */
+  onUsage?: (inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }) => void
 }
 
 /** 策略返回（纯计算输出：摘要文本 + 保留区起点）。 */

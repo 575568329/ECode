@@ -68,11 +68,16 @@ class OpenaiTranslator {
 
     // usage-only chunk（stream_options.include_usage 的最后 chunk 可能无 choices）
     if (chunk.usage) {
-      this.usageInput = chunk.usage.prompt_tokens ?? 0
       this.usageOutput = chunk.usage.completion_tokens ?? 0
-      // OpenAI 的 prompt cache 命中数在 prompt_tokens_details.cached_tokens（§4.7）
+      // OpenAI 的 prompt cache 命中数在 prompt_tokens_details.cached_tokens（§4.7）。
+      // 口径对齐（M12-P0 修复）：OpenAI 的 prompt_tokens 语义**含** cached 部分，而 Anthropic 的
+      // input_tokens 不含 cache——统一模型里 input 必须是"非缓存输入"，否则四维分开计价时
+      // cache 部分被算两遍（input 全价 + cacheRead 单价）
       if (chunk.usage.prompt_tokens_details?.cached_tokens != null) {
         this.cacheReadTokens = chunk.usage.prompt_tokens_details.cached_tokens
+        this.usageInput = Math.max(0, (chunk.usage.prompt_tokens ?? 0) - this.cacheReadTokens)
+      } else {
+        this.usageInput = chunk.usage.prompt_tokens ?? 0
       }
       this.sawUsage = true
     }

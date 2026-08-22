@@ -212,6 +212,14 @@ async function callSummary(ctx: CompactionContext, system: string, msgs: Message
   for await (const d of ctx.provider.run(req)) {
     if (d.type === 'text') raw += d.text
     if (d.type === 'error') throw new Error(`摘要流内错误: ${d.error.message}`)
+    // M12-P0：摘要调用的 usage 上报（此前漏账——压缩烧钱但不进统计）
+    if (d.type === 'usage') {
+      const cache =
+        d.cache_read_tokens != null || d.cache_creation_tokens != null
+          ? { read: d.cache_read_tokens, creation: d.cache_creation_tokens }
+          : undefined
+      ctx.onUsage?.(d.input_tokens, d.output_tokens, cache)
+    }
   }
   return raw
 }

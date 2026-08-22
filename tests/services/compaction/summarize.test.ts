@@ -114,6 +114,33 @@ describe('SummarizeStrategy.run', () => {
     }
   }
 
+  it('M12-P0：摘要流含 usage → ctx.onUsage 收到四维（压缩漏账修复）', async () => {
+    const calls: Array<[number, number, { read?: number; creation?: number } | undefined]> = []
+    const r = await new SummarizeStrategy().run(ctx({
+      provider: mockProvider([
+        { type: 'text', text: '<summary>x</summary>' },
+        { type: 'usage', input_tokens: 3000, output_tokens: 200, cache_read_tokens: 500, cache_creation_tokens: 100 },
+        { type: 'done', stop_reason: 'end' },
+      ]),
+      onUsage: (i, o, c) => {
+        calls.push([i, o, c])
+      },
+    }))
+    expect(r.compacted).toBe(true)
+    expect(calls).toEqual([[3000, 200, { read: 500, creation: 100 }]])
+  })
+
+  it('M12-P0：未传 onUsage → 不报也不炸（向下兼容）', async () => {
+    const r = await new SummarizeStrategy().run(ctx({
+      provider: mockProvider([
+        { type: 'text', text: '<summary>x</summary>' },
+        { type: 'usage', input_tokens: 10, output_tokens: 5 },
+        { type: 'done', stop_reason: 'end' },
+      ]),
+    }))
+    expect(r.compacted).toBe(true)
+  })
+
   it('摘要成功 → compacted:true + summary + tailStartIndex', async () => {
     const r = await new SummarizeStrategy().run(ctx())
     expect(r.compacted).toBe(true)

@@ -136,10 +136,7 @@ export class HostSession {
     setSubagentBridge({
       confirm: (use) => this.hostConfirm(use),
       warn: (m) => this.publish('notice', { level: 'warn', text: m }),
-      usage: (inp, out, cache) => {
-        const cost = tokensToCost(this.cfg().current.model, { input: inp, output: out, cacheRead: cache?.read ?? 0, cacheCreation: cache?.creation ?? 0 })
-        this.publish('usage', { input: inp, output: out, cacheRead: cache?.read, cacheCreation: cache?.creation, costUsd: cost ?? undefined })
-      },
+      usage: (inp, out, cache) => this.recordUsage(inp, out, cache), // 子代理成本归并（M12-P0 统一收口）
       onBeforeWrite: async (paths, tool, toolUseId) => {
         for (const p of paths) this.editedFiles.add(p)
         await this.deps.checkpoint?.snapshot(this.deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
@@ -198,6 +195,7 @@ export class HostSession {
       onCompacted: () => this.publish('compacted', {}),
       history: deps.history,
       tools: deps.tools.specs(),
+      onUsage: (inp, out, cache) => this.recordUsage(inp, out, cache), // M12-P0：压缩漏账修复
     })
     try {
       await hook(this.messages, 'manual')
@@ -238,6 +236,26 @@ export class HostSession {
 
   private publish(type: ProtocolEvent['type'], data: Record<string, unknown> = {}): void {
     this.channel.publish({ type, ...data } as Parameters<InMemoryChannel['publish']>[0])
+  }
+
+  /**
+   * M12-P0：会话 usage 统一收口——主循环回调与压缩链上报共用（计价 + 协议帧广播）。
+   * 批2 将在此挂累计器与 stats 行落盘。
+   */
+  private recordUsage(inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }): void {
+    const cost = tokensToCost(this.cfg().current.model, {
+      input: inputTokens,
+      output: outputTokens,
+      cacheRead: cache?.read ?? 0,
+      cacheCreation: cache?.creation ?? 0,
+    })
+    this.publish('usage', {
+      input: inputTokens,
+      output: outputTokens,
+      cacheRead: cache?.read,
+      cacheCreation: cache?.creation,
+      costUsd: cost ?? undefined,
+    })
   }
 
   private async dispatch(cmd: ProtocolCommand): Promise<CommandResult> {
@@ -383,6 +401,7 @@ export class HostSession {
         onCompacting: () => this.publish('compacting', {}),
         onCompactFail: () => this.publish('compactFailed', {}),
         tools: deps.tools.specs(),
+        onUsage: (inp, out, cache) => this.recordUsage(inp, out, cache), // M12-P0：压缩漏账修复
       })
       const cwd = deps.cwd ?? process.cwd()
       await runLoop(this.messages, input, {
@@ -408,21 +427,7 @@ export class HostSession {
               ...(use !== undefined ? { use: use as unknown } : {}),
             })
           },
-          onUsage: (inp, out, cache) => {
-            const cost = tokensToCost(this.cfg().current.model, {
-              input: inp,
-              output: out,
-              cacheRead: cache?.read ?? 0,
-              cacheCreation: cache?.creation ?? 0,
-            })
-            this.publish('usage', {
-              input: inp,
-              output: out,
-              cacheRead: cache?.read,
-              cacheCreation: cache?.creation,
-              costUsd: cost ?? undefined,
-            })
-          },
+          onUsage: (inp, out, cache) => this.recordUsage(inp, out, cache),
           onIter: (i, m) => this.publish('thread/status', { busy: true, waitingOn: null, iter: i, maxIter: m } as Record<string, unknown>),
           onActivity: (state, text) => this.publish('activity', { state, text }),
           onWarn: (m) => this.publish('warn', { text: m }),

@@ -17,13 +17,20 @@ describe('translateOpenaiStream', () => {
     expect(deltas.at(-1)).toEqual({ type: 'done', stop_reason: 'end' })
   })
 
-  it('prompt_tokens_details.cached_tokens → cache_read_tokens（OpenAI prompt cache）', () => {
+  it('prompt_tokens_details.cached_tokens → cache_read_tokens + input 去重（M12-P0：OpenAI prompt_tokens 含 cached，四维计价须减防重复计价）', () => {
     const chunks = [
       { choices: [{ delta: { content: 'hi' }, finish_reason: null }] },
       { choices: [], usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 80 } } },
     ]
     const deltas = translateOpenaiStream(chunks as never)
-    expect(deltas).toContainEqual({ type: 'usage', input_tokens: 100, output_tokens: 5, cache_read_tokens: 80 })
+    // input = 100 − 80 = 20（非缓存输入；与 Anthropic 口径对齐）
+    expect(deltas).toContainEqual({ type: 'usage', input_tokens: 20, output_tokens: 5, cache_read_tokens: 80 })
+  })
+
+  it('usage 无 cached_tokens → input 原值透传（去重分支不影响无缓存调用）', () => {
+    const chunks = [{ choices: [], usage: { prompt_tokens: 50, completion_tokens: 5 } }]
+    const deltas = translateOpenaiStream(chunks as never)
+    expect(deltas).toContainEqual({ type: 'usage', input_tokens: 50, output_tokens: 5 })
   })
 
   it('tool_calls → tool_use_start/delta/end + done(tool_use)', () => {

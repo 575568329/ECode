@@ -29,7 +29,7 @@ import { setWebSearchProvider } from '../tools/builtin/web_search.js'
 import { taskRegistry } from '../services/tasks.js'
 import { evalPermission, loadPermissionLayers, saveLocalPermission, askPermissionInteractive } from '../services/permissions.js'
 import { join } from 'node:path'
-import { writeFileSync, chmodSync } from 'node:fs'
+import { writeFileSync, chmodSync, readFileSync, rmSync } from 'node:fs'
 import * as os from 'node:os'
 import { spawn } from 'node:child_process'
 import { render } from 'ink'
@@ -282,7 +282,37 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
  * M12-B7：`ecode serve` 常驻模式——单会话宿主上 HTTP（多项目 ProjectRegistry 在 B8）。
  * ready 单行 JSON 契约（orca 式）：stdout 只给端口与注册文件路径——**token 不打 stdout**（防本机进程读屏）。
  */
+/** M12：`ecode serve stop`——读注册文件 → 验存活 → SIGTERM（调研结论：常驻+手动停，三家同款） */
+async function serveStop(): Promise<void> {
+  const regPath = join(os.homedir(), '.ecode', 'server.json')
+  try {
+    const reg = JSON.parse(readFileSync(regPath, 'utf8')) as { pid: number; port: number }
+    process.kill(reg.pid, 0) // 探活：已死则 ESRCH 走 catch
+    process.kill(reg.pid, 'SIGTERM')
+    process.stdout.write(`已停止 serve（pid ${reg.pid}）
+`)
+  } catch (e) {
+    process.stdout.write(`无需停止：${(e as { code?: string }).code === 'ESRCH' ? '进程已不在' : '注册文件不存在或损坏'}
+`)
+  }
+  try {
+    rmSync(regPath, { force: true })
+  } catch {
+    // 幂等
+  }
+}
+
 async function serveMode(): Promise<void> {
+  // 启动接管（调研结论 2）：旧 daemon 活着 → SIGTERM 让位（版本升级/重复启动即换新）
+  try {
+    const regPath = join(os.homedir(), '.ecode', 'server.json')
+    const old = JSON.parse(readFileSync(regPath, 'utf8')) as { pid: number }
+    process.kill(old.pid, 0)
+    process.kill(old.pid, 'SIGTERM')
+    await new Promise((r) => setTimeout(r, 800)) // 等旧进程清锁退出
+  } catch {
+    // 无旧实例/已死——直接起
+  }
   const sessionId = new Date().toISOString().replace(/[:.]/g, '-')
   const logger = new JsonlLogger(new LogStore(join(process.cwd(), '.ecode', 'logs', `serve-${sessionId}.jsonl`), sessionId))
   const config = loadConfig()
@@ -317,6 +347,22 @@ async function serveMode(): Promise<void> {
   console.log(JSON.stringify({ type: 'ready', schemaVersion: 1, bound: `127.0.0.1:${srv.port}`, register: regPath }))
   // 空闲回收（30 分钟 sweep；审批/UI 挂起不回收）
   const sweep = setInterval(() => void registry.sweepIdle(), 60_000)
+  // 防脑裂（opencode 同款）：10s 校验注册 id 仍是自己——被更新版接管即让位自杀
+  const myId = sessionId
+  const watchdog = setInterval(() => {
+    try {
+      const cur = JSON.parse(readFileSync(join(os.homedir(), '.ecode', 'server.json'), 'utf8')) as { id: string }
+      if (cur.id !== myId) {
+        clearInterval(watchdog)
+        clearInterval(sweep)
+        registry.disposeAll()
+        process.exit(0)
+      }
+    } catch {
+      // 注册文件被删（stop 已发 SIGTERM——此路径兜底）
+    }
+  }, 10_000)
+  void watchdog
   // 审阅 P1-4：serve 分流先于 main 的 handler 注册——此处自管生命周期：
   // 一次信号 = 全量清理后退出（server.close 断流 → registry.disposeAll（锁释放/审批收敛）→ exit）
   const shutdown = (code: number): void => {
@@ -341,6 +387,10 @@ async function serveMode(): Promise<void> {
 async function main(): Promise<void> {
   // M12：`ecode serve` 分流（常驻宿主 HTTP——不初始化 Ink）
   if (process.argv[2] === 'serve') {
+    if (process.argv[3] === 'stop') {
+      await serveStop()
+      return
+    }
     await serveMode()
     return
   }

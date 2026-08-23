@@ -106,6 +106,22 @@ describe('aggregateStats（含文件级 mtime 缓存）', () => {
     expect(a3.totals.input).toBe(15)
   })
 
+  it('缓存结构变更防御：v1 旧缓存/缺 byModel 字段的条目弃用重算（不炸）', () => {
+    const dir = path.join(tmp, `vc-${Date.now()}`)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'v1.jsonl'), JSON.stringify(statsLine({ input: 30 })) + '\n')
+    const cachePath = path.join(dir, 'cache.json')
+    // 手写 v1 旧结构缓存（version:1 + agg 缺 byModel/costCny——否则命中后聚合抛错）
+    fs.writeFileSync(cachePath, JSON.stringify({
+      version: 1,
+      files: { v1: { mtimeMs: fs.statSync(path.join(dir, 'v1.jsonl')).mtimeMs, agg: { sessionId: 'v1', firstTs: 1, lastTs: 2, cwd: 'x', models: ['m'], mcpCalls: 0, totals: { input: 1, output: 1, cacheRead: 0, cacheCreation: 0, costUsd: 1 }, days: {} } } },
+    }))
+    const agg = aggregateStats(dir, cachePath)
+    expect(agg.totals.input).toBe(30) // 重算而非命中旧结构
+    const saved = JSON.parse(fs.readFileSync(cachePath, 'utf8')) as { version: number }
+    expect(saved.version).toBe(2)
+  })
+
   it('目录不存在 → 空聚合不炸', () => {
     const agg = aggregateStats(path.join(tmp, 'not-exist-dir'), path.join(tmp, 'not-exist-cache.json'))
     expect(agg.sessions).toBe(0)

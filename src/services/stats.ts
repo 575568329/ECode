@@ -56,7 +56,12 @@ export interface StatsAgg {
 }
 
 interface StatsCacheFile {
-  version: 1
+  /**
+   * v2（2026-08-23）：SessionAgg 增 byModel/costCny/costUnknownLines（审阅修复批结构变更）。
+   * v1 缓存结构不兼容（缺 byModel 会让聚合抛错）——整体弃用重建。
+   * 结构防御（version 忘升的未来保险）：命中条目缺 byModel 字段视为 miss 重算。
+   */
+  version: 2
   /** agg: null = 负缓存（该文件无 stats 行且 mtime 未变——审阅 P1-6：旧会话文件不必每次重读） */
   files: Record<string, { mtimeMs: number; agg: SessionAgg | null }>
 }
@@ -148,11 +153,11 @@ export function parseSessionFile(filePath: string, sessionId: string): SessionAg
 function loadCache(cachePath: string): StatsCacheFile {
   try {
     const raw = JSON.parse(fs.readFileSync(cachePath, 'utf8')) as StatsCacheFile
-    if (raw.version === 1 && typeof raw.files === 'object' && raw.files !== null) return raw
+    if (raw.version === 2 && typeof raw.files === 'object' && raw.files !== null) return raw
   } catch {
     // 无缓存/损坏 → 重建
   }
-  return { version: 1, files: {} }
+  return { version: 2, files: {} }
 }
 
 function saveCache(cachePath: string, cache: StatsCacheFile): void {
@@ -205,8 +210,9 @@ export function aggregateStats(dir: string, cachePath = path.join(os.homedir(), 
       continue
     }
     const hit = cache.files[sessionId]
-    if (hit !== undefined && hit.mtimeMs === mtimeMs) {
-      // 负缓存命中（agg:null，无 stats 行的旧会话）也跳过——审阅 P1-6
+    if (hit !== undefined && hit.mtimeMs === mtimeMs && (hit.agg === null || typeof hit.agg.byModel === 'object')) {
+      // 负缓存命中（agg:null，无 stats 行的旧会话）也跳过——审阅 P1-6；
+      // 结构防御：agg 非 null 但缺 byModel（旧结构缓存）视为 miss 重算
       if (hit.agg !== null) sessionAggs.push(hit.agg)
       continue
     }

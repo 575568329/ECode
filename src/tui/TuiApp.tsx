@@ -23,7 +23,7 @@ import { createActive, type CommittedItem, type ActiveState } from './types.js'
 import { messagesToCommitted } from './commit.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { expandSkill, type SkillRegistry } from '../services/skill.js'
-import { registerSkillHooks, unregisterAllSkillHooks } from '../services/hooks/global.js'
+import { globalSkillHooks } from '../services/hooks/global.js'
 import type { HookRunner } from '../services/hooks/runner.js'
 import {
   callLLM,
@@ -95,6 +95,10 @@ export interface TuiAppDeps {
   pluginLoader?: import('../services/plugin/loader.js').PluginLoader | null
   /** /restart 的执行句柄（cli 注入：unmount + spawn 新实例 + exit；缺省时提示不可用） */
   onRestart?: () => void
+  /** M13-W1：项目宿主（会话容器——构造走它；测试 fake 缺省走内联构造兜底） */
+  project?: import('../host/project.js').ProjectHost
+  /** M13-W1：skill hooks 写端口（项目级 registry 绑定；缺省走模块兜底端口） */
+  skillHooks?: import('../services/hooks/global.js').SkillHooksPort
 }
 
 
@@ -266,20 +270,25 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   // —— M12-B3：宿主会话（数据/执行/审批全权在宿主；TuiApp 只是协议客户端）——
   const hostRef = useRef<HostSession | null>(null)
   if (hostRef.current === null) {
-    hostRef.current = new HostSession({
-      providerRegistry: deps.providerRegistry,
-      tools: deps.tools,
-      logger: deps.logger,
-      history: deps.history,
-      getConfig: () => configRef.current,
-      orchestrator: deps.orchestrator,
-      skillListForPrompt: () => deps.skillRegistry.listForPrompt(),
-      ...(deps.hookRunner != null ? { hookRunner: deps.hookRunner } : {}),
-      ...(deps.checkpoint != null && deps.checkpoint !== undefined ? { checkpoint: deps.checkpoint } : {}),
-      ...(deps.quality != null && deps.quality !== undefined ? { quality: deps.quality } : {}),
-      ctxWindowHint: () => ctxWindowRef.current,
-      cwd: process.cwd(),
-    })
+    // M13-W1：宿主取自 ProjectHost（会话容器；首会话已由 makeDeps ensure——此处幂等取回）；
+    // 测试 fake 无 project 走内联构造兜底（与 M12 等价）
+    hostRef.current =
+      deps.project !== undefined
+        ? deps.project.ensureDefault(deps.history.currentSessionId())
+        : new HostSession({
+            providerRegistry: deps.providerRegistry,
+            tools: deps.tools,
+            logger: deps.logger,
+            history: deps.history,
+            getConfig: () => configRef.current,
+            orchestrator: deps.orchestrator,
+            skillListForPrompt: () => deps.skillRegistry.listForPrompt(),
+            ...(deps.hookRunner != null ? { hookRunner: deps.hookRunner } : {}),
+            ...(deps.checkpoint != null && deps.checkpoint !== undefined ? { checkpoint: deps.checkpoint } : {}),
+            ...(deps.quality != null && deps.quality !== undefined ? { quality: deps.quality } : {}),
+            ctxWindowHint: () => ctxWindowRef.current,
+            cwd: process.cwd(),
+          })
   }
   const host = hostRef.current
 
@@ -498,7 +507,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
   // 清动态/瞬态状态（onClear 和 restoreSession 共用；committed 由调用方设，§9.2 P2-6 别重写一套）
   const resetTransient = () => {
     // M7 H-P5：skill hooks 是会话级——起新会话（/clear、恢复历史）即注销全部
-    unregisterAllSkillHooks()
+    // M13-W1：经项目级端口（多项目不串台）；缺省走模块兜底
+    ;(deps.skillHooks ?? globalSkillHooks).unregisterAll()
     // 兜底：若有挂起的 confirm（inactive 本应挡住命令触发，此处 defense-in-depth），取消避免 Promise 永挂
     if (active.confirm) {
       active.confirm.resolve(false)
@@ -1128,7 +1138,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
           if (info === undefined) return
           // M7 H-P5：skill 附带 hooks → 会话级注册 + 底部告知（与 LLM 面同语义）
           if (info.hooks !== undefined && info.hooks.length > 0) {
-            registerSkillHooks(info.name, info.hooks)
+            ;(deps.skillHooks ?? globalSkillHooks).register(info.name, info.hooks)
             setSystemMsgs([`skill「${name}」已启用 ${info.hooks.length} 个 hooks（本会话）`])
           }
           void submit(

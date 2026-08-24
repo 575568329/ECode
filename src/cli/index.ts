@@ -45,6 +45,10 @@ import { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import { makeTaskTool } from '../services/subagent.js'
 import { SummarizeStrategy } from '../services/compaction/summarize.js'
 import { skillRegistry, createSkillRegistry } from '../services/skill.js'
+import { makeSkillHooksPort, type SkillHooksPort } from '../services/hooks/global.js'
+import { ExtensionHooksRegistry } from '../services/hooks/registry.js'
+import { ProjectHost } from '../host/project.js'
+import type { HostDeps } from '../host/session.js'
 import { setupMcp } from '../services/mcp/setup.js'
 import type { McpManager } from '../services/mcp/manager.js'
 import { makeGracefulShutdown } from '../services/gracefulShutdown.js'
@@ -82,12 +86,39 @@ interface Deps {
   checkpoint?: CheckpointStore | null
   /** M9-P3：编辑后 lint/test 回喂门（afterTools 装配进 runLoop opts） */
   quality?: QualityGate | null
+  /** M13-W1：项目宿主（会话容器——TuiApp/argv/serve 经它取会话；测试 fake 缺省走内联构造兜底） */
+  project?: import('../host/project.js').ProjectHost
+  /** M13-W1：skill hooks 写端口（项目级 registry 绑定——TuiApp /clear 与手动触发经此，多项目不串台） */
+  skillHooks?: import('../services/hooks/global.js').SkillHooksPort
 }
 
-/** M12-B8a：cwd 参数化（多项目 makeDeps(cwd) 可重入）；sessionId 会话层（B8 ProjectHost 每会话新 id）。
- *  挂账：setWebFetchLimits/setWebSearchProvider/skillRegistry/globalExtensionHooks 仍全局（同值覆写无害；
- *  项目级不同值需 tools 层工厂化——B8 实际撞到再做） */
-function makeDeps(config: Config, logger: Logger, sessionId: string, dir: string = process.cwd()): Deps {
+/** M13-W1：项目级件（一项目一套——ProjectHost 持有，跨会话共享；opencode Instance 同构）。
+ *  挂账沿用：setWebFetchLimits/setWebSearchProvider 仍进程级（同值覆写无害）；makeTaskTool 的
+ *  onBeforeWrite 快照经 sessionRef.id 取当前会话（多会话并发时最后 ensure 者胜——W2 信封路由收口）。 */
+interface ProjectParts {
+  providerReg: LLMProviderRegistryImpl
+  hookedTools: HookedToolRegistry
+  orchestrator: CompactionOrchestrator
+  hookRunner: HookRunner
+  checkpoint: CheckpointStore
+  quality: QualityGate
+  pluginLoader: PluginLoader
+  skills: ReturnType<typeof createSkillRegistry>
+  extHooks: ExtensionHooksRegistry
+  mcpManager: McpManager | null
+  mcpWarnings: string[]
+  mcpPendingApproval?: { file: string; approve: () => Promise<void> }
+  instructionWarnings: string[]
+}
+
+/** M13-W1 项目级装配（原 makeDeps 主体；会话级件 history 拆出到 makeConversationDeps） */
+function makeProjectParts(
+  config: Config,
+  logger: Logger,
+  dir: string,
+  registries: { skills: ReturnType<typeof createSkillRegistry>; extHooks: ExtensionHooksRegistry },
+  sessionRef: { id: string },
+): ProjectParts {
   const providerReg = new LLMProviderRegistryImpl()
   providerReg.register(new AnthropicProvider())
   providerReg.register(new OpenaiProvider())
@@ -104,17 +135,19 @@ function makeDeps(config: Config, logger: Logger, sessionId: string, dir: string
     warn: (m) => logger.warn('mcp', 'setup', { message: m }),
   })
   // M7 H-P1/H-P3：hooks 双源分发器 + 工具装饰（loop 拿代理零感知；runner 经 getter 可替换——H4 v3.1）
-  // 扩展源用全局注册表（skill/plugin 的注册入口分散在 Tool/TuiApp，全局单例免依赖穿透）
+  // M13-W1：扩展源用项目级实例（serve 多项目不串台；REPL/argv 传模块单例同源兼容）
   const { hooks: userHooks, warnings: hookWarnings } = parseUserHooks(config.hooks)
   for (const w of hookWarnings) logger.warn('hooks', 'user_config', { message: w })
   // M9-P5：扩展源 hook 权限门（Hook(owner) 三态；用户源无 owner 不问）。
   // once 允许后本会话同 owner:event 不再问（session 记忆）；remember 落 local 层 settings.local.json。
   const permSessionAllowed = new Set<string>()
   const hookRunner = new HookRunner({
-    extensions: globalExtensionHooks,
+    extensions: registries.extHooks,
     execute: runCommandHook,
     getUserHooks: () => userHooks,
-    getSessionId: () => sessionId,
+    // M13-W1（三单例收敛③）：sessionRef 随 ensureConversation 更新——多会话下 hook 事件
+    // session_id 空值兜底动态化（显式传 id 的 dispatch 路径本就不受影响）
+    getSessionId: () => sessionRef.id,
     warn: (m) => logger.warn('hooks', 'exec', { message: m }),
     checkHookPermission: async (owner, event) => {
       const key = `${owner}:${event}`
@@ -149,11 +182,10 @@ function makeDeps(config: Config, logger: Logger, sessionId: string, dir: string
   setWebFetchLimits({ maxContentKB: config.webFetchMaxKB })
   // M10-P1：三层装配（搜索 MCP 命中→null 不注册内置；默认 bing RSS；配置后 zhipu）
   setWebSearchProvider(resolveSearchProvider(config))
-  // M11-P5：task 工具（装配期工厂——deps 全 getter/引用；UI 桥由 TuiApp 挂，argv 无 UI confirm fail-closed）
-  const history = new FileHistoryStore({ sessionId, model: config.current.model })
   const checkpoint = new CheckpointStore(dir, {
     warn: (m) => logger.warn('checkpoint', 'snapshot', { message: m }),
   })
+  // M11-P5：task 工具（装配期工厂——deps 全 getter/引用；UI 桥由宿主挂，argv 无 UI confirm fail-closed）
   toolReg.register(makeTaskTool({
     getProviderReq: () => buildProviderReq(config),
     getProvider: () => providerReg.getByType(config.providers[config.current.name].type),
@@ -171,7 +203,8 @@ function makeDeps(config: Config, logger: Logger, sessionId: string, dir: string
       }
     },
     onBeforeWrite: async (paths, tool, toolUseId) => {
-      await checkpoint?.snapshot(history.currentSessionId(), paths, { tool, messageId: toolUseId })
+      // M13-W1：会话级 history 拆出后经 sessionRef 取当前会话 id（W1 单会话语义等价）
+      await checkpoint?.snapshot(sessionRef.id, paths, { tool, messageId: toolUseId })
     },
     sandbox: makeSandbox(
       (config.sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default',
@@ -189,26 +222,100 @@ function makeDeps(config: Config, logger: Logger, sessionId: string, dir: string
     getModel: () => config.current.model,
   }))
   return {
-    providerRegistry: providerReg,
-    tools: hookedTools,
-    logger,
-    history,
+    providerReg,
+    hookedTools,
+    orchestrator,
+    hookRunner,
     checkpoint,
     quality: new QualityGate({
       commands: detectQualityCommands(dir, { lintCommand: config.lintCommand, testCommand: config.testCommand }),
       run: makeShellRunner(dir),
       warn: (m) => logger.warn('quality', 'gate', { message: m }),
     }),
-    config,
-    orchestrator,
-    lastUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
-    skillRegistry,
+    pluginLoader: new PluginLoader({ warn: (m) => logger.warn('plugin', 'load', { message: m }) }),
+    skills: registries.skills,
+    extHooks: registries.extHooks,
     mcpManager: mcp.manager,
     mcpWarnings: mcp.warnings,
     instructionWarnings,
-    hookRunner,
-    pluginLoader: new PluginLoader({ warn: (m) => logger.warn('plugin', 'load', { message: m }) }),
     ...(mcp.pendingApproval !== undefined ? { mcpPendingApproval: mcp.pendingApproval } : {}),
+  }
+}
+
+/** M13-W1 会话级件（一会话一套——history 绑 sessionId；HostSession 的 HostDeps 组装点） */
+function makeConversationDeps(
+  parts: ProjectParts,
+  logger: Logger,
+  config: Config,
+  sessionId: string,
+  dir: string,
+  sessionRef: { id: string },
+  skillHooks: SkillHooksPort,
+  approvalPolicy?: 'ask' | 'auto-approve',
+): { host: HostDeps; history: FileHistoryStore } {
+  sessionRef.id = sessionId // 三单例收敛③：hook 事件 session_id 兜底动态化
+  const history = new FileHistoryStore({ sessionId, model: config.current.model })
+  const host: HostDeps = {
+    providerRegistry: parts.providerReg,
+    tools: parts.hookedTools,
+    logger,
+    history,
+    getConfig: () => config,
+    orchestrator: parts.orchestrator,
+    skillListForPrompt: () => parts.skills.listForPrompt(),
+    hookRunner: parts.hookRunner,
+    checkpoint: parts.checkpoint,
+    quality: parts.quality,
+    cwd: dir,
+    skillHooks,
+    ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),
+  }
+  return { host, history }
+}
+
+/** M13-W1：makeDeps = 项目级件 + 首会话 + ProjectHost（签名不变——TuiApp/serve 消费 Deps 整袋）。
+ *  opts.freshRegistries：serve 每项目新建 skills/extHooks 实例（多项目隔离）；
+ *  REPL/argv 缺省复用模块单例（TUI 组件模块直读同源兼容）。
+ *  opts.approvalPolicy：argv --yes 经此进会话 broker（原 runOnce 构造参数前移到装配点）。 */
+function makeDeps(
+  config: Config,
+  logger: Logger,
+  sessionId: string,
+  dir: string = process.cwd(),
+  opts: { freshRegistries?: boolean; approvalPolicy?: 'ask' | 'auto-approve' } = {},
+): Deps {
+  const skills = opts.freshRegistries === true ? createSkillRegistry() : skillRegistry
+  const extHooks = opts.freshRegistries === true ? new ExtensionHooksRegistry() : globalExtensionHooks
+  const skillHooks = makeSkillHooksPort(extHooks)
+  const sessionRef = { id: sessionId }
+  const parts = makeProjectParts(config, logger, dir, { skills, extHooks }, sessionRef)
+  const conv0 = makeConversationDeps(parts, logger, config, sessionId, dir, sessionRef, skillHooks, opts.approvalPolicy)
+  const project = new ProjectHost({
+    createConversation: (sid) =>
+      makeConversationDeps(parts, logger, config, sid, dir, sessionRef, skillHooks, opts.approvalPolicy).host,
+    skills,
+    extHooks,
+  })
+  project.ensure(sessionId, conv0.host)
+  return {
+    providerRegistry: parts.providerReg,
+    tools: parts.hookedTools,
+    logger,
+    history: conv0.history,
+    checkpoint: parts.checkpoint,
+    quality: parts.quality,
+    config,
+    orchestrator: parts.orchestrator,
+    lastUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    skillRegistry: skills,
+    skillHooks,
+    project,
+    mcpManager: parts.mcpManager,
+    mcpWarnings: parts.mcpWarnings,
+    instructionWarnings: parts.instructionWarnings,
+    hookRunner: parts.hookRunner,
+    pluginLoader: parts.pluginLoader,
+    ...(parts.mcpPendingApproval !== undefined ? { mcpPendingApproval: parts.mcpPendingApproval } : {}),
   }
 }
 
@@ -216,21 +323,26 @@ function makeDeps(config: Config, logger: Logger, sessionId: string, dir: string
 async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-approve' = 'ask'): Promise<void> {
   // M12-B1：argv 切换为宿主消费方（同进程 InMemoryChannel + stdout 适配器）——
   // 与 TUI 走同一套装配/事件翻译（原内联装配退役）；行为增强：Stop hook/插话队列/轮末兜底随宿主获得
-  const host = new HostSession({
-    providerRegistry: deps.providerRegistry,
-    tools: deps.tools,
-    logger: deps.logger,
-    history: deps.history,
-    getConfig: () => deps.config,
-    orchestrator: deps.orchestrator,
-    skillListForPrompt: () => deps.skillRegistry.listForPrompt(),
-    hookRunner: deps.hookRunner,
-    checkpoint: deps.checkpoint,
-    quality: deps.quality,
-    approvalPolicy,
-    cwd: process.cwd(),
-  })
-  // B3：三桥宿主侧挂载（argv 无订阅者 → ask_user/权限/子代理副作用全 fail-closed——D1 语义）
+  // M13-W1：宿主取自 ProjectHost（makeDeps 已装配含 approvalPolicy——opts 前移）；无 project 的
+  // 旧测试路径走内联构造兜底（行为与 M12 等价）
+  const host =
+    deps.project !== undefined
+      ? deps.project.ensureDefault(deps.history.currentSessionId())
+      : new HostSession({
+          providerRegistry: deps.providerRegistry,
+          tools: deps.tools,
+          logger: deps.logger,
+          history: deps.history,
+          getConfig: () => deps.config,
+          orchestrator: deps.orchestrator,
+          skillListForPrompt: () => deps.skillRegistry.listForPrompt(),
+          ...(deps.hookRunner != null ? { hookRunner: deps.hookRunner } : {}),
+          ...(deps.checkpoint != null ? { checkpoint: deps.checkpoint } : {}),
+          ...(deps.quality != null ? { quality: deps.quality } : {}),
+          approvalPolicy,
+          cwd: process.cwd(),
+        })
+  // B3：三桥宿主侧挂载（argv 无订阅者 → ask_user/权限/子代理副作用全 fail-closed——D1 语义；幂等）
   host.mountBridges()
   host.subscribe((ev) => {
     switch (ev.type) {
@@ -318,22 +430,13 @@ async function serveMode(): Promise<void> {
   const config = loadConfig()
   const registry = new ProjectRegistry({
     createSession: (cwd) => {
+      // M13-W1：每项目独立 skills/extHooks 实例（多项目 /clear 不串台）+ 会话取自 ProjectHost；
+      // ProjectRegistry 本批不动（W2 升维 path→ProjectHost）——对 registry 而言仍是"每项目一个 HostSession"
       const sid = new Date().toISOString().replace(/[:.]/g, '-')
-      const projDeps = makeDeps(config, logger, sid, cwd)
-      const h = new HostSession({
-        providerRegistry: projDeps.providerRegistry,
-        tools: projDeps.tools,
-        logger: projDeps.logger,
-        history: projDeps.history,
-        getConfig: () => config,
-        orchestrator: projDeps.orchestrator,
-        skillListForPrompt: () => projDeps.skillRegistry.listForPrompt(),
-        ...(projDeps.hookRunner != null ? { hookRunner: projDeps.hookRunner } : {}),
-        ...(projDeps.checkpoint != null ? { checkpoint: projDeps.checkpoint } : {}),
-        ...(projDeps.quality != null ? { quality: projDeps.quality } : {}),
-        cwd,
-      })
-      h.mountBridges() // 每项目宿主各挂三桥（B8.2 ctx 会话化后多宿主不串台；模块级为单会话兜底）
+      const deps = makeDeps(config, logger, sid, cwd, { freshRegistries: true })
+      const h = deps.project !== undefined ? deps.project.ensureDefault(sid) : null
+      if (h === null) throw new Error('ProjectHost missing in makeDeps')
+      h.mountBridges() // 幂等（ensure 已自动挂；显式保留 B8.2 注释语义）
       return h
     },
   })
@@ -475,7 +578,9 @@ async function main(): Promise<void> {
     providerType: config.providers[config.current.name]?.type,
   })
 
-  const deps = makeDeps(config, logger, sessionId)
+  // M13-W1：--yes 前移（approvalPolicy 经 makeDeps opts 进会话 broker——原 runOnce 构造参数前移到装配点）
+  const autoYes = process.argv.includes('--yes')
+  const deps = makeDeps(config, logger, sessionId, process.cwd(), { approvalPolicy: autoYes ? 'auto-approve' : 'ask' })
   // M10-P3 终审 P1-6：后台任务完成钩子——走近修改集快照兜底（bash 同款语义；无 git 时 warn 跳过）
   taskRegistry.onComplete = (t) => {
     void deps.checkpoint
@@ -501,7 +606,6 @@ async function main(): Promise<void> {
 
   // argv 单次模式：M1 stdout 输出 → 跑一次退出（graceful：SessionEnd/MCP 清理走预算窗口）
   // D1（B2）：--yes 显式放行 tool-confirm 类审批（sensitive/mcp-permission 不豁免）；缺省 fail-closed
-  const autoYes = process.argv.includes('--yes')
   const initialInput = process.argv
     .slice(2)
     .filter((a) => a !== '--yes')
@@ -511,7 +615,7 @@ async function main(): Promise<void> {
     for (const w of deps.instructionWarnings) process.stderr.write(`⚠ ${w}
 `)
     try {
-      await runOnce(initialInput, deps, autoYes ? 'auto-approve' : 'ask')
+      await runOnce(initialInput, deps, autoYes ? 'auto-approve' : 'ask') // policy 兜底（project 路径已在装配点生效）
     } catch (e) {
       process.stderr.write(`✗ ${e instanceof Error ? e.message : String(e)}\n`)
       gracefulShutdown(1)

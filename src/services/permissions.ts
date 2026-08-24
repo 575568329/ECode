@@ -148,6 +148,11 @@ export function setPermissionAsker(h: ((owner: string, event: string) => Promise
   asker = h
 }
 
+/** M13-W1：当前槽位只读（ConversationHost dispose 归属守卫） */
+export function currentPermissionAsker(): ((owner: string, event: string) => Promise<PermissionAnswer>) | null {
+  return asker
+}
+
 export async function askPermissionInteractive(owner: string, event: string): Promise<PermissionAnswer | null> {
   if (asker === null) return null
   return asker(owner, event)

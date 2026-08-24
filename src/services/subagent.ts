@@ -92,6 +92,11 @@ export function setSubagentBridge(b: SubagentBridge | null): void {
   bridge = b
 }
 
+/** M13-W1：当前槽位只读（ConversationHost dispose 归属守卫——仅当槽内仍是自己装的才清，防误清后挂者） */
+export function currentSubagentBridge(): SubagentBridge | null {
+  return bridge
+}
+
 function bridgeConfirm(use: ToolUseBlock): Promise<boolean> {
   return bridge !== null ? bridge.confirm(use) : Promise.resolve(false)
 }
@@ -112,6 +117,11 @@ let progressHandler: ((list: SubagentStatus[]) => void) | null = null
 /** TuiApp 挂载注入（卸载置 null）；每次状态变化推送全量快照 */
 export function setSubagentProgressHandler(h: ((list: SubagentStatus[]) => void) | null): void {
   progressHandler = h
+}
+
+/** M13-W1：dispose 归属守卫用（同 currentSubagentBridge） */
+export function currentSubagentProgressHandler(): ((list: SubagentStatus[]) => void) | null {
+  return progressHandler
 }
 
 function notifyProgress(): void {

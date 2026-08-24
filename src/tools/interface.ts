@@ -46,6 +46,8 @@ export interface ToolContext {
     countMcpCall?(): void
     /** B8.2：ask_user 会话化（argv/多宿主 fail-closed 语义由宿主 broker 决定） */
     askUser?(questions: unknown[]): Promise<unknown>
+    /** M13-W1：skill hooks 写端口（项目级 registry 绑定——多项目 /clear 不串台；缺省走模块兑底端口） */
+    skillHooks?: import('../services/hooks/global.js').SkillHooksPort
   }
   /** M12-B4：会话级后台任务表快捷位（ctx.session.tasks 的平铺——工具侧免嵌套判空） */
   tasks?: import('../services/tasks.js').TaskRegistry

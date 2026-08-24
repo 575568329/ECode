@@ -20,6 +20,11 @@ export function setAskUserHandler(h: AskUserHandler | null): void {
   handler = h
 }
 
+/** M13-W1：当前槽位只读（ConversationHost dispose 归属守卫） */
+export function currentAskUserHandler(): AskUserHandler | null {
+  return handler
+}
+
 /** 是否有 UI 可用（argv/管道模式 false）。 */
 export function askUserInteractive(): boolean {
   return handler !== null

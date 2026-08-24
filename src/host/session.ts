@@ -39,9 +39,10 @@ import { InMemoryChannel } from '../protocol/channel.js'
 import type { CommandResult, ImagePayload, ProtocolCommand, ProtocolEvent } from '../protocol/types.js'
 import { ApprovalBroker, type ApprovalPolicy } from './approval.js'
 import { buildPreview } from '../services/preview.js'
-import { setSubagentBridge, setSubagentProgressHandler } from '../services/subagent.js'
-import { setPermissionAsker } from '../services/permissions.js'
-import { setAskUserHandler, type AskUserHandler } from '../tools/builtin/askUserBridge.js'
+import { setSubagentBridge, setSubagentProgressHandler, currentSubagentBridge, currentSubagentProgressHandler, type SubagentBridge } from '../services/subagent.js'
+import { setPermissionAsker, currentPermissionAsker } from '../services/permissions.js'
+import { setAskUserHandler, currentAskUserHandler, type AskUserHandler } from '../tools/builtin/askUserBridge.js'
+import type { SkillHooksPort } from '../services/hooks/global.js'
 
 /** buildSystemPrompt 的技能清单入参形态（结构化取参，避免依赖 skill 具体类型） */
 type SkillPromptSource = Parameters<typeof buildSystemPrompt>[0]
@@ -64,6 +65,8 @@ export interface HostDeps {
   approvalPolicy?: ApprovalPolicy
   /** 上下文窗口提示（TUI 传启动预热情；缺省走 resolveContextWindow 联网/内置表） */
   ctxWindowHint?: () => number | null
+  /** M13-W1：skill hooks 写端口（项目级 registry 绑定——skill 工具经 ctx.session 消费；缺省走模块兜底端口） */
+  skillHooks?: SkillHooksPort
 }
 
 interface QueueEntry {
@@ -111,11 +114,13 @@ export class HostSession {
     this.tasks.dispose()
     this.broker.dispose()
     this.abort.abort()
+    // M13-W1 归属守卫：模块槽是"最后挂载者"语义——仅当槽内仍是自己装的才清，
+    // 防止 A 会话 dispose 误清后挂的 B 会话桥（多会话共存的正确卸载语义）
     if (this.bridgesMounted) {
-      setSubagentBridge(null)
-      setSubagentProgressHandler(null)
-      setPermissionAsker(null)
-      setAskUserHandler(null)
+      if (currentPermissionAsker() === this.installedAsker) setPermissionAsker(null)
+      if (currentAskUserHandler() === this.installedAskUser) setAskUserHandler(null)
+      if (currentSubagentBridge() === this.installedBridge) setSubagentBridge(null)
+      if (currentSubagentProgressHandler() === this.installedProgress) setSubagentProgressHandler(null)
       this.bridgesMounted = false
     }
     this.channel.dispose()
@@ -128,12 +133,14 @@ export class HostSession {
   mountBridges(): void {
     if (this.bridgesMounted) return
     this.bridgesMounted = true
-    setPermissionAsker(async (owner, event) => this.broker.permission(owner, event))
-    setAskUserHandler((async (questions: Parameters<AskUserHandler>[0]) => {
+    this.installedAsker = async (owner, event) => this.broker.permission(owner, event)
+    setPermissionAsker(this.installedAsker)
+    this.installedAskUser = (async (questions: Parameters<AskUserHandler>[0]) => {
       const r = await this.broker.askUser(questions)
       return (r ?? { kind: 'cancel' }) as ReturnType<AskUserHandler>
-    }) as AskUserHandler)
-    setSubagentBridge({
+    }) as AskUserHandler
+    setAskUserHandler(this.installedAskUser)
+    this.installedBridge = {
       confirm: (use) => this.hostConfirm(use),
       warn: (m) => this.publish('notice', { level: 'warn', text: m }),
       usage: (inp, out, cache) => this.recordUsage(inp, out, cache), // 子代理成本归并（M12-P0 统一收口）
@@ -146,10 +153,11 @@ export class HostSession {
       getSandbox: () =>
         makeSandbox(this.sandboxMode, this.deps.cwd ?? process.cwd(), this.cfg().sandbox?.blockedCommands ?? []),
       getModel: () => this.cfg().current.model,
-    })
-    setSubagentProgressHandler((agents) =>
-      this.publish('subagent/progress', { agents: agents.map((a) => ({ id: a.id, description: a.description, activity: a.activity })) }),
-    )
+    }
+    setSubagentBridge(this.installedBridge)
+    this.installedProgress = (agents) =>
+      this.publish('subagent/progress', { agents: agents.map((a) => ({ id: a.id, description: a.description, activity: a.activity })) })
+    setSubagentProgressHandler(this.installedProgress)
   }
 
   /** sweepIdle 只读视图（Q12：审批悬置不回收——broker 私有，经此暴露计数） */
@@ -213,6 +221,11 @@ export class HostSession {
   }
 
   private bridgesMounted = false
+  /** M13-W1 桥归属守卫：本会话装进模块槽的四件闭包引用（dispose 时比对身份再清） */
+  private installedAsker: ((owner: string, event: string) => Promise<import('../services/permissions.js').PermissionAnswer>) | null = null
+  private installedAskUser: AskUserHandler | null = null
+  private installedBridge: SubagentBridge | null = null
+  private installedProgress: ((list: { id: string; description: string; activity: string }[]) => void) | null = null
 
   send(cmd: ProtocolCommand): Promise<CommandResult> {
     return this.channel.send(cmd)
@@ -481,6 +494,8 @@ export class HostSession {
             // 审阅 P1-2/P1-4：子代理 usage 与 MCP 计数走会话窄端口（多宿主不串台）；模块桥降兜底
             recordUsage: (i, o, c) => this.recordUsage(i, o, c),
             countMcpCall: () => this.bumpMcp(),
+            // M13-W1：skill hooks 写端口（项目级 registry 绑定；缺省走模块兜底——argv/旧测试）
+            ...(this.deps.skillHooks !== undefined ? { skillHooks: this.deps.skillHooks } : {}),
           },
           tasks: this.tasks,
           signal: this.abort.signal,

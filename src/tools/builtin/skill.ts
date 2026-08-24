@@ -9,7 +9,8 @@
 
 import type { Tool } from '../interface.js'
 import { skillRegistry } from '../../services/skill.js'
-import { registerSkillHooks } from '../../services/hooks/global.js'
+import { globalSkillHooks } from '../../services/hooks/global.js'
+import type { ToolContext } from '../interface.js'
 
 export const skillTool: Tool = {
   name: 'Skill',
@@ -24,7 +25,7 @@ export const skillTool: Tool = {
   },
   readonly: true,
 
-  async execute(args) {
+  async execute(args, ctx?: ToolContext) {
     const { skill } = args as { skill: string }
     const info = skillRegistry.get(skill)
     if (info === undefined) {
@@ -47,7 +48,9 @@ export const skillTool: Tool = {
     }
     // M7 H-P5：skill 附带 hooks → 会话级注册（skill 使用即启用；/clear 或会话结束注销）
     if (info.hooks !== undefined && info.hooks.length > 0) {
-      registerSkillHooks(info.name, info.hooks)
+      // M13-W1：经会话端口写项目级 registry（多项目不串台）；无宿主降模块兑底
+      const port = ctx?.session?.skillHooks ?? globalSkillHooks
+      port.register(info.name, info.hooks)
       const summary = info.hooks.map((h) => `${h.event}${h.matcher !== undefined ? `(${h.matcher})` : ''}`).join('、')
       lines.push('', `该 Skill 已启用 ${info.hooks.length} 个 hooks（本会话）：${summary}`)
     }

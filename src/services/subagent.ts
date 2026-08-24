@@ -44,6 +44,10 @@ interface SessionPort {
     recordUsage?(inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }): void
     /** 审阅 P1-2：子代理发起的 mcp__ 调用计数（此前只计主循环——子代理是 MCP 搜索主力场景） */
     countMcpCall?(): void
+    /** M13 审阅 R1：写前快照会话化（多会话 checkpoint 归属发起会话） */
+    onBeforeWrite?(paths: string[], tool: string, toolUseId?: string): Promise<void>
+    /** M13 审阅 R1：沙箱档随发起会话（sandbox/set 切档后子代理跟随） */
+    getSandbox?(): import('./sandbox.js').Sandbox
   }
 }
 
@@ -263,9 +267,10 @@ export function makeSubagentOpts(
     toolCtx: {
       cwd: deps.cwd,
       signal,
-      onBeforeWrite: bridge?.onBeforeWrite ?? deps.onBeforeWrite,
-      ...((bridge?.getSandbox !== undefined ? bridge.getSandbox() : deps.sandbox) !== undefined
-        ? { sandbox: bridge?.getSandbox !== undefined ? bridge.getSandbox() : deps.sandbox }
+      // M13 审阅 R1：sess 端口优先（多会话不串台）——模块桥降单会话兜底（argv/旧路径）
+      onBeforeWrite: sessPort?.onBeforeWrite ?? bridge?.onBeforeWrite ?? deps.onBeforeWrite,
+      ...((sessPort?.getSandbox?.() ?? (bridge?.getSandbox !== undefined ? bridge.getSandbox() : deps.sandbox)) !== undefined
+        ? { sandbox: sessPort?.getSandbox?.() ?? (bridge?.getSandbox !== undefined ? bridge.getSandbox() : deps.sandbox) }
         : {}),
       ...((bridge?.getModel?.() ?? deps.getModel?.()) !== undefined
         ? { model: bridge?.getModel?.() ?? deps.getModel?.() }

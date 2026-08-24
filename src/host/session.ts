@@ -572,6 +572,13 @@ export class HostSession {
             // M13-B1：skill 去重判定 + 重复读守卫（会话级；无宿主路径缺省不去重）
             isSkillActive: (name) => this.isSkillActive(name),
             readFileGuard: this.readFileGuard,
+            // M13 审阅 R1：子代理快照/沙箱会话化（本会话 history.currentSessionId——多会话不串台）
+            onBeforeWrite: async (paths, tool, toolUseId) => {
+              for (const p of paths) this.editedFiles.add(p)
+              await this.deps.checkpoint?.snapshot(this.deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
+            },
+            getSandbox: () =>
+              makeSandbox(this.sandboxMode, this.deps.cwd ?? process.cwd(), this.cfg().sandbox?.blockedCommands ?? []),
           },
           tasks: this.tasks,
           signal: this.abort.signal,

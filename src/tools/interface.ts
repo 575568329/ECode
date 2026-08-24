@@ -48,6 +48,10 @@ export interface ToolContext {
     askUser?(questions: unknown[]): Promise<unknown>
     /** M13-W1：skill hooks 写端口（项目级 registry 绑定——多项目 /clear 不串台；缺省走模块兑底端口） */
     skillHooks?: import('../services/hooks/global.js').SkillHooksPort
+    /** M13 审阅 R1：子代理写前快照会话化（多会话下 checkpoint 归属发起会话——模块桥最后挂载者不再误导向） */
+    onBeforeWrite?(paths: string[], tool: string, toolUseId?: string): Promise<void>
+    /** M13 审阅 R1：子代理沙箱档随发起会话（sandbox/set 切档后子代理跟随本会话档位） */
+    getSandbox?(): import('../services/sandbox.js').Sandbox
     /** M13-B1：skill 激活判定（扫投影后 messages——/rewind·压缩后标记被投影自动回未激活） */
     isSkillActive?(name: string): boolean
     /** M13-B1：重复读守卫（mtime 比对；write/edit 后 mtime 变自然放行——bash cat 是逃生口 D6） */

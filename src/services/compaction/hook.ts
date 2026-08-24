@@ -42,6 +42,11 @@ export interface OnBeforeRequestOpts {
   tools?: ToolSpec[]
   /** M12-P0：摘要调用 usage 上报（透传到策略 ctx——压缩漏账修复） */
   onUsage?: CompactionContext['onUsage']
+  /**
+   * M13-B3（roles.summary 分流）：摘要专用 provider/req/窗口。缺省回退主模型（现状）。
+   * 审阅 P0 修复：此前只拆窗口不换笔——装配链透传主会话 provider，分流完全失效。
+   */
+  summary?: { provider: LLMProvider; providerReq: ProviderReq; window: number }
 }
 
 /**
@@ -68,10 +73,11 @@ export function makeOnBeforeRequest(
         trigger,
         messages: ctx,
         tokenCount: estimated,
-        effectiveWindow,
+        triggerWindow: effectiveWindow,
+        summaryWindow: opts.summary !== undefined ? opts.summary.window : effectiveWindow,
         allMessages: messages,
-        provider,
-        providerReq,
+        provider: opts.summary !== undefined ? opts.summary.provider : provider,
+        providerReq: opts.summary !== undefined ? opts.summary.providerReq : providerReq,
         history: opts.history,
         signal: opts.signal,
         onUsage: opts.onUsage,

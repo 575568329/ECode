@@ -103,7 +103,7 @@ describe('SummarizeStrategy.run', () => {
     return {
       messages: bigTextMessages(20), // 20000 token，超 8000 budget → 真实压缩
       tokenCount: 100000,
-      effectiveWindow: 180000,
+      triggerWindow: 180000, summaryWindow: 180000,
       trigger: 'pressure',
       provider: overrides.provider ?? mockProvider([
         { type: 'text', text: '<analysis>x</analysis><summary>## 目标\n- 完成 M5</summary>' },
@@ -252,7 +252,7 @@ describe('分批路径（v2：超大 head 的 map-reduce）', () => {
     return {
       messages: bigTextMessages(30),
       tokenCount: 600000,
-      effectiveWindow: 30000,
+      triggerWindow: 30000, summaryWindow: 30000,
       trigger: 'manual',
       providerReq: PROVIDER_REQ,
       ...overrides,

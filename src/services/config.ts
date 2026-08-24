@@ -49,6 +49,11 @@ export interface Config {
   sessionIdleMinutes?: number
   /** M13-B2：审批挂起超时毫秒（默认 15 分钟；0=不限——超时自动 reject + resolved('timeout') 轨迹） */
   approvalTimeoutMs?: number
+  /**
+   * M13-B3 角色分流：summary=压缩摘要专用（便宜 flash 模型干力气活）。
+   * 不配 = 会话主模型（现状零行为变化）；窗口下限校验从批预算常量反算（装配层执行）。
+   */
+  roles?: { summary?: { provider: string; model: string } }
   /** M10-P1：联网搜索（provider 缺省 bing RSS 免费；preferMcp 显式声明搜索 MCP server 名；命中搜索 MCP 时内置不注册） */
   webSearch?: { provider?: 'bing' | 'zhipu'; apiKey?: string; engine?: 'search_std' | 'search_pro' | 'search_pro_sogou' | 'search_pro_quark'; preferMcp?: string[] }
   /** 指令/记忆注入单级上限 KB（M8：ECODE.md/CLAUDE.md/MEMORY.md 各级截断阈值，默认 32） */
@@ -86,6 +91,8 @@ interface ConfigFile {
   mcpServers?: Record<string, import('./mcp/config.js').McpServerConfig>
   /** hooks 原始数组（jsonc 透传；过滤在 hooks/validate.ts） */
   hooks?: unknown
+  /** M13-B3：角色分流（summary=压缩摘要专用便宜模型；校验 provider 名存在） */
+  roles?: { summary?: { provider: string; model: string } }
 }
 
 export interface LoadConfigOpts {
@@ -162,7 +169,10 @@ export const CONFIG_TEMPLATE = `{
   // "hooks": [                // 事件 hook（M7）：command 子进程，stdin 收事件 JSON
   //   { "event": "PostToolUse", "matcher": "edit_file|write_file",
   //     "handler": { "kind": "command", "command": "prettier ." } }
-  // ]
+  // ],
+  // "roles": {                // 角色分流（M13）：summary=压缩摘要走便宜模型（不配=会话主模型）
+  //   "summary": { "provider": "zhipu-flash", "model": "glm-4.6-flash" }
+  // }
 }
 `
 
@@ -271,9 +281,17 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     models: rawCfg.models?.length ? rawCfg.models : [model],
   }
 
+  // M13-B3 启动期校验：roles.summary 的 provider 名必须存在于 providers map
+  // （缺失即配置错误——不拖到压缩时才炸；窗口下限校验在装配层，因需异步 resolveContextWindow）
+  if (file.roles?.summary !== undefined && providers[file.roles.summary.provider] === undefined) {
+    throw new Error(
+      `[CONFIG_ROLES_INVALID] roles.summary.provider "${file.roles.summary.provider}" 不存在于 providers（可用：${Object.keys(providers).join(', ')}）——请修正 config.json 的 roles 配置`,
+    )
+  }
   return {
     providers,
     current: { name: providerName, model },
+    ...(file.roles !== undefined ? { roles: file.roles } : {}),
     maxIterations: file.maxIterations ?? DEFAULT_MAX_ITERATIONS,
     bashMaxOutputBytes: file.bashMaxOutputBytes ?? DEFAULT_BASH_MAX_BYTES,
     lintCommand: file.lintCommand,
@@ -303,6 +321,22 @@ export function buildProviderReq(config: Config): ProviderReq {
     baseURL: cfg.baseURL,
     apiKey: cfg.apiKey,
     model: config.current.model,
+    ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+    ...(cfg.topP !== undefined ? { topP: cfg.topP } : {}),
+    ...(cfg.maxTokens !== undefined ? { maxTokens: cfg.maxTokens } : {}),
+    ...(cfg.thinking !== undefined ? { thinking: cfg.thinking } : {}),
+    ...(cfg.contextWindow !== undefined ? { contextWindow: cfg.contextWindow } : {}),
+  }
+}
+
+/** M13-B3：按 provider 名 + model 构造指定角色的 ProviderReq（roles.summary 装配用） */
+export function buildProviderReqFor(config: Config, providerName: string, model: string): ProviderReq {
+  const cfg = config.providers[providerName]
+  return {
+    name: providerName,
+    baseURL: cfg.baseURL,
+    apiKey: cfg.apiKey,
+    model,
     ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
     ...(cfg.topP !== undefined ? { topP: cfg.topP } : {}),
     ...(cfg.maxTokens !== undefined ? { maxTokens: cfg.maxTokens } : {}),

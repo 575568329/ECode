@@ -19,8 +19,9 @@ import { randomUUID, createHash } from 'node:crypto'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
 import type { HistoryLine, ImageBlock, Message } from '../core/types.js'
-import { buildProviderReq, type Config } from '../services/config.js'
+import { buildProviderReq, buildProviderReqFor, type Config } from '../services/config.js'
 import { makeOnBeforeRequest } from '../services/compaction/hook.js'
+import { SUMMARY_WINDOW_FLOOR } from '../services/compaction/summarize.js'
 import type { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import { resolveContextWindow } from '../services/contextWindow.js'
 import type { Logger } from '../services/logger.js'
@@ -259,6 +260,7 @@ export class HostSession {
       history: deps.history,
       tools: deps.tools.specs(),
       onUsage: (inp, out, cache) => this.recordUsage(inp, out, cache), // M12-P0：压缩漏账修复
+      ...((r) => (r !== null ? { summary: r } : {}))(await this.resolveSummaryRole()), // M13-B3：摘要换笔（三项变更之②provider 替换）
     })
     try {
       await hook(this.messages, 'manual')
@@ -288,6 +290,39 @@ export class HostSession {
   /** 运行态配置（/model·/config 切换后取新值——B3 TUI 接线的前提） */
   private cfg(): Config {
     return this.deps.getConfig()
+  }
+
+  /**
+   * M13-B3：roles.summary 分流解析（装配链换笔——provider/providerReq 替换 + summaryWindow）。
+   * 窗口下限校验：resolveContextWindow 结果 < SUMMARY_WINDOW_FLOOR（批预算常量反算 2 倍余量）
+   * → warn 一次并回退主模型（保底批也装不下，批批超限）。配置键缓存（含模型名——/model 不影响 roles）。
+   */
+  private summaryRoleCache: { key: string; value: { provider: import('../providers/interface.js').LLMProvider; providerReq: import('../providers/interface.js').ProviderReq; window: number } | null } | null = null
+  private summaryFloorWarned = false
+  private async resolveSummaryRole(): Promise<{ provider: import('../providers/interface.js').LLMProvider; providerReq: import('../providers/interface.js').ProviderReq; window: number } | null> {
+    const cfg = this.cfg()
+    const role = cfg.roles?.summary
+    if (role === undefined) return null
+    const providerCfg = cfg.providers[role.provider]
+    if (providerCfg === undefined) return null // loadConfig 已校验；此处防御（运行中配置被改）
+    const key = `${role.provider}:${role.model}`
+    if (this.summaryRoleCache?.key === key) return this.summaryRoleCache.value
+    const provider = this.deps.providerRegistry.getByType(providerCfg.type)
+    const providerReq = buildProviderReqFor(cfg, role.provider, role.model)
+    const window = await resolveContextWindow(role.model, providerCfg.contextWindow)
+    if (window < SUMMARY_WINDOW_FLOOR) {
+      if (!this.summaryFloorWarned) {
+        this.summaryFloorWarned = true
+        this.deps.logger.warn('config', 'roles_summary_window', {
+          message: `roles.summary 模型 ${role.model} 窗口 ${window} < 下限 ${SUMMARY_WINDOW_FLOOR}（批预算反算）——分流禁用回退主模型`,
+        })
+      }
+      this.summaryRoleCache = { key, value: null }
+      return null
+    }
+    const value = { provider, providerReq, window: Math.floor(window * 0.9) }
+    this.summaryRoleCache = { key, value }
+    return value
   }
 
   /** 等到空闲（argv 模式收尾用；含轮末兜底队列排空） */
@@ -515,6 +550,7 @@ export class HostSession {
         onCompactFail: () => this.publish('compactFailed', {}),
         tools: deps.tools.specs(),
         onUsage: (inp, out, cache) => this.recordUsage(inp, out, cache), // M12-P0：压缩漏账修复
+        ...((r) => (r !== null ? { summary: r } : {}))(await this.resolveSummaryRole()), // M13-B3：摘要换笔（三项变更之②provider 替换）
       })
       const cwd = deps.cwd ?? process.cwd()
       await runLoop(this.messages, input, {

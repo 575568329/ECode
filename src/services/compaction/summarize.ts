@@ -70,10 +70,16 @@ function anchoredSystem(previousSummary: string): string {
 }
 
 /** 批预算（token，减法语义对齐主流）：window×0.9 − 输出 − buffer − system 预留，钳下限。 */
-export function batchBudgetTokens(effectiveWindow: number): number {
+/**
+ * M13-B3：摘要模型窗口下限（从批预算常量反算 2 倍余量——公式变则校验自动跟）。
+ * 低于此值时装配层拒绝分流回退主模型（保底批也装不下，批批超限）。
+ */
+export const SUMMARY_WINDOW_FLOOR = 2 * (MIN_BATCH_TOKENS + SUMMARY_OUTPUT_RESERVE + BATCH_BUFFER_TOKENS + SCOPE_SYSTEM_RESERVE_TOKENS)
+
+export function batchBudgetTokens(summaryWindow: number): number {
   return Math.max(
     MIN_BATCH_TOKENS,
-    effectiveWindow - SUMMARY_OUTPUT_RESERVE - BATCH_BUFFER_TOKENS - SCOPE_SYSTEM_RESERVE_TOKENS,
+    summaryWindow - SUMMARY_OUTPUT_RESERVE - BATCH_BUFFER_TOKENS - SCOPE_SYSTEM_RESERVE_TOKENS,
   )
 }
 
@@ -115,7 +121,7 @@ export class SummarizeStrategy implements CompactionStrategy {
 
     // 3. head 装得进单次请求 → 结构化单发（渐进压缩，行为不变）；
     //    超批预算 → 分批 map-reduce（跨 model 大落差场景）
-    const budget = batchBudgetTokens(ctx.effectiveWindow)
+    const budget = batchBudgetTokens(ctx.summaryWindow)
     const summary =
       estimateMessagesTokens(head) <= budget
         ? await this.summarizeSingle(head, ctx)
@@ -142,7 +148,7 @@ export class SummarizeStrategy implements CompactionStrategy {
 /** 分批主流程：serialize → 组批 → map（含二分重试）→ reduce → 校验。失败返回 null（降级）。 */
 async function summarizeInBatches(head: Message[], ctx: CompactionContext): Promise<string | null> {
   try {
-    const budgetBytes = batchBudgetTokens(ctx.effectiveWindow) * 4
+    const budgetBytes = batchBudgetTokens(ctx.summaryWindow) * 4
     const blocks = head.map(serializeMessage)
     const batches = groupBatches(blocks, budgetBytes)
     // map 并行（真机基准 800k/5 批：串行 103s → 并行 58s，无 429）；结果按批序保序，
@@ -152,7 +158,7 @@ async function summarizeInBatches(head: Message[], ctx: CompactionContext): Prom
     )
     let summary = await reducePartials(partials, ctx)
     // reduce 后校验：final summary + tail + system 必须装得进新窗口（aider 同款闸）
-    if (estimateTokens(summary) + RECENT_BUDGET_TOKENS + SCOPE_SYSTEM_RESERVE_TOKENS > ctx.effectiveWindow) {
+    if (estimateTokens(summary) + RECENT_BUDGET_TOKENS + SCOPE_SYSTEM_RESERVE_TOKENS > ctx.summaryWindow) {
       summary = await reducePartials([summary], ctx) // 极端情况：summary 自身再摘一轮
     }
     return summary || null

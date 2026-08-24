@@ -35,7 +35,7 @@ function baseOpts(allMessages: HistoryLine[]) {
   return {
     messages: [],
     tokenCount: 100000,
-    effectiveWindow: 180000,
+    triggerWindow: 180000, summaryWindow: 180000,
     trigger: 'pressure' as const,
     provider: fakeProvider,
     providerReq: { name: 't', baseURL: 'x', apiKey: 'k', model: 'm' },

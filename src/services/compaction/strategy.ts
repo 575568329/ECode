@@ -21,8 +21,10 @@ export interface CompactionContext {
   messages: Message[]
   /** 当前 token 估算 */
   tokenCount: number
-  /** 有效窗口（contextWindow × 0.9） */
-  effectiveWindow: number
+  /** 触发窗口（主模型 contextWindow × 0.9——压力阈值判定盯主模型，M13-B3 拆双字段） */
+  triggerWindow: number
+  /** 摘要窗口（摘要模型窗口——批预算与归并判定盯摘要模型；未分流时与 triggerWindow 同源） */
+  summaryWindow: number
   trigger: CompactionTrigger
   /** 摘要要调的 LLM provider（策略用） */
   provider: LLMProvider

@@ -27,6 +27,11 @@ export const skillTool: Tool = {
 
   async execute(args, ctx?: ToolContext) {
     const { skill } = args as { skill: string }
+    // M13-B1（#3）：上文已激活（tool_result 含标记）→ 一行 notice 防重复注入全文；
+    // 判定在 registry lookup 之前——skill 中途卸载也不影响去重。手动触发面不走 execute（用户主动重读不去重）
+    if (ctx?.session?.isSkillActive?.(skill) === true) {
+      return { content: `<skill_notice name="${skill}">该 skill 指令已在上文生效，无需重复加载。</skill_notice>` }
+    }
     const info = skillRegistry.get(skill)
     if (info === undefined) {
       const names = skillRegistry.listForPrompt().map((s) => s.name)

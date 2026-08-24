@@ -38,6 +38,11 @@ export const readFileTool: Tool = {
     // 判定在 fs 读取之前（密钥绝不进返回值/上下文）
     const denied = await sensitiveGate(abs, ctx, 'read_file')
     if (denied !== undefined) return denied
+    // M13-B1（#4）：本会话已读且 mtime 未变 → 跳过重复注入（LLM 常见"再看一眼"整段重进上下文）；
+    // 文件被写后 mtime 变自然放行；bash cat 是逃生口（D6 不加 force 参数）
+    if (ctx.session?.readFileGuard !== undefined && (await ctx.session.readFileGuard.check(abs))) {
+      return { content: '文件自上次读取后未变化（本会话已读，见上文 tool_result）。如需强制查看可用 bash cat。' }
+    }
     try {
       // 多模态分流：扩展名命中才读字节判 magic（文本主路径零额外开销）
       const ext = path.extname(abs).toLowerCase()
@@ -51,12 +56,14 @@ export const readFileTool: Tool = {
         if (!guard.ok) return { content: guard.reason, is_error: true }
         // 终审 P1-1：带 _path——history 落盘转 image_ref（base64 不进会话文件，主路径同粘贴路径）
         if (guard.block.type === 'image') guard.block._path = abs
+        await ctx.session?.readFileGuard?.record(abs)
         return {
           content: guard.block.type === 'image' ? `已读取图片 ${rel}（内容见附图）` : `已读取 PDF ${rel}（内容见附件文档）`,
           blocks: [guard.block],
         }
       }
       const content = await fs.readFile(abs, 'utf8')
+      await ctx.session?.readFileGuard?.record(abs)
       return { content }
     } catch (e) {
       return {

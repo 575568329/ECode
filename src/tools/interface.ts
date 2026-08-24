@@ -48,6 +48,13 @@ export interface ToolContext {
     askUser?(questions: unknown[]): Promise<unknown>
     /** M13-W1：skill hooks 写端口（项目级 registry 绑定——多项目 /clear 不串台；缺省走模块兑底端口） */
     skillHooks?: import('../services/hooks/global.js').SkillHooksPort
+    /** M13-B1：skill 激活判定（扫投影后 messages——/rewind·压缩后标记被投影自动回未激活） */
+    isSkillActive?(name: string): boolean
+    /** M13-B1：重复读守卫（mtime 比对；write/edit 后 mtime 变自然放行——bash cat 是逃生口 D6） */
+    readFileGuard?: {
+      check(path: string): Promise<boolean>
+      record(path: string): Promise<void>
+    }
   }
   /** M12-B4：会话级后台任务表快捷位（ctx.session.tasks 的平铺——工具侧免嵌套判空） */
   tasks?: import('../services/tasks.js').TaskRegistry

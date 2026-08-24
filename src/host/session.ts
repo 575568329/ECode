@@ -35,6 +35,8 @@ import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { HookRunner } from '../services/hooks/runner.js'
 import { readFile } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
+import { buildContextMessages } from '../core/context.js'
 import { InMemoryChannel } from '../protocol/channel.js'
 import type { CommandResult, ImagePayload, ProtocolCommand, ProtocolEvent } from '../protocol/types.js'
 import { ApprovalBroker, type ApprovalPolicy } from './approval.js'
@@ -87,6 +89,8 @@ export class HostSession {
   private sandboxMode: 'default' | 'read-only' | 'workspace-write' | 'full-access'
   private readonly messages: HistoryLine[] = []
   private readonly editedFiles = new Set<string>()
+  /** M13-B1（#4）：已读文件 mtime 表（readFileGuard 数据源——write/edit 后 mtime 变自然放行） */
+  private readonly readMtime = new Map<string, number>()
   private readonly queue: QueueEntry[] = []
   private running = false
   private currentTurnId: string | null = null
@@ -176,6 +180,33 @@ export class HostSession {
     this.publish('subagent/progress', { agents: [...this.subagentView.values()] })
   }
 
+  /**
+   * M13-B1（#3）：skill 激活判定——扫**投影后** messages 的 tool_result 是否含
+   * `<skill_content name="x">` 标记。按投影而非全量：/rewind 掉标记区间、压缩吃掉标记段后
+   * 判定自动回未激活（与"消息即状态"同构，免内存 Set 的清理逻辑）。O(n) 一次、skill 调用低频可接受。
+   */
+  isSkillActive(name: string): boolean {
+    const marker = `<skill_content name="${name}">`
+    return buildContextMessages(this.messages).some(
+      (m) => typeof m.content !== 'string' && m.content.some((b) => b.type === 'tool_result' && typeof b.content === 'string' && b.content.includes(marker)),
+    )
+  }
+
+  /** M13-B1（#4）：重复读守卫（ctx.session.readFileGuard 消费；宿主 stat 比对 mtime） */
+  readonly readFileGuard = {
+    /** true=已读且未变（工具侧跳过重复注入） */
+    check: async (filePath: string): Promise<boolean> => {
+      const mtimeMs = await stat(filePath).then((st) => st.mtimeMs, () => null)
+      if (mtimeMs === null) return false // stat 失败放行（读取自身会报真实错误）
+      return this.readMtime.get(filePath) === mtimeMs
+    },
+    /** 读取成功后记录（下次同 mtime 跳过） */
+    record: async (filePath: string): Promise<void> => {
+      const mtimeMs = await stat(filePath).then((st) => st.mtimeMs, () => null)
+      if (mtimeMs !== null) this.readMtime.set(filePath, mtimeMs)
+    },
+  }
+
   /** B3（审阅 P0-3 修复）：/rewind 标记线注入宿主权威 messages（投影层据 rewind_to 跳过区间——
    *  客户端只写镜像时回退对 LLM 上下文不生效且下轮镜像覆盖丢失） */
   appendRewind(line: HistoryLine): void {
@@ -187,6 +218,7 @@ export class HostSession {
     this.messages.length = 0
     this.messages.push(...lines)
     this.mcpCallCount = 0 // 审阅 P1-1：会话切换计数归零（防旧累计值写进新会话文件致全局双计）
+    this.readMtime.clear() // M13-B1：换会话已读表重置（旧会话的读取记录对新会话无意义）
   }
 
   /** B3：手动强制压缩（/compact——客户端命令面中间态实现；B5 升格为宿主命令） */
@@ -351,6 +383,7 @@ export class HostSession {
         this.messages.length = 0
         this.queue.length = 0
         this.editedFiles.clear()
+        this.readMtime.clear() // M13-B1：已读表随会话重置
         this.mcpCallCount = 0 // 审阅 P1-1：与客户端 setSessionCost(0) 同语义
         return { ok: true }
       case 'session/list':
@@ -496,6 +529,9 @@ export class HostSession {
             countMcpCall: () => this.bumpMcp(),
             // M13-W1：skill hooks 写端口（项目级 registry 绑定；缺省走模块兜底——argv/旧测试）
             ...(this.deps.skillHooks !== undefined ? { skillHooks: this.deps.skillHooks } : {}),
+            // M13-B1：skill 去重判定 + 重复读守卫（会话级；无宿主路径缺省不去重）
+            isSkillActive: (name) => this.isSkillActive(name),
+            readFileGuard: this.readFileGuard,
           },
           tasks: this.tasks,
           signal: this.abort.signal,

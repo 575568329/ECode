@@ -18,7 +18,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { runLoop, type LoopRunOptions } from '../core/loop.js'
-import type { HistoryLine, ToolUseBlock } from '../core/types.js'
+import type { HistoryLine, Message, ToolUseBlock } from '../core/types.js'
 import type { LLMProvider, ProviderReq } from '../providers/interface.js'
 import type { Tool, ToolContext, ToolRegistry } from '../tools/interface.js'
 import type { Logger } from './logger.js'
@@ -32,6 +32,11 @@ import type { Sandbox } from './sandbox.js'
 const SUB_MAX_ITERATIONS = 25
 /** 单子代理硬超时（方案 D6：execute 自实现——task 未声明 timeout_ms，loop 层软超时对内嵌 runLoop 不适用） */
 const SUB_TIMEOUT_MS = 10 * 60_000
+/** M13-B4：超时自总结一次性调用参数（独立信号 60s——不占用也不继承子循环的已断信号） */
+const RESUME_SUMMARY_TIMEOUT_MS = 60_000
+const RESUME_SUMMARY_MAX_TOKENS = 2048
+/** 低于此长度视为"无有效临终遗言"（触发自总结——空/过短时父代理只拿到一句超时报错白烧全程） */
+const MIN_VIABLE_RESULT = 20
 /** 返回结论截断（方案 D12；CC 100k 太宽） */
 const RESULT_MAX_BYTES = 16 * 1024
 /** D5：宿主会话窄端口（结构类型——HostSession 实现；缺省 undefined 走模块级兜底） */
@@ -284,6 +289,67 @@ export function makeSubagentOpts(
 }
 
 /** 取子 messages 中最后一条含 text 的 assistant 文本（返回契约）。 */
+/**
+ * M13-B4：超时/中断自总结——临终遗言为空或过短时，用子代理自己的 provider 补一发
+ * 一次性总结调用（tools 空/max_tokens 2048/独立 60s 限时），把已完成的调查抢救回来。
+ * 产出直接作 task 返回 content（D8：不追加进 messages，与 lastAssistantText 语义不重叠）；
+ * 总结调用自身失败回落现状报错路径（不无限重试）。正常完成路径零改动。
+ */
+async function resumeSummary(
+  deps: SubagentDeps,
+  messages: HistoryLine[],
+  abortReason: string,
+): Promise<string | null> {
+  const providerReq = deps.getProviderReq()
+  const provider = deps.getProvider()
+  const transcriptText = messages
+    .filter((l): l is Message => 'role' in l && 'content' in l)
+    .map((m) => {
+      const parts = (Array.isArray(m.content) ? m.content : [])
+        .map((b: { type: string; text?: string; name?: string; content?: unknown }) =>
+          b.type === 'text' ? (b.text ?? '') : b.type === 'tool_use' ? `[调用工具 ${b.name ?? ''}]` : b.type === 'tool_result' ? `[工具结果 ${(typeof b.content === 'string' ? b.content : '').slice(0, 200)}]` : '')
+        .join(' ')
+      return `${m.role}: ${parts}`
+    })
+    .join('\n')
+    .slice(0, 100_000) // 原料上限（字节级粗截——总结调用自己也有窗口约束）
+  try {
+    let out = ''
+    for await (const d of provider.run({
+      ...providerReq,
+      system: '你是任务抢救总结器。只输出总结，不寒暄不提问。',
+      tools: [],
+      maxTokens: RESUME_SUMMARY_MAX_TOKENS,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `任务被中断/超时（${abortReason}）。以下是该子代理执行到中断为止的完整过程记录。请严格按以下格式总结已完成的调查，没查到的明确说没查：
+状态:（已完成什么/进行到哪）
+结论:（已确认的事实）
+证据位置:（文件:行 或工具输出关键片段）
+未确认项:（没查到/存疑的）
+下一步:（若继续该做什么）
+
+过程记录：
+${transcriptText}`,
+            },
+          ],
+        },
+      ],
+      signal: AbortSignal.timeout(RESUME_SUMMARY_TIMEOUT_MS),
+    })) {
+      if (d.type === 'text') out += d.text
+    }
+    return out.trim() !== '' ? out : null
+  } catch {
+    // 回落现状报错路径（caller 处理 null）
+    return null
+  }
+}
+
 function lastAssistantText(messages: HistoryLine[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
@@ -370,8 +436,15 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
         await runLoop(messages, prompt, opts)
         const text = lastAssistantText(messages)
         if (text === '') {
+          // M13-B4：无临终遗言（超时/中断后 loop 正常返回形态）→ 自总结抢救
+          const summary = await resumeSummary(deps, messages, signal.aborted ? '中断' : '超时或中止')
+          if (summary !== null) {
+            deps.logger.warn('tool', 'subagent_resume_summary', { agentId, bytes: summary.length })
+            return { content: `${clampResult(summary)}
+（任务被中断/超时，以上为自动抢救的执行总结。完整过程：~/.ecode/agents/${agentId}.jsonl）` }
+          }
           return {
-            content: `子代理未产出文本结论（可能被中断或超时）。完整过程：~/.ecode/agents/${agentId}.jsonl`,
+            content: `子代理未产出文本结论（可能被中断或超时，自总结未成功）。完整过程：~/.ecode/agents/${agentId}.jsonl`,
             is_error: true,
           }
         }
@@ -380,6 +453,16 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
       } catch (e) {
         // 双保险之一：子代理超窗/致命错误不上抛炸父循环（独立压缩链是第一道）
         const msg = e instanceof Error ? e.message : String(e)
+        // M13-B4：失败但过程里已有足量产出（遗言过短=过程未被带回）→ 自总结抢救
+        const dying = lastAssistantText(messages)
+        if (dying.length < MIN_VIABLE_RESULT && messages.length >= 4) {
+          const summary = await resumeSummary(deps, messages, `失败：${msg}`)
+          if (summary !== null) {
+            deps.logger.warn('tool', 'subagent_resume_summary', { agentId, bytes: summary.length, cause: msg })
+            return { content: `${clampResult(summary)}
+（子代理中途失败（${msg}），以上为自动抢救的执行总结。完整过程：~/.ecode/agents/${agentId}.jsonl）` }
+          }
+        }
         return {
           content: `子代理失败：${msg}${msg.includes('CONTEXT') || msg.includes('上下文') ? '——任务过大，建议拆分' : ''}。完整过程：~/.ecode/agents/${agentId}.jsonl`,
           is_error: true,

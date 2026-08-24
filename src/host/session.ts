@@ -15,7 +15,7 @@
  * - argv 经宿主后新增 Stop hook 分发（原 runOnce 不发）——与 TUI 语义对齐，行为增强非回归。
  */
 
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
 import type { HistoryLine, ImageBlock, Message } from '../core/types.js'
@@ -94,6 +94,18 @@ export class HostSession {
   private readonly editedFiles = new Set<string>()
   /** M13-B1（#4）：已读文件 mtime 表（readFileGuard 数据源——write/edit 后 mtime 变自然放行） */
   private readonly readMtime = new Map<string, number>()
+
+  // —— M13-B2 loopGuard（#2 无效轮次检测：复读/同参/空错——阈值常量集中一处，D5 不入 config） ——
+  private static readonly GUARD = { FP_WINDOW: 3, REPEAT_NUDGE: 1, REPEAT_ABORT: 3, SIG_NUDGE: 8, ERR_NUDGE: 5, ERR_ABORT: 8, TEXT_HEAD: 500 }
+  private readonly guardFingerprints: string[] = [] // 最近 N 轮 assistant 文本指纹环
+  private repeatStreak = 0
+  private lastToolSig = ''
+  private sigStreak = 0
+  private sigNudged = false
+  private errStreak = 0
+  private turnHadTools = false
+  private lastRoundLen = 0
+  private roundUses: string[] = []
   private readonly queue: QueueEntry[] = []
   private running = false
   private currentTurnId: string | null = null
@@ -104,7 +116,7 @@ export class HostSession {
 
   constructor(private readonly deps: HostDeps) {
     this.channel.bind((cmd) => this.dispatch(cmd))
-    this.broker = new ApprovalBroker(this.channel, deps.approvalPolicy ?? 'ask')
+    this.broker = new ApprovalBroker(this.channel, deps.approvalPolicy ?? 'ask', deps.getConfig().approvalTimeoutMs ?? 900_000)
     this.sandboxMode =
       (this.cfg().sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default'
   }
@@ -446,6 +458,9 @@ export class HostSession {
       return
     }
     this.running = true
+    this.turnHadTools = false
+    this.lastRoundLen = this.messages.length
+    this.roundUses = []
     this.currentTurnId = randomUUID()
     this.abort = new AbortController()
     const turnId = this.currentTurnId
@@ -504,12 +519,16 @@ export class HostSession {
           onText: (t) => this.publish('delta', { turnId, text: t }),
           onToolStart: (name) => this.publish('item/started', { itemId: `${turnId}-${++this.itemSeq}`, name }),
           onToolResult: (id, name, r) => {
+            this.turnHadTools = true
             if (name.startsWith('mcp__')) this.bumpMcp() // M12-P0：MCP 调用计数（随下一条 stats 行落盘）
             const use = this.messages
               .filter(isMessageLine)
               .filter((l) => l.role === 'assistant')
               .flatMap((l) => l.content)
               .find((b) => b.type === 'tool_use' && b.id === id)
+            // M13-B2：同参检测原料（name+input 精确签名——D3 同款精确匹配零误伤；D4 记变体：
+            // use 块在事件翻译层现成，免 PostToolUse hook 的项目级跨会话路由）
+            if (use !== undefined && use.type === 'tool_use') this.roundUses.push(`${use.name}:${JSON.stringify(use.input)}`)
             this.publish('item/completed', {
               itemId: id,
               name,
@@ -611,6 +630,7 @@ export class HostSession {
   }
 
   private finishTurn(turnId: string): void {
+    if (!this.turnHadTools) this.loopGuardTextTurn() // M13-B2：纯文本轮复读（onWarn 通道）
     this.publish('turn/completed', { turnId })
     this.publish('thread/status', { busy: false, waitingOn: null, iter: 0 })
     this.running = false
@@ -630,11 +650,14 @@ export class HostSession {
     this.notifyIdle()
   }
 
-  /** afterTools（TuiApp makeAfterTools 的宿主版：quality 回喂 + autoCommit + 后台通知） */
+  /** afterTools（TuiApp makeAfterTools 的宿主版：loopGuard 检测 + quality 回喂 + autoCommit + 后台通知） */
   private makeAfterTools(): NonNullable<Parameters<typeof runLoop>[2]>['afterTools'] {
     return async (round) => {
       const deps = this.deps
       let feedback: string | undefined
+      // M13-B2：无效轮次检测先行（feedback/abort 注入在 quality 之前——止损优先）
+      const guardFb = this.loopGuardRound(round)
+      if (guardFb !== undefined) feedback = guardFb
       if (deps.quality != null) {
         const fb = await deps.quality.afterRound(round.tools)
         if (fb !== undefined) {
@@ -664,5 +687,111 @@ export class HostSession {
         feedback !== undefined ? (notes.length > 0 ? `${feedback}\n${notes.join('\n')}` : feedback) : notes.length > 0 ? notes.join('\n') : undefined
       return combined !== undefined ? { feedback: combined } : undefined
     }
+  }
+
+  /**
+   * M13-B2（#2）三检测器（工具轮——afterTools 时点；纯文本轮复读在 finishTurn）：
+   * 跨 Turn 复读（指纹环精确匹配，D3）/ 同参工具（name+input 签名连续相同）/ 连续空错。
+   * 阈值：复读提醒 ×2 后第 3 次 abort；同参连 8 提醒后仍不变 abort；空错连 5 提醒连 8 abort。
+   * 公共约束（文章同款）：指纹/签名/错误形态一变即清零重计；触发记 LogStore(loop-guard)；abort 前
+   * systemMsg 给用户可读原因；feedback 带 [loop-guard] 前缀（transcript 可识别）。
+   */
+  private loopGuardRound(round: { tools: Array<{ name: string; isError: boolean }> }): string | undefined {
+    const G = HostSession.GUARD
+    let feedback: string | undefined
+    if (round.tools.length === 0) return undefined
+
+    // ① 同参工具：本轮签名（排序去序敏感）与上轮连续相同
+    const sig = [...this.roundUses].sort().join('|')
+    this.roundUses = []
+    if (sig !== '' && sig === this.lastToolSig) this.sigStreak++
+    else {
+      this.lastToolSig = sig
+      this.sigStreak = 1
+      this.sigNudged = false
+    }
+    if (this.sigStreak >= G.SIG_NUDGE) {
+      if (this.sigNudged) {
+        this.guardAbort('same-args', '连续多轮以完全相同的参数调用同一工具且提醒无效')
+        return '[loop-guard] 检测到同参数工具循环，本轮已终止。请更换方法或工具。'
+      }
+      this.sigNudged = true
+      this.deps.logger.warn('loop-guard', 'same-args', { streak: this.sigStreak })
+      feedback = `[loop-guard] 最近 ${this.sigStreak} 轮在以完全相同的参数调用相同工具，请重新判断这是否必要。`
+    }
+
+    // ② 连续空错：全 isError 非空轮
+    if (round.tools.every((t) => t.isError)) {
+      this.errStreak++
+      if (this.errStreak >= G.ERR_ABORT) {
+        this.guardAbort('all-error', `连续 ${this.errStreak} 轮工具全部失败`)
+        return (feedback !== undefined ? `${feedback}\n[loop-guard] ` : '[loop-guard] ') + `连续失败 ${this.errStreak} 轮，本轮已终止。请更换思路或基于已有信息回答。`
+      }
+      if (this.errStreak >= G.ERR_NUDGE) {
+        this.deps.logger.warn('loop-guard', 'all-error', { streak: this.errStreak })
+        const nudge = `[loop-guard] 已连续 ${this.errStreak} 轮工具全部失败，请更换思路或基于已有信息回答。`
+        feedback = feedback !== undefined ? `${feedback}\n${nudge}` : nudge
+      }
+    } else this.errStreak = 0
+
+    // ③ 跨 Turn 复读（工具轮）：本轮 assistant 文本指纹与最近 N 轮比对
+    const text = this.assistantTextSince(this.lastRoundLen)
+    this.lastRoundLen = this.messages.length
+    if (text !== '') {
+      const fp = createHash('sha256').update(text.slice(0, G.TEXT_HEAD)).digest('hex')
+      if (this.guardFingerprints.includes(fp)) {
+        this.repeatStreak++
+        if (this.repeatStreak >= G.REPEAT_ABORT) {
+          this.guardAbort('repeat', `最近 ${this.repeatStreak + 1} 轮输出高度重复`)
+          return (feedback !== undefined ? `${feedback}\n` : '') + '[loop-guard] 输出高度重复，本轮已终止。请更换方法或工具。'
+        }
+        if (this.repeatStreak >= G.REPEAT_NUDGE) {
+          this.deps.logger.warn('loop-guard', 'repeat', { streak: this.repeatStreak })
+          const nudge = `[loop-guard] 最近 ${this.repeatStreak + 1} 轮输出高度重复，请更换方法或工具。`
+          feedback = feedback !== undefined ? `${feedback}\n${nudge}` : nudge
+        }
+      } else this.repeatStreak = 0
+      this.guardFingerprints.push(fp)
+      if (this.guardFingerprints.length > G.FP_WINDOW) this.guardFingerprints.shift()
+    }
+    return feedback
+  }
+
+  /** 纯文本轮复读检测（finishTurn 时点——afterTools 只在工具轮触发）：onWarn 用户可见 */
+  private loopGuardTextTurn(): void {
+    const text = this.assistantTextSince(this.lastRoundLen)
+    this.lastRoundLen = this.messages.length
+    if (text === '') return
+    const fp = createHash('sha256').update(text.slice(0, HostSession.GUARD.TEXT_HEAD)).digest('hex')
+    if (this.guardFingerprints.includes(fp)) {
+      this.repeatStreak++
+      if (this.repeatStreak >= HostSession.GUARD.REPEAT_ABORT) {
+        this.guardAbort('repeat', `最近 ${this.repeatStreak + 1} 轮输出高度重复`)
+        return
+      }
+      this.publish('warn', { text: `[loop-guard] 最近 ${this.repeatStreak + 1} 轮输出高度重复（纯文本），请更换话题或方法。` })
+      this.deps.logger.warn('loop-guard', 'repeat-text', { streak: this.repeatStreak })
+    } else this.repeatStreak = 0
+    this.guardFingerprints.push(fp)
+    if (this.guardFingerprints.length > HostSession.GUARD.FP_WINDOW) this.guardFingerprints.shift()
+  }
+
+  /** messages[start..] 中 assistant 文本拼接（复读指纹原料） */
+  private assistantTextSince(start: number): string {
+    return this.messages
+      .slice(start)
+      .filter(isMessageLine)
+      .filter((l) => l.role === 'assistant')
+      .flatMap((l) => l.content)
+      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+      .map((b) => b.text)
+      .join('')
+  }
+
+  /** 检测 abort：断信号 + systemMsg 可读原因 + 日志（loop 心脏零改动——signal 它本来就在听） */
+  private guardAbort(detector: string, reason: string): void {
+    this.abort.abort()
+    this.deps.logger.warn('loop-guard', 'abort', { detector, reason })
+    this.publish('systemMsg', { text: `⚠ [loop-guard] ${reason}，已终止本轮。` })
   }
 }

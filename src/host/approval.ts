@@ -25,6 +25,8 @@ interface PendingEntry {
   kind: ApprovalKind
   frame: ProtocolEvent
   resolve: (value: unknown) => void
+  /** M13-B2 审批超时定时器（respond/dispose 清；触发=自动 reject + resolved('timeout')） */
+  timer?: ReturnType<typeof setTimeout>
 }
 
 /** 可答帧的构造形态（不含 seq——通道分配；requestId 为公共字段） */
@@ -42,6 +44,8 @@ export class ApprovalBroker {
   constructor(
     private readonly channel: InMemoryChannel,
     private readonly policy: ApprovalPolicy = 'ask',
+    /** M13-B2：挂起超时毫秒（config.approvalTimeoutMs；0=不限——默认值由宿主层填） */
+    private readonly timeoutMs = 0,
   ) {}
 
   get pendingCount(): number {
@@ -160,7 +164,30 @@ export class ApprovalBroker {
       }
       this.pending.set(requestId, entry)
       entry.frame = this.publish(frame) // 广播后回填带 seq 的完整帧（重放源）
+      // M13-B2：超时自动 reject（resolved 带 'timeout' 轨迹；unref 不占事件循环——测试短时限可调）
+      if (this.timeoutMs > 0) {
+        entry.timer = setTimeout(() => this.timeoutResolve(requestId), this.timeoutMs)
+        entry.timer.unref?.()
+      }
     })
+  }
+
+  /** 超时收敛：无人应答的挂起按 kind 给默认拒绝值 + resolved('timeout')（多端延迟答审批的止损） */
+  private timeoutResolve(requestId: string): void {
+    const entry = this.pending.get(requestId)
+    if (entry === undefined) return
+    this.pending.delete(requestId)
+    if (entry.kind === 'mcp-permission') entry.resolve({ allow: false, remember: false })
+    else if (entry.kind === 'ask-select') entry.resolve(null)
+    else if (entry.kind === 'ask-user') entry.resolve(null)
+    else entry.resolve(false)
+    if (entry.kind === 'tool-confirm' || entry.kind === 'sensitive' || entry.kind === 'mcp-permission') {
+      this.publish({ type: 'approval/resolved', requestId, outcome: 'timeout' })
+    } else if (entry.kind === 'ask-user') {
+      this.publish({ type: 'askUser/resolved', requestId, answers: null })
+    } else {
+      this.publish({ type: 'askSelect/resolved', requestId, choice: null })
+    }
   }
 
   /** approval/respond 命令处理：回执 accepted；权威结果经 resolved 广播 */
@@ -169,6 +196,7 @@ export class ApprovalBroker {
     if (entry === undefined) return { accepted: false, reason: 'not-pending' }
     const tool = (entry.frame as { tool: string }).tool
     const mcpPrefix = tool.startsWith('mcp__') ? tool.split('__').slice(0, 2).join('__') : null
+    if (entry.timer !== undefined) clearTimeout(entry.timer)
     this.pending.delete(requestId)
     if (decision === 'always') {
       if (mcpPrefix !== null) this.confirmAlways.add(mcpPrefix)
@@ -178,6 +206,7 @@ export class ApprovalBroker {
         for (const [id, p] of [...this.pending]) {
           const f = p.frame as { tool: string }
           if (p.kind === 'tool-confirm' && f.tool.startsWith(`${mcpPrefix}__`)) {
+            if (p.timer !== undefined) clearTimeout(p.timer)
             this.pending.delete(id)
             p.resolve(true)
             this.publish({ type: 'approval/resolved', requestId: id, outcome: 'once' })
@@ -189,6 +218,7 @@ export class ApprovalBroker {
       // 级联：本会话全部 pending tool-confirm 一并拒绝（opencode 同款语义）
       for (const [id, p] of [...this.pending]) {
         if (p.kind === 'tool-confirm') {
+          if (p.timer !== undefined) clearTimeout(p.timer)
           this.pending.delete(id)
           p.resolve(false)
           this.publish({ type: 'approval/resolved', requestId: id, outcome: 'reject' })
@@ -204,6 +234,7 @@ export class ApprovalBroker {
   respondAskUser(requestId: string, answers: unknown): { accepted: boolean; reason?: string } {
     const entry = this.pending.get(requestId)
     if (entry === undefined) return { accepted: false, reason: 'not-pending' }
+    if (entry.timer !== undefined) clearTimeout(entry.timer)
     this.pending.delete(requestId)
     entry.resolve(answers)
     this.publish({ type: 'askUser/resolved', requestId, answers })
@@ -213,6 +244,7 @@ export class ApprovalBroker {
   respondAskSelect(requestId: string, choice: string | null): { accepted: boolean; reason?: string } {
     const entry = this.pending.get(requestId)
     if (entry === undefined) return { accepted: false, reason: 'not-pending' }
+    if (entry.timer !== undefined) clearTimeout(entry.timer)
     this.pending.delete(requestId)
     entry.resolve(choice)
     this.publish({ type: 'askSelect/resolved', requestId, choice })
@@ -227,6 +259,7 @@ export class ApprovalBroker {
   /** 实例销毁：全部 pending fail-closed 收敛（不留悬挂 Promise——opencode finalizer 同款） */
   dispose(): void {
     for (const [id, p] of [...this.pending]) {
+      if (p.timer !== undefined) clearTimeout(p.timer)
       this.pending.delete(id)
       if (p.kind === 'mcp-permission') p.resolve({ allow: false, remember: false })
       else if (p.kind === 'ask-select') p.resolve(null)

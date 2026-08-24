@@ -25,6 +25,8 @@ import { HostSession, type HostDeps } from './session.js'
 export interface ProjectHostDeps {
   /** 会话工厂（cli 传 makeConversationDeps 装配——projectId 由调用方生成策略持有） */
   createConversation: (sessionId: string) => HostDeps
+  /** M13-W3：项目路径（正斜杠规范形——SessionBrief.project） */
+  cwd?: string
   /** 项目级 skill 注册表（REPL/argv 传模块单例；serve 每项目新建；缺省新建） */
   skills?: SkillRegistry
   /** 项目级扩展 hooks 注册表（同上） */
@@ -48,10 +50,28 @@ export class ProjectHost {
   /** 会话空闲打点（sweepSessions 消费；prompt/restore 等 touch 点更新） */
   private readonly lastActive = new Map<string, number>()
 
+  /** M13-W3：会话生命周期监听器集（mux 层接——session/created·removed 帧的源） */
+  private readonly sessionListeners = new Set<(kind: 'created' | 'removed', info: { sessionId: string; brief?: import('../protocol/mux.js').SessionBrief }) => void>()
+
   constructor(private readonly deps: ProjectHostDeps) {
     this.skills = deps.skills ?? createSkillRegistry()
     this.extHooks = deps.extHooks ?? new ExtensionHooksRegistry()
     this.skillHooks = makeSkillHooksPort(this.extHooks)
+  }
+
+  /** M13-W3：订阅会话生命周期（返回退订；mux 连接用） */
+  onSessionEvent(cb: (kind: 'created' | 'removed', info: { sessionId: string; brief?: import('../protocol/mux.js').SessionBrief }) => void): () => void {
+    this.sessionListeners.add(cb)
+    return () => this.sessionListeners.delete(cb)
+  }
+
+  private emitSession(kind: 'created' | 'removed', info: { sessionId: string; brief?: import('../protocol/mux.js').SessionBrief }): void {
+    for (const cb of this.sessionListeners) cb(kind, info)
+  }
+
+  /** M13-W3：活会话快照（mux 订阅遍历用——[sessionId, HostSession] 数组） */
+  conversationsSnapshot(): Array<[string, HostSession]> {
+    return [...this.conversations.entries()]
   }
 
   /** 当前（默认）会话 id——HookRunner.getSessionId 空值兜底与缺省路由共用 */
@@ -86,7 +106,28 @@ export class ProjectHost {
     this.convDeps.set(sessionId, convDeps)
     this.lastActive.set(sessionId, Date.now())
     if (this.defaultId === null) this.defaultId = sessionId
+    this.emitSession('created', { sessionId, brief: this.briefOf(sessionId) })
     return host
+  }
+
+  /** M13-W3：会话摘要（baseline/created 帧体——标题取首条 user 文本截断） */
+  private get cwd(): string {
+    return this.deps.cwd ?? ''
+  }
+
+  private briefOf(sessionId: string): import('../protocol/mux.js').SessionBrief {
+    const host = this.conversations.get(sessionId)
+    const firstUser = host?.transcript.find((l) => typeof l === 'object' && 'role' in l && l.role === 'user')
+    const title =
+      firstUser !== undefined && 'content' in firstUser && Array.isArray(firstUser.content)
+        ? (firstUser.content.find((b) => b.type === 'text') as { text?: string } | undefined)?.text ?? ''
+        : ''
+    return { project: this.cwd, sessionId, running: host?.isBusy ?? false, title, updatedAt: this.lastActive.get(sessionId) ?? Date.now() }
+  }
+
+  /** M13-W3：全部活会话摘要（mux baseline 帧） */
+  briefs(): import('../protocol/mux.js').SessionBrief[] {
+    return [...this.conversations.keys()].map((id) => this.briefOf(id))
   }
 
   /**
@@ -142,6 +183,7 @@ export class ProjectHost {
     this.convDeps.delete(sessionId)
     this.lastActive.delete(sessionId)
     if (this.defaultId === sessionId) this.defaultId = null
+    this.emitSession('removed', { sessionId })
     return true
   }
 

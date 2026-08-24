@@ -40,8 +40,17 @@ export class ProjectRegistry {
   private readonly registered = new Set<string>()
   private readonly lockDir: string
 
+  /** M13-W3：项目上架监听器集（mux 层接——project/added 帧的源 + 动态接入新项目） */
+  private readonly hostListeners = new Set<(cwd: string, host: ProjectHost) => void>()
+
   constructor(private readonly opts: ProjectHostOptions) {
     this.lockDir = opts.lockDir ?? join(homedir(), '.ecode', 'sessions')
+  }
+
+  /** M13-W3：订阅项目上架（返回退订；mux 连接用） */
+  onHostAdded(cb: (cwd: string, host: ProjectHost) => void): () => void {
+    this.hostListeners.add(cb)
+    return () => this.hostListeners.delete(cb)
   }
 
   /** 项目发现：显式注册（--add）+ 历史会话 meta.cwd 反推（由调用方喂入——注册表不读 history） */
@@ -161,6 +170,7 @@ export class ProjectRegistry {
       const host = this.opts.createSession(cwd)
       this.hosts.set(cwd, host)
       this.pendingAcquire.delete(cwd)
+      for (const cb of this.hostListeners) cb(cwd, host)
       settle(host)
     })()
     const h = await p

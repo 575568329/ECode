@@ -14,6 +14,7 @@ import type { HostSession } from '../host/session.js'
 import type { ProjectHost } from '../host/project.js'
 import { randomUUID } from 'node:crypto'
 import { LOOPBACK_ADDRS } from './loopback.js'
+import type { MuxFrame, SessionBrief } from '../protocol/mux.js'
 import { serveHost, type ServeResult } from './http.js'
 import type { ProjectRegistry } from './projects.js'
 
@@ -29,9 +30,21 @@ const MULTI_BODY_CAP = 1024 * 1024
  * 多项目 serve：基于单会话 serveHost 的鉴权/工程细节之外，加项目维度路由与 acquire 栅栏语义。
  * 返回与 ServeResult 同形（复用注册文件契约）。
  */
-export function serveMulti(deps: MultiServeDeps, opts: { port?: number } = {}): Promise<ServeResult> {
+export function serveMulti(
+  deps: MultiServeDeps,
+  opts: { port?: number; host?: string; password?: string; muxFilter?: (frame: MuxFrame) => boolean } = {},
+): Promise<ServeResult> {
   const token = randomBytes(24).toString('hex')
   const { registry } = deps
+  // M13-W3（三预留③绑定语义显式化）：默认 loopback；非 loopback 强制密码（cli 侧同款双保险）
+  const bindHost = opts.host ?? '127.0.0.1'
+  const isLoopbackBind = bindHost === '127.0.0.1' || bindHost === '::1' || bindHost === 'localhost'
+  if (!isLoopbackBind && (opts.password === undefined || opts.password === '')) {
+    return Promise.reject(new Error('非 loopback 绑定必须设置密码（拒绝启动——防裸奔局域网）'))
+  }
+  // M13-W3（三预留①多凭据结构）：token 为首项，密码为第二项——M14 配对设备追加凭据条目即在此列表
+  const credentials = new Set<string>([token, ...(opts.password !== undefined && opts.password !== '' ? [opts.password] : [])])
+  const muxFilter = opts.muxFilter
 
   /** 新会话 id（cli 生成策略同款：ISO 时间戳 + 短随机尾防同秒碰撞） */
   const freshSessionId = (): string => `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`
@@ -91,7 +104,7 @@ export function serveMulti(deps: MultiServeDeps, opts: { port?: number } = {}): 
       if (req.method === 'GET' && url.pathname === '/api/health') return json(200, { ok: true })
       const auth = req.headers.authorization ?? ''
       const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : auth.startsWith('Basic ') ? (Buffer.from(auth.slice(6), 'base64').toString('utf8').split(':').pop() ?? '') : ''
-      if (bearer !== token) return json(401, { error: '未授权' })
+      if (!credentials.has(bearer)) return json(401, { error: '未授权' })
 
       // 项目列表
       if (req.method === 'GET' && url.pathname === '/api/projects') {
@@ -99,6 +112,68 @@ export function serveMulti(deps: MultiServeDeps, opts: { port?: number } = {}): 
           registered: registry.listKnown(),
           active: registry.listActive(),
         })
+      }
+
+      // M13-W3：mux 单流——一条 SSE 汇所有项目所有会话（HostEvent 生命周期帧 + 信封事件帧）。
+      // 连接三连：baseline（活项目+活会话）→ pending 审批重放（HostSession.subscribe 自带）→ 持续广播
+      if (req.method === 'GET' && url.pathname === '/api/events.mux') {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+          'x-accel-buffering': 'no',
+        })
+        // 预留②per-client 过滤钩子（当前 undefined=全放行；M14 配对设备接 per-device 会话订阅过滤）
+        const send = (frame: MuxFrame): void => {
+          if (muxFilter !== undefined && !muxFilter(frame)) return
+          const eventName = 'host' in frame ? frame.host.type : frame.ev.type
+          if (res.write(`event: ${eventName}\n\ndata: ${JSON.stringify(frame)}\n\n`) === false) {
+            res.once('drain', () => {})
+          }
+        }
+        const unsubs: Array<() => void> = []
+        const attachProject = (cwd: string, host: ProjectHost): void => {
+          for (const [sid, conv] of host.conversationsSnapshot()) {
+            unsubs.push(conv.subscribe((ev) => send({ project: cwd, sessionId: sid, ev })))
+          }
+          // 新会话动态补订（sweep 收掉的会话 channel.dispose 自动停流——无需退订）
+          unsubs.push(
+            host.onSessionEvent((kind, info) => {
+              if (kind === 'created') {
+                send({ host: { type: 'session/created', brief: info.brief ?? { project: cwd, sessionId: info.sessionId, running: false, title: '', updatedAt: Date.now() } } })
+              } else {
+                send({ host: { type: 'session/removed', project: cwd, sessionId: info.sessionId } })
+              }
+            }),
+          )
+        }
+        // 连接后新上架项目动态接入（project/added + 补订）
+        unsubs.push(
+          registry.onHostAdded((cwd, host) => {
+            send({ host: { type: 'project/added', project: cwd } })
+            attachProject(cwd, host)
+          }),
+        )
+        // 连接三连之一：baseline（活项目全部已 live——acquire 走 live 复用同步路径）
+        void (async () => {
+          const projects: string[] = []
+          const sessions: SessionBrief[] = []
+          for (const entry of registry.listActive()) {
+            const r = await registry.acquire(entry.path, { confirm: true }).catch(() => null)
+            if (r !== null && r.ok && r.host !== undefined) {
+              projects.push(entry.path)
+              sessions.push(...r.host.briefs())
+              attachProject(entry.path, r.host)
+            }
+          }
+          send({ host: { type: 'session/baseline', projects, sessions } })
+        })()
+        const ping = setInterval(() => res.write(': ping\n\n'), 15_000)
+        res.on('close', () => {
+          clearInterval(ping)
+          for (const u of unsubs) u()
+        })
+        return
       }
 
       // 项目维度路由：/api/p/:p/(cmd|events)；无前缀=默认项目
@@ -142,7 +217,7 @@ export function serveMulti(deps: MultiServeDeps, opts: { port?: number } = {}): 
             wantSid !== null && wantSid !== ''
               ? h.host.conversation(wantSid) ?? (await h.host.ensureRestore(wantSid))
               : h.host.ensureDefault(freshSessionId())
-          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' })
           const unsub = target.subscribe((ev) => {
             if (res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`) === false) res.once('drain', () => {})
           })
@@ -166,7 +241,7 @@ export function serveMulti(deps: MultiServeDeps, opts: { port?: number } = {}): 
 
   return new Promise((resolve, reject) => {
     server.once('error', reject)
-    server.listen(opts.port ?? 0, '127.0.0.1', () => {
+    server.listen(opts.port ?? 0, bindHost, () => {
       const { port } = server.address() as { port: number }
       resolve({
         port,

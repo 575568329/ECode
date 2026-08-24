@@ -452,12 +452,29 @@ async function serveMode(): Promise<void> {
   })
   registry.register(process.cwd())
   // 多项目 serve（B8.2）：默认项目=启动 cwd；/api/projects 列表 + /api/p/<path>/ 项目路由
-  const srv = await serveMulti({ registry, defaultCwd: process.cwd() }, { port: Number(process.env.ECODE_SERVE_PORT ?? 0) })
+  // M13-W3（绑定语义显式化 + 启动体验）：ECODE_SERVE_HOST 三态（loopback 默认/局域网 IP/LAN 全网卡）；
+  // 非 loopback 强制 ECODE_SERVER_PASSWORD（serveMulti 同款校验双保险）；启动打印完整访问 URL
+  const serveHost = process.env.ECODE_SERVE_HOST ?? '127.0.0.1'
+  const servePassword = process.env.ECODE_SERVER_PASSWORD ?? ''
+  const isLoopbackServe = serveHost === '127.0.0.1' || serveHost === '::1' || serveHost === 'localhost'
+  if (!isLoopbackServe && servePassword === '') {
+    process.stderr.write('✗ 非 loopback 绑定（ECODE_SERVE_HOST=' + serveHost + '）必须设置 ECODE_SERVER_PASSWORD——拒绝启动（防裸奔局域网）\n')
+    process.exit(1)
+  }
+  const srv = await serveMulti({ registry, defaultCwd: process.cwd() }, { port: Number(process.env.ECODE_SERVE_PORT ?? 0), host: serveHost, password: servePassword })
   // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读
   const regPath = join(os.homedir(), '.ecode', 'server.json')
   writeFileSync(regPath, JSON.stringify({ id: sessionId, port: srv.port, token: srv.token, pid: process.pid }, null, 2), { mode: 0o600 })
   chmodSync(regPath, 0o600)
-  console.log(JSON.stringify({ type: 'ready', schemaVersion: 1, bound: `127.0.0.1:${srv.port}`, register: regPath }))
+  console.log(JSON.stringify({ type: 'ready', schemaVersion: 1, bound: `${serveHost}:${srv.port}`, register: regPath }))
+  // 局域网形态打印手机可直接点击的访问 URL（半行代码消除"我该在手机输什么"的摩擦——审阅 P1）
+  if (!isLoopbackServe) {
+    const lanIp = Object.values(os.networkInterfaces())
+      .flat()
+      .find((n): n is os.NetworkInterfaceInfo => n !== undefined && n.family === 'IPv4' && n.internal === false)?.address
+    if (lanIp !== undefined) process.stdout.write(`Mobile: http://${lanIp}:${srv.port}\n`)
+    process.stdout.write('提示：DHCP 可能变动局域网 IP——建议为公司电脑配置静态 IP（中继形态 M14 后此问题消失）\n')
+  }
   // 空闲回收（30 分钟 sweep；审批/UI 挂起不回收）
   // M13-W2：会话级回收（项目基座常驻——Q5 两家实证）；sessionIdleMinutes 默认 120，0=不收
   const sessionIdleMinutes = config.sessionIdleMinutes ?? 120

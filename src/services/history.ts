@@ -26,6 +26,10 @@ export interface SessionMeta {
   createdAt: string
   model: string
   firstUser: string // 首条 user 消息摘要（/history 列表显示）
+  /** M13-W4：会话所属项目路径（新会话落盘；存量无此字段归"未归类"——不回填） */
+  cwd?: string
+  /** M13-W4：活会话运行态（dispatch session/list 冷热合并时注入——不落盘） */
+  running?: boolean
 }
 
 /** M12-P0：会话用量统计行（追加进会话 JSONL；自包含 cwd/model/ts——聚合不依赖 meta）。
@@ -77,13 +81,15 @@ export class FileHistoryStore implements HistoryStore {
   private readonly dir: string
   private model: string
   private sessionId: string
+  private cwd?: string
   private createdAt: string
   private metaWritten = false
   private firstUser = '(空)'
 
-  constructor(opts: { sessionId: string; model: string; dir?: string }) {
+  constructor(opts: { sessionId: string; model: string; cwd?: string; dir?: string }) {
     this.sessionId = opts.sessionId
     this.model = opts.model
+    this.cwd = opts.cwd
     this.createdAt = new Date().toISOString()
     this.dir = opts.dir ?? path.join(os.homedir(), '.ecode', 'sessions')
     this.ensureDir()
@@ -133,6 +139,7 @@ export class FileHistoryStore implements HistoryStore {
         createdAt: this.createdAt,
         model: this.model,
         firstUser: this.firstUser,
+        ...(this.cwd !== undefined ? { cwd: this.cwd } : {}),
       }
       this.writeLine(JSON.stringify(meta))
       this.metaWritten = true
@@ -194,6 +201,7 @@ export class FileHistoryStore implements HistoryStore {
         const parsed = JSON.parse(firstLine) as MetaLine
         if (parsed.meta) {
           metas.push({
+            cwd: parsed.cwd,
             sessionId: parsed.sessionId,
             createdAt: parsed.createdAt,
             model: parsed.model,
@@ -351,4 +359,36 @@ export class NoopHistoryStore implements HistoryStore {
   currentSessionId(): string {
     return ''
   }
+}
+
+
+/**
+ * M13-W4 历史反推项目发现：扫 sessions 目录首行 meta.cwd 去重聚合（/api/projects 第三源）。
+ * 读侧兼容：存量文件无 cwd → 不出现（归"未归类"由调用方处理）；cwd 统一正斜杠返回。
+ * 纯函数读文件系统，不动任何 store 实例（Web 项目列表零实例扫描——harness listVisible 同款语义）。
+ */
+export function collectProjectCwds(dir: string = path.join(os.homedir(), '.ecode', 'sessions')): string[] {
+  const cwds = new Set<string>()
+  let files: string[]
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
+  } catch {
+    return []
+  }
+  for (const f of files) {
+    try {
+      const buf = Buffer.alloc(2048)
+      const fd = fs.openSync(path.join(dir, f), 'r')
+      const bytes = fs.readSync(fd, buf, 0, 2048, 0)
+      fs.closeSync(fd)
+      const firstLine = buf.toString('utf8', 0, bytes).split('\n')[0]
+      const parsed = JSON.parse(firstLine) as { meta?: true; cwd?: string }
+      if (parsed.meta === true && parsed.cwd !== undefined && parsed.cwd !== '') {
+        cwds.add(parsed.cwd.split(String.fromCharCode(92)).join('/'))
+      }
+    } catch {
+      // 单文件损坏跳过（聚合是尽力而为）
+    }
+  }
+  return [...cwds]
 }

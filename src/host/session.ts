@@ -72,6 +72,8 @@ export interface HostDeps {
   /** M13-W2：restore=ensure 项目端口（session/restore 命令经此落 ProjectHost——活复用/冷载入/并发单飞）；
    *  缺省返回 NOT_IMPLEMENTED（argv/旧测试）。回执 value 含恢复的会话 id。 */
   ensureConversation?: (sessionId: string) => Promise<CommandResult>
+  /** M13-W4：活会话运行态表（session/list 冷热合并——running 注入 meta 列表；缺省不注入） */
+  conversationStates?: () => Map<string, boolean>
 }
 
 interface QueueEntry {
@@ -412,8 +414,13 @@ export class HostSession {
           return { ok: false, error: '命令 session/restore 尚未接线（无 ProjectHost）', code: 'NOT_IMPLEMENTED' }
         }
         return this.deps.ensureConversation(cmd.sessionId)
-      case 'session/list':
-        return { ok: true, value: this.deps.history.loadAll() }
+      case 'session/list': {
+        // M13-W4 冷热合并：历史 meta（冷）∪ 活会话 running 态（热）——前端一份列表两端状态
+        const states = this.deps.conversationStates?.()
+        const metas = this.deps.history.loadAll()
+        if (states === undefined) return { ok: true, value: metas }
+        return { ok: true, value: metas.map((m) => (states.has(m.sessionId) ? { ...m, running: states.get(m.sessionId) } : m)) }
+      }
       case 'session/read':
         return { ok: true, value: this.deps.history.restoreFull(cmd.sessionId) }
       case 'sandbox/set':

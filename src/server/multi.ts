@@ -15,6 +15,7 @@ import type { ProjectHost } from '../host/project.js'
 import { randomUUID } from 'node:crypto'
 import { LOOPBACK_ADDRS } from './loopback.js'
 import type { MuxFrame, SessionBrief } from '../protocol/mux.js'
+import { collectProjectCwds } from '../services/history.js'
 import { serveHost, type ServeResult } from './http.js'
 import type { ProjectRegistry } from './projects.js'
 
@@ -32,7 +33,7 @@ const MULTI_BODY_CAP = 1024 * 1024
  */
 export function serveMulti(
   deps: MultiServeDeps,
-  opts: { port?: number; host?: string; password?: string; muxFilter?: (frame: MuxFrame) => boolean } = {},
+  opts: { port?: number; host?: string; password?: string; muxFilter?: (frame: MuxFrame) => boolean; sessionsDir?: string } = {},
 ): Promise<ServeResult> {
   const token = randomBytes(24).toString('hex')
   const { registry } = deps
@@ -106,11 +107,12 @@ export function serveMulti(
       const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : auth.startsWith('Basic ') ? (Buffer.from(auth.slice(6), 'base64').toString('utf8').split(':').pop() ?? '') : ''
       if (!credentials.has(bearer)) return json(401, { error: '未授权' })
 
-      // 项目列表
+      // 项目列表（M13-W4 三源并集：显式注册 ∪ 活项目 ∪ 历史反推 meta.cwd——Web 打开即见本机所有有历史的项目）
       if (req.method === 'GET' && url.pathname === '/api/projects') {
         return json(200, {
           registered: registry.listKnown(),
           active: registry.listActive(),
+          history: collectProjectCwds(opts.sessionsDir),
         })
       }
 

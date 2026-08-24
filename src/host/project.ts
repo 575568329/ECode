@@ -74,6 +74,13 @@ export class ProjectHost {
     return [...this.conversations.entries()]
   }
 
+  /** M13-W4：活会话运行态表（session/list 冷热合并注入用） */
+  runningMap(): Map<string, boolean> {
+    const m = new Map<string, boolean>()
+    for (const [id, h] of this.conversations) m.set(id, h.isBusy)
+    return m
+  }
+
   /** 当前（默认）会话 id——HookRunner.getSessionId 空值兜底与缺省路由共用 */
   get currentSessionId(): string {
     return this.defaultId ?? ''

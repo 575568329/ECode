@@ -255,7 +255,7 @@ function makeConversationDeps(
   approvalPolicy?: 'ask' | 'auto-approve',
 ): { host: HostDeps; history: FileHistoryStore } {
   sessionRef.id = sessionId // 三单例收敛③：hook 事件 session_id 兜底动态化
-  const history = new FileHistoryStore({ sessionId, model: config.current.model })
+  const history = new FileHistoryStore({ sessionId, model: config.current.model, cwd: dir }) // M13-W4：meta 落盘会话归属
   const host: HostDeps = {
     providerRegistry: parts.providerReg,
     tools: parts.hookedTools,
@@ -277,6 +277,8 @@ function makeConversationDeps(
       await proj.ensureRestore(sid)
       return { ok: true, sessionId: sid }
     },
+    // M13-W4：session/list 冷热合并（活会话 running 态注入 meta 列表）
+    conversationStates: () => projectRef.current?.runningMap() ?? new Map(),
     ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),
   }
   return { host, history }

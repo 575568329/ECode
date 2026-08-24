@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ProjectRegistry } from '../../src/server/projects.js'
-import type { HostSession } from '../../src/host/session.js'
+import type { ProjectHost } from '../../src/host/project.js'
 
 const dirs: string[] = []
 const mkd = (): string => {
@@ -18,18 +18,17 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
-const fakeHost = (): HostSession =>
-  ({ dispose: vi.fn(), send: vi.fn(), subscribe: vi.fn(), transcript: [] } as unknown as HostSession)
+const fakeProject = (): ProjectHost =>
+  ({ disposeAll: vi.fn(), sweepSessions: vi.fn(() => 0) } as unknown as ProjectHost)
 
-const makeRegistry = (created: HostSession[]) =>
+const makeRegistry = (created: ProjectHost[]) =>
   new ProjectRegistry({
     createSession: (cwd) => {
       void cwd
-      const h = fakeHost()
+      const h = fakeProject()
       created.push(h)
       return h
     },
-    idleMinutes: 0,
     lockDir: join(tmpdir(), `ecode-locks-${Date.now()}-${Math.random().toString(36).slice(2)}`),
   })
 
@@ -46,7 +45,7 @@ describe('ProjectRegistry（B8 多项目核心）', () => {
   })
 
   it('显式注册豁免 confirm；live 复用不重复装配；冷启动并发单飞去重', async () => {
-    const created: HostSession[] = []
+    const created: ProjectHost[] = []
     const reg = makeRegistry(created)
     const dir = mkd()
     reg.register(dir)
@@ -59,14 +58,13 @@ describe('ProjectRegistry（B8 多项目核心）', () => {
   })
 
   it('项目互斥：同路径二次 acquire（新 registry 实例=另一进程视角）被 lock 拒绝', async () => {
-    const created: HostSession[] = []
+    const created: ProjectHost[] = []
     const opts = {
       createSession: () => {
-        const h = fakeHost()
+        const h = fakeProject()
         created.push(h)
         return h
       },
-      idleMinutes: 0,
       lockDir: join(tmpdir(), `ecode-locks-${Date.now()}-${Math.random().toString(36).slice(2)}`),
     }
     const dir = mkd()
@@ -85,26 +83,16 @@ describe('ProjectRegistry（B8 多项目核心）', () => {
     expect(r3.ok).toBe(true)
   })
 
-  it('空闲回收：超时 dispose+解锁；有订阅者（审批/UI 挂起）不回收', async () => {
-    const created: HostSession[] = []
-    const reg = new ProjectRegistry({
-      createSession: () => {
-        const h = fakeHost()
-        created.push(h)
-        return h
-      },
-      idleMinutes: 0,
-      lockDir: join(tmpdir(), `ecode-locks-${Date.now()}-${Math.random().toString(36).slice(2)}`),
-    })
+  it('M13-W2 会话级回收委托：sweepSessions 透传阈值给各 ProjectHost；项目基座常驻（listActive 不减）', async () => {
+    const created: ProjectHost[] = []
+    const reg = makeRegistry(created)
     const dir = mkd()
     reg.register(dir)
     const r = await reg.acquire(dir)
-    // 模拟订阅者挂起（channel.subscriberCount>0 → Q12 不回收）
-    ;(r.host as unknown as { channel: { subscriberCount: number } }).channel = { subscriberCount: 1 }
-    expect(await reg.sweepIdle()).toBe(0)
-    ;(r.host as unknown as { channel: { subscriberCount: number } }).channel = { subscriberCount: 0 }
-    expect(await reg.sweepIdle()).toBe(1)
-    expect(created[0]?.dispose).toHaveBeenCalled()
-    expect(reg.listActive()).toHaveLength(0)
+    expect(r.ok).toBe(true)
+    ;(r.host as unknown as { sweepSessions: ReturnType<typeof vi.fn> }).sweepSessions.mockReturnValue(3)
+    expect(reg.sweepSessions(120)).toBe(3)
+    expect((r.host as unknown as { sweepSessions: ReturnType<typeof vi.fn> }).sweepSessions).toHaveBeenCalledWith(120)
+    expect(reg.listActive()).toHaveLength(1) // 项目仍在（Q5 常驻）——回收发生在会话层
   })
 })

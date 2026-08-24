@@ -39,8 +39,14 @@ export class ProjectHost {
   /** skill hooks 写端口（绑本项目 registry——TuiApp/工具经此写，多项目不串台） */
   readonly skillHooks: SkillHooksPort
   private readonly conversations = new Map<string, HostSession>()
+  /** createConversation 产物留档（ensureRestore 冷会话载入要用 deps.history.restoreFull） */
+  private readonly convDeps = new Map<string, HostDeps>()
+  /** restore 单飞（并发同 id 冷启动只载一次——deferred 模式：先登记再跑体，M12 实测坑⑤同款） */
+  private readonly pendingRestore = new Map<string, Promise<HostSession>>()
   /** 默认会话（缺省 sessionId 命令的目标；首个 ensure 者转正，被收后不持久化——下次 ensure 重建） */
   private defaultId: string | null = null
+  /** 会话空闲打点（sweepSessions 消费；prompt/restore 等 touch 点更新） */
+  private readonly lastActive = new Map<string, number>()
 
   constructor(private readonly deps: ProjectHostDeps) {
     this.skills = deps.skills ?? createSkillRegistry()
@@ -67,26 +73,74 @@ export class ProjectHost {
   }
 
   /**
-   * 幂等建/取会话（同步——构造无异步环节；W2 restore=ensure 的 deferred 单飞在彼批加，
-   * 冷会话载入 restoreFrom 属命令路由层职责）。prebuilt：cli 首会话传已组装 HostDeps
+   * 幂等建/取会话（同步——构造无异步环节）。prebuilt：cli 首会话传已组装 HostDeps
    * （与 Deps.history 同实例——TuiApp 直读路径等价）。
    */
   ensure(sessionId: string, prebuilt?: HostDeps): HostSession {
     const live = this.conversations.get(sessionId)
     if (live !== undefined) return live
-    const host = new HostSession(prebuilt ?? this.deps.createConversation(sessionId))
+    const convDeps = prebuilt ?? this.deps.createConversation(sessionId)
+    const host = new HostSession(convDeps)
     if (this.deps.autoMountBridges !== false) host.mountBridges()
     this.conversations.set(sessionId, host)
+    this.convDeps.set(sessionId, convDeps)
+    this.lastActive.set(sessionId, Date.now())
     if (this.defaultId === null) this.defaultId = sessionId
     return host
   }
 
-  /** 会话回收（W2 会话级 sweep 的执行位；历史文件/checkpoint 不动） */
+  /**
+   * M13-W2 restore=ensure：活会话复用；冷会话（history 文件在、宿主无实例）载入新建。
+   * 并发同 id 幂等单飞（deferred：先登记 promise 再跑体——同步完成不留死条目）。
+   */
+  async ensureRestore(sessionId: string): Promise<HostSession> {
+    const live = this.conversations.get(sessionId)
+    if (live !== undefined) return live
+    const inflight = this.pendingRestore.get(sessionId)
+    if (inflight !== undefined) return inflight
+    let settle!: (h: HostSession) => void
+    const p = new Promise<HostSession>((res) => {
+      settle = res
+    })
+    this.pendingRestore.set(sessionId, p)
+    const host = this.ensure(sessionId)
+    const lines = this.convDeps.get(sessionId)?.history.restoreFull(sessionId) ?? []
+    host.restoreFrom(lines)
+    this.pendingRestore.delete(sessionId)
+    settle(host)
+    return p
+  }
+
+  /** 活跃度打点（路由/命令命中时调——sweepSessions 依据） */
+  touch(sessionId: string): void {
+    this.lastActive.set(sessionId, Date.now())
+  }
+
+  /**
+   * M13-W2 会话级 sweep（方案 §3.4：项目基座常驻不收，闲置会话回收）。
+   * 三闸：有订阅者 / 有挂起审批 / 运行态（busy=loop 在跑或队列非空）——任一命中跳过；
+   * 历史文件/checkpoint 不动（restore 即续）。返回回收数。
+   */
+  sweepSessions(idleMinutes: number): number {
+    const cutoff = Date.now() - idleMinutes * 60_000
+    let reclaimed = 0
+    for (const [id, host] of [...this.conversations]) {
+      if ((this.lastActive.get(id) ?? Date.now()) > cutoff) continue
+      if (host.channel.subscriberCount > 0 || host.brokerPending > 0 || host.isBusy) continue
+      this.disposeConversation(id)
+      reclaimed++
+    }
+    return reclaimed
+  }
+
+  /** 会话回收（sweepSessions 的执行位；历史文件/checkpoint 不动） */
   disposeConversation(sessionId: string): boolean {
     const host = this.conversations.get(sessionId)
     if (host === undefined) return false
     host.dispose()
     this.conversations.delete(sessionId)
+    this.convDeps.delete(sessionId)
+    this.lastActive.delete(sessionId)
     if (this.defaultId === sessionId) this.defaultId = null
     return true
   }
@@ -94,6 +148,8 @@ export class ProjectHost {
   disposeAll(): void {
     for (const host of this.conversations.values()) host.dispose()
     this.conversations.clear()
+    this.convDeps.clear()
+    this.lastActive.clear()
     this.defaultId = null
   }
 

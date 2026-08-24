@@ -10,6 +10,7 @@ import { serveMulti } from '../../src/server/multi.js'
 import { HttpTransport } from '../../src/protocol/http.js'
 import { ProjectRegistry } from '../../src/server/projects.js'
 import { HostSession, type HostDeps } from '../../src/host/session.js'
+import { ProjectHost } from '../../src/host/project.js'
 import type { LLMProvider, LLMProviderRunRequest } from '../../src/providers/interface.js'
 import type { Delta } from '../../src/core/types.js'
 import { ToolRegistryImpl } from '../../src/tools/registry.js'
@@ -30,6 +31,7 @@ const noopLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, er
 
 const seenCwds: string[] = []
 const mk = (cwd: string): HostDeps => {
+  // M13-W2：工厂改为项目视角（registry 存 ProjectHost；会话 Map 内含首会话）
   seenCwds.push(cwd)
   const reg = new ToolRegistryImpl()
   const orch = new CompactionOrchestrator()
@@ -56,13 +58,27 @@ const dirA = mkdtempSync(join(tmpdir(), 'ecode-projA-'))
 const dirB = mkdtempSync(join(tmpdir(), 'ecode-projB-'))
 const created: HostSession[] = []
 
+const createdProjects: ProjectHost[] = []
 const registry = new ProjectRegistry({
   createSession: (cwd) => {
-    const h = new HostSession(mk(cwd))
-    created.push(h)
-    return h
+    // 对齐 cli 装配：ensureConversation 端口晚绑定 projectRef（session/restore 经 dispatch 落 ProjectHost）
+    const projectRef: { current?: ProjectHost } = {}
+    const p = new ProjectHost({
+      createConversation: () => ({
+        ...mk(cwd),
+        ensureConversation: async (sid) => {
+          if (projectRef.current === undefined) return { ok: false, error: 'no project', code: 'NOT_IMPLEMENTED' }
+          await projectRef.current.ensureRestore(sid)
+          return { ok: true, sessionId: sid }
+        },
+      }),
+    })
+    projectRef.current = p
+    const first = p.ensure('sess-A')
+    created.push(first)
+    createdProjects.push(p)
+    return p
   },
-  idleMinutes: 0,
   lockDir: join(tmpdir(), `ecode-mlock-${Date.now()}`),
 })
 registry.register(dirA)
@@ -93,7 +109,7 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     expect(rA).toMatchObject({ ok: true })
     const rB = await (await fetch(`${base}/api/p/${enc(dirB)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: 'session/clear' }) })).json()
     expect(rB).toMatchObject({ ok: true })
-    expect(created.length).toBe(2) // 两项目各装配一个 HostSession
+    expect(created.length).toBe(2) // 两项目各装配一个 ProjectHost 首会话
     expect(seenCwds).toContain(dirA.split(String.fromCharCode(92)).join('/')) // cwd 真接线（审阅 P0-1：曾 void cwd 掩护断线）
     expect(seenCwds).toContain(dirB.split(String.fromCharCode(92)).join('/'))
   })
@@ -105,6 +121,25 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     const r2 = await (await fetch(`${base}/api/p/${enc(dirC)}/cmd?confirm=true`, { method: 'POST', headers: auth, body: JSON.stringify({ op: 'session/list' }) })).json()
     expect(r2).toMatchObject({ ok: true })
     rmSync(dirC, { recursive: true, force: true })
+  })
+
+  it('M13-W2 命令信封三态：显式命中/冷会话 404/缺省走默认并回执 sessionId', async () => {
+    const pA = enc(dirA)
+    // ①显式 sessionId：命中项目首会话 sess-A
+    const r1 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ sessionId: 'sess-A', op: { op: 'session/list' } }) })).json()
+    expect(r1).toMatchObject({ ok: true, sessionId: 'sess-A' })
+    // ①冷会话非 restore → 404
+    const r2 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ sessionId: '不存在的会话', op: { op: 'session/list' } }) })).json()
+    expect(r2).toMatchObject({ ok: false })
+    // ①冷会话 restore 可拉起（NoopHistory 空载入 → ok）
+    const r3 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ sessionId: 'cold-x', op: { op: 'session/restore', sessionId: 'cold-x' } }) })).json()
+    expect(r3).toMatchObject({ ok: true, sessionId: 'cold-x' })
+    // ②缺省 → 默认会话（sess-A）回执
+    const r4 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/list' } }) })).json()
+    expect(r4).toMatchObject({ ok: true, sessionId: 'sess-A' })
+    // 过渡兼容：裸 ProtocolCommand（无信封）仍可用
+    const r5 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: 'session/list' }) })).json()
+    expect(r5).toMatchObject({ ok: true, sessionId: 'sess-A' })
   })
 
   it('G2 双客户端附着：HttpTransport 双端事件一致（B7 已验证的订阅实现）', async () => {

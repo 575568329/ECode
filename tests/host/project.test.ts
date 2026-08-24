@@ -170,6 +170,61 @@ describe('ProjectHost（M13-W1）', () => {
   })
 })
 
+describe('ProjectHost M13-W2（restore=ensure / 会话级 sweep）', () => {
+  const mkConvDeps = (lines: HistoryLine[] = []) => {
+    const store = new NoopHistoryStore()
+    return { ...makeHostDeps(new MockProvider()), history: { ...store, restoreFull: () => lines } }
+  }
+
+  it('ensureRestore 冷会话：载入 restoreFull 内容为新会话', async () => {
+    const lines: HistoryLine[] = [{ role: 'user', content: [{ type: 'text', text: '历史消息' }] }]
+    const p = new ProjectHost({ createConversation: () => mkConvDeps(lines) })
+    const h = await p.ensureRestore('cold-1')
+    expect(h.transcript.length).toBe(1)
+    expect(p.conversation('cold-1')).toBe(h)
+  })
+
+  it('ensureRestore 活会话复用：不重复载入（restoreFull 不再调）', async () => {
+    let loads = 0
+    const p = new ProjectHost({
+      createConversation: () => {
+        loads++
+        return mkConvDeps([])
+      },
+    })
+    const first = p.ensure('live-1')
+    const second = await p.ensureRestore('live-1')
+    expect(second).toBe(first)
+    expect(loads).toBe(1)
+  })
+
+  it('ensureRestore 并发单飞：同 id 并发只装配一次', async () => {
+    let created = 0
+    const p = new ProjectHost({
+      createConversation: () => {
+        created++
+        return mkConvDeps([])
+      },
+    })
+    const [a, b] = await Promise.all([p.ensureRestore('race-1'), p.ensureRestore('race-1')])
+    expect(a).toBe(b)
+    expect(created).toBe(1)
+  })
+
+  it('sweepSessions：闲置回收；订阅者闸拦截；默认被收后置空', () => {
+    const p = makeProject(true)
+    const a = p.ensure('s-a')
+    p.ensure('s-b')
+    const unsub = a.subscribe(() => {}) // a 有订阅者 → 三闸拦截
+    expect(p.sweepSessions(0)).toBe(1) // 只收了 b
+    expect(p.conversation('s-b')).toBeUndefined()
+    expect(p.conversation('s-a')).toBe(a)
+    unsub()
+    expect(p.sweepSessions(0)).toBe(1) // a 无闸了 → 收
+    expect(p.currentSessionId).toBe('') // 默认被收 → 置空
+  })
+})
+
 // 模块槽卫生：本文件动过 permissionAsker 槽，收尾清空防串到其他用例
 afterAll(() => {
   setPermissionAsker(null)

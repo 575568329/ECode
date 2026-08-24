@@ -45,6 +45,8 @@ export interface Config {
   sandbox?: { defaultMode?: SandboxMode; blockedCommands?: string[] }
   /** M9-P6：编辑轮末自动 git commit（默认 false——不静默改用户 repo；/undo 只退 ECode 提交） */
   autoCommit?: boolean
+  /** M13-W2：会话空闲回收阈值分钟（serve 多会话；默认 120；0=不收——项目基座常驻不收，仅收闲置会话） */
+  sessionIdleMinutes?: number
   /** M10-P1：联网搜索（provider 缺省 bing RSS 免费；preferMcp 显式声明搜索 MCP server 名；命中搜索 MCP 时内置不注册） */
   webSearch?: { provider?: 'bing' | 'zhipu'; apiKey?: string; engine?: 'search_std' | 'search_pro' | 'search_pro_sogou' | 'search_pro_quark'; preferMcp?: string[] }
   /** 指令/记忆注入单级上限 KB（M8：ECODE.md/CLAUDE.md/MEMORY.md 各级截断阈值，默认 32） */

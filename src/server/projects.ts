@@ -5,7 +5,8 @@
  * - acquire 三段式：live 复用 → 冷启动单飞去重（并发只装配一次）→ 所有权栅栏（互斥占用拒绝）
  * - 路径校验三件套（v1.2 P1-5）：存在性 + realpath 规范化（防同目录多形态绕互斥）+ 历史反推项目
  *   首次拉起需 confirm=true 二次确认（显式注册的豁免——恶意仓库 hooks 防线）
- * - 空闲回收：N 分钟无请求 dispose（confirm 悬置不回收——宁等勿杀，Q12）
+ * - M13-W2：值改存 ProjectHost（每项目一个容器，内含会话 Map）；项目级空闲回收退役
+ *   （Q5 基座常驻，两家实证）→ registry.sweepSessions 会话级回收（三闸见 ProjectHost）
  * - 项目互斥标记：`~/.ecode/sessions/` 同目录 lock 文件（open 'wx' 原子占坑 + 0600——TOCTOU/预置 symlink 双防）
  */
 
@@ -13,7 +14,7 @@ import { openSync, closeSync, writeSync, readFileSync, existsSync, realpathSync,
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import type { HostSession } from '../host/session.js'
+import type { ProjectHost } from '../host/project.js'
 
 export interface ProjectEntry {
   path: string
@@ -24,27 +25,22 @@ export interface AcquireResult {
   ok: boolean
   reason?: 'not-exist' | 'locked' | 'need-confirm'
   lockHolder?: string
-  host?: HostSession
+  host?: ProjectHost
 }
 
 export interface ProjectHostOptions {
-  /** 冷启动工厂（cli 传入：makeDeps(cwd)+sessionId+HostSession 装配） */
-  createSession: (cwd: string) => HostSession
-  /** 空闲回收阈值（分钟；0=不回收——测试用） */
-  idleMinutes?: number
+  /** 项目宿主工厂（cli 传入：makeDeps(cwd)+ProjectHost 装配——M13-W2 起每项目一个容器） */
+  createSession: (cwd: string) => ProjectHost
   lockDir?: string
 }
 
 export class ProjectRegistry {
-  private readonly hosts = new Map<string, HostSession>()
-  private readonly pendingAcquire = new Map<string, Promise<HostSession | null>>()
+  private readonly hosts = new Map<string, ProjectHost>()
+  private readonly pendingAcquire = new Map<string, Promise<ProjectHost | null>>()
   private readonly registered = new Set<string>()
-  private readonly lastActive = new Map<string, number>()
-  private readonly idleMinutes: number
   private readonly lockDir: string
 
   constructor(private readonly opts: ProjectHostOptions) {
-    this.idleMinutes = opts.idleMinutes ?? 30
     this.lockDir = opts.lockDir ?? join(homedir(), '.ecode', 'sessions')
   }
 
@@ -139,7 +135,6 @@ export class ProjectRegistry {
 
     const live = this.hosts.get(cwd)
     if (live !== undefined) {
-      this.lastActive.set(cwd, Date.now())
       return { ok: true, host: live }
     }
 
@@ -151,8 +146,8 @@ export class ProjectRegistry {
     }
 
     // deferred：先登记再去装配——promise 体同步失败时 delete 会先于 set 执行留下死条目（实测竞态）
-    let settle!: (h: HostSession | null) => void
-    const p = new Promise<HostSession | null>((res) => {
+    let settle!: (h: ProjectHost | null) => void
+    const p = new Promise<ProjectHost | null>((res) => {
       settle = res
     })
     this.pendingAcquire.set(cwd, p)
@@ -165,7 +160,6 @@ export class ProjectRegistry {
       }
       const host = this.opts.createSession(cwd)
       this.hosts.set(cwd, host)
-      this.lastActive.set(cwd, Date.now())
       this.pendingAcquire.delete(cwd)
       settle(host)
     })()
@@ -173,34 +167,20 @@ export class ProjectRegistry {
     return h !== null ? { ok: true, host: h } : { ok: false, reason: 'locked', lockHolder: '' }
   }
 
-  /** 活跃度打点（prompt/事件订阅等 touch 点调用） */
-  touch(cwd: string): void {
-    this.lastActive.set(this.normalize(cwd), Date.now())
-  }
-
-  /** 审批悬置不回收（Q12）：host 有 pending 审批时跳过本轮回收 */
-  async sweepIdle(): Promise<number> {
-    // idleMinutes=0 → 立即过期（测试语义）
-    const cutoff = Date.now() - this.idleMinutes * 60_000
+  /**
+   * M13-W2 会话级回收（项目级 sweepIdle 退役——Q5 基座常驻不收，两家实证）：
+   * 遍历项目宿主做会话 sweep（三闸：订阅者/挂起审批/运行态），返回总回收数。
+   * 项目锁不释放（disposeAll 时的全量清理不变）。
+   */
+  sweepSessions(sessionIdleMinutes: number): number {
     let reclaimed = 0
-    for (const [cwd, host] of [...this.hosts]) {
-      const active = this.lastActive.get(cwd) ?? Date.now()
-      if (active > cutoff) continue
-      // confirm 悬置不回收（Q12）：有订阅者或 broker 有 pending 均视为活跃（审阅 P1-8：曾只查订阅者）
-      const h = host as unknown as { channel: { subscriberCount: number }; brokerPending: number }
-      if (h.channel.subscriberCount > 0 || h.brokerPending > 0) continue
-      host.dispose()
-      this.hosts.delete(cwd)
-      this.lastActive.delete(cwd)
-      this.unlock(cwd)
-      reclaimed++
-    }
+    for (const host of this.hosts.values()) reclaimed += host.sweepSessions(sessionIdleMinutes)
     return reclaimed
   }
 
   disposeAll(): void {
     for (const [cwd, host] of this.hosts) {
-      host.dispose()
+      host.disposeAll()
       this.unlock(cwd)
     }
     this.hosts.clear()

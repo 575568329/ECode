@@ -251,6 +251,7 @@ function makeConversationDeps(
   dir: string,
   sessionRef: { id: string },
   skillHooks: SkillHooksPort,
+  projectRef: { current?: ProjectHost },
   approvalPolicy?: 'ask' | 'auto-approve',
 ): { host: HostDeps; history: FileHistoryStore } {
   sessionRef.id = sessionId // 三单例收敛③：hook 事件 session_id 兜底动态化
@@ -268,6 +269,14 @@ function makeConversationDeps(
     quality: parts.quality,
     cwd: dir,
     skillHooks,
+    // M13-W2：restore=ensure 项目端口（session/restore 命令经宿主 dispatch 落 ProjectHost；
+    // projectRef 晚绑定——会话 deps 先于 ProjectHost 构造，makeDeps 尾部回填）
+    ensureConversation: async (sid) => {
+      const proj = projectRef.current
+      if (proj === undefined) return { ok: false, error: 'ProjectHost 未装配', code: 'NOT_IMPLEMENTED' }
+      await proj.ensureRestore(sid)
+      return { ok: true, sessionId: sid }
+    },
     ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),
   }
   return { host, history }
@@ -289,13 +298,15 @@ function makeDeps(
   const skillHooks = makeSkillHooksPort(extHooks)
   const sessionRef = { id: sessionId }
   const parts = makeProjectParts(config, logger, dir, { skills, extHooks }, sessionRef)
-  const conv0 = makeConversationDeps(parts, logger, config, sessionId, dir, sessionRef, skillHooks, opts.approvalPolicy)
+  const projectRef: { current?: ProjectHost } = {}
+  const conv0 = makeConversationDeps(parts, logger, config, sessionId, dir, sessionRef, skillHooks, projectRef, opts.approvalPolicy)
   const project = new ProjectHost({
     createConversation: (sid) =>
-      makeConversationDeps(parts, logger, config, sid, dir, sessionRef, skillHooks, opts.approvalPolicy).host,
+      makeConversationDeps(parts, logger, config, sid, dir, sessionRef, skillHooks, projectRef, opts.approvalPolicy).host,
     skills,
     extHooks,
   })
+  projectRef.current = project
   project.ensure(sessionId, conv0.host)
   return {
     providerRegistry: parts.providerReg,
@@ -434,10 +445,9 @@ async function serveMode(): Promise<void> {
       // ProjectRegistry 本批不动（W2 升维 path→ProjectHost）——对 registry 而言仍是"每项目一个 HostSession"
       const sid = new Date().toISOString().replace(/[:.]/g, '-')
       const deps = makeDeps(config, logger, sid, cwd, { freshRegistries: true })
-      const h = deps.project !== undefined ? deps.project.ensureDefault(sid) : null
-      if (h === null) throw new Error('ProjectHost missing in makeDeps')
-      h.mountBridges() // 幂等（ensure 已自动挂；显式保留 B8.2 注释语义）
-      return h
+      if (deps.project === undefined) throw new Error('ProjectHost missing in makeDeps')
+      deps.project.ensure(sid) // 首会话（W2：registry 存 ProjectHost，会话 Map 内含；信封三态按需增会话）
+      return deps.project
     },
   })
   registry.register(process.cwd())
@@ -449,7 +459,9 @@ async function serveMode(): Promise<void> {
   chmodSync(regPath, 0o600)
   console.log(JSON.stringify({ type: 'ready', schemaVersion: 1, bound: `127.0.0.1:${srv.port}`, register: regPath }))
   // 空闲回收（30 分钟 sweep；审批/UI 挂起不回收）
-  const sweep = setInterval(() => void registry.sweepIdle(), 60_000)
+  // M13-W2：会话级回收（项目基座常驻——Q5 两家实证）；sessionIdleMinutes 默认 120，0=不收
+  const sessionIdleMinutes = config.sessionIdleMinutes ?? 120
+  const sweep = sessionIdleMinutes > 0 ? setInterval(() => void registry.sweepSessions(sessionIdleMinutes), 60_000) : null
   // 防脑裂（opencode 同款）：10s 校验注册 id 仍是自己——被更新版接管即让位自杀
   const myId = sessionId
   const watchdog = setInterval(() => {
@@ -457,7 +469,7 @@ async function serveMode(): Promise<void> {
       const cur = JSON.parse(readFileSync(join(os.homedir(), '.ecode', 'server.json'), 'utf8')) as { id: string }
       if (cur.id !== myId) {
         clearInterval(watchdog)
-        clearInterval(sweep)
+        if (sweep !== null) clearInterval(sweep)
         registry.disposeAll()
         process.exit(0)
       }
@@ -469,7 +481,7 @@ async function serveMode(): Promise<void> {
   // 审阅 P1-4：serve 分流先于 main 的 handler 注册——此处自管生命周期：
   // 一次信号 = 全量清理后退出（server.close 断流 → registry.disposeAll（锁释放/审批收敛）→ exit）
   const shutdown = (code: number): void => {
-    clearInterval(sweep)
+    if (sweep !== null) clearInterval(sweep)
     void (async () => {
       await srv.close()
       registry.disposeAll()

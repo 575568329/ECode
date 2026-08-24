@@ -118,6 +118,8 @@ export interface PromptResult extends CommandOk {
 export interface CommandOk {
   ok: true
   value?: unknown
+  /** M13-W2：路由命中的会话 id（信封路由/隐式建会话时回执——TuiApp 同进程路径不填） */
+  sessionId?: string
 }
 export interface CommandError {
   ok: false

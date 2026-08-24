@@ -69,6 +69,9 @@ export interface HostDeps {
   ctxWindowHint?: () => number | null
   /** M13-W1：skill hooks 写端口（项目级 registry 绑定——skill 工具经 ctx.session 消费；缺省走模块兜底端口） */
   skillHooks?: SkillHooksPort
+  /** M13-W2：restore=ensure 项目端口（session/restore 命令经此落 ProjectHost——活复用/冷载入/并发单飞）；
+   *  缺省返回 NOT_IMPLEMENTED（argv/旧测试）。回执 value 含恢复的会话 id。 */
+  ensureConversation?: (sessionId: string) => Promise<CommandResult>
 }
 
 interface QueueEntry {
@@ -167,6 +170,11 @@ export class HostSession {
   /** sweepIdle 只读视图（Q12：审批悬置不回收——broker 私有，经此暴露计数） */
   get brokerPending(): number {
     return this.broker.approvalPendingCount
+  }
+
+  /** M13-W2：运行态（loop 在跑或队列有货）——会话级 sweep 三闸之一（运行态永不收） */
+  get isBusy(): boolean {
+    return this.running || this.queue.length > 0
   }
 
   /** B4（D5）：会话级子代理进度上报（task 工具经 ctx.session 调用；发布 subagent/progress 事件） */
@@ -386,6 +394,12 @@ export class HostSession {
         this.readMtime.clear() // M13-B1：已读表随会话重置
         this.mcpCallCount = 0 // 审阅 P1-1：与客户端 setSessionCost(0) 同语义
         return { ok: true }
+      case 'session/restore':
+        // M13-W2：restore=ensure（活复用/冷载入 restoreFrom/并发幂等单飞——落点 ProjectHost）
+        if (this.deps.ensureConversation === undefined) {
+          return { ok: false, error: '命令 session/restore 尚未接线（无 ProjectHost）', code: 'NOT_IMPLEMENTED' }
+        }
+        return this.deps.ensureConversation(cmd.sessionId)
       case 'session/list':
         return { ok: true, value: this.deps.history.loadAll() }
       case 'session/read':

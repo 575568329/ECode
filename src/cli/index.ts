@@ -29,7 +29,7 @@ import { setWebSearchProvider } from '../tools/builtin/web_search.js'
 import { taskRegistry } from '../services/tasks.js'
 import { evalPermission, loadPermissionLayers, saveLocalPermission, askPermissionInteractive } from '../services/permissions.js'
 import { join } from 'node:path'
-import { writeFileSync, chmodSync, readFileSync, rmSync } from 'node:fs'
+import { writeFileSync, chmodSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import * as os from 'node:os'
 import { spawn } from 'node:child_process'
 import { render } from 'ink'
@@ -463,7 +463,12 @@ async function serveMode(): Promise<void> {
     process.stderr.write('✗ 非 loopback 绑定（ECODE_SERVE_HOST=' + serveHost + '）必须设置 ECODE_SERVER_PASSWORD——拒绝启动（防裸奔局域网）\n')
     process.exit(1)
   }
-  const srv = await serveMulti({ registry, defaultCwd: process.cwd() }, { port: Number(process.env.ECODE_SERVE_PORT ?? 0), host: serveHost, password: servePassword })
+  // M13-W5：web/dist 托管（存在即挂——开发期没 build 则纯 API 形态不变）
+  const webDir = join(process.cwd(), 'web', 'dist')
+  const srv = await serveMulti(
+    { registry, defaultCwd: process.cwd() },
+    { port: Number(process.env.ECODE_SERVE_PORT ?? 0), host: serveHost, password: servePassword, ...(existsSync(webDir) ? { webDir } : {}) },
+  )
   // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读
   const regPath = join(os.homedir(), '.ecode', 'server.json')
   writeFileSync(regPath, JSON.stringify({ id: sessionId, port: srv.port, token: srv.token, pid: process.pid }, null, 2), { mode: 0o600 })

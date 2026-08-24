@@ -16,6 +16,8 @@ import { randomUUID } from 'node:crypto'
 import { LOOPBACK_ADDRS } from './loopback.js'
 import type { MuxFrame, SessionBrief } from '../protocol/mux.js'
 import { collectProjectCwds } from '../services/history.js'
+import { createReadStream, existsSync, statSync } from 'node:fs'
+import { extname, join as pathJoin, normalize, sep } from 'node:path'
 import { serveHost, type ServeResult } from './http.js'
 import type { ProjectRegistry } from './projects.js'
 
@@ -33,7 +35,15 @@ const MULTI_BODY_CAP = 1024 * 1024
  */
 export function serveMulti(
   deps: MultiServeDeps,
-  opts: { port?: number; host?: string; password?: string; muxFilter?: (frame: MuxFrame) => boolean; sessionsDir?: string } = {},
+  opts: {
+    port?: number
+    host?: string
+    password?: string
+    muxFilter?: (frame: MuxFrame) => boolean
+    sessionsDir?: string
+    /** M13-W5：web/dist 托管目录（存在即挂 / 静态路由 + SPA fallback；缺省不挂） */
+    webDir?: string
+  } = {},
 ): Promise<ServeResult> {
   const token = randomBytes(24).toString('hex')
   const { registry } = deps
@@ -103,6 +113,26 @@ export function serveMulti(
       const remote = req.socket.remoteAddress ?? ''
       if (!LOOPBACK_ADDRS.has(remote)) return json(403, { error: '非 loopback 连接被拒' })
       if (req.method === 'GET' && url.pathname === '/api/health') return json(200, { ok: true })
+
+      // M13-W5：静态托管（SPA 壳免鉴权——HTML/JS 无敏感内容，API 全鉴权；TokenGate 是应用层）
+      if (opts.webDir !== undefined && req.method === 'GET' && !url.pathname.startsWith('/api/')) {
+        const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2' }
+        const rel = normalize(url.pathname).split(sep).filter((x) => x !== '..').join(sep)
+        const candidate = pathJoin(opts.webDir, rel === sep || rel === '' ? 'index.html' : rel)
+        // 路径逃逸守卫（normalize 后仍剥 .. 段）+ SPA fallback：不存在的一律 index.html
+        const file = candidate.startsWith(opts.webDir) && existsSync(candidate) && statSync(candidate).isFile()
+          ? candidate
+          : pathJoin(opts.webDir, 'index.html')
+        try {
+          const stream = createReadStream(file)
+          res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', 'cache-control': extname(file) === '.html' ? 'no-cache' : 'public, max-age=3600' })
+          stream.pipe(res)
+        } catch {
+          res.writeHead(500)
+          res.end()
+        }
+        return
+      }
       const auth = req.headers.authorization ?? ''
       const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : auth.startsWith('Basic ') ? (Buffer.from(auth.slice(6), 'base64').toString('utf8').split(':').pop() ?? '') : ''
       if (!credentials.has(bearer)) return json(401, { error: '未授权' })

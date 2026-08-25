@@ -98,12 +98,9 @@ describe('Markdown 组件渲染', () => {
     expect(dataLine).toContain('90')
   })
 
-  it('超宽表格按终端宽自适应（单元格内折行，边框不再超屏）', () => {
-    // 复刻真实事故形态：长接口路径 + 文件路径 + 100+ 显示宽中文长句
-    const longDesc =
-      '已选知识点值的来源：rppQuestion.rppAccessories 下 knowledges 与 xgkKnowledges 字段的取值逻辑与展示判定说明，这是一段非常长的中文描述'.repeat(
-        2,
-      )
+  it('超宽表格按终端宽自适应（单元格内折行 ≤4 行，边框不再超屏）', () => {
+    // 复刻事故形态：长接口路径 + 文件路径 + 超宽中文描述（80 显示宽，折 3 行不触发降级）
+    const longDesc = '描述文字'.repeat(10)
     const md = [
       '| 接口 | 定义处 | 作用 |',
       '|---|---|---|',
@@ -117,12 +114,43 @@ describe('Markdown 组件渲染', () => {
     for (const line of lines) {
       expect(lineWidth(line)).toBeLessThanOrEqual(renderCols())
     }
-    // 折行断在任意字符（同列内容与邻列交错），完整性用「无截断符 …」证明——截断才会丢字符
+    // 保持表格形态（未被降级）：边框在，且无截断符 …（截断才会丢字符）
+    expect(frame).toContain('┌')
+    expect(frame).toContain('│')
     expect(frame).not.toContain('…')
     expect(frame).toContain('GET api/presBa')
-    expect(frame).toContain('已选知识点值的来源')
+    expect(frame).toContain('描述文字')
     // 长描述在单元格内折行 → 行数远多于 2 条数据行
     expect(lines.length).toBeGreaterThan(6)
+  })
+
+  it('折行超限的表格降级为 key-value 垂直格式', () => {
+    // 描述 320 显示宽，按分配列宽折行 8 行 > 4 → 整表转 key-value
+    const hugeDesc = '描述文字'.repeat(40)
+    const md = [
+      '| 接口 | 定义处 | 作用 |',
+      '|---|---|---|',
+      `| GET api/presBasic/getRppQuestion?taskId= | src/api/basicResService.js:16 | ${hugeDesc} |`,
+      `| GET api/task/getTaskDetail?taskId= | src/api/taskService.js:27 | ${hugeDesc} |`,
+    ].join('\n')
+    const { lastFrame } = render(React.createElement(Markdown, { text: md }))
+    const frame = lastFrame() ?? ''
+    const lines = frame.split('\n')
+    // 无表格边框（已降级），标签 key-value 形态 + 记录间分隔线
+    const plain = lines.map((l) => l.replace(/\u001b\[[0-9;]*m/g, ''))
+    for (const line of plain) {
+      expect(line).not.toContain('│')
+      expect(line).not.toContain('┌')
+    }
+    expect(plain.some((l) => l.startsWith('接口: '))).toBe(true)
+    expect(plain.some((l) => l.startsWith('定义处: '))).toBe(true)
+    expect(plain.some((l) => l.startsWith('作用: '))).toBe(true)
+    expect(frame).toContain('─')
+    expect(frame).toContain('描述文字')
+    // 垂直形态同样不超屏（标签 + ': ' 前缀 + 值悬挂缩进对齐）
+    for (const line of lines) {
+      expect(lineWidth(line)).toBeLessThanOrEqual(renderCols())
+    }
   })
 
   it('引用块', () => {

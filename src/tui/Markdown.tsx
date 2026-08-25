@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Fragment } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { Text, Box } from 'ink'
 import { marked } from 'marked'
@@ -15,7 +15,7 @@ import { hasMarkdownSyntax, inlineToAnsi, type InlineTok } from './mdparse.js'
  *   marked.lexer → block tokens → 按 type 映射 Ink 原语
  *   inline tokens → inlineToAnsi（ANSI 字符串）→ wrap-ansi（中文按显示宽度折行）→ parseAnsi → <Text> spans
  *   代码块 → cli-highlight（动态懒加载，TTY 下着色）→ parseAnsi → <Box borderStyle="round">
- *   表格 → cli-table3（列宽按终端宽自适应 + wrap-ansi 预折行）→ parseAnsi → <Text>
+ *   表格 → cli-table3（列宽按终端宽自适应 + wrap-ansi 预折行；折行超限降级 key-value 垂直格式）→ parseAnsi → <Text>
  *
  * 流式 markdown（阶段二，remend + stable/unstable 切分）见 M2 方案 B.2，M2 不做。
  */
@@ -118,6 +118,12 @@ const TABLE_MIN_COL_WIDTH = 10
 /** cli-table3 单元格默认左右 padding 各 1：colWidths 是含 padding 的整格宽，折行宽才是纯内容宽 */
 const TABLE_CELL_PADDING = 2
 
+/**
+ * 表格降级阈值：单元格按分配列宽折行后最大行数超过它 → 整表转 key-value 垂直格式。
+ * 表格被压得太高（长描述 + 窄终端）时，垂直 key-value 比碎成多行的表格可读（对齐 Claude Code 同款策略）。
+ */
+const TABLE_MAX_ROW_LINES = 4
+
 /** 最大余数法整数分配：raw（实数和恰为 total）取整后凑齐 total，保证合计不漂移 */
 function largestRemainder(raw: number[], total: number): number[] {
   const out = raw.map(Math.floor)
@@ -169,11 +175,65 @@ function naturalColWidths(allRows: string[][]): number[] {
   return widths
 }
 
+/** ANSI 字符串 → 纯文本（垂直格式的标签用，表头单元格含行内样式 ANSI） */
+function plainText(ansi: string): string {
+  return parseAnsi(ansi)
+    .map((s) => s.text)
+    .join('')
+}
+
+/** 单条 key-value：粗体青色标签 + 值悬挂缩进折行（续行对齐值起始列） */
+function KVCell({ label, value }: { label: string; value: string }): ReactElement {
+  // 单元格内换行/连续空白归一（markdown 单元格里的排版噪声在垂直形态无意义）
+  const normalized = value.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim()
+  const labelWidth = stringWidth(label)
+  // 标签过长（值被挤到 < 10 列）时标签独立成行，值退回 2 空格缩进
+  const labelOwnLine = labelWidth > cols() - 12
+  const prefixWidth = labelOwnLine ? 2 : labelWidth + 2
+  const valueLines = wrapAnsi(normalized, Math.max(cols() - prefixWidth, 10), { hard: true }).split('\n')
+  const styledLabel = `\u001b[1m\u001b[36m${label}\u001b[39m\u001b[22m`
+  const lines = labelOwnLine
+    ? [styledLabel, ...valueLines.map((l) => '  ' + l)]
+    : valueLines.map((l, i) => (i === 0 ? `${styledLabel}: ${l}` : ' '.repeat(labelWidth + 2) + l))
+  const spans = parseAnsi(lines.join('\n'))
+  return (
+    <Text>
+      {spans.map((s, i) => (
+        <Text key={i} {...spanProps(s)}>
+          {s.text}
+        </Text>
+      ))}
+    </Text>
+  )
+}
+
+/**
+ * 表格降级形态：key-value 垂直格式，每条记录按列展开、记录间细分隔线。
+ * 值统一按首行宽一步 wrap（标签 + ': ' 占前缀），续行缩进对齐值起始列——
+ * 不做两段重 wrap（hard 断开的 token 会被重拼进空格，URL 之类被污染）。
+ */
+function VerticalTableBlock({ head, rows }: { head: string[]; rows: string[][] }): ReactElement {
+  const labels = head.map(plainText)
+  return (
+    <Box flexDirection="column">
+      {rows.map((row, i) => (
+        <Fragment key={i}>
+          {i > 0 && <Text dimColor>{'─'.repeat(Math.min(cols() - 1, 40))}</Text>}
+          {row.map((cell, j) => (
+            <KVCell key={j} label={labels[j] || `列 ${j + 1}`} value={cell} />
+          ))}
+        </Fragment>
+      ))}
+    </Box>
+  )
+}
+
 /**
  * 表格：cli-table3 画框对齐 + 终端宽自适应。
  * 超屏时自算列宽（computeColWidths）并用 wrap-ansi hard 预折行后再喂 cli-table3——
  * 它自带的 wordWrap 对中文不安全（按空白分词断不了无空格的中文长句；hard 模式按
  * UTF-16 code unit 切，中文 1 字 2 列必超宽），不能开。
+ * 折行后行数超 TABLE_MAX_ROW_LINES → 整表降级 key-value 垂直格式。
  */
 function TableBlock({ token }: { token: BlockTok }): ReactElement {
   const head = (token.header ?? []).map((h) => inlineToAnsi(h.tokens as unknown as InlineTok[]) || (h.text ?? ''))
@@ -185,12 +245,16 @@ function TableBlock({ token }: { token: BlockTok }): ReactElement {
   const widths = computeColWidths(natural, budget)
   const overflow = natural.reduce((a, b) => a + b, 0) > budget
   const wrapCell = (cell: string, i: number): string => (overflow ? wrapAnsi(cell, widths[i], { hard: true }) : cell)
+  const wrappedHead = head.map(wrapCell)
+  const wrappedRows = rows.map((row) => row.map(wrapCell))
+  const maxCellLines = Math.max(1, ...[wrappedHead, ...wrappedRows].flat().map((c) => c.split('\n').length))
+  if (maxCellLines > TABLE_MAX_ROW_LINES) return <VerticalTableBlock head={head} rows={rows} />
   const table = new Table({
-    head: head.map(wrapCell),
+    head: wrappedHead,
     colWidths: widths.map((w) => w + TABLE_CELL_PADDING),
     style: { head: ['cyan'], border: ['gray'] },
   })
-  for (const row of rows) table.push(row.map(wrapCell))
+  for (const row of wrappedRows) table.push(row)
   const spans = parseAnsi(table.toString())
   return (
     <Text>

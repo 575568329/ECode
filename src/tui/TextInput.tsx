@@ -95,7 +95,9 @@ export function TextInput({ value, caret, placeholder, onInput, onSubmit, inacti
       return
     }
     if (!key.ctrl && !key.meta && !key.escape && input !== '') {
-      onInput?.(insert(cur, input))
+      // 行尾归一：xterm.js 系终端（VS Code / ZCode 集成终端）粘贴把换行统一转成裸 \r——
+      // 原样进渲染层会被终端当「回到行首」逐段覆盖，视觉上只剩最后一行（数据完整、显示被骗）
+      onInput?.(insert(cur, input.replace(/\r\n?/g, '\n')))
     }
   }, { isActive: !inactive })
   return <InputRender text={value} caret={caret} placeholder={placeholder} />

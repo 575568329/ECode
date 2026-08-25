@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ECode · 离线</title>
+    <style>
+      body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center; background: #0a0a0a; color: #a3a3a3; font-family: system-ui, sans-serif; }
+      .box { text-align: center; }
+      h1 { font-size: 16px; font-weight: 600; color: #e5e5e5; }
+      p { font-size: 13px; line-height: 1.6; }
+      button { margin-top: 12px; padding: 8px 20px; border: 0; border-radius: 8px; background: #e5e5e5; color: #0a0a0a; font-size: 13px; }
+    </style>
+  </body>
+  <body>
+    <div class="box">
+      <h1>无法连接 ECode 服务</h1>
+      <p>请确认电脑端 ecode serve 正在运行，<br />且手机与电脑在同一网络。</p>
+      <button onclick="location.reload()">重试</button>
+    </div>
+  </body>
+</html>

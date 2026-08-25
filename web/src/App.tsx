@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
+import { ArrowLeft } from 'lucide-react'
 import { connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
 import { useApp, type SessionBrief } from './store'
 import { Conversation } from './Conversation'
@@ -125,10 +126,13 @@ export function App(): React.JSX.Element {
   if (!checked) return <div className="flex h-full items-center justify-center text-sm text-neutral-600">…</div>
   if (!ready) return <TokenGate onReady={() => setReady(true)} />
 
+  // W7 移动两态：选中会话后主区占满（侧栏隐藏，顶栏返回）；md 以上常驻双栏
+  const mobileDetail = selectedSession !== null
+
   return (
     <div className="flex h-full flex-col md:flex-row">
-      {/* 侧栏（桌面）/主列表（移动两态由选中态切换——W7 细化） */}
-      <aside className="flex w-full shrink-0 flex-col border-b border-neutral-800 md:w-72 md:border-b-0 md:border-r">
+      {/* 侧栏（桌面常驻；移动=列表态显示） */}
+      <aside className={`flex w-full shrink-0 flex-col border-b border-neutral-800 md:flex md:w-72 md:border-b-0 md:border-r ${mobileDetail ? 'hidden' : 'flex'}`}>
         <div className="flex items-center justify-between px-3 py-2.5">
           <span className="text-sm font-semibold tracking-wide">ECode</span>
           <ConnBadge />
@@ -170,8 +174,16 @@ export function App(): React.JSX.Element {
           )}
         </div>
       </aside>
-      {/* 对话区（W6a 展示层；W6b 输入/审批在 Conversation 底部长出） */}
-      <main className="flex min-h-0 flex-1 flex-col">
+      {/* 对话区（移动=详情态占满+顶栏返回；桌面常驻） */}
+      <main className={`flex min-h-0 flex-1 flex-col ${mobileDetail ? 'flex' : 'hidden md:flex'}`}>
+        {mobileDetail && (
+          <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-2 md:hidden">
+            <button onClick={() => select(selectedProject, null)} className="flex items-center gap-1 rounded px-2 py-1 text-sm text-neutral-400 hover:text-neutral-200">
+              <ArrowLeft size={16} /> 返回
+            </button>
+            <span className="truncate text-sm text-neutral-500">{selectedProject?.split('/').filter(Boolean).slice(-2).join('/')}</span>
+          </div>
+        )}
         {selectedProject === null || selectedSession === null || selectedSession === '' ? (
           <div className="flex flex-1 items-center justify-center text-sm text-neutral-600">
             {selectedProject === null ? '选择左侧项目' : selectedSession === null ? '选择会话或新建对话' : '输入你的问题开始对话（W6b 接入）'}

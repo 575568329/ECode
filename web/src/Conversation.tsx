@@ -34,6 +34,21 @@ function ToolCard({ item }: { item: ToolItem }): React.JSX.Element {
   )
 }
 
+/** W7：软键盘视口跟随（iOS visualViewport——键盘弹起时压缩可视高度，输入区保持可见） */
+function KeyboardAware({ children }: { children: React.ReactNode }): React.JSX.Element {
+  useEffect(() => {
+    const vv = window.visualViewport
+    if (vv === null || vv === undefined) return
+    const onResize = (): void => {
+      document.documentElement.style.setProperty('--vvh', `${vv.height}px`)
+    }
+    vv.addEventListener('resize', onResize)
+    onResize()
+    return () => vv.removeEventListener('resize', onResize)
+  }, [])
+  return <div style={{ height: 'var(--vvh, auto)' }}>{children}</div>
+}
+
 export function Conversation({ project, sessionId }: { project: string; sessionId: string }): React.JSX.Element {
   const view = useApp((s) => s.views[sessionId])
   const running = useApp((s) => s.sessions.find((x) => x.sessionId === sessionId)?.running ?? false)
@@ -99,7 +114,10 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
         </div>
       </div>
       {/* W6b：输入/审批/选择 takeover（approval 挂起时占据输入位） */}
-      <Composer project={project} sessionId={sessionId} running={running} />
+      {/* W7 软键盘吸底：iOS Safari 的 visualViewport 收缩时 body 高度跟随（height 100% 不跟键盘） */}
+      <KeyboardAware>
+        <Composer project={project} sessionId={sessionId} running={running} />
+      </KeyboardAware>
     </div>
   )
 }

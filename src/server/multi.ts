@@ -116,7 +116,7 @@ export function serveMulti(
 
       // M13-W5：静态托管（SPA 壳免鉴权——HTML/JS 无敏感内容，API 全鉴权；TokenGate 是应用层）
       if (opts.webDir !== undefined && req.method === 'GET' && !url.pathname.startsWith('/api/')) {
-        const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2' }
+        const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json' }
         const rel = normalize(url.pathname).split(sep).filter((x) => x !== '..').join(sep)
         const candidate = pathJoin(opts.webDir, rel === sep || rel === '' ? 'index.html' : rel)
         // 路径逃逸守卫（normalize 后仍剥 .. 段）+ SPA fallback：不存在的一律 index.html

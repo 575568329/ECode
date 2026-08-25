@@ -62,16 +62,16 @@ export function Composer({ project, sessionId, running }: { project: string; ses
           <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border border-neutral-800 bg-neutral-900/70 px-3 py-2 text-xs text-neutral-300">{a.preview}</pre>
           <div className="flex flex-wrap gap-2">
             {a.decisions.includes('once') && (
-              <button onClick={() => void answer('once')} className="flex items-center gap-1.5 rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600">
+              <button onClick={() => void answer('once')} className="flex min-h-11 items-center gap-1.5 rounded bg-emerald-700 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-600">
                 <Check size={13} /> 允许
               </button>
             )}
             {a.decisions.includes('always') && !sensitive && (
-              <button onClick={() => void answer('always')} className="flex items-center gap-1.5 rounded bg-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-600">
+              <button onClick={() => void answer('always')} className="flex min-h-11 items-center gap-1.5 rounded bg-neutral-700 px-4 py-2 text-xs text-neutral-300 hover:bg-neutral-600">
                 <Check size={13} /> 本会话始终允许
               </button>
             )}
-            <button onClick={() => void answer('reject')} className="flex items-center gap-1.5 rounded bg-red-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700">
+            <button onClick={() => void answer('reject')} className="flex min-h-11 items-center gap-1.5 rounded bg-red-800 px-4 py-2 text-xs font-medium text-white hover:bg-red-700">
               <Ban size={13} /> 拒绝
             </button>
           </div>

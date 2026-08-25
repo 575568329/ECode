@@ -9,6 +9,8 @@ html,
 body,
 #root {
   height: 100%;
+  /* W7：软键盘视口跟随（无 visualViewport 时回退 100%） */
+  height: var(--vvh, 100%);
   margin: 0;
   background: #0a0a0a;
   color: #e5e5e5;

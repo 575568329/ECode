@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { Text, Box } from 'ink'
 import { marked } from 'marked'
 import wrapAnsi from 'wrap-ansi'
+import stringWidth from 'string-width'
 import Table from 'cli-table3'
 import { parseAnsi, type Span } from './ansi.js'
 import { hasMarkdownSyntax, inlineToAnsi, type InlineTok } from './mdparse.js'
@@ -14,7 +15,7 @@ import { hasMarkdownSyntax, inlineToAnsi, type InlineTok } from './mdparse.js'
  *   marked.lexer → block tokens → 按 type 映射 Ink 原语
  *   inline tokens → inlineToAnsi（ANSI 字符串）→ wrap-ansi（中文按显示宽度折行）→ parseAnsi → <Text> spans
  *   代码块 → cli-highlight（动态懒加载，TTY 下着色）→ parseAnsi → <Box borderStyle="round">
- *   表格 → cli-table3（CJK 安全）→ parseAnsi → <Text>
+ *   表格 → cli-table3（列宽按终端宽自适应 + wrap-ansi 预折行）→ parseAnsi → <Text>
  *
  * 流式 markdown（阶段二，remend + stable/unstable 切分）见 M2 方案 B.2，M2 不做。
  */
@@ -111,12 +112,85 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }): ReactElemen
   )
 }
 
-/** 表格：cli-table3（CJK 安全，内置 string-width 列宽对齐） */
+/** 表格列宽分配：短列保底宽（自然宽不超过它的列不参与压缩，表头/路径类短列原样保留） */
+const TABLE_MIN_COL_WIDTH = 10
+
+/** cli-table3 单元格默认左右 padding 各 1：colWidths 是含 padding 的整格宽，折行宽才是纯内容宽 */
+const TABLE_CELL_PADDING = 2
+
+/** 最大余数法整数分配：raw（实数和恰为 total）取整后凑齐 total，保证合计不漂移 */
+function largestRemainder(raw: number[], total: number): number[] {
+  const out = raw.map(Math.floor)
+  const rest = total - out.reduce((a, b) => a + b, 0)
+  const byRemainder = raw
+    .map((v, i) => ({ i, rem: v - Math.floor(v) }))
+    .sort((a, b) => b.rem - a.rem)
+  for (let k = 0; k < rest; k++) out[byRemainder[k % byRemainder.length].i]++
+  return out
+}
+
+/**
+ * 表格列宽分配：按终端可用宽自适应（cli-table3 只按内容自然宽排布，总宽超屏会被终端
+ * 软折行打碎边框——中文长描述列一列就能撑到 100+ 显示宽）。
+ * - 自然宽合计 <= budget → 各列自然宽，不折行
+ * - 超预算 → 短列（<= TABLE_MIN_COL_WIDTH）保底不压，长列按各自超出保底的部分比例分掉剩余预算
+ * - 预算低于列数（终端过窄）→ 均分兜底，每列至少 1
+ * 返回值合计恰为 max(budget, 列数)，可直接作 cli-table3 colWidths。
+ */
+export function computeColWidths(natural: number[], budget: number): number[] {
+  if (natural.length === 0) return []
+  const clampedBudget = Math.max(budget, natural.length)
+  const total = natural.reduce((a, b) => a + b, 0)
+  if (total <= clampedBudget) return natural.slice()
+  const floors = natural.map((w) => Math.min(Math.max(w, 1), TABLE_MIN_COL_WIDTH))
+  const reserved = floors.reduce((a, b) => a + b, 0)
+  if (reserved >= clampedBudget) {
+    const share = clampedBudget / natural.length
+    return largestRemainder(
+      natural.map(() => share),
+      clampedBudget,
+    )
+  }
+  const surplus = clampedBudget - reserved
+  const flexTotal = natural.reduce((a, b, i) => a + Math.max(b - floors[i], 0), 0)
+  const raw = floors.map((f, i) => f + (surplus * Math.max(natural[i] - f, 0)) / flexTotal)
+  return largestRemainder(raw, clampedBudget)
+}
+
+/** 各列自然显示宽（单元格含 \n 时逐行取最大；string-width 剥 ANSI 计中文 2 列，与 cli-table3 测量一致） */
+function naturalColWidths(allRows: string[][]): number[] {
+  const widths: number[] = []
+  for (const row of allRows) {
+    row.forEach((cell, i) => {
+      const w = Math.max(...cell.split('\n').map((line) => stringWidth(line)))
+      widths[i] = Math.max(widths[i] ?? 0, w)
+    })
+  }
+  return widths
+}
+
+/**
+ * 表格：cli-table3 画框对齐 + 终端宽自适应。
+ * 超屏时自算列宽（computeColWidths）并用 wrap-ansi hard 预折行后再喂 cli-table3——
+ * 它自带的 wordWrap 对中文不安全（按空白分词断不了无空格的中文长句；hard 模式按
+ * UTF-16 code unit 切，中文 1 字 2 列必超宽），不能开。
+ */
 function TableBlock({ token }: { token: BlockTok }): ReactElement {
   const head = (token.header ?? []).map((h) => inlineToAnsi(h.tokens as unknown as InlineTok[]) || (h.text ?? ''))
   const rows = (token.rows ?? []).map((r) => r.map((c) => inlineToAnsi(c.tokens as unknown as InlineTok[]) || (c.text ?? '')))
-  const table = new Table({ head, style: { head: ['cyan'], border: ['gray'] } })
-  for (const row of rows) table.push(row)
+  const colCount = head.length
+  // 可用内容宽 = 渲染宽 - 边框/内边距开销：每列左右各 1 空格 + 1 竖线，再加最外 1 条竖线
+  const budget = Math.max(cols() - (colCount * 3 + 1), colCount)
+  const natural = naturalColWidths([head, ...rows])
+  const widths = computeColWidths(natural, budget)
+  const overflow = natural.reduce((a, b) => a + b, 0) > budget
+  const wrapCell = (cell: string, i: number): string => (overflow ? wrapAnsi(cell, widths[i], { hard: true }) : cell)
+  const table = new Table({
+    head: head.map(wrapCell),
+    colWidths: widths.map((w) => w + TABLE_CELL_PADDING),
+    style: { head: ['cyan'], border: ['gray'] },
+  })
+  for (const row of rows) table.push(row.map(wrapCell))
   const spans = parseAnsi(table.toString())
   return (
     <Text>

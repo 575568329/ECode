@@ -1,7 +1,38 @@
 import { describe, it, expect } from 'vitest'
 import { render } from 'ink-testing-library'
 import React from 'react'
-import { Markdown } from '../../src/tui/Markdown.js'
+import stringWidth from 'string-width'
+import { Markdown, computeColWidths } from '../../src/tui/Markdown.js'
+
+/** 剥 ANSI 后按显示宽度测一行（中文 1 字 2 列），用于断言表格不超屏 */
+const lineWidth = (line: string): number => stringWidth(line.replace(/\u001b\[[0-9;]*m/g, ''))
+
+/** 与组件内 cols() 同式：终端更窄取终端宽，上限 100 */
+const renderCols = (): number => Math.min(process.stdout.columns || 80, 100)
+
+describe('computeColWidths 表格列宽分配', () => {
+  it('自然宽合计在预算内 → 原样返回不折行', () => {
+    expect(computeColWidths([4, 6], 50)).toEqual([4, 6])
+  })
+
+  it('超预算 → 短列保底不压、长列压缩、合计恰等于预算', () => {
+    const widths = computeColWidths([4, 40, 100], 90)
+    expect(widths[0]).toBe(4)
+    expect(widths.reduce((a, b) => a + b, 0)).toBe(90)
+    expect(widths.every((w) => w >= 1)).toBe(true)
+    expect(widths[2]).toBeGreaterThan(widths[1])
+    expect(widths[1]).toBeGreaterThan(10)
+  })
+
+  it('预算低于列数（终端过窄）→ 均分兜底每列至少 1', () => {
+    const widths = computeColWidths([40, 30], 1)
+    expect(widths).toEqual([1, 1])
+  })
+
+  it('空列集返回空数组', () => {
+    expect(computeColWidths([], 50)).toEqual([])
+  })
+})
 
 describe('Markdown 组件渲染', () => {
   it('纯文本（无语法）原样输出', () => {
@@ -55,6 +86,43 @@ describe('Markdown 组件渲染', () => {
     expect(frame).toContain('姓名')
     expect(frame).toContain('张三')
     expect(frame).toContain('90')
+  })
+
+  it('窄表格不折行（数据行单行呈现）', () => {
+    const { lastFrame } = render(
+      React.createElement(Markdown, { text: '| 姓名 | 分数 |\n|---|---|\n| 张三 | 90 |' }),
+    )
+    const lines = (lastFrame() ?? '').split('\n').map((l) => l.replace(/\u001b\[[0-9;]*m/g, ''))
+    const dataLine = lines.find((l) => l.includes('张三'))
+    expect(dataLine).toBeDefined()
+    expect(dataLine).toContain('90')
+  })
+
+  it('超宽表格按终端宽自适应（单元格内折行，边框不再超屏）', () => {
+    // 复刻真实事故形态：长接口路径 + 文件路径 + 100+ 显示宽中文长句
+    const longDesc =
+      '已选知识点值的来源：rppQuestion.rppAccessories 下 knowledges 与 xgkKnowledges 字段的取值逻辑与展示判定说明，这是一段非常长的中文描述'.repeat(
+        2,
+      )
+    const md = [
+      '| 接口 | 定义处 | 作用 |',
+      '|---|---|---|',
+      `| GET api/presBasic/getRppQuestion?taskId= | src/api/basicResService.js:16 | ${longDesc} |`,
+      `| GET api/task/getTaskDetail?taskId= | src/api/taskService.js:27 | ${longDesc} |`,
+    ].join('\n')
+    const { lastFrame } = render(React.createElement(Markdown, { text: md }))
+    const frame = lastFrame() ?? ''
+    const lines = frame.split('\n')
+    // 每行显示宽度都不超渲染宽——修复前长描述列会把行撑到 200+ 列被终端软折行打碎边框
+    for (const line of lines) {
+      expect(lineWidth(line)).toBeLessThanOrEqual(renderCols())
+    }
+    // 折行断在任意字符（同列内容与邻列交错），完整性用「无截断符 …」证明——截断才会丢字符
+    expect(frame).not.toContain('…')
+    expect(frame).toContain('GET api/presBa')
+    expect(frame).toContain('已选知识点值的来源')
+    // 长描述在单元格内折行 → 行数远多于 2 条数据行
+    expect(lines.length).toBeGreaterThan(6)
   })
 
   it('引用块', () => {

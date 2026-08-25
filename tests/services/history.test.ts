@@ -32,6 +32,27 @@ describe('FileHistoryStore', () => {
     expect(JSON.parse(lines[2]).role).toBe('assistant')
   })
 
+  it('forkSession 恢复续写：新文件全量播种（fork 自包含，重开不丢前文）', () => {
+    const dir = path.join(tmp, `fork-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'seed', model: 'm', dir })
+    store.append(userMsg('原问题'))
+    store.append(assistantMsg('原回答'))
+    store.forkSession('fork-1', store.restoreFull('seed'), 'glm-5.2')
+    // 旧文件只读不动
+    expect(fs.readFileSync(path.join(dir, 'seed.jsonl'), 'utf8').trim().split('\n').length).toBe(3)
+    // 新文件 = meta + 全量消息
+    const forkLines = fs.readFileSync(path.join(dir, 'fork-1.jsonl'), 'utf8').trim().split('\n')
+    expect(forkLines.length).toBe(3)
+    const meta = JSON.parse(forkLines[0])
+    expect(meta.sessionId).toBe('fork-1')
+    expect(meta.firstUser).toBe('原问题')
+    expect(meta.model).toBe('glm-5.2')
+    // 续写追加进 fork 文件；再恢复 fork 内容完整（跨重开）
+    store.append(userMsg('继续问'))
+    expect(fs.readFileSync(path.join(dir, 'fork-1.jsonl'), 'utf8').includes('继续问')).toBe(true)
+    expect(store.restoreFull('fork-1').length).toBe(3)
+  })
+
   it('存原始 Message（不脱敏，P0-6）', () => {
     const dir = path.join(tmp, `redact-${Date.now()}`)
     const store = new FileHistoryStore({ sessionId: 'sess-r', model: 'm', dir })

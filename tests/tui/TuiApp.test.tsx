@@ -198,13 +198,13 @@ describe('TuiApp /model', () => {
     expect(f).toContain('帮我写函数')
   })
 
-  it('选中 → restore 注入 + setSessionId 续写 + committed 重建', async () => {
+  it('选中 → restore 注入 + forkSession 播种续写 + committed 重建', async () => {
     const restored: Message[] = [
       { role: 'user', content: [{ type: 'text', text: '之前问的问题' }] },
       { role: 'assistant', content: [{ type: 'text', text: '之前的回答' }] },
     ]
     const restoreFull = vi.fn(() => restored)
-    const setSessionId = vi.fn()
+    const forkSession = vi.fn()
     const currentSessionId = vi.fn(() => 'old-session')
     const history = {
       ...noopHistory,
@@ -212,7 +212,7 @@ describe('TuiApp /model', () => {
         { sessionId: 's1', createdAt: '2026-08-13T10:00:00.000Z', model: 'glm-5.2', firstUser: '之前问的问题' },
       ],
       restoreFull,
-      setSessionId,
+      forkSession,
       currentSessionId,
     } as unknown as HistoryStore
     const { stdin, lastFrame } = render(
@@ -229,9 +229,32 @@ describe('TuiApp /model', () => {
     stdin.write('\r') // 选中第一项恢复
     await flush()
     expect(restoreFull).toHaveBeenCalledWith('s1')
-    expect(setSessionId).toHaveBeenCalled()
+    expect(forkSession).toHaveBeenCalled() // 播种式续写：新 id + 全量恢复行（fork 自包含）
     // committed 重建：含恢复的 assistant 文本（messagesToCommitted）
     expect(lastFrame() ?? '').toContain('之前的回答')
+  })
+
+  it('initialHistorySessionId 启动即恢复（--history 入口的组件面）', async () => {
+    const restored: Message[] = [
+      { role: 'user', content: [{ type: 'text', text: '启动前问的' }] },
+      { role: 'assistant', content: [{ type: 'text', text: '启动前的回答' }] },
+    ]
+    const forkSession = vi.fn()
+    const history = {
+      ...noopHistory,
+      restoreFull: () => restored,
+      forkSession,
+      currentSessionId: () => 'old-session',
+    } as unknown as HistoryStore
+    const { lastFrame } = render(
+      React.createElement(TuiApp, {
+        deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history, config, skillRegistry: makeDeps().skillRegistry, mcpManager: null },
+        initialHistorySessionId: 's1',
+      }),
+    )
+    await flush()
+    expect(lastFrame() ?? '').toContain('启动前的回答') // committed 重建
+    expect(forkSession).toHaveBeenCalled()
   })
 
   it('空历史 → 显示「无历史会话」', async () => {

@@ -18,7 +18,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { isMessageLine, type BoundaryLine, type HistoryLine, type Message, type RewindLine, type ImageBlock, type DocumentBlock, type ImageRefBlock } from '../core/types.js'
+import { isMessageLine, isBoundary, isRewind, type BoundaryLine, type HistoryLine, type Message, type RewindLine, type ImageBlock, type DocumentBlock, type ImageRefBlock } from '../core/types.js'
 import { readFileSync } from 'node:fs'
 
 export interface SessionMeta {
@@ -68,6 +68,8 @@ export interface HistoryStore {
   appendUsageStats(record: UsageStatsRecord): void
   /** 切换 sessionId（/history 恢复后续写新文件；旧文件只读不破坏，D2） */
   setSessionId(id: string, model?: string): void
+  /** 恢复续写（D2 补全）：起新 id 并全量播种恢复行——fork 文件自包含，重开不丢前文 */
+  forkSession(id: string, lines: HistoryLine[], model?: string): void
   /** 当前 sessionId（M9-P1：checkpoint 快照目录键控用；restore 后为新 id） */
   currentSessionId(): string
 }
@@ -172,6 +174,21 @@ export class FileHistoryStore implements HistoryStore {
   /** 当前 sessionId（M9-P1：checkpoint 快照目录键控） */
   currentSessionId(): string {
     return this.sessionId
+  }
+
+  /**
+   * 恢复续写（D2 补全）：CC copyFileHistoryForResume 同款——旧文件只读，新文件全量播种。
+   * 旧版只 setSessionId 不播种，fork 文件仅有恢复后的增量：跨一次重开即丢前文、
+   * 恢复后不发言直接退出则 fork 文件根本不存在。正常轮次由 loop.ts 逐条增量 append，
+   * 此处一次性播种不构成双写。
+   */
+  forkSession(id: string, lines: HistoryLine[], model?: string): void {
+    this.setSessionId(id, model)
+    for (const line of lines) {
+      if (isBoundary(line)) this.appendCompactBoundary(line)
+      else if (isRewind(line)) this.appendRewind(line)
+      else if (isMessageLine(line)) this.append(line)
+    }
   }
 
   /** 只读文件首行（P1-13：loadAll 避免全量读大 session 文件，读前 2048 字节取首行足够 meta） */
@@ -356,6 +373,7 @@ export class NoopHistoryStore implements HistoryStore {
     return []
   }
   setSessionId(_id: string, _model?: string): void {}
+  forkSession(_id: string, _lines: HistoryLine[], _model?: string): void {}
   currentSessionId(): string {
     return ''
   }

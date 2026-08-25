@@ -631,6 +631,7 @@ async function main(): Promise<void> {
   let mcpManagerRef: McpManager | null = null
   let sessionEndHook: HookRunner | null = null
   let inkApp: { unmount(): void } | undefined
+  let historyRef: HistoryStore | null = null
   // 优雅关闭（M7 调研后采用：信号 handler / 双击退出 / argv 收尾共用——先同步恢复终端，
   // 再预算内 await SessionEnd hooks 与 MCP stop，failsafe 定时器兜底强退）
   const gracefulShutdown = makeGracefulShutdown({
@@ -641,6 +642,14 @@ async function main(): Promise<void> {
         // 已卸载（TUI 关闭路径竞态）——恢复终端幂等
       }
       showTerminalCursor()
+      // 恢复提示：本会话有内容时留一条重开命令（forkSession 后当前文件自包含全对话）。
+      // 恢复的会话也成立（播种后 currentSessionId 即完整对话）；空会话不打扰。
+      const history = historyRef
+      if (history !== null && process.stdout.isTTY === true && history.restore(history.currentSessionId()).length > 0) {
+        process.stdout.write(
+          `\u001b[2m↩ 继续本次对话：ecode --history ${history.currentSessionId()}（应用内 /history 亦可）\u001b[22m\n`,
+        )
+      }
     },
     runSessionEndHooks: () =>
       sessionEndHook?.dispatch('SessionEnd', { event: 'SessionEnd', session_id: '' }) ?? Promise.resolve(),
@@ -711,6 +720,7 @@ async function main(): Promise<void> {
   // M13-W1：--yes 前移（approvalPolicy 经 makeDeps opts 进会话 broker——原 runOnce 构造参数前移到装配点）
   const autoYes = process.argv.includes('--yes')
   const deps = makeDeps(config, logger, sessionId, process.cwd(), { approvalPolicy: autoYes ? 'auto-approve' : 'ask' })
+  historyRef = deps.history
   // M10-P3 终审 P1-6：后台任务完成钩子——走近修改集快照兜底（bash 同款语义；无 git 时 warn 跳过）
   taskRegistry.onComplete = (t) => {
     void deps.checkpoint
@@ -736,11 +746,24 @@ async function main(): Promise<void> {
 
   // argv 单次模式：M1 stdout 输出 → 跑一次退出（graceful：SessionEnd/MCP 清理走预算窗口）
   // D1（B2）：--yes 显式放行 tool-confirm 类审批（sensitive/mcp-permission 不豁免）；缺省 fail-closed
+  // `--history <sessionId>`：REPL 启动即恢复指定会话（同 /history 语义——起新 sessionId 续写，D2），
+  // 与位置参数（单次模式）互斥
+  const argvRest = process.argv.slice(2)
+  const historyFlagIdx = argvRest.indexOf('--history')
+  const initialHistorySessionId = historyFlagIdx >= 0 ? argvRest[historyFlagIdx + 1] : undefined
+  if (historyFlagIdx >= 0 && (initialHistorySessionId === undefined || initialHistorySessionId.startsWith('--'))) {
+    process.stderr.write('用法：ecode --history <sessionId>（应用内 /history 可查会话列表）\n')
+    process.exit(1)
+  }
   const initialInput = process.argv
     .slice(2)
-    .filter((a) => a !== '--yes')
+    .filter((a, i, arr) => a !== '--yes' && a !== '--history' && arr[i - 1] !== '--history')
     .join(' ')
     .trim()
+  if (initialInput !== '' && initialHistorySessionId !== undefined) {
+    process.stderr.write('✗ --history 与位置参数（单次执行模式）互斥，二选一\n')
+    process.exit(1)
+  }
   if (initialInput) {
     for (const w of deps.instructionWarnings) process.stderr.write(`⚠ ${w}
 `)
@@ -762,7 +785,8 @@ async function main(): Promise<void> {
     React.createElement(TuiApp, {
       deps,
       banner,
-      onRestart: () => restartProcess(instance),
+      initialHistorySessionId,
+      onRestart: () => restartProcess(instance, historyRef),
       onExit: () => gracefulShutdown(0),
     }),
     { exitOnCtrlC: false },
@@ -775,13 +799,18 @@ async function main(): Promise<void> {
  * 不随旧进程死）→ 延迟 exit 给新旧进程交接终端（短暂闪屏可接受）。会话历史已由
  * HistoryStore 持久化，新实例 /history 可恢复。
  */
-function restartProcess(instance: { unmount(): void }): void {
+function restartProcess(instance: { unmount(): void }, history: HistoryStore | null): void {
   try {
     instance.unmount()
   } catch {
     // unmount 竞态不阻塞重启
   }
-  const child = spawn(process.execPath, process.argv.slice(1), {
+  const argv = process.argv.slice(1)
+  // /restart 重放 --history 时换成当前会话 id：restore 后是 fork 新 id（含最新状态），
+  // 原样重放旧值会退回恢复前的快照
+  const historyFlagIdx = argv.indexOf('--history')
+  if (historyFlagIdx >= 0 && history !== null) argv[historyFlagIdx + 1] = history.currentSessionId()
+  const child = spawn(process.execPath, argv, {
     cwd: process.cwd(),
     detached: true,
     stdio: 'inherit',

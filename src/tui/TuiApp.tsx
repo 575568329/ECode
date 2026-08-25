@@ -121,7 +121,7 @@ function generalConfigItems(config: import('../services/config.js').Config): Con
  * - active：当前轮活跃状态（分区累积：userInput / tools / streamingText）
  * - 一轮一 commit：runLoop 结束 → messagesToCommitted → setCommitted；active 清空
  */
-export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { deps: TuiAppDeps; banner?: string; onRestart?: () => void; onExit?: () => void }): ReactElement {
+export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initialHistorySessionId }: { deps: TuiAppDeps; banner?: string; onRestart?: () => void; onExit?: () => void; initialHistorySessionId?: string }): ReactElement {
   const abortRef = useRef<AbortController>(new AbortController())
   // M12-B3 中间态：客户端消息镜像（宿主 transcript 权威；轮末/压缩/恢复同步——B5 退役）
   const messagesRef = useRef<HistoryLine[]>([])
@@ -712,7 +712,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
     const newId = new Date().toISOString().replace(/[:.]/g, '-')
     // M9-P2：快照目录拷贝跟随（起新 id 后旧快照仍可用——否则「跨重启可回退」落空，CC copyFileHistoryForResume 同款）
     const oldId = deps.history.currentSessionId()
-    deps.history.setSessionId(newId, config.current.model)
+    // D2 补全：恢复行全量播种进新文件（fork 自包含——重开不丢前文；loop.ts 只增量 append 不双写）
+    deps.history.forkSession(newId, messages, config.current.model)
     deps.checkpoint
       ?.copyForResume(oldId, newId)
       .catch((e: unknown) =>
@@ -728,6 +729,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit }: { dep
       })
       .catch(() => {})
   }
+  // CLI `ecode --history <id>` 启动恢复：复用 /history 的 restoreSession（起新 sessionId 续写，D2）。
+  // host 由 hostRef 渲染期惰性构造，effect 执行时已就绪；restoreSession 每渲染重建不列依赖，
+  // prop 为启动期常量——仅随它触发一次。
+  useEffect(() => {
+    if (initialHistorySessionId !== undefined) restoreSession(initialHistorySessionId)
+  }, [initialHistorySessionId])
+
   const { warning } = useInterrupt({
     onInterrupt: () => {
       // 本地 abort（hook 子进程中断）+ 宿主 interrupt（loop 的 signal 在宿主）

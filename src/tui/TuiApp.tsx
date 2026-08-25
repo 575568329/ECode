@@ -1170,7 +1170,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             return
           }
           if (result.action === 'pick-history') {
-            setHistoryMetas(deps.history.loadAll())
+            setHistoryMetas(deps.history.loadAll(process.cwd()))
             pickerRef.current = true
             setOverlay({ kind: 'pick-history' })
             return

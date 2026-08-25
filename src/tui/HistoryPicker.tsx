@@ -17,9 +17,13 @@ interface HistoryPickerProps {
   onCancel: () => void
 }
 
-/** ISO → 'YYYY-MM-DD HH:mm'（列表紧凑显示，秒级精度无意义） */
+/** ISO → 'YYYY-MM-DD HH:mm' 本地时区（存储是 UTC ISO 串——直接截串显示会差出时区
+ * 空间，如 UTC+8 早 8 小时；new Date 转本地再手工 pad 格式化，避免 Intl locale 差异） */
 function formatTime(iso: string): string {
-  return iso.slice(0, 16).replace('T', ' ')
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 16).replace('T', ' ')
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 export function HistoryPicker({ metas, onSelect, onCancel }: HistoryPickerProps): ReactElement {

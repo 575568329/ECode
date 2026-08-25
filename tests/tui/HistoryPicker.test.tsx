@@ -20,7 +20,21 @@ describe('HistoryPicker', () => {
     expect(f).toContain('glm-5.2')
     expect(f).toContain('解释这段代码')
     expect(f).toContain('deepseek-v4')
-    expect(f).toContain('2026-08-13 10:00') // formatTime
+    // formatTime：UTC ISO 转本地时区显示（期望值按同式计算，与机器时区无关）
+    const d = new Date('2026-08-13T10:00:00.000Z')
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    expect(f).toContain(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`)
+  })
+
+  it('非法时间串回退原样截断显示（不崩）', () => {
+    const { lastFrame } = render(
+      React.createElement(HistoryPicker, {
+        metas: [{ sessionId: 'bad', createdAt: '不是时间', model: 'm', firstUser: 'x' }],
+        onSelect: () => {},
+        onCancel: () => {},
+      }),
+    )
+    expect(lastFrame() ?? '').toContain('不是时间')
   })
 
   it('回车 → onSelect(首项=最新会话 sessionId)', () => {

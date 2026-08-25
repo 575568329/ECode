@@ -807,9 +807,12 @@ function restartProcess(instance: { unmount(): void }, history: HistoryStore | n
   }
   const argv = process.argv.slice(1)
   // /restart 重放 --history 时换成当前会话 id：restore 后是 fork 新 id（含最新状态），
-  // 原样重放旧值会退回恢复前的快照
+  // 原样重放旧值会退回恢复前的快照；恢复后未发言就重启的，先播种落盘重放才有文件
   const historyFlagIdx = argv.indexOf('--history')
-  if (historyFlagIdx >= 0 && history !== null) argv[historyFlagIdx + 1] = history.currentSessionId()
+  if (historyFlagIdx >= 0 && history !== null) {
+    history.flushPendingSeed()
+    argv[historyFlagIdx + 1] = history.currentSessionId()
+  }
   const child = spawn(process.execPath, argv, {
     cwd: process.cwd(),
     detached: true,

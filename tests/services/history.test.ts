@@ -32,25 +32,52 @@ describe('FileHistoryStore', () => {
     expect(JSON.parse(lines[2]).role).toBe('assistant')
   })
 
-  it('forkSession 恢复续写：新文件全量播种（fork 自包含，重开不丢前文）', () => {
+  it('forkSession 延迟播种：跳转零落盘，首条写入才播种+续写（fork 自包含）', () => {
     const dir = path.join(tmp, `fork-${Date.now()}`)
     const store = new FileHistoryStore({ sessionId: 'seed', model: 'm', dir })
     store.append(userMsg('原问题'))
     store.append(assistantMsg('原回答'))
     store.forkSession('fork-1', store.restoreFull('seed'), 'glm-5.2')
-    // 旧文件只读不动
-    expect(fs.readFileSync(path.join(dir, 'seed.jsonl'), 'utf8').trim().split('\n').length).toBe(3)
-    // 新文件 = meta + 全量消息
+    // 跳转/浏览历史零文件（延迟播种——不发言不产生 fork 会话）
+    expect(fs.existsSync(path.join(dir, 'fork-1.jsonl'))).toBe(false)
+    // 首条写入触发播种：meta + 全量恢复行 + 新消息
+    store.append(userMsg('继续问'))
     const forkLines = fs.readFileSync(path.join(dir, 'fork-1.jsonl'), 'utf8').trim().split('\n')
-    expect(forkLines.length).toBe(3)
+    expect(forkLines.length).toBe(4)
     const meta = JSON.parse(forkLines[0])
     expect(meta.sessionId).toBe('fork-1')
     expect(meta.firstUser).toBe('原问题')
     expect(meta.model).toBe('glm-5.2')
-    // 续写追加进 fork 文件；再恢复 fork 内容完整（跨重开）
-    store.append(userMsg('继续问'))
-    expect(fs.readFileSync(path.join(dir, 'fork-1.jsonl'), 'utf8').includes('继续问')).toBe(true)
+    // 旧文件只读不动；再恢复 fork 内容完整（跨重开）
+    expect(fs.readFileSync(path.join(dir, 'seed.jsonl'), 'utf8').trim().split('\n').length).toBe(3)
     expect(store.restoreFull('fork-1').length).toBe(3)
+  })
+
+  it('forkSession 二跳丢弃未落盘种子（不串台）', () => {
+    const dir = path.join(tmp, `fork2-${Date.now()}`)
+    const store = new FileHistoryStore({ sessionId: 'seed', model: 'm', dir })
+    store.append(userMsg('问题A'))
+    store.forkSession('fork-a', store.restoreFull('seed'))
+    // 跳 A 未发言 → 又跳回 seed（二次恢复）：A 的种子属于旧 id，切走即弃
+    store.forkSession('fork-b', store.restoreFull('seed'))
+    expect(fs.existsSync(path.join(dir, 'fork-a.jsonl'))).toBe(false)
+    store.append(userMsg('继续B'))
+    const b = fs.readFileSync(path.join(dir, 'fork-b.jsonl'), 'utf8')
+    expect(b).toContain('问题A')
+    expect(b).toContain('继续B')
+    expect(b).not.toContain('继续A')
+  })
+
+  it('loadAll(cwd) 只列当前项目会话（无 cwd 老会话不显示）', () => {
+    const dir = path.join(tmp, `cwd-${Date.now()}`)
+    new FileHistoryStore({ sessionId: 'in-a', model: 'm', cwd: '/proj/a', dir }).append(userMsg('A项目问题'))
+    new FileHistoryStore({ sessionId: 'in-b', model: 'm', cwd: '/proj/b', dir }).append(userMsg('B项目问题'))
+    new FileHistoryStore({ sessionId: 'legacy', model: 'm', dir }).append(userMsg('无cwd老会话'))
+    const reader = new FileHistoryStore({ sessionId: 'r', model: 'm', dir })
+    const onlyA = reader.loadAll('/proj/a')
+    expect(onlyA.map((m) => m.sessionId)).toEqual(['in-a'])
+    // 不传 cwd 维持全局视图（web 端 collectProjectCwds 同类消费）
+    expect(reader.loadAll().length).toBe(3)
   })
 
   it('存原始 Message（不脱敏，P0-6）', () => {

@@ -54,8 +54,8 @@ export interface UsageStatsRecord {
 export interface HistoryStore {
   /** 增量追加一条 message（loop finally 已调，M1 占位兑现） */
   append(msg: Message): void
-  /** 列所有会话 meta（读每个文件首行，按 createdAt 倒序） */
-  loadAll(): SessionMeta[]
+  /** 列所有会话 meta（读每个文件首行，按 createdAt 倒序）；传 cwd 时只列该项目的会话 */
+  loadAll(cwd?: string): SessionMeta[]
   /** 读某会话全部 messages（跳过 meta + boundary 行，纯 Message；M4 兼容） */
   restore(sessionId: string): Message[]
   /** 读某会话全量行（含 boundary，跳过 meta；M5 投影/UI/审计用） */
@@ -70,6 +70,8 @@ export interface HistoryStore {
   setSessionId(id: string, model?: string): void
   /** 恢复续写（D2 补全）：起新 id 并全量播种恢复行——fork 文件自包含，重开不丢前文 */
   forkSession(id: string, lines: HistoryLine[], model?: string): void
+  /** 播种待落盘的恢复行（forkSession 延迟落盘后，首次 append* 自动触发；/restart 重放前显式触发） */
+  flushPendingSeed(): void
   /** 当前 sessionId（M9-P1：checkpoint 快照目录键控用；restore 后为新 id） */
   currentSessionId(): string
 }
@@ -87,6 +89,8 @@ export class FileHistoryStore implements HistoryStore {
   private createdAt: string
   private metaWritten = false
   private firstUser = '(空)'
+  /** forkSession 延迟播种的恢复行：首次写入（append*）才落盘——跳转历史零文件，真续写才 fork */
+  private pendingSeed: HistoryLine[] | null = null
 
   constructor(opts: { sessionId: string; model: string; cwd?: string; dir?: string }) {
     this.sessionId = opts.sessionId
@@ -123,6 +127,7 @@ export class FileHistoryStore implements HistoryStore {
   }
 
   append(msg: Message): void {
+    this.flushPendingSeed()
     // M10-P2b：落盘前 ImageBlock → ImageRef（base64 不进会话文件）
     this.appendStorable({ role: msg.role, content: msg.content.map(toStorableBlock) })
   }
@@ -152,11 +157,13 @@ export class FileHistoryStore implements HistoryStore {
 
   /** 压缩时追加 boundary 行（append-only，旧消息不删；投影锚点） */
   appendCompactBoundary(boundary: BoundaryLine): void {
+    this.flushPendingSeed()
     this.writeLine(JSON.stringify(boundary))
   }
 
   /** M12-P0：用量统计行（append-only；读侧 restoreFull 按 stats 标记跳过） */
   appendUsageStats(record: UsageStatsRecord): void {
+    this.flushPendingSeed()
     this.writeLine(JSON.stringify(record))
   }
 
@@ -168,6 +175,7 @@ export class FileHistoryStore implements HistoryStore {
     this.createdAt = new Date().toISOString()
     this.metaWritten = false
     this.firstUser = '(空)'
+    this.pendingSeed = null // 未落盘的种子属于旧 fork id——切走即弃（防串台写进新文件）
     this.ensureDir()
   }
 
@@ -178,13 +186,21 @@ export class FileHistoryStore implements HistoryStore {
 
   /**
    * 恢复续写（D2 补全）：CC copyFileHistoryForResume 同款——旧文件只读，新文件全量播种。
-   * 旧版只 setSessionId 不播种，fork 文件仅有恢复后的增量：跨一次重开即丢前文、
-   * 恢复后不发言直接退出则 fork 文件根本不存在。正常轮次由 loop.ts 逐条增量 append，
-   * 此处一次性播种不构成双写。
+   * 延迟落盘：只记 pendingSeed，首次 append* 才真正写——跳转/浏览历史零文件零噪音
+   * （真续写才产生 fork 文件）；/restart 重放前由 cli 调 flushPendingSeed 兜底。
+   * 播种经 append* 逐条写入（懒写 meta 自动带 firstUser），与 loop.ts 增量 append 不双写。
    */
   forkSession(id: string, lines: HistoryLine[], model?: string): void {
     this.setSessionId(id, model)
-    for (const line of lines) {
+    this.pendingSeed = [...lines]
+  }
+
+  /** 落盘 pendingSeed（幂等；先清再写防 append* 重入递归） */
+  flushPendingSeed(): void {
+    if (this.pendingSeed === null) return
+    const seed = this.pendingSeed
+    this.pendingSeed = null
+    for (const line of seed) {
       if (isBoundary(line)) this.appendCompactBoundary(line)
       else if (isRewind(line)) this.appendRewind(line)
       else if (isMessageLine(line)) this.append(line)
@@ -203,7 +219,7 @@ export class FileHistoryStore implements HistoryStore {
     }
   }
 
-  loadAll(): SessionMeta[] {
+  loadAll(cwd?: string): SessionMeta[] {
     let files: string[]
     try {
       files = fs.readdirSync(this.dir).filter((f) => f.endsWith('.jsonl'))
@@ -230,8 +246,10 @@ export class FileHistoryStore implements HistoryStore {
         process.stderr.write(`[HistoryStore] 跳过损坏会话文件 ${f}：${e instanceof Error ? e.message : String(e)}\n`)
       }
     }
-    // 按 createdAt 倒序（最新在前）
-    return metas.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    // 按 createdAt 倒序（最新在前）；传 cwd 时只列该项目（存储用户级全局，TUI /history 按项目过滤——
+    // 无 cwd 的老会话归属不可判定，一并不显示；web 端 collectProjectCwds 自有聚合不受影响）
+    const visible = cwd !== undefined ? metas.filter((m) => m.cwd === cwd) : metas
+    return visible.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   }
 
   /** 读全量行（含 boundary，跳过 meta；M5 投影/UI/审计用） */
@@ -276,6 +294,7 @@ export class FileHistoryStore implements HistoryStore {
   }
 
   appendRewind(line: RewindLine): void {
+    this.flushPendingSeed()
     this.writeLine(JSON.stringify(line))
   }
 
@@ -374,6 +393,7 @@ export class NoopHistoryStore implements HistoryStore {
   }
   setSessionId(_id: string, _model?: string): void {}
   forkSession(_id: string, _lines: HistoryLine[], _model?: string): void {}
+  flushPendingSeed(): void {}
   currentSessionId(): string {
     return ''
   }

@@ -32,6 +32,7 @@ import { join } from 'node:path'
 import { writeFileSync, chmodSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import * as os from 'node:os'
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { render } from 'ink'
 import React from 'react'
 import { TuiApp } from '../tui/TuiApp.js'
@@ -464,11 +465,17 @@ async function serveMode(): Promise<void> {
     process.stderr.write('✗ 非 loopback 绑定（ECODE_SERVE_HOST=' + serveHost + '）必须设置 ECODE_SERVER_PASSWORD——拒绝启动（防裸奔局域网）\n')
     process.exit(1)
   }
-  // M13-W5：web/dist 托管（存在即挂——开发期没 build 则纯 API 形态不变）
-  const webDir = join(process.cwd(), 'web', 'dist')
+  // M13-W5：web/dist 托管（存在即挂——开发期没 build 则纯 API 形态不变）。
+  // 解析序：ECODE_WEB_DIR 显式覆盖 > 包内相对（import.meta.url——tsx 源码跑=仓库根/web/dist，
+  // npm 发布跑=包根/web/dist；files 字段带 web/dist）> 不托管。不再看 cwd（其他项目目录起 serve
+  // 时 cwd/web/dist 是错误形态——审阅修正）
+  const webDirFromEnv = process.env.ECODE_WEB_DIR
+  const webDirFromPkg = fileURLToPath(new URL('../../web/dist', import.meta.url))
+  const webDirCandidate = webDirFromEnv !== undefined && webDirFromEnv !== '' ? webDirFromEnv : webDirFromPkg
+  const webDir = existsSync(webDirCandidate) ? webDirCandidate : undefined
   const srv = await serveMulti(
     { registry, defaultCwd: process.cwd() },
-    { port: Number(process.env.ECODE_SERVE_PORT ?? 0), host: serveHost, password: servePassword, ...(existsSync(webDir) ? { webDir } : {}) },
+    { port: Number(process.env.ECODE_SERVE_PORT ?? 0), host: serveHost, password: servePassword, ...(webDir !== undefined ? { webDir } : {}) },
   )
   // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读
   const regPath = join(os.homedir(), '.ecode', 'server.json')

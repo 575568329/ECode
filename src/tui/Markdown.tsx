@@ -6,6 +6,7 @@ import wrapAnsi from 'wrap-ansi'
 import stringWidth from 'string-width'
 import Table from 'cli-table3'
 import { parseAnsi, type Span } from './ansi.js'
+import { smartWrapAnsi } from './wrap.js'
 import { hasMarkdownSyntax, inlineToAnsi, type InlineTok } from './mdparse.js'
 
 /**
@@ -190,7 +191,7 @@ function KVCell({ label, value }: { label: string; value: string }): ReactElemen
   // 标签过长（值被挤到 < 10 列）时标签独立成行，值退回 2 空格缩进
   const labelOwnLine = labelWidth > cols() - 12
   const prefixWidth = labelOwnLine ? 2 : labelWidth + 2
-  const valueLines = wrapAnsi(normalized, Math.max(cols() - prefixWidth, 10), { hard: true }).split('\n')
+  const valueLines = smartWrapAnsi(normalized, Math.max(cols() - prefixWidth, 10)).split('\n')
   const styledLabel = `\u001b[1m\u001b[36m${label}\u001b[39m\u001b[22m`
   const lines = labelOwnLine
     ? [styledLabel, ...valueLines.map((l) => '  ' + l)]
@@ -209,8 +210,8 @@ function KVCell({ label, value }: { label: string; value: string }): ReactElemen
 
 /**
  * 表格降级形态：key-value 垂直格式，每条记录按列展开、记录间细分隔线。
- * 值统一按首行宽一步 wrap（标签 + ': ' 占前缀），续行缩进对齐值起始列——
- * 不做两段重 wrap（hard 断开的 token 会被重拼进空格，URL 之类被污染）。
+ * 值统一按首行宽一步折行（smartWrapAnsi，标签 + ': ' 占前缀），续行缩进对齐值起始列——
+ * 不做两段重 wrap（断开的 token 会被重拼进空格，URL 之类被污染）。
  */
 function VerticalTableBlock({ head, rows }: { head: string[]; rows: string[][] }): ReactElement {
   const labels = head.map(plainText)
@@ -230,9 +231,9 @@ function VerticalTableBlock({ head, rows }: { head: string[]; rows: string[][] }
 
 /**
  * 表格：cli-table3 画框对齐 + 终端宽自适应。
- * 超屏时自算列宽（computeColWidths）并用 wrap-ansi hard 预折行后再喂 cli-table3——
- * 它自带的 wordWrap 对中文不安全（按空白分词断不了无空格的中文长句；hard 模式按
- * UTF-16 code unit 切，中文 1 字 2 列必超宽），不能开。
+ * 超屏时自算列宽（computeColWidths）并用 smartWrapAnsi（wrap.ts，语义断点优先）预折行
+ * 后再喂 cli-table3——cli-table3 自带的 wordWrap 对中文不安全（按空白分词断不了无空格的
+ * 中文长句；hard 模式按 UTF-16 code unit 切，中文 1 字 2 列必超宽），不能开。
  * 折行后行数超 TABLE_MAX_ROW_LINES → 整表降级 key-value 垂直格式。
  */
 function TableBlock({ token }: { token: BlockTok }): ReactElement {
@@ -244,7 +245,7 @@ function TableBlock({ token }: { token: BlockTok }): ReactElement {
   const natural = naturalColWidths([head, ...rows])
   const widths = computeColWidths(natural, budget)
   const overflow = natural.reduce((a, b) => a + b, 0) > budget
-  const wrapCell = (cell: string, i: number): string => (overflow ? wrapAnsi(cell, widths[i], { hard: true }) : cell)
+  const wrapCell = (cell: string, i: number): string => (overflow ? smartWrapAnsi(cell, widths[i]) : cell)
   const wrappedHead = head.map(wrapCell)
   const wrappedRows = rows.map((row) => row.map(wrapCell))
   const maxCellLines = Math.max(1, ...[wrappedHead, ...wrappedRows].flat().map((c) => c.split('\n').length))

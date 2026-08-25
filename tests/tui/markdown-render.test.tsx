@@ -119,6 +119,8 @@ describe('Markdown 组件渲染', () => {
     expect(frame).toContain('│')
     expect(frame).not.toContain('…')
     expect(frame).toContain('GET api/presBa')
+    // URL 断在语义边界（…/getRppQuestion? 整段一行），不是任意字符拦腰切
+    expect(frame).toContain('getRppQuestion?')
     expect(frame).toContain('描述文字')
     // 长描述在单元格内折行 → 行数远多于 2 条数据行
     expect(lines.length).toBeGreaterThan(6)
@@ -143,6 +145,8 @@ describe('Markdown 组件渲染', () => {
       expect(line).not.toContain('┌')
     }
     expect(plain.some((l) => l.startsWith('接口: '))).toBe(true)
+    // 垂直形态行宽 ~74：URL 整条放得下，保持完整不拆（codex adaptive wrap 同语义）
+    expect(plain.some((l) => l.includes('GET api/presBasic/getRppQuestion?taskId='))).toBe(true)
     expect(plain.some((l) => l.startsWith('定义处: '))).toBe(true)
     expect(plain.some((l) => l.startsWith('作用: '))).toBe(true)
     expect(frame).toContain('─')

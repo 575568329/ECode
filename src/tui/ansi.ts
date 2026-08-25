@@ -35,6 +35,24 @@ const BG_COLORS: Record<number, string> = {
   104: 'blueBright', 105: 'magentaBright', 106: 'cyanBright', 107: 'whiteBright',
 }
 
+/** FG_COLORS / BG_COLORS 的逆表（Ink 颜色名 → SGR 码，attrsToAnsi 序列化用） */
+const FG_CODES = new Map(Object.entries(FG_COLORS).map(([code, name]) => [name, Number(code)]))
+const BG_CODES = new Map(Object.entries(BG_COLORS).map(([code, name]) => [name, Number(code)]))
+
+/** span 属性（不含 text）→ SGR 开码；无属性返回 ''（smartWrapAnsi 重序列化折行片段用） */
+export function attrsToAnsi(attrs: Omit<Span, 'text'>): string {
+  const codes: number[] = []
+  if (attrs.bold) codes.push(1)
+  if (attrs.dimColor) codes.push(2)
+  if (attrs.italic) codes.push(3)
+  if (attrs.underline) codes.push(4)
+  if (attrs.color !== undefined && FG_CODES.has(attrs.color)) codes.push(FG_CODES.get(attrs.color) as number)
+  if (attrs.backgroundColor !== undefined && BG_CODES.has(attrs.backgroundColor)) {
+    codes.push(BG_CODES.get(attrs.backgroundColor) as number)
+  }
+  return codes.length > 0 ? `\u001b[${codes.join(';')}m` : ''
+}
+
 /** 当前 SGR 属性状态（解析器内部用，不含 text） */
 interface Attrs {
   color?: string

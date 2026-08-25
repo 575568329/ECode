@@ -64,6 +64,7 @@ import { BUILTIN_TOOLS } from '../tools/builtin/index.js'
 import { PluginLoader } from '../services/plugin/loader.js'
 import { HostSession } from '../host/session.js'
 import { serveMulti } from '../server/multi.js'
+import { FeishuGateway } from '../server/im/feishu.js'
 import { ProjectRegistry } from '../server/projects.js'
 
 interface Deps {
@@ -482,6 +483,62 @@ async function serveMode(): Promise<void> {
     if (lanIp !== undefined) process.stdout.write(`Mobile: http://${lanIp}:${srv.port}\n`)
     process.stdout.write('提示：DHCP 可能变动局域网 IP——建议为公司电脑配置静态 IP（中继形态 M14 后此问题消失）\n')
   }
+  // M13-W8：飞书 IM gateway（配置了凭据才激活——长连接免公网，公司电脑零暴露）
+  let feishuGw: FeishuGateway | undefined
+  if (config.feishu !== undefined && config.feishu.appId !== '' && config.feishu.appSecret !== '') {
+    const projectRoot = process.cwd().split(String.fromCharCode(92)).join('/')
+    feishuGw = new FeishuGateway({
+      appId: config.feishu.appId,
+      appSecret: config.feishu.appSecret,
+      logger,
+      project: projectRoot,
+      sendCommand: async (sessionId, op) => {
+        const r = await registry.acquire(projectRoot, { confirm: true })
+        if (!r.ok || r.host === undefined) return { ok: false, error: 'project acquire failed' }
+        const conv = sessionId !== undefined ? r.host.conversation(sessionId) ?? (await r.host.ensureRestore(sessionId)) : r.host.ensureDefault(`${new Date().toISOString().replace(/[:.]/g, '-')}-im`)
+        const result = (await conv.send(op as Parameters<typeof conv.send>[0])) as { ok: boolean; error?: string; sessionId?: string; value?: unknown }
+        return { ...result, sessionId: sessionId ?? r.host.currentSessionId }
+      },
+      subscribe: (handler) => {
+        // mux 语义的最小进程内形态：订阅默认项目全部会话（registry 层面——W8 简化走 registry 快照轮询不可行，
+        // 直接用 ProjectHost 会话订阅：acquire 后 conversationsSnapshot 订阅现有+onSessionEvent 增量）
+        const unsubs: Array<() => void> = []
+        void registry.acquire(projectRoot, { confirm: true }).then((r) => {
+          if (!r.ok || r.host === undefined) return
+          const attach = (): void => {
+            for (const [sid, conv] of r.host!.conversationsSnapshot()) {
+              unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: sid, ev })))
+            }
+            unsubs.push(
+              r.host!.onSessionEvent((kind, info) => {
+                if (kind === 'created') {
+                  const conv = r.host!.conversation(info.sessionId)
+                  if (conv !== undefined) unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: info.sessionId, ev })))
+                }
+              }),
+            )
+          }
+          attach()
+        })
+        return () => {
+          for (const u of unsubs) u()
+        }
+      },
+      listSessions: async () => {
+        const r = await registry.acquire(projectRoot, { confirm: true })
+        if (!r.ok || r.host === undefined) return []
+        const conv = r.host.ensureDefault(`list-${Date.now()}`)
+        const res = (await conv.send({ op: 'session/list' })) as { ok: boolean; value?: unknown }
+        return Array.isArray(res.value) ? (res.value as Array<{ sessionId: string; firstUser: string; running?: boolean }>) : []
+      },
+    })
+    void feishuGw.start().catch((e: unknown) => {
+      process.stderr.write(`飞书 gateway 启动失败：${e instanceof Error ? e.message : String(e)}
+`)
+      feishuGw = undefined
+    })
+  }
+
   // 空闲回收（30 分钟 sweep；审批/UI 挂起不回收）
   // M13-W2：会话级回收（项目基座常驻——Q5 两家实证）；sessionIdleMinutes 默认 120，0=不收
   const sessionIdleMinutes = config.sessionIdleMinutes ?? 120
@@ -507,6 +564,7 @@ async function serveMode(): Promise<void> {
   const shutdown = (code: number): void => {
     if (sweep !== null) clearInterval(sweep)
     void (async () => {
+      feishuGw?.dispose()
       await srv.close()
       registry.disposeAll()
       process.exit(code)

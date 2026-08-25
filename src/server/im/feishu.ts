@@ -1,0 +1,241 @@
+/**
+ * M13-W8 飞书 IM gateway（方案 §4A）——第三种客户端形态，接 mux 协议（与 Web 同构）。
+ *
+ * 通道能力（官方 SDK，长连接模式——免公网 IP/域名/回调 URL，公司电脑零暴露）：
+ * - WSClient：企业自建应用 WebSocket 长连接收事件（im.message.receive_v1 消息）与
+ *   卡片回调（card.action.trigger——审批三键的回传）。
+ * - Client：发消息 API（markdown 富文本）+ 卡片 interactive 消息。
+ *
+ * 会话映射（Q14 单聊先行）：单聊 bot ↔ ECode 会话一对一。命令：
+ *   /new          新建对话（换绑当前用户 → 新 sessionId）
+ *   /switch <n>   切到本项目第 n 个历史会话（session/list 序）
+ *   /sessions     列出本项目会话
+ * 默认：绑定项目最近活跃会话（没有则首条消息隐式新建）。
+ *
+ * 3s 时限：飞书事件回调 3 秒内需返回——收到消息先回执「处理中」，轮末推完整回复（异步）。
+ * 审批转卡片：approval/requested 帧 → interactive 卡片三键（允许/本会话始终允许/拒绝；
+ * sensitive 不给始终键——D6 延续）；按钮回调 → mux approval/respond；resolved 后卡片更新为终态。
+ */
+
+import * as lark from '@larksuiteoapi/node-sdk'
+import type { Logger } from '../../services/logger.js'
+
+export interface FeishuGatewayDeps {
+  appId: string
+  appSecret: string
+  logger: Logger
+  /** mux 命令面（serve 侧注入——信封路由同 Web） */
+  sendCommand: (sessionId: string | undefined, op: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; sessionId?: string; value?: unknown }>
+  /** mux 订阅面（审批帧等） */
+  subscribe: (handler: (frame: { project: string; sessionId: string; ev: { type: string; [k: string]: unknown } }) => void) => () => void
+  /** 项目根（默认绑定的项目） */
+  project: string
+  /** 历史会话列表（/sessions /switch 用——session/list 冷热合并） */
+  listSessions: () => Promise<Array<{ sessionId: string; firstUser: string; running?: boolean }>>
+  dispose?: () => void
+}
+
+/** 单聊用户 → 绑定会话 */
+const binding = new Map<string, string>()
+
+export class FeishuGateway {
+  private readonly client: lark.Client
+  private ws?: lark.WSClient
+  private unsub?: () => void
+  private readonly pendingCards = new Map<string, { chatId: string; messageId: string }>()
+  private disposed = false
+
+  constructor(private readonly deps: FeishuGatewayDeps) {
+    this.client = new lark.Client({ appId: deps.appId, appSecret: deps.appSecret })
+  }
+
+  async start(): Promise<void> {
+    const dispatcher = new lark.EventDispatcher({}).register({
+      'im.message.receive_v1': async (data: unknown) => {
+        try {
+          await this.onMessage(data)
+        } catch (e) {
+          this.deps.logger.warn('im', 'feishu_message_failed', { message: e instanceof Error ? e.message : String(e) })
+        }
+        // 3s 内返回（异步处理在 onMessage 内部 fire-and-forget）
+      },
+      'card.action.trigger': async (data: unknown) => {
+        try {
+          await this.onCardAction(data)
+        } catch (e) {
+          this.deps.logger.warn('im', 'feishu_card_failed', { message: e instanceof Error ? e.message : String(e) })
+        }
+        return { toast: { type: 'success', content: '已处理' } }
+      },
+    })
+    this.ws = new lark.WSClient({ appId: this.deps.appId, appSecret: this.deps.appSecret })
+    await this.ws.start({ eventDispatcher: dispatcher })
+    // mux 订阅：审批帧 → 卡片；轮末 → 推送回复
+    this.unsub = this.deps.subscribe((frame) => void this.onFrame(frame))
+    this.deps.logger.info('im', 'feishu_started', { project: this.deps.project })
+  }
+
+  dispose(): void {
+    this.disposed = true
+    this.unsub?.()
+    this.deps.dispose?.()
+  }
+
+  // —— 消息入（单聊驱动会话） ——
+  private async onMessage(data: unknown): Promise<void> {
+    const d = data as { event?: { message?: { chat_id?: string; chat_type?: string; message_type?: string; content?: string }; sender?: { sender_id?: { open_id?: string } } } }
+    const ev = d.event
+    const msg = ev?.message
+    const chatType = msg?.chat_type
+    const openId = ev?.sender?.sender_id?.open_id ?? ''
+    if (chatType !== 'p2p' || msg?.message_type !== 'text') return // 群聊/富文本忽略（Q14 单聊先行）
+    let text = ''
+    try {
+      text = String(JSON.parse(msg.content ?? '{}').text ?? '')
+    } catch {
+      return
+    }
+    if (text.trim() === '') return
+    const chatId = msg.chat_id ?? ''
+    this.rememberChat(openId, chatId)
+    this.deps.logger.info('im', 'feishu_message', { openId, len: text.length })
+
+    // 命令面
+    if (text.startsWith('/new')) {
+      binding.delete(openId)
+      await this.replyText(chatId, '已新建对话——下一条消息开始新会话。')
+      return
+    }
+    if (text.startsWith('/sessions')) {
+      const list = await this.deps.listSessions()
+      const lines = list.slice(0, 10).map((s, i) => `${i + 1}. ${(s.firstUser ?? '').slice(0, 30)}${s.running === true ? ' ●运行中' : ''}`)
+      await this.replyText(chatId, lines.length > 0 ? `本项目会话：\n${lines.join('\n')}\n（/switch <序号> 切换）` : '暂无历史会话。')
+      return
+    }
+    if (text.startsWith('/switch')) {
+      const n = Number(text.split(/\s+/)[1] ?? '0')
+      const list = await this.deps.listSessions()
+      const target = list[n - 1]
+      if (target === undefined) {
+        await this.replyText(chatId, `序号无效（1-${Math.min(list.length, 10)}）。`)
+        return
+      }
+      binding.set(openId, target.sessionId)
+      await this.replyText(chatId, `已切换到：${(target.firstUser ?? '').slice(0, 30)}`)
+      return
+    }
+
+    // 会话驱动：绑定或隐式新建（三态③——sendCommand 不带 sessionId）
+    const bound = binding.get(openId)
+    await this.replyText(chatId, '收到，处理中…') // 3s 回执
+    const r = await this.deps.sendCommand(bound, { op: 'prompt', text, mode: 'StartOrSteer' })
+    if (r.ok && r.sessionId !== undefined && r.sessionId !== '') binding.set(openId, r.sessionId)
+    if (!r.ok) await this.replyText(chatId, `执行失败：${r.error ?? '未知'}`)
+  }
+
+  // —— mux 帧出（轮末推送 + 审批卡片） ——
+  private async onFrame(frame: { project: string; sessionId: string; ev: { type: string; [k: string]: unknown } }): Promise<void> {
+    if (this.disposed || frame.project !== this.deps.project) return
+    // 找绑定了该会话的用户（O(n) 单聊规模可接受）
+    let openId: string | null = null
+    for (const [k, v] of binding) if (v === frame.sessionId) openId = k
+    if (openId === null) return
+    const chatId = this.chatIdOf(openId)
+    if (chatId === null) return
+
+    if (frame.ev.type === 'turn/completed') {
+      // 轮末推送：从宿主侧拿不到完整回复文本（W8 简化——用 item/completed+delta 聚合在 gateway 不现实；
+      // 走 session/read 尾页取最后 assistant 文本）
+      const r = await this.deps.sendCommand(frame.sessionId, { op: 'session/read', sessionId: frame.sessionId })
+      if (r.ok && Array.isArray(r.value)) {
+        const lines = r.value as Array<{ role?: string; content?: Array<{ type: string; text?: string }> }>
+        const lastAssistant = [...lines].reverse().find((l) => l.role === 'assistant')
+        const text = (lastAssistant?.content ?? []).filter((b) => b.type === 'text').map((b) => b.text ?? '').join('')
+        if (text !== '') await this.replyMarkdown(chatId, text.slice(0, 3500))
+      }
+      return
+    }
+    if (frame.ev.type === 'approval/requested') {
+      const requestId = String(frame.ev.requestId ?? '')
+      const sensitive = String(frame.ev.kind ?? '') === 'sensitive'
+      const tool = String(frame.ev.tool ?? '')
+      const preview = String(frame.ev.preview ?? '').slice(0, 600)
+      const buttons: Array<{ tag: string; text: { tag: string; content: string }; type?: string; value?: string }> = []
+      if (!sensitive && Array.isArray(frame.ev.decisions) && (frame.ev.decisions as string[]).includes('always')) {
+        buttons.push({ tag: 'button', text: { tag: 'plain_text', content: '本会话始终允许' }, type: 'primary', value: JSON.stringify({ requestId, decision: 'always' }) })
+      }
+      buttons.push(
+        { tag: 'button', text: { tag: 'plain_text', content: '允许' }, type: 'primary', value: JSON.stringify({ requestId, decision: 'once' }) },
+        { tag: 'button', text: { tag: 'plain_text', content: '拒绝' }, type: 'danger', value: JSON.stringify({ requestId, decision: 'reject' }) },
+      )
+      const card = {
+        config: { wide_screen_mode: true },
+        header: { title: { tag: 'plain_text', content: sensitive ? '⚠ 敏感操作确认（不可记住）' : '需要审批' }, template: 'orange' },
+        elements: [
+          { tag: 'div', text: { tag: 'lark_md', content: `**工具**：\`${tool}\`` } },
+          { tag: 'div', text: { tag: 'lark_md', content: `\`\`\`${preview}\`\`\`` } },
+          { tag: 'action', actions: buttons },
+        ],
+      }
+      const sent = await this.client.im.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: { receive_id: chatId, msg_type: 'interactive', content: JSON.stringify(card) },
+      })
+      if (sent.data?.message_id !== undefined) this.pendingCards.set(requestId, { chatId, messageId: sent.data.message_id })
+      return
+    }
+    if (frame.ev.type === 'approval/resolved') {
+      // 卡片置终态（更新为纯文本结果卡）
+      const requestId = String(frame.ev.requestId ?? '')
+      const card = this.pendingCards.get(requestId)
+      if (card !== undefined) {
+        this.pendingCards.delete(requestId)
+        const outcome = String(frame.ev.outcome ?? '')
+        const zh = outcome === 'once' || outcome === 'always' ? `已${outcome === 'always' ? '始终' : ''}允许` : outcome === 'reject' ? '已拒绝' : outcome === 'timeout' ? '已超时自动拒绝' : outcome
+        void this.client.im.message
+          .patch({ path: { message_id: card.messageId }, data: { content: JSON.stringify({ config: { wide_screen_mode: true }, header: { title: { tag: 'plain_text', content: `审批${zh}` }, template: outcome === 'reject' || outcome === 'timeout' ? 'red' : 'green' }, elements: [{ tag: 'div', text: { tag: 'lark_md', content: `终态：${zh}` } }] }) } })
+          .catch(() => {})
+      }
+    }
+  }
+
+  // —— 卡片按钮回调 → approval/respond ——
+  private async onCardAction(data: unknown): Promise<void> {
+    const d = data as { event?: { action?: { value?: string }; operator?: { open_id?: string } } }
+    const raw = d.event?.action?.value
+    if (typeof raw !== 'string') return
+    try {
+      const { requestId, decision } = JSON.parse(raw) as { requestId: string; decision: string }
+      await this.deps.sendCommand(undefined, { op: 'approval/respond', requestId, decision })
+    } catch {
+      /* 无效载荷忽略 */
+    }
+  }
+
+  // —— 发送助手 ——
+  private chatCache = new Map<string, string>()
+  private chatIdOf(openId: string): string | null {
+    return this.chatCache.get(openId) ?? null
+  }
+  /** 首条消息时记录 openId→chatId 映射（onMessage 里 chatId 现成——缓存供 onFrame 反查） */
+  private rememberChat(openId: string, chatId: string): void {
+    this.chatCache.set(openId, chatId)
+  }
+
+  private async replyText(chatId: string, text: string): Promise<void> {
+    if (chatId === '') return
+    void this.client.im.message
+      .create({ params: { receive_id_type: 'chat_id' }, data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }) } })
+      .catch((e: unknown) => this.deps.logger.warn('im', 'feishu_reply_failed', { message: e instanceof Error ? e.message : String(e) }))
+  }
+
+  private async replyMarkdown(chatId: string, text: string): Promise<void> {
+    if (chatId === '') return
+    void this.client.im.message
+      .create({
+        params: { receive_id_type: 'chat_id' },
+        data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }) },
+      })
+      .catch((e: unknown) => this.deps.logger.warn('im', 'feishu_reply_failed', { message: e instanceof Error ? e.message : String(e) }))
+  }
+}

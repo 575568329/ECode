@@ -58,15 +58,28 @@ describe('输入大段粘贴折叠（>5 行替代显示，提交不受影响）'
     expect(f).not.toContain('已折叠')
   })
 
-  it('6 行 → 头部折叠指示 + 尾 5 行可见', () => {
-    const lines = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6']
+  it('8 行 caret 在末尾 → 头 5 行 + 折叠指示 + caret 行', () => {
+    const lines = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8']
     const text = lines.join('\n')
-    const caret = text.length // 末尾
+    const caret = text.length
     const { lastFrame } = render(React.createElement(InputRender, { text, caret }))
     const f = lastFrame() ?? ''
-    expect(f).toContain('已折叠 1 行（共 6 行）')
-    for (const w of ['L2', 'L3', 'L4', 'L5', 'L6']) expect(f).toContain(w)
-    expect(f).not.toContain('L1')
+    expect(f).toContain('已折叠 2 行（共 8 行）')
+    for (const w of ['L1', 'L2', 'L3', 'L4', 'L5', 'L8']) expect(f).toContain(w)
+    expect(f).not.toContain('L6')
+    expect(f).not.toContain('L7')
+  })
+
+  it('caret 在中部折叠区 → 头窗 + 上下双指示 + caret 行可见', () => {
+    const lines = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10']
+    const text = lines.join('\n')
+    const caret = text.indexOf('H8') // 第 8 行（0-based 7）
+    const { lastFrame } = render(React.createElement(InputRender, { text, caret }))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('H1')
+    expect(f).toContain('H8') // caret 行亮出
+    expect(f).not.toContain('H6')
+    expect(f.split('已折叠').length - 1).toBe(2) // 上下两条指示
   })
 
   it('caret 移到头部区域 → 可见窗随 caret 移动', () => {

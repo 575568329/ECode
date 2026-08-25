@@ -44,24 +44,29 @@ function caretLineCol(lines: string[], caret: number): { line: number; col: numb
 }
 
 /**
- * 输入框折叠视图：≤ maxLines 原样；超过则显示 caret 附近 maxLines 行（尾窗偏置——
- * 粘贴后 caret 在末尾即显示尾部）+ 上下折叠指示行。纯显示折叠，value/caret 不动，提交不受影响。
+ * 输入框折叠视图：≤ maxLines 原样；超过则显示头部 maxLines 行（看内容是什么——头窗偏置，
+ * 用户拍板；CC「+N lines pasted」同形态）+ 底部折叠指示。caret 在折叠区时额外亮出
+ * caret 所在行（粘贴后 caret 在末尾，不亮出来打字不可见）。纯显示折叠，提交不受影响。
  */
 export function foldInputView(text: string, caret: number, maxLines = INPUT_FOLD_MAX_LINES): { rows: FoldRow[]; caretRow: number; caretCol: number } {
   const lines = text.split('\n')
-  if (lines.length <= maxLines) {
-    const { line, col } = caretLineCol(lines, caret)
-    return { rows: lines.map((t) => ({ kind: 'text' as const, text: t, count: 0 })), caretRow: line, caretCol: col }
-  }
   const { line: cl, col: caretCol } = caretLineCol(lines, caret)
-  const endIdx = Math.max(Math.min(cl + 2, lines.length - 1), maxLines - 1)
-  const startIdx = endIdx - (maxLines - 1)
-  const rows: FoldRow[] = []
-  if (startIdx > 0) rows.push({ kind: 'folded', text: '', count: startIdx })
-  for (let i = startIdx; i <= endIdx; i++) rows.push({ kind: 'text', text: lines[i] as string, count: 0 })
-  const below = lines.length - 1 - endIdx
+  if (lines.length <= maxLines) {
+    return { rows: lines.map((t) => ({ kind: 'text' as const, text: t, count: 0 })), caretRow: cl, caretCol }
+  }
+  const rows: FoldRow[] = lines.slice(0, maxLines).map((t) => ({ kind: 'text' as const, text: t, count: 0 }))
+  if (cl < maxLines) {
+    // caret 在头部窗内：剩余尾部整体折叠
+    rows.push({ kind: 'folded', text: '', count: lines.length - maxLines })
+    return { rows, caretRow: cl, caretCol }
+  }
+  // caret 在折叠区：头部窗 + 上侧折叠指示 + caret 行 + 下侧折叠指示
+  const above = cl - maxLines
+  if (above > 0) rows.push({ kind: 'folded', text: '', count: above })
+  rows.push({ kind: 'text', text: lines[cl] as string, count: 0 })
+  const below = lines.length - 1 - cl
   if (below > 0) rows.push({ kind: 'folded', text: '', count: below })
-  return { rows, caretRow: (startIdx > 0 ? 1 : 0) + (cl - startIdx), caretCol }
+  return { rows, caretRow: rows.length - (below > 0 ? 2 : 1), caretCol }
 }
 
 /** 输入渲染：❯ + 反色 caret 字素（设计理念 §7.2：反色不塞 ▋，跨字素不错位） */

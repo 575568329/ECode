@@ -36,9 +36,13 @@ export interface SessionView {
   streaming: string
   queue: string[]
   loaded: boolean
+  /** W6b：挂起审批（approval/requested 帧——composer-takeover 渲染） */
+  approval: { requestId: string; kind?: string; tool: string; preview: string; decisions: string[] } | null
+  /** W6b：挂起单选（askSelect/requested 帧） */
+  askSelect: { requestId: string; title: string; options: string[] } | null
 }
 
-const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false })
+const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, approval: null, askSelect: null })
 
 interface AppState {
   connState: 'connecting' | 'open' | 'backoff'
@@ -155,6 +159,26 @@ export const useApp = create<AppState>((set) => ({
         case 'session/clear':
           // 宿主权威 clear——本地视图同步清
           return patchView(st, f.sessionId, () => emptyView())
+        case 'approval/requested':
+          return patchView(st, f.sessionId, (v) => ({
+            ...v,
+            approval: {
+              requestId: String(f.ev.requestId ?? ''),
+              kind: f.ev.kind === undefined ? undefined : String(f.ev.kind),
+              tool: String(f.ev.tool ?? ''),
+              preview: String(f.ev.preview ?? ''),
+              decisions: Array.isArray(f.ev.decisions) ? (f.ev.decisions as string[]) : ['once', 'reject'],
+            },
+          }))
+        case 'approval/resolved':
+          return patchView(st, f.sessionId, (v) => (v.approval !== null && v.approval.requestId === String(f.ev.requestId ?? '') ? { ...v, approval: null } : v))
+        case 'askSelect/requested':
+          return patchView(st, f.sessionId, (v) => ({
+            ...v,
+            askSelect: { requestId: String(f.ev.requestId ?? ''), title: String(f.ev.title ?? ''), options: Array.isArray(f.ev.options) ? (f.ev.options as string[]) : [] },
+          }))
+        case 'askSelect/resolved':
+          return patchView(st, f.sessionId, (v) => (v.askSelect !== null && v.askSelect.requestId === String(f.ev.requestId ?? '') ? { ...v, askSelect: null } : v))
         default:
           return st
       }

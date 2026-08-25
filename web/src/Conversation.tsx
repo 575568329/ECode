@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Terminal } from 'lucide-react'
 import { sendCommand } from './connect'
 import { useApp, type ToolItem } from './store'
+import { Composer } from './Composer'
 
 /** 流式/历史文本渲染（Streamdown W6a 后续接入——骨架先用等宽预格式，样式分层已留） */
 function Markdown({ text }: { text: string }): React.JSX.Element {
@@ -35,6 +36,7 @@ function ToolCard({ item }: { item: ToolItem }): React.JSX.Element {
 
 export function Conversation({ project, sessionId }: { project: string; sessionId: string }): React.JSX.Element {
   const view = useApp((s) => s.views[sessionId])
+  const running = useApp((s) => s.sessions.find((x) => x.sessionId === sessionId)?.running ?? false)
   const loadHistory = useApp((s) => s.loadHistory)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -58,7 +60,7 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex-1 overflow-y-auto px-4 py-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         <div className="mx-auto max-w-3xl space-y-3">
           {view.entries.map((e, i) =>
             e.kind === 'user' ? (
@@ -96,6 +98,8 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
           <div ref={bottomRef} />
         </div>
       </div>
+      {/* W6b：输入/审批/选择 takeover（approval 挂起时占据输入位） */}
+      <Composer project={project} sessionId={sessionId} running={running} />
     </div>
   )
 }

@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
 import { useApp, type SessionBrief } from './store'
+import { Conversation } from './Conversation'
 
 /** 同源定位 daemon（dev 模式经 vite proxy；托管形态同源直连） */
 const BASE = ''
@@ -169,11 +170,15 @@ export function App(): React.JSX.Element {
           )}
         </div>
       </aside>
-      {/* 对话区（W6a/b 长出） */}
-      <main className="flex flex-1 items-center justify-center">
-        <div className="text-center text-sm text-neutral-600">
-          {selectedSession === null ? '选择左侧会话' : selectedSession === '' ? '输入你的问题开始对话（W6b 接入）' : `会话 ${selectedSession.slice(-12)}（W6a 渲染接入）`}
-        </div>
+      {/* 对话区（W6a 展示层；W6b 输入/审批在 Conversation 底部长出） */}
+      <main className="flex min-h-0 flex-1 flex-col">
+        {selectedProject === null || selectedSession === null || selectedSession === '' ? (
+          <div className="flex flex-1 items-center justify-center text-sm text-neutral-600">
+            {selectedProject === null ? '选择左侧项目' : selectedSession === null ? '选择会话或新建对话' : '输入你的问题开始对话（W6b 接入）'}
+          </div>
+        ) : (
+          <Conversation project={selectedProject} sessionId={selectedSession} />
+        )}
       </main>
     </div>
   )

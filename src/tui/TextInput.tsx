@@ -9,6 +9,7 @@ import {
   moveHome,
   moveEnd,
   splitAtCaret,
+  countGraphemes,
   type CursorState,
 } from './cursor.js'
 import { symbols } from './symbols.js'
@@ -20,16 +21,81 @@ interface InputRenderProps {
   placeholder?: string
 }
 
+/** 输入框可见行数上限：超过即折叠为指示行（M14 §3.2「输入粘贴」项先行——动态区防超屏） */
+const INPUT_FOLD_MAX_LINES = 5
+
+/** 折叠视图的一行：文本行 or 折叠指示（count = 被折叠行数） */
+export interface FoldRow {
+  kind: 'text' | 'folded'
+  text: string
+  count: number
+}
+
+/** caret（全文字素下标）→ 行号 + 行内字素列（\n 计 1 字素） */
+function caretLineCol(lines: string[], caret: number): { line: number; col: number } {
+  let consumed = 0
+  for (let i = 0; i < lines.length; i++) {
+    const len = countGraphemes(lines[i] as string)
+    if (caret <= consumed + len) return { line: i, col: caret - consumed }
+    consumed += len + 1
+  }
+  const last = lines.length - 1
+  return { line: last, col: countGraphemes(lines[last] ?? '') }
+}
+
+/**
+ * 输入框折叠视图：≤ maxLines 原样；超过则显示 caret 附近 maxLines 行（尾窗偏置——
+ * 粘贴后 caret 在末尾即显示尾部）+ 上下折叠指示行。纯显示折叠，value/caret 不动，提交不受影响。
+ */
+export function foldInputView(text: string, caret: number, maxLines = INPUT_FOLD_MAX_LINES): { rows: FoldRow[]; caretRow: number; caretCol: number } {
+  const lines = text.split('\n')
+  if (lines.length <= maxLines) {
+    const { line, col } = caretLineCol(lines, caret)
+    return { rows: lines.map((t) => ({ kind: 'text' as const, text: t, count: 0 })), caretRow: line, caretCol: col }
+  }
+  const { line: cl, col: caretCol } = caretLineCol(lines, caret)
+  const endIdx = Math.max(Math.min(cl + 2, lines.length - 1), maxLines - 1)
+  const startIdx = endIdx - (maxLines - 1)
+  const rows: FoldRow[] = []
+  if (startIdx > 0) rows.push({ kind: 'folded', text: '', count: startIdx })
+  for (let i = startIdx; i <= endIdx; i++) rows.push({ kind: 'text', text: lines[i] as string, count: 0 })
+  const below = lines.length - 1 - endIdx
+  if (below > 0) rows.push({ kind: 'folded', text: '', count: below })
+  return { rows, caretRow: (startIdx > 0 ? 1 : 0) + (cl - startIdx), caretCol }
+}
+
 /** 输入渲染：❯ + 反色 caret 字素（设计理念 §7.2：反色不塞 ▋，跨字素不错位） */
 export function InputRender({ text, caret, placeholder }: InputRenderProps): ReactElement {
+  const folded = text.split('\n').length > INPUT_FOLD_MAX_LINES
   return (
     <Box>
       <Text color={theme.user}>{symbols.prompt}</Text>
       <Text> </Text>
       {text === '' && placeholder !== undefined ? (
         <Text dimColor>{placeholder}</Text>
+      ) : folded ? (
+        <FoldedCaretText text={text} caret={caret} />
       ) : (
         <CaretText text={text} caret={caret} />
+      )}
+    </Box>
+  )
+}
+
+/** 折叠态输入：可见窗内 caret 行反色，折叠段用指示行替代（CC「+N lines」同款形态） */
+function FoldedCaretText({ text, caret }: { text: string; caret: number }): ReactElement {
+  const total = text.split('\n').length
+  const view = foldInputView(text, caret)
+  return (
+    <Box flexDirection="column">
+      {view.rows.map((row, i) =>
+        row.kind === 'folded' ? (
+          <Text key={i} dimColor>{`…已折叠 ${row.count} 行（共 ${total} 行）`}</Text>
+        ) : i === view.caretRow ? (
+          <CaretText key={i} text={row.text} caret={view.caretCol} />
+        ) : (
+          <Text key={i}>{row.text === '' ? ' ' : row.text}</Text>
+        ),
       )}
     </Box>
   )

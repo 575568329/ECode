@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render } from 'ink-testing-library'
 import React from 'react'
-import { InputRender, TextInput } from '../../src/tui/TextInput.js'
+import { InputRender, TextInput, foldInputView } from '../../src/tui/TextInput.js'
 
 describe('InputRender', () => {
   it('空文本 + placeholder 显示占位', () => {
@@ -48,6 +48,46 @@ describe('InputRender', () => {
 })
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
+
+describe('输入大段粘贴折叠（>5 行替代显示，提交不受影响）', () => {
+  it('≤5 行不折叠照常显示', () => {
+    const text = ['一', '二', '三', '四', '五'].join('\n')
+    const { lastFrame } = render(React.createElement(InputRender, { text, caret: 0 }))
+    const f = lastFrame() ?? ''
+    for (const w of ['一', '二', '三', '四', '五']) expect(f).toContain(w)
+    expect(f).not.toContain('已折叠')
+  })
+
+  it('6 行 → 头部折叠指示 + 尾 5 行可见', () => {
+    const lines = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6']
+    const text = lines.join('\n')
+    const caret = text.length // 末尾
+    const { lastFrame } = render(React.createElement(InputRender, { text, caret }))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('已折叠 1 行（共 6 行）')
+    for (const w of ['L2', 'L3', 'L4', 'L5', 'L6']) expect(f).toContain(w)
+    expect(f).not.toContain('L1')
+  })
+
+  it('caret 移到头部区域 → 可见窗随 caret 移动', () => {
+    const lines = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10']
+    const text = lines.join('\n')
+    const caret = 3 // H1 换行后 = 第 2 行行首（H2）
+    const { lastFrame } = render(React.createElement(InputRender, { text, caret }))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('H1')
+    expect(f).toContain('H2')
+    expect(f).toContain('H5')
+    expect(f).not.toContain('H6') // 下方折叠
+    expect(f).toContain('已折叠 5 行')
+  })
+
+  it('foldInputView：caret 落在换行边界 → 归下一行行首', () => {
+    const view = foldInputView('ab\ncd', 3) // 'ab'+'\n'(2)+1 → cd 行首
+    expect(view.caretRow).toBe(1)
+    expect(view.caretCol).toBe(0)
+  })
+})
 
 describe('粘贴行尾归一（xterm.js 系终端粘贴把换行转裸 \\r）', () => {
   it('裸 \\r 粘贴 → 归一为 \\n（渲染层不再被终端当回到行首覆盖）', async () => {

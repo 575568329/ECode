@@ -29,7 +29,7 @@ import { setWebSearchProvider } from '../tools/builtin/web_search.js'
 import { taskRegistry } from '../services/tasks.js'
 import { evalPermission, loadPermissionLayers, saveLocalPermission, askPermissionInteractive } from '../services/permissions.js'
 import { join } from 'node:path'
-import { writeFileSync, chmodSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { writeFileSync, chmodSync, readFileSync, rmSync, existsSync, writeSync } from 'node:fs'
 import * as os from 'node:os'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -588,6 +588,30 @@ async function serveMode(): Promise<void> {
   await new Promise<never>(() => {}) // 常驻（无客户端不退——生命周期由上方 handler 管）
 }
 
+/** DEC 私有模式：藏/还终端硬件光标（VT100 标准，conpty 支持） */
+const CURSOR_HIDE = '\u001b[?25l'
+const CURSOR_SHOW = '\u001b[?25h'
+
+/**
+ * 终端硬件光标管理：TUI 的输入位置由自绘反色 caret 呈现（TextInput §7.2），硬件光标
+ * 在 Ink 掌屏期间纯属多余——裸留在帧尾闪烁（Ctrl+C 中断后尤其明显）。掌屏期常隐
+ * （Claude Code fork Ink 的 "hide cursor (Ink manages)" 同款），退出/恢复终端时还。
+ * 仅 TTY 写（argv/管道捕获输出不混入转义序列）；还光标用 writeSync——Node 在
+ * Windows TTY 上 stdout.write 是异步的，exit 钩子里可能来不及落地。
+ */
+function hideTerminalCursor(): void {
+  if (process.stdout.isTTY === true) process.stdout.write(CURSOR_HIDE)
+}
+
+function showTerminalCursor(): void {
+  if (process.stdout.isTTY !== true) return
+  try {
+    writeSync(process.stdout.fd, CURSOR_SHOW)
+  } catch {
+    // fd 已关（崩溃收尾竞态）——尽力而为
+  }
+}
+
 async function main(): Promise<void> {
   // M12：`ecode serve` 分流（常驻宿主 HTTP——不初始化 Ink）
   if (process.argv[2] === 'serve') {
@@ -616,6 +640,7 @@ async function main(): Promise<void> {
       } catch {
         // 已卸载（TUI 关闭路径竞态）——恢复终端幂等
       }
+      showTerminalCursor()
     },
     runSessionEndHooks: () =>
       sessionEndHook?.dispatch('SessionEnd', { event: 'SessionEnd', session_id: '' }) ?? Promise.resolve(),
@@ -627,7 +652,11 @@ async function main(): Promise<void> {
     },
   })
   // exit handler = 兜底层（graceful 路径已完成异步清理；此处覆盖 uncaught/restart 等
-  // 未走 graceful 的退出：stopNow 同步杀 + 日志 flush。注册序 = 执行序，先杀再 flush）
+  // 未走 graceful 的退出：stopNow 同步杀 + 日志 flush。注册序 = 执行序，先杀再 flush；
+  // 还光标 writeSync 同步落地，任何退出路径终端不留隐藏光标态）
+  process.on('exit', () => {
+    showTerminalCursor()
+  })
   process.on('exit', () => {
     mcpManagerRef?.stopNow()
   })
@@ -728,6 +757,7 @@ async function main(): Promise<void> {
 
   // REPL 模式：Ink TUI（exitOnCtrlC:false，由 TuiApp 的 useInterrupt 自处理双击退出——
   // 双击走 gracefulShutdown：恢复终端 → SessionEnd hooks → MCP stop → exit）
+  hideTerminalCursor()
   const instance = render(
     React.createElement(TuiApp, {
       deps,

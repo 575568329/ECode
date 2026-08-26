@@ -56,8 +56,9 @@ function renderCommitted(item: CommittedItem): ReactNode {
     case 'assistant-text':
       return <AssistantMessage text={item.text} />
     case 'tool-group':
-      // Static 完整展示（expanded=true：详设 §7.5，scrollback 不怕长，事后滚轮看 diff/输出全文）
-      return <ToolGroupView tools={callsToTools(item.calls)} expanded={true} />
+      // Static 收起固化（用户拍板：发送新对话后历史默认全收起——▸ preview 单行；
+      // 看全文在当前轮 Ctrl+O；历史轮全文回看归输出查看器 M14 挂账）
+      return <ToolGroupView tools={callsToTools(item.calls)} />
     case 'compacted':
       // M5 压缩点标记：UI 显示全量原文（投影分离），此处告知模型上下文已被摘要
       return (

@@ -78,9 +78,9 @@ export function ToolGroupView({ tools, expanded = false, done, onToggle }: ToolG
         // 副作用工具（edit_file/write_file）默认展开输出（直接显示 diff/content），
         // 只读工具默认折叠（▸ preview）；Ctrl+O 全展开覆盖
         const isSideEffect = t.name === 'edit_file' || t.name === 'write_file'
-        // 副作用工具仅在本轮结束（done）时展开 diff；进行中折叠省空间（本轮可能多 edit）；
-        // Static done=undefined → 展开（事后完整看）；Ctrl+O（expanded）强制全展
-        const showFull = expanded || (isSideEffect && done !== false)
+        // 副作用工具（edit_file/write_file）仅动态区轮末（done=true）展开 diff（看刚改了什么）；
+        // 进行中（done=false）与 Static 固化（done=undefined）都收起——历史默认全收起（用户拍板）
+        const showFull = expanded || (isSideEffect && done === true)
         const preview = previewLine(content)
         // M11-P6 todo 特化：digest 显示完成度，展开态逐项 ASCII 状态符（[x]/[->]/[ ]——ambiguous 宽度教训只用 ASCII）
         const isTodo = t.name === 'todo'

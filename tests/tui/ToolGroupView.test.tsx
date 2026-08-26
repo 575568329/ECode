@@ -143,3 +143,42 @@ describe('ToolGroupView', () => {
     expect(f).toContain('完整文件内容')
   })
 })
+
+describe('历史默认全收起（用户拍板：发送新对话后 Static 工具组不展开）', () => {
+  it('Static 形态（不传 done）：副作用工具输出也收起（▸ preview，不显 diff 全文）', () => {
+    const f = view([
+      makeTool({
+        name: 'edit_file',
+        status: 'done',
+        id: 't1',
+        input: { path: 'a.ts' },
+        content: '+ const x = 1\n- const y = 2',
+      }),
+    ])
+    expect(f).toContain('▸')
+    expect(f).not.toContain('▾ 输出')
+  })
+
+  it('动态区轮末（done=true）：副作用工具 diff 仍展开（看刚改了什么）', () => {
+    const f =
+      render(
+        React.createElement(ToolGroupView, {
+          tools: [makeTool({ name: 'edit_file', status: 'done', id: 't1', input: { path: 'a.ts' }, content: '+ 新行' })],
+          done: true,
+        }),
+      ).lastFrame() ?? ''
+    expect(f).toContain('▾')
+    expect(f).toContain('+ 新行')
+  })
+
+  it('动态区进行中（done=false）：副作用工具收起（省空间，本轮可能多 edit）', () => {
+    const f =
+      render(
+        React.createElement(ToolGroupView, {
+          tools: [makeTool({ name: 'edit_file', status: 'running', id: 't1', input: { path: 'a.ts' } })],
+          done: false,
+        }),
+      ).lastFrame() ?? ''
+    expect(f).toContain('edit_file')
+  })
+})

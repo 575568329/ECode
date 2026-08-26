@@ -26,6 +26,11 @@ describe('buildSystemPrompt（M6 S-P4）', () => {
     expect(buildSystemPrompt([], 200_000)).not.toContain('<available_skills>')
   })
 
+  it('W8 cwd 注入：opts.cwd 覆盖 process.cwd()（serve 多项目——曾烤死启动目录，加项目后 agent 报错目录）', () => {
+    const p = buildSystemPrompt([], 200_000, { cwd: 'D:/other/proj' })
+    expect(p).toContain('当前工作目录：D:/other/proj')
+  })
+
   it('有 skills → 注入 <available_skills>（预算渲染）', () => {
     const p = buildSystemPrompt([skill('commit', '按约定提交')], 200_000)
     expect(p).toContain('<available_skills>')

@@ -23,12 +23,20 @@ export interface ToolItem {
   content?: string
 }
 
+/** 内联图片（data URI 直渲——session/read 恢复形态里 image_ref 已被宿主转回 base64 ImageBlock） */
+export interface ChatImage {
+  mediaType: string
+  data: string
+}
+
 /** 单条渲染消息（历史补拉与流式共用形；tool=历史工具调用投影——tool_use/tool_result 配对） */
 export interface ChatEntry {
   kind: 'user' | 'assistant' | 'system' | 'tool'
   text: string
   name?: string
   ok?: boolean
+  /** user 消息携带图 / tool_result 附着图（read_file 读图） */
+  images?: ChatImage[]
 }
 
 export interface SessionView {
@@ -75,6 +83,20 @@ const patchView = (state: AppState, sessionId: string, patch: (v: SessionView) =
   views: { ...state.views, [sessionId]: patch(state.views[sessionId] ?? emptyView()) },
 })
 
+/** 图片块提取（ImageBlock.source.base64 → ChatImage；非 image/非 base64 块跳过） */
+function pickImages(content: unknown): ChatImage[] {
+  if (!Array.isArray(content)) return []
+  const out: ChatImage[] = []
+  for (const b of content as Array<Record<string, unknown>>) {
+    if (b.type !== 'image') continue
+    const src = b.source as { type?: string; media_type?: string; data?: string } | undefined
+    if (src !== undefined && src.type === 'base64' && typeof src.media_type === 'string' && typeof src.data === 'string') {
+      out.push({ mediaType: src.media_type, data: src.data })
+    }
+  }
+  return out
+}
+
 export const useApp = create<AppState>((set) => ({
   connState: 'connecting',
   projects: [],
@@ -95,15 +117,15 @@ export const useApp = create<AppState>((set) => ({
     set((st) =>
       patchView(st, sessionId, (v) => {
         if (!Array.isArray(lines)) return { ...v, loaded: true }
-        // 两遍投影：先收 tool_use_id → result（成败/摘要），再按序出 entry——历史轮的工具调用
+        // 两遍投影：先收 tool_use_id → result（成败/摘要/附着图），再按序出 entry——历史轮的工具调用
         // 不再被丢弃（G3 挂账：此前只投影 text 块，恢复会话看不到当时干了什么）
-        const results = new Map<string, { ok: boolean; summary: string }>()
+        const results = new Map<string, { ok: boolean; summary: string; images: ChatImage[] }>()
         for (const l of lines as Array<Record<string, unknown>>) {
           if (typeof l !== 'object' || l === null || l.role !== 'user' || !Array.isArray(l.content)) continue
           for (const b of l.content as Array<Record<string, unknown>>) {
             if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
               const content = typeof b.content === 'string' ? b.content : ''
-              results.set(b.tool_use_id, { ok: b.is_error !== true, summary: content.split('\n')[0]?.slice(0, 80) ?? '' })
+              results.set(b.tool_use_id, { ok: b.is_error !== true, summary: content.split('\n')[0]?.slice(0, 80) ?? '', images: pickImages(b.blocks) })
             }
           }
         }
@@ -114,13 +136,14 @@ export const useApp = create<AppState>((set) => ({
           const content = Array.isArray(l.content) ? (l.content as Array<Record<string, unknown>>) : []
           const text = content.filter((b) => b.type === 'text').map((b) => String(b.text ?? '')).join('')
           if (role === 'user') {
-            if (text !== '') entries.push({ kind: 'user', text })
+            const images = pickImages(content)
+            if (text !== '' || images.length > 0) entries.push({ kind: 'user', text, ...(images.length > 0 ? { images } : {}) })
           } else if (role === 'assistant') {
             if (text !== '') entries.push({ kind: 'assistant', text })
             for (const b of content) {
               if (b.type !== 'tool_use' || typeof b.name !== 'string') continue
               const r = results.get(String(b.id ?? ''))
-              entries.push({ kind: 'tool', text: r?.summary ?? '', name: b.name, ok: r?.ok ?? true })
+              entries.push({ kind: 'tool', text: r?.summary ?? '', name: b.name, ok: r?.ok ?? true, ...(r !== undefined && r.images.length > 0 ? { images: r.images } : {}) })
             }
           }
         }

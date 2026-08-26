@@ -146,6 +146,26 @@ export function serveMulti(
         })
       }
 
+      // 项目添加（web 侧栏「+」）：注册即入列表（册上项目 acquire 免 confirm——projects.ts 三件套）。
+      // 仅注册不冷起宿主——首条消息 acquire 才装配（冷启动语义不变）
+      if (req.method === 'POST' && url.pathname === '/api/projects') {
+        void (async () => {
+          try {
+            const chunks: Buffer[] = []
+            for await (const c of req) chunks.push(c as Buffer)
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as { path?: unknown }
+            const path = body.path
+            if (typeof path !== 'string' || path.trim() === '') return json(400, { ok: false, error: '缺少 path' })
+            if (!existsSync(path)) return json(404, { ok: false, error: `路径不存在：${path}` })
+            if (!statSync(path).isDirectory()) return json(400, { ok: false, error: `不是目录：${path}` })
+            return json(200, { ok: true, path: registry.register(path) })
+          } catch (e) {
+            json(400, { ok: false, error: e instanceof Error ? e.message : String(e) })
+          }
+        })()
+        return
+      }
+
       // M13-W3：mux 单流——一条 SSE 汇所有项目所有会话（HostEvent 生命周期帧 + 信封事件帧）。
       // 连接三连：baseline（活项目+活会话）→ pending 审批重放（HostSession.subscribe 自带）→ 持续广播
       if (req.method === 'GET' && url.pathname === '/api/events.mux') {
@@ -227,6 +247,16 @@ export function serveMulti(
             const cmd = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown>
             const h = await resolveHost(project, confirm)
             if ('error' in h) return json(h.code, { ok: false, error: h.error })
+            // 项目级 session/new：真新建（区别于缺省路由的 ensureDefault 复用默认会话——
+            // 「+新对话」两次进同一会话的病灶）。ensure 即挂活 + created 帧广播（mux 列表
+            // 自动同步）；冷项目首个新会话顺位成默认（缺省路由随后命中），不额外起承载会话
+            const opName = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : cmd) as { op?: string }
+            if (opName.op === 'session/new') {
+              const sid = freshSessionId()
+              h.host.ensure(sid)
+              h.host.touch(sid)
+              return json(200, { ok: true, sessionId: sid })
+            }
             const routed = await routeConversation(h.host, cmd)
             if ('error' in routed) return json(routed.code, { ok: false, error: routed.error })
             const inner = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : cmd) as Parameters<HostSession['send']>[0]

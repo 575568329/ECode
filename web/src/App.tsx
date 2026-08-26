@@ -1,13 +1,16 @@
 /**
  * M13-W5 骨架页：token 门 → 两级列表（项目 → 会话）+ 连接状态条。
- * W6a/b 在此长出对话区与审批 UI。
+ * W8 布局批（harness 同款 AppFrame 形）：主列 = 滚动体（hero/对话）+ 常驻底部输入区
+ * （session-optional——未选项目禁用占位、hero 态输入即开新对话）；侧栏可添加项目。
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft } from 'lucide-react'
-import { connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
+import { ArrowLeft, Plus } from 'lucide-react'
+import { addProject, connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
 import { useApp, type SessionBrief } from './store'
+import { makeHash, parseHash, type RoutePos } from './routing'
 import { Conversation } from './Conversation'
+import { Composer } from './Composer'
 
 /** 同源定位 daemon（dev 模式经 vite proxy；托管形态同源直连） */
 const BASE = ''
@@ -71,27 +74,31 @@ function SessionRow({ brief, active, onClick }: { brief: SessionBrief; active: b
   )
 }
 
-/** hash 路由（零服务端改动——SPA 免 fallback）：#/p/<项目>[/s/<会话|new>]。
- * 深链/刷新/后退可用；store↔hash 双向同步（先比对防回环）。 */
-interface RoutePos {
-  p: string | null
-  s: string | null // null=未选会话；''=新对话占位
-}
-function parseHash(): RoutePos {
-  const m = /^#\/p\/([^/]+)(?:\/s\/([^/]+))?$/.exec(location.hash)
-  if (m === null) return { p: null, s: null }
-  return { p: decodeURIComponent(m[1]), s: m[2] === undefined ? null : m[2] === 'new' ? '' : decodeURIComponent(m[2]) }
-}
-function makeHash(pos: RoutePos): string {
-  if (pos.p === null) return '#/'
-  const base = `#/p/${encodeURIComponent(pos.p)}`
-  return pos.s === null ? base : `${base}/s/${pos.s === '' ? 'new' : encodeURIComponent(pos.s)}`
+/** W7：软键盘视口跟随（iOS visualViewport——键盘弹起时压缩可视高度，输入区保持可见） */
+function KeyboardAware({ children }: { children: React.ReactNode }): React.JSX.Element {
+  useEffect(() => {
+    const vv = window.visualViewport
+    if (vv === null || vv === undefined) return
+    const onResize = (): void => {
+      document.documentElement.style.setProperty('--vvh', `${vv.height}px`)
+    }
+    vv.addEventListener('resize', onResize)
+    onResize()
+    return () => vv.removeEventListener('resize', onResize)
+  }, [])
+  return <div style={{ height: 'var(--vvh, auto)' }}>{children}</div>
 }
 
 export function App(): React.JSX.Element {
   const [ready, setReady] = useState(getToken() !== '')
   const [checked, setChecked] = useState(false)
   const [unauthorized, setUnauthorized] = useState(false)
+  // 添加项目（侧栏「+」——内联表单；错误就地展示，成功即选中进 hero 态）
+  const [adding, setAdding] = useState(false)
+  const [addBusy, setAddBusy] = useState(false)
+  const [newPath, setNewPath] = useState('')
+  const [addErr, setAddErr] = useState('')
+  const [creating, setCreating] = useState(false)
   const { projects, sessions, selectedProject, selectedSession, select, setProjects, applyHost, applyFrame, setConn, upsertSession } = useApp()
   const loadHistory = useApp((s) => s.loadHistory)
   // hashchange 闭包读最新选中态（effect 只挂一次 select 依赖）
@@ -193,7 +200,7 @@ export function App(): React.JSX.Element {
   }, [selectedProject, selectedSession])
   useEffect(() => {
     const apply = (): void => {
-      const h = parseHash()
+      const h = parseHash(location.hash)
       const cur: RoutePos = { p: selectedProjectRef.current, s: selectedSessionRef.current }
       if (h.p !== cur.p || h.s !== cur.s) select(h.p, h.s)
     }
@@ -206,6 +213,41 @@ export function App(): React.JSX.Element {
     () => sessions.filter((s) => s.project === selectedProject).sort((a, b) => b.updatedAt - a.updatedAt),
     [sessions, selectedProject],
   )
+
+  /** 真新建会话（「+新对话」/hero 输入共用）：serve 信封层 session/new → 实 id 转正选中。
+   *  旧「''占位+prompt 隐式建」废弃（缺省路由复用默认会话——两次 +新对话进同一会话的病灶） */
+  const startNewSession = (): void => {
+    if (selectedProject === null || creating) return
+    setCreating(true)
+    sendCommand(BASE, selectedProject, undefined, { op: 'session/new' })
+      .then((r) => {
+        if (r.ok && r.sessionId !== undefined && r.sessionId !== '') {
+          loadHistory(r.sessionId, [])
+          upsertSession({ project: selectedProject, sessionId: r.sessionId, running: false, title: '', updatedAt: Date.now() })
+          select(selectedProject, r.sessionId)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setCreating(false))
+  }
+
+  /** 添加项目：注册即入列表（不冷起宿主）；成功用服务端规范化路径选中（导航 /api/p 须同串） */
+  const submitAddProject = (): void => {
+    const p = newPath.trim()
+    if (p === '' || addBusy) return
+    setAddBusy(true)
+    setAddErr('')
+    addProject(BASE, p)
+      .then(async (norm) => {
+        const list = await fetchProjects(BASE)
+        setProjects([...new Set([...(list.registered ?? []).map((x) => x.path), ...(list.history ?? [])])])
+        setAdding(false)
+        setNewPath('')
+        select(norm, null)
+      })
+      .catch((e: unknown) => setAddErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setAddBusy(false))
+  }
 
   if (!checked) return <div className="flex h-full items-center justify-center text-sm text-neutral-600">…</div>
   if (!ready)
@@ -231,7 +273,56 @@ export function App(): React.JSX.Element {
           <ConnBadge />
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-2">
-          <div className="px-1 pb-1 pt-2 text-[11px] uppercase tracking-wider text-neutral-600">项目</div>
+          <div className="flex items-center justify-between px-1 pb-1 pt-2 text-[11px] uppercase tracking-wider text-neutral-600">
+            项目
+            <button
+              onClick={() => {
+                setAdding(!adding)
+                setAddErr('')
+              }}
+              title="添加项目（本机绝对路径）"
+              className="flex h-5 w-5 items-center justify-center rounded text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
+            >
+              <Plus size={12} />
+            </button>
+          </div>
+          {adding && (
+            <form
+              className="mb-1 px-1"
+              onSubmit={(e) => {
+                e.preventDefault()
+                submitAddProject()
+              }}
+            >
+              <input
+                autoFocus
+                value={newPath}
+                onChange={(e) => {
+                  setNewPath(e.target.value)
+                  if (addErr !== '') setAddErr('')
+                }}
+                placeholder="本机项目绝对路径（D:/study/foo）"
+                className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-xs outline-none focus:border-neutral-500"
+              />
+              {addErr !== '' && <div className="pt-1 text-[11px] text-red-400">{addErr}</div>}
+              <div className="flex gap-1.5 pt-1.5">
+                <button type="submit" disabled={newPath.trim() === '' || addBusy} className="rounded bg-neutral-200 px-2 py-1 text-[11px] font-medium text-neutral-900 disabled:opacity-30">
+                  {addBusy ? '添加中…' : '添加'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdding(false)
+                    setNewPath('')
+                    setAddErr('')
+                  }}
+                  className="rounded px-2 py-1 text-[11px] text-neutral-500 hover:text-neutral-300"
+                >
+                  取消
+                </button>
+              </div>
+            </form>
+          )}
           {projects.map((p) => {
             const short = p.split('/').filter(Boolean).slice(-2).join('/')
             return (
@@ -246,7 +337,7 @@ export function App(): React.JSX.Element {
               </button>
             )
           })}
-          {projects.length === 0 && <div className="px-2 py-3 text-xs text-neutral-600">暂无项目（daemon 侧跑一次会话后出现）</div>}
+          {projects.length === 0 && <div className="px-2 py-3 text-xs text-neutral-600">暂无项目——点上方「+」添加，或在本机项目里跑一次 ecode</div>}
           {selectedProject !== null && (
             <>
               <div className="px-1 pb-1 pt-3 text-[11px] uppercase tracking-wider text-neutral-600">会话</div>
@@ -254,20 +345,17 @@ export function App(): React.JSX.Element {
                 <SessionRow key={s.sessionId} brief={s} active={selectedSession === s.sessionId} onClick={() => select(selectedProject, s.sessionId)} />
               ))}
               <button
-                onClick={() => {
-                  // 新建对话：prompt 不带 sessionId=隐式建（三态③）——骨架期发个占位会先建立；
-                  // W6b 接输入框后由真实 prompt 触发
-                  select(selectedProject, '')
-                }}
-                className="mt-1 w-full rounded border border-dashed border-neutral-700 px-2 py-1.5 text-xs text-neutral-500 hover:border-neutral-500 hover:text-neutral-300"
+                onClick={startNewSession}
+                disabled={creating}
+                className="mt-1 w-full rounded border border-dashed border-neutral-700 px-2 py-1.5 text-xs text-neutral-500 hover:border-neutral-500 hover:text-neutral-300 disabled:opacity-40"
               >
-                + 新对话
+                {creating ? '新建中…' : '+ 新对话'}
               </button>
             </>
           )}
         </div>
       </aside>
-      {/* 对话区（移动=详情态占满+顶栏返回；桌面常驻） */}
+      {/* 主列（移动=详情态占满+顶栏返回；桌面常驻）：滚动体（hero/对话）+ 常驻底部输入区 */}
       <main className={`flex min-h-0 flex-1 flex-col ${mobileDetail ? 'flex' : 'hidden md:flex'}`}>
         {mobileDetail && (
           <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-2 md:hidden">
@@ -278,13 +366,26 @@ export function App(): React.JSX.Element {
           </div>
         )}
         {selectedProject === null ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-neutral-600">选择左侧项目</div>
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
+            <div className="text-base font-semibold tracking-wide">ECode</div>
+            <div className="max-w-md text-sm text-neutral-600">选择左侧项目开始，或点侧栏「+」添加本机项目</div>
+          </div>
         ) : selectedSession === null ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-neutral-600">选择会话或新建对话</div>
+          // hero 态：输入即开新对话（composer 常驻下方——harness 空 hero + 常驻 bar 同款）
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-10 text-center">
+            <div className="text-lg font-semibold tracking-wide">新对话</div>
+            <div className="max-w-md text-sm text-neutral-500">在下方输入框输入即开新对话；或从左侧选择历史会话继续。</div>
+            <div className="max-w-md truncate rounded border border-neutral-800 px-2 py-1 font-mono text-[11px] text-neutral-600" title={selectedProject}>
+              {selectedProject}
+            </div>
+          </div>
         ) : (
-          // selectedSession 可能是空串（+ 新对话 占位）——Conversation 空态 + Composer isNew 发送后转正
           <Conversation project={selectedProject} sessionId={selectedSession} />
         )}
+        {/* 常驻输入区（session-optional）：未选项目禁用占位；审批/单选挂起时 takeover 占位 */}
+        <KeyboardAware>
+          <Composer project={selectedProject} sessionId={selectedSession} />
+        </KeyboardAware>
       </main>
     </div>
   )

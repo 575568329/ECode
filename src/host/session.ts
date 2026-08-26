@@ -254,7 +254,10 @@ export class HostSession {
     const providerReq = buildProviderReq(cfg)
     const maxKB = cfg.maxInstructionsKB
     const ctxWindow = this.ctxWindowCache ?? this.deps.ctxWindowHint?.() ?? 200_000
-    const system = buildSystemPrompt(deps.skillListForPrompt(), ctxWindow, maxKB !== undefined ? { maxInstructionBytes: maxKB * 1024 } : undefined)
+    const system = buildSystemPrompt(deps.skillListForPrompt(), ctxWindow, {
+      ...(maxKB !== undefined ? { maxInstructionBytes: maxKB * 1024 } : {}),
+      cwd: deps.cwd ?? process.cwd(),
+    })
     const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, {
       onCompacted: () => this.publish('compacted', {}),
       history: deps.history,
@@ -537,11 +540,10 @@ export class HostSession {
           this.cfg().providers[this.cfg().current.name]?.contextWindow,
         ))
       const maxKB = this.cfg().maxInstructionsKB
-      const system = buildSystemPrompt(
-        deps.skillListForPrompt(),
-        ctxWindow,
-        maxKB !== undefined ? { maxInstructionBytes: maxKB * 1024 } : undefined,
-      )
+      const system = buildSystemPrompt(deps.skillListForPrompt(), ctxWindow, {
+        ...(maxKB !== undefined ? { maxInstructionBytes: maxKB * 1024 } : {}),
+        cwd: deps.cwd ?? process.cwd(),
+      })
       const onBeforeRequest = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, {
         onCompacted: () => this.publish('compacted', {}),
         history: deps.history,

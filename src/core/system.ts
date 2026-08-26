@@ -17,12 +17,15 @@ import { loadMemoryIndexes, renderMemory } from '../services/memory.js'
 export interface SystemPromptOpts {
   /** 指令/记忆单级上限字节（config maxInstructionsKB × 1024；缺省 32KB） */
   maxInstructionBytes?: number
+  /** 会话项目目录（serve 多项目各会话 cwd 不同——曾烤死 process.cwd()，web 加项目后
+   *  agent 以为在 serve 启动目录而 bash 实际跑在项目目录，相对路径错位；缺省=单进程形态两者相同） */
+  cwd?: string
 }
 
 export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number, opts?: SystemPromptOpts): string {
   // —— 静态前缀（永不变，cache 友好）——
   const prefix = `你是 ECode，一个终端 Agent CLI。你能通过工具读文件、执行命令、搜索代码，帮用户完成编程任务。
-当前工作目录：${process.cwd()}
+当前工作目录：${opts?.cwd ?? process.cwd()}
 当前平台：${process.platform}
 
 工具选择指引（选对工具，避免反复试错）：

@@ -53,9 +53,12 @@ export class ProjectRegistry {
     return () => this.hostListeners.delete(cb)
   }
 
-  /** 项目发现：显式注册（--add）+ 历史会话 meta.cwd 反推（由调用方喂入——注册表不读 history） */
-  register(path: string): void {
-    this.registered.add(this.normalize(path))
+  /** 项目发现：显式注册（--add / web 添加）+ 历史会话 meta.cwd 反推（由调用方喂入——注册表不读 history）。
+   *  返回规范化路径（realpath+正斜杠）——web 添加后须用同一字符串导航 /api/p/<path> */
+  register(path: string): string {
+    const normalized = this.normalize(path)
+    this.registered.add(normalized)
+    return normalized
   }
 
   listKnown(): ProjectEntry[] {

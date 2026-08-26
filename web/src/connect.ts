@@ -65,8 +65,8 @@ export function connectMux(
   const abort = new AbortController()
   const muxUrl =
     sessionId !== undefined && sessionId !== ''
-      ? `${base}/api/events.mux?sessionId=${encodeURIComponent(sessionId)}`
-      : `${base}/api/events.mux`
+      ? `${base}/api/events.mux?sessionId=${encodeURIComponent(sessionId)}&confirm=true`
+      : `${base}/api/events.mux?confirm=true`
 
   const visibilityResume = (): void => {
     if (document.visibilityState === 'visible' && attempt > 0) {
@@ -146,7 +146,9 @@ export async function sendCommand(
 ): Promise<{ ok: boolean; error?: string; sessionId?: string; value?: unknown; [k: string]: unknown }> {
   const body: Record<string, unknown> = { op }
   if (sessionId !== undefined && sessionId !== '') body.sessionId = sessionId
-  const res = await fetch(`${base}/api/p/${encodeURIComponent(project)}/cmd`, {
+  // confirm=true：web 每条命令都源自用户显式交互（点项目/发送）＝栅栏要求的二次确认语义
+  // 本身；不带则历史反推项目首拉 428（命令静默失败——列表空死的根因）
+  const res = await fetch(`${base}/api/p/${encodeURIComponent(project)}/cmd?confirm=true`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${getToken()}` },
     body: JSON.stringify(body),
@@ -169,4 +171,20 @@ export async function fetchProjects(
   }
   if (!res.ok) throw new Error(`projects HTTP ${res.status}`)
   return (await res.json()) as { registered: Array<{ path: string }>; active: Array<{ path: string }>; history: string[] }
+}
+
+/** 添加项目（web 侧栏「+」）：注册入列表（不冷起宿主）；返回规范化路径（导航 /api/p/<path> 须用它）。 */
+export async function addProject(base: string, path: string): Promise<string> {
+  const res = await fetch(`${base}/api/projects`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${getToken()}` },
+    body: JSON.stringify({ path }),
+  })
+  if (res.status === 401) {
+    clearToken()
+    throw new Error('未授权——token 已失效，请重新输入')
+  }
+  const r = (await res.json()) as { ok: boolean; path?: string; error?: string }
+  if (!r.ok || r.path === undefined) throw new Error(r.error ?? `添加失败 HTTP ${res.status}`)
+  return r.path
 }

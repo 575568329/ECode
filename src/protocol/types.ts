@@ -99,6 +99,9 @@ export type ProtocolCommand =
   | { op: 'session/list' }
   | { op: 'session/read'; sessionId: string; beforeSeq?: number; limit?: number }
   | { op: 'session/restore'; sessionId: string }
+  /** 真新建会话（web「+新对话」）——项目级命令，serve 信封层（multi.ts）直接拦截不走会话
+   *  dispatch：经会话承载会让冷项目为承载命令多起一个空默认会话；回执 sessionId。 */
+  | { op: 'session/new' }
   | { op: 'session/clear' }
   | { op: 'rewind/list' }
   | { op: 'rewind/exec'; target: number }

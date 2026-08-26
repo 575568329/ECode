@@ -142,6 +142,46 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     expect(r5).toMatchObject({ ok: true, sessionId: 'sess-A' })
   })
 
+  it('W8 session/new 真新建：回执新 id 挂活（显式路由可达）；两次新建不落同一会话', async () => {
+    const pA = enc(dirA)
+    const r1 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/new' } }) })).json()
+    expect(r1).toMatchObject({ ok: true })
+    const sid1 = r1.sessionId as string
+    expect(sid1).not.toBe('sess-A') // 不复用默认会话（旧「+新对话进同一会话」病灶）
+    // 新会话已挂活：显式 sessionId 路由命中（非 404）
+    const r2 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ sessionId: sid1, op: { op: 'session/list' } }) })).json()
+    expect(r2).toMatchObject({ ok: true, sessionId: sid1 })
+    // 第二次新建 → 不同 id（经会话承载的旧实现会因 ensureDefault 复用落同会话）
+    const r3 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/new' } }) })).json()
+    expect(r3.sessionId).not.toBe(sid1)
+    // 裸命令形态同效（过渡兼容）
+    const r4 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: 'session/new' }) })).json()
+    expect(r4).toMatchObject({ ok: true })
+  })
+
+  it('W8 POST /api/projects：注册入列（规范化回执）+ 路径校验 + 注册项目免 confirm', async () => {
+    // 未带 path → 400
+    const bad = await fetch(`${base}/api/projects`, { method: 'POST', headers: auth, body: '{}' })
+    expect(bad.status).toBe(400)
+    // 不存在路径 → 404
+    const nf = await (await fetch(`${base}/api/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ path: 'X:/不存在-' + Date.now() }) })).json()
+    expect(nf).toMatchObject({ ok: false })
+    // 真目录 → 规范化路径回执 + 列表可见 + acquire 免 confirm（registered 集合命中三件套豁免）
+    const dirD = mkdtempSync(join(tmpdir(), 'ecode-projD-'))
+    try {
+      const add = await (await fetch(`${base}/api/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ path: dirD }) })).json()
+      expect(add).toMatchObject({ ok: true })
+      const normalized = (add as { path: string }).path
+      expect(normalized).toContain('/') // 统一正斜杠（HTTP 项目路径约定）
+      const list = await (await fetch(`${base}/api/projects`, { headers: auth })).json()
+      expect((list.registered as Array<{ path: string }>).some((x) => x.path === normalized)).toBe(true)
+      const cmd = await (await fetch(`${base}/api/p/${enc(normalized)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/list' } }) })).json()
+      expect(cmd).toMatchObject({ ok: true }) // 无 confirm 直接放行
+    } finally {
+      rmSync(dirD, { recursive: true, force: true })
+    }
+  })
+
   it('G2 双客户端附着：HttpTransport 双端事件一致（B7 已验证的订阅实现）', async () => {
     const t1 = new HttpTransport(base, srv.token)
     const t2 = new HttpTransport(base, srv.token)

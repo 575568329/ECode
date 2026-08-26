@@ -554,3 +554,59 @@ describe('runLoop：中断分类（Ctrl+C 中断链路）', () => {
     expect(warns).toEqual([]) // 中断不是错误，不该刷「Request was aborted.」
   })
 })
+
+describe('runLoop：真实 SDK abort 静默收尾（pty 实测形态——abort 不抛错，流正常结束）', () => {
+  /** 模拟真实 @anthropic-ai/sdk + undici：fetch abort 后事件流迭代器**正常 return**
+   *  （无异常、无 done 帧截断收尾）——loop 若只认异常会把中断当正常 end */
+  class SilentAbortProvider implements LLMProvider {
+    readonly type = 'mock'
+    async *run(req: LLMProviderRunRequest): AsyncIterable<Delta> {
+      yield { type: 'text', text: '思考中' }
+      yield {
+        type: 'tool_use_start',
+        id: 't-silent',
+        name: 'echo',
+      }
+      yield { type: 'tool_use_end', id: 't-silent' }
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, 30_000)
+        req.signal?.addEventListener('abort', () => { clearTimeout(t); resolve() }, { once: true })
+      })
+      // 无 done 帧，生成器直接结束（真实 SDK 截断形态）
+    }
+  }
+
+  it('signal 已断时流静默结束 → 判 aborted：工具不执行（stop-lying 防御不让路）', async () => {
+    const ac = new AbortController()
+    const toolExec = vi.fn(async () => ({ content: '不该执行' }))
+    const echo: Tool = {
+      name: 'echo', description: 'e',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: true,
+      execute: toolExec,
+    }
+    const reg = new ToolRegistryImpl()
+    reg.register(echo)
+    const acts: string[] = []
+    const opts: LoopRunOptions = {
+      provider: new SilentAbortProvider(),
+      tools: reg,
+      logger: noopLogger,
+      history: new NoopHistoryStore(),
+      callbacks: {
+        onText: vi.fn(),
+        onActivity: (s) => acts.push(s),
+      },
+      providerReq: { name: 't', baseURL: 'http://x', apiKey: 'k', model: 'm' },
+      system: 's',
+      maxIterations: 10,
+      toolCtx: { cwd: process.cwd(), signal: ac.signal },
+      signal: ac.signal,
+    }
+    const runP = runLoop([], 'go', opts)
+    setTimeout(() => ac.abort(), 80)
+    await runP
+    expect(acts).toContain('aborted')
+    expect(toolExec).not.toHaveBeenCalled()
+  })
+})

@@ -213,6 +213,10 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
             break
         }
       }
+      // 真实 SDK abort 语义（pty 实测，loop 日志实证）：fetch abort 不抛错——流静默正常收尾
+      //（done 缺失/截断），for-await 干净结束。若不兜底会当正常 end 走停止判定：
+      // 有 tool_use 时 stop-lying 防御还会继续执行工具=中断失效。signal 已断即权威判中断。
+      if (opts.signal?.aborted) stopReason = 'aborted'
     } catch (e) {
       if (streamError === null) streamError = toAppError(e)
       // abort 判定三源：裸 AbortError / Anthropic SDK 手动 abort 抛 APIUserAbortError（name 不同，

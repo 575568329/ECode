@@ -23,10 +23,12 @@ export interface ToolItem {
   content?: string
 }
 
-/** 单条渲染消息（历史补拉与流式共用形） */
+/** 单条渲染消息（历史补拉与流式共用形；tool=历史工具调用投影——tool_use/tool_result 配对） */
 export interface ChatEntry {
-  kind: 'user' | 'assistant' | 'system'
+  kind: 'user' | 'assistant' | 'system' | 'tool'
   text: string
+  name?: string
+  ok?: boolean
 }
 
 export interface SessionView {
@@ -36,13 +38,15 @@ export interface SessionView {
   streaming: string
   queue: string[]
   loaded: boolean
+  /** 历史补拉失败原因（''=无；Conversation 顶部红条 + 重试） */
+  loadError: string
   /** W6b：挂起审批（approval/requested 帧——composer-takeover 渲染） */
   approval: { requestId: string; kind?: string; tool: string; preview: string; decisions: string[] } | null
   /** W6b：挂起单选（askSelect/requested 帧） */
   askSelect: { requestId: string; title: string; options: string[] } | null
 }
 
-export const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, approval: null, askSelect: null })
+export const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, loadError: '', approval: null, askSelect: null })
 
 interface AppState {
   connState: 'connecting' | 'open' | 'backoff'
@@ -58,8 +62,11 @@ interface AppState {
   setProjects: (ps: string[]) => void
   select: (project: string | null, session: string | null) => void
   upsertSession: (b: SessionBrief) => void
-  /** W6a：历史补拉（session/read 返回的 HistoryLine 投影为 entries） */
+  /** W6a：历史补拉（session/read 返回的 HistoryLine 投影为 entries——含工具调用配对投影） */
   loadHistory: (sessionId: string, lines: unknown) => void
+  /** 补拉失败标记（顶部红条 + 重试入口）；retryLoad 清标记并重置 loaded 触发重拉 */
+  setLoadError: (sessionId: string, msg: string) => void
+  retryLoad: (sessionId: string) => void
   /** 发送成功即时上屏 user 消息（当前轮 user 不经任何帧回推——G3 实测缺口） */
   appendUser: (sessionId: string, text: string) => void
 }
@@ -88,22 +95,40 @@ export const useApp = create<AppState>((set) => ({
     set((st) =>
       patchView(st, sessionId, (v) => {
         if (!Array.isArray(lines)) return { ...v, loaded: true }
+        // 两遍投影：先收 tool_use_id → result（成败/摘要），再按序出 entry——历史轮的工具调用
+        // 不再被丢弃（G3 挂账：此前只投影 text 块，恢复会话看不到当时干了什么）
+        const results = new Map<string, { ok: boolean; summary: string }>()
+        for (const l of lines as Array<Record<string, unknown>>) {
+          if (typeof l !== 'object' || l === null || l.role !== 'user' || !Array.isArray(l.content)) continue
+          for (const b of l.content as Array<Record<string, unknown>>) {
+            if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+              const content = typeof b.content === 'string' ? b.content : ''
+              results.set(b.tool_use_id, { ok: b.is_error !== true, summary: content.split('\n')[0]?.slice(0, 80) ?? '' })
+            }
+          }
+        }
         const entries: ChatEntry[] = []
         for (const l of lines as Array<Record<string, unknown>>) {
           if (typeof l !== 'object' || l === null || !('role' in l)) continue // 边界/rewind/统计行跳过
           const role = l.role as string
-          const content = Array.isArray(l.content) ? (l.content as Array<{ type: string; text?: string }>) : []
-          const text = content
-            .filter((b) => b.type === 'text')
-            .map((b) => b.text ?? '')
-            .join('')
-          if (text === '') continue
-          if (role === 'user') entries.push({ kind: 'user', text })
-          else if (role === 'assistant') entries.push({ kind: 'assistant', text })
+          const content = Array.isArray(l.content) ? (l.content as Array<Record<string, unknown>>) : []
+          const text = content.filter((b) => b.type === 'text').map((b) => String(b.text ?? '')).join('')
+          if (role === 'user') {
+            if (text !== '') entries.push({ kind: 'user', text })
+          } else if (role === 'assistant') {
+            if (text !== '') entries.push({ kind: 'assistant', text })
+            for (const b of content) {
+              if (b.type !== 'tool_use' || typeof b.name !== 'string') continue
+              const r = results.get(String(b.id ?? ''))
+              entries.push({ kind: 'tool', text: r?.summary ?? '', name: b.name, ok: r?.ok ?? true })
+            }
+          }
         }
-        return { ...v, entries, loaded: true }
+        return { ...v, entries, loaded: true, loadError: '' }
       }),
     ),
+  setLoadError: (sessionId, msg) => set((st) => patchView(st, sessionId, (v) => ({ ...v, loaded: true, loadError: msg }))),
+  retryLoad: (sessionId) => set((st) => patchView(st, sessionId, (v) => ({ ...v, loaded: false, loadError: '' }))),
   appendUser: (sessionId, text) =>
     set((st) =>
       patchView(st, sessionId, (v) => ({

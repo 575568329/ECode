@@ -18,6 +18,10 @@ export function getToken(): string {
 export function setToken(t: string): void {
   localStorage.setItem(TOKEN_KEY, t)
 }
+/** 401 时清除失效凭据（App 层收到 onUnauthorized 后回 token 门重输——G3 挂账缺陷修复） */
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY)
+}
 
 export interface MuxFrame {
   project: string
@@ -51,6 +55,8 @@ export function connectMux(
     onHost?: (h: HostEventFrame['host']) => void
     onReconnect?: () => void
     onState?: (s: 'connecting' | 'open' | 'backoff') => void
+    /** 401：token 已清除（clearToken），调用方应回 token 门重输——不再退避重试（G3 挂账缺陷修复） */
+    onUnauthorized?: () => void
   },
   sessionId?: string,
 ): MuxConnection {
@@ -80,6 +86,13 @@ export function connectMux(
           signal: abort.signal,
         })
         clearTimeout(openTimer)
+        if (res.status === 401) {
+          // token 失效：清凭据 + 上报后终止循环——退避重试 401 只会永远死循环（G3 实测）
+          clearToken()
+          disposed = true
+          handlers.onUnauthorized?.()
+          break
+        }
         if (!res.ok || res.body === null) throw new Error(`HTTP ${res.status}`)
         const reader = res.body
           .pipeThrough(new TextDecoderStream())
@@ -138,7 +151,10 @@ export async function sendCommand(
     headers: { 'content-type': 'application/json', authorization: `Bearer ${getToken()}` },
     body: JSON.stringify(body),
   })
-  if (res.status === 401) throw new Error('未授权——请检查 token')
+  if (res.status === 401) {
+    clearToken() // 命令通道 401 同样清凭据——App 的 mux onUnauthorized 会回 token 门
+    throw new Error('未授权——token 已失效，请重新输入')
+  }
   return (await res.json()) as { ok: boolean }
 }
 
@@ -147,6 +163,10 @@ export async function fetchProjects(
   base: string,
 ): Promise<{ registered: Array<{ path: string }>; active: Array<{ path: string }>; history: string[] }> {
   const res = await fetch(`${base}/api/projects`, { headers: { authorization: `Bearer ${getToken()}` } })
+  if (res.status === 401) {
+    clearToken()
+    throw new Error('未授权——token 已失效，请重新输入')
+  }
   if (!res.ok) throw new Error(`projects HTTP ${res.status}`)
   return (await res.json()) as { registered: Array<{ path: string }>; active: Array<{ path: string }>; history: string[] }
 }

@@ -3,7 +3,7 @@
  * W6a/b 在此长出对话区与审批 UI。
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
 import { useApp, type SessionBrief } from './store'
@@ -12,7 +12,7 @@ import { Conversation } from './Conversation'
 /** 同源定位 daemon（dev 模式经 vite proxy；托管形态同源直连） */
 const BASE = ''
 
-function TokenGate({ onReady }: { onReady: () => void }): React.JSX.Element {
+function TokenGate({ onReady, hint }: { onReady: () => void; hint?: string }): React.JSX.Element {
   const [value, setValue] = useState('')
   const [error, setError] = useState('')
   return (
@@ -23,12 +23,14 @@ function TokenGate({ onReady }: { onReady: () => void }): React.JSX.Element {
           e.preventDefault()
           if (value.trim() === '') return
           setToken(value.trim())
+          setError('')
           fetchProjects(BASE)
             .then(() => onReady())
-            .catch((err: unknown) => setError(String(err)))
+            .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
         }}
       >
         <div className="text-sm text-neutral-400">连接 ECode daemon（~/.ecode/server.json 的 token）</div>
+        {hint !== undefined && hint !== '' && <div className="text-xs text-amber-400">⚠ {hint}</div>}
         <input
           type="password"
           autoFocus
@@ -69,12 +71,36 @@ function SessionRow({ brief, active, onClick }: { brief: SessionBrief; active: b
   )
 }
 
+/** hash 路由（零服务端改动——SPA 免 fallback）：#/p/<项目>[/s/<会话|new>]。
+ * 深链/刷新/后退可用；store↔hash 双向同步（先比对防回环）。 */
+interface RoutePos {
+  p: string | null
+  s: string | null // null=未选会话；''=新对话占位
+}
+function parseHash(): RoutePos {
+  const m = /^#\/p\/([^/]+)(?:\/s\/([^/]+))?$/.exec(location.hash)
+  if (m === null) return { p: null, s: null }
+  return { p: decodeURIComponent(m[1]), s: m[2] === undefined ? null : m[2] === 'new' ? '' : decodeURIComponent(m[2]) }
+}
+function makeHash(pos: RoutePos): string {
+  if (pos.p === null) return '#/'
+  const base = `#/p/${encodeURIComponent(pos.p)}`
+  return pos.s === null ? base : `${base}/s/${pos.s === '' ? 'new' : encodeURIComponent(pos.s)}`
+}
+
 export function App(): React.JSX.Element {
   const [ready, setReady] = useState(getToken() !== '')
   const [checked, setChecked] = useState(false)
+  const [unauthorized, setUnauthorized] = useState(false)
   const { projects, sessions, selectedProject, selectedSession, select, setProjects, applyHost, applyFrame, setConn, upsertSession } = useApp()
+  // hashchange 闭包读最新选中态（effect 只挂一次 select 依赖）
+  const selectedProjectRef = useRef(selectedProject)
+  selectedProjectRef.current = selectedProject
+  const selectedSessionRef = useRef(selectedSession)
+  selectedSessionRef.current = selectedSession
 
-  // token 预检（已有 token 验证可达性）
+  // token 预检（已有 token 验证可达性）。401 时 connect 层已 clearToken → 回 token 门重输
+  // （G3 挂账缺陷：此前 401 也进主界面 → mux 无限退避"重连中"，被锁死只能手动清存储）
   useEffect(() => {
     if (getToken() === '') {
       setChecked(true)
@@ -82,7 +108,12 @@ export function App(): React.JSX.Element {
     }
     fetchProjects(BASE)
       .then(() => setReady(true))
-      .catch(() => setReady(true)) // 失败也进主界面（mux 状态条会显示重连）——token 错在命令层报
+      .catch(() => {
+        if (getToken() === '') {
+          setReady(false)
+          setUnauthorized(true)
+        } else setReady(true) // 网络类失败仍进主界面（mux 状态条显示重连）
+      })
       .finally(() => setChecked(true))
   }, [])
 
@@ -116,6 +147,11 @@ export function App(): React.JSX.Element {
           setConn(s)
           if (s === 'open') refreshSessions()
         },
+        // token 失效：connect 层已 clearToken + 停止重试——回 token 门带提示重输
+        onUnauthorized: () => {
+          setReady(false)
+          setUnauthorized(true)
+        },
       },
       selectedSession ?? undefined,
     )
@@ -140,13 +176,38 @@ export function App(): React.JSX.Element {
       .catch(() => {})
   }, [selectedProject, upsertSession])
 
+  // —— hash 路由双向同步（store→hash 写历史记录；hash→store 供后退/深链/刷新；先比对防回环） ——
+  useEffect(() => {
+    const fromStore: RoutePos = { p: selectedProject, s: selectedSession }
+    if (makeHash(fromStore) !== location.hash) location.hash = makeHash(fromStore)
+  }, [selectedProject, selectedSession])
+  useEffect(() => {
+    const apply = (): void => {
+      const h = parseHash()
+      const cur: RoutePos = { p: selectedProjectRef.current, s: selectedSessionRef.current }
+      if (h.p !== cur.p || h.s !== cur.s) select(h.p, h.s)
+    }
+    apply() // 首挂载吃深链
+    window.addEventListener('hashchange', apply)
+    return () => window.removeEventListener('hashchange', apply)
+  }, [select])
+
   const projectSessions = useMemo(
     () => sessions.filter((s) => s.project === selectedProject).sort((a, b) => b.updatedAt - a.updatedAt),
     [sessions, selectedProject],
   )
 
   if (!checked) return <div className="flex h-full items-center justify-center text-sm text-neutral-600">…</div>
-  if (!ready) return <TokenGate onReady={() => setReady(true)} />
+  if (!ready)
+    return (
+      <TokenGate
+        hint={unauthorized ? 'token 已失效（daemon 重启会更换 token）——请重新输入' : undefined}
+        onReady={() => {
+          setUnauthorized(false)
+          setReady(true)
+        }}
+      />
+    )
 
   // W7 移动两态：选中会话后主区占满（侧栏隐藏，顶栏返回）；md 以上常驻双栏
   const mobileDetail = selectedSession !== null

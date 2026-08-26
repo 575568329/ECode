@@ -137,6 +137,13 @@ interface TextInputProps {
 export function TextInput({ value, caret, placeholder, onInput, onSubmit, inactive }: TextInputProps): ReactElement {
   const cur: CursorState = { text: value, caret }
   useInput((input, key) => {
+    // 手动换行三键位（legacy 终端 Shift+Enter 与 Enter 同字节 \r 不可区分——跨端稳妥组合）：
+    // - Shift+Enter / Alt+Enter：kitty 协议或 ESC \r 序列可区分修饰键
+    // - Ctrl+J：裸 \n（parse-keypress 归 name='enter'，input='\n'）或 kitty 形态 ctrl+'j'
+    if ((key.return && (key.shift || key.meta)) || (!key.return && input === '\n') || (key.ctrl && input === 'j')) {
+      onInput?.(insert(cur, '\n'))
+      return
+    }
     if (key.return) {
       onSubmit?.(value)
       return

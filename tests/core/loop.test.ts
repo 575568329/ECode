@@ -516,3 +516,41 @@ describe('安全审阅修复：timeout_ms 强制 + retryable 消费', () => {
     expect(received).toBe('has')
   })
 })
+
+describe('runLoop：中断分类（Ctrl+C 中断链路）', () => {
+  /** 模拟 Anthropic SDK MessageStream 真实 abort 语义：pending 消费被 reject，
+   *  抛 e.name='APIUserAbortError'（SDK 把裸 AbortError 换名重抛——不是 'AbortError'） */
+  class AbortRealProvider implements LLMProvider {
+    readonly type = 'mock'
+    async *run(req: LLMProviderRunRequest): AsyncIterable<Delta> {
+      yield { type: 'text', text: '思考中' }
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(resolve, 30_000)
+        req.signal?.addEventListener('abort', () => {
+          clearTimeout(t)
+          const e = new Error('Request was aborted.')
+          e.name = 'APIUserAbortError'
+          reject(e)
+        }, { once: true })
+      })
+      yield { type: 'done', stop_reason: 'end' }
+    }
+  }
+
+  it('APIUserAbortError 判为 abort：立即终止，不走退避重试/不发假 warn', async () => {
+    const ac = new AbortController()
+    const opts = { ...makeOpts(new AbortRealProvider(), []), signal: ac.signal }
+    const warns: string[] = []
+    const acts: string[] = []
+    ;(opts.callbacks.onWarn as ReturnType<typeof vi.fn>).mockImplementation((m: string) => warns.push(m))
+    opts.callbacks.onActivity = (s) => acts.push(s)
+    const t0 = Date.now()
+    const runP = runLoop([], 'hi', opts)
+    setTimeout(() => ac.abort(), 80)
+    await runP
+    expect(Date.now() - t0).toBeLessThan(1500) // 不等退避（BASE_RETRY_MS 500ms 起）
+    expect(acts).toContain('aborted')
+    expect(acts).not.toContain('retry')
+    expect(warns).toEqual([]) // 中断不是错误，不该刷「Request was aborted.」
+  })
+})

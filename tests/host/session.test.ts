@@ -395,3 +395,22 @@ describe('B5：session 命令面', () => {
     host.dispose()
   })
 })
+
+describe('中断不自动续投（Ctrl+C「无法中断」根因修复）', () => {
+  it('interrupt 后轮末兜底不起队列新轮；队列保留并 systemMsg 提示', async () => {
+    const gate = Promise.withResolvers<void>()
+    const p = new MockProvider([[{ type: 'text', text: '挂着' }, { type: 'done', stop_reason: 'end' }]], [gate.promise])
+    const host = new HostSession(makeDeps(p))
+    const events = collect(host)
+    await host.send({ op: 'prompt', text: '长任务', mode: 'StartOrSteer' })
+    await host.send({ op: 'prompt', text: '排队的', mode: 'StartIfIdle' }) // 忙 → 入队
+    await host.send({ op: 'interrupt' })
+    gate.resolve()
+    await host.whenIdle()
+    // 只有一轮：中断后不允许队列条目立刻自动起新轮（看似模型停不下来）
+    expect(events.filter((e) => e.type === 'turn/started').length).toBe(1)
+    // 队列不弃（CC 同款）：systemMsg 提示保留条数，queue/snapshot 仍含条目
+    expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('插话队列保留 1 条'))).toBe(true)
+    expect(events.some((e) => e.type === 'queue/snapshot' && (e.items ?? []).includes('排队的'))).toBe(true)
+  })
+})

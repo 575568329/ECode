@@ -215,7 +215,10 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
       }
     } catch (e) {
       if (streamError === null) streamError = toAppError(e)
-      const isAbort = e instanceof Error && e.name === 'AbortError'
+      // abort 判定三源：裸 AbortError / Anthropic SDK 手动 abort 抛 APIUserAbortError（name 不同，
+      // 错分类成可重试会走退避+假 warn）/ signal 已断（宿主 interrupt——兜底权威判据）
+      const isAbort =
+        e instanceof Error && (e.name === 'AbortError' || e.name === 'APIUserAbortError') ? true : opts.signal?.aborted === true
       if (isAbort) {
         stopReason = 'aborted'
         isAborted = true

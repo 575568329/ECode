@@ -685,8 +685,13 @@ export class HostSession {
     this.publish('thread/status', { busy: false, waitingOn: null, iter: 0 })
     this.running = false
     this.currentTurnId = null
-    // 轮末兜底：队列续投（带图条目在此以 blocks 起轮）
-    const next = this.queue.shift()
+    // 轮末兜底：队列续投（带图条目在此以 blocks 起轮）。
+    // 中断态不续投（Ctrl+C「无法中断」根因：断掉当前轮后这里立刻用队列条目起新轮，
+    // 看似模型停不下来）；队列保留（CC 同款中断不弃队列——下一轮 pollUserInput 步间注入或用户再提交时消费）
+    const next = this.abort.signal.aborted ? undefined : this.queue.shift()
+    if (this.abort.signal.aborted && this.queue.length > 0) {
+      this.publish('systemMsg', { text: `已中断（插话队列保留 ${this.queue.length} 条，下轮自动注入；Ctrl+U 清空）` })
+    }
     if (next !== undefined) {
       this.publish('queue/snapshot', { items: this.queue.map((q) => q.text) })
       void this.startTurn(next.text, next.blocks).catch((e: unknown) => {

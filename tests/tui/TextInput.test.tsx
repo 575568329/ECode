@@ -133,3 +133,49 @@ describe('粘贴行尾归一（xterm.js 系终端粘贴把换行转裸 \\r）', 
     expect(onInput).toHaveBeenCalledWith({ text: 'hello', caret: 5 })
   })
 })
+
+describe('手动换行三键位（legacy 终端 Shift+Enter 与 Enter 同字节不可区分）', () => {
+  it('Ctrl+J（裸 \n）→ 插入换行不提交', async () => {
+    const onInput = vi.fn()
+    const onSubmit = vi.fn()
+    const { stdin } = render(React.createElement(TextInput, { value: '第一行', caret: 3, onInput, onSubmit }))
+    await flush()
+    stdin.write('\n')
+    await flush()
+    expect(onInput).toHaveBeenCalledWith({ text: '第一行\n', caret: 4 })
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('Alt+Enter（ESC \r → meta+return）→ 插入换行不提交', async () => {
+    const onInput = vi.fn()
+    const onSubmit = vi.fn()
+    const { stdin } = render(React.createElement(TextInput, { value: 'a', caret: 1, onInput, onSubmit }))
+    await flush()
+    stdin.write('\x1b\r')
+    await flush()
+    expect(onInput).toHaveBeenCalledWith({ text: 'a\n', caret: 2 })
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('kitty 协议 Shift+Enter（CSI u 13;2）→ 插入换行不提交', async () => {
+    const onInput = vi.fn()
+    const onSubmit = vi.fn()
+    const { stdin } = render(React.createElement(TextInput, { value: 'a', caret: 1, onInput, onSubmit }))
+    await flush()
+    stdin.write('\x1b[13;2u')
+    await flush()
+    expect(onInput).toHaveBeenCalledWith({ text: 'a\n', caret: 2 })
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('普通 Enter 仍提交（不换行）', async () => {
+    const onInput = vi.fn()
+    const onSubmit = vi.fn()
+    const { stdin } = render(React.createElement(TextInput, { value: 'hi', caret: 2, onInput, onSubmit }))
+    await flush()
+    stdin.write('\r')
+    await flush()
+    expect(onSubmit).toHaveBeenCalledWith('hi')
+    expect(onInput).not.toHaveBeenCalled()
+  })
+})

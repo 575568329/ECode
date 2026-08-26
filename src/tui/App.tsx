@@ -41,6 +41,9 @@ interface AppProps {
   warningLevel?: 'error' | 'warn' | 'info'
   /** 配置无效/不完整提示（顶部醒目，启动态；区别于 warning 进 StatusBar） */
   banner?: string
+  /** 运行态镜像（thread/status 驱动）——ShortcutHint 上下文权威判据；
+   *  缺省回退旧启发式（active.streamingText/activity——测试/旧用法兼容） */
+  running?: boolean
   children?: ReactNode
 }
 
@@ -63,14 +66,16 @@ export function App({
   warning,
   warningLevel,
   banner,
+  running,
   children,
 }: AppProps): ReactElement {
   const busy =
-    active.streamingText !== '' ||
-    active.confirm !== null ||
-    activity === 'thinking' ||
-    activity === 'tool' ||
-    activity === 'retry'
+    running ??
+    (active.streamingText !== '' ||
+      active.confirm !== null ||
+      activity === 'thinking' ||
+      activity === 'tool' ||
+      activity === 'retry')
   return (
     <Box flexDirection="column">
       {banner !== undefined && (

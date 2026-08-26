@@ -227,6 +227,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const [sessionCost, setSessionCost] = useState(0)
   const [systemMsgs, setSystemMsgs] = useState<string[]>([])
   const [iter, setIter] = useState<number | undefined>(undefined)
+  // 运行态镜像（thread/status 驱动）：placeholder/快捷键提示的权威判据。
+  // 旧判据 active.streamingText !== '' 在轮末延迟 commit 下永不清空——
+  // 正常轮结束后输入框仍显示「处理中，Ctrl+C 中断」（中断观感根因之一）
+  const [running, setRunning] = useState(false)
   const [maxIter, setMaxIter] = useState<number | undefined>(undefined)
   const [clearKey, setClearKey] = useState(0)
   // config 是 state 不是 props（§8.1.1）：/model 改 current → setConfig → 重渲染，下次 submit 用新 current
@@ -327,6 +331,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           break
         case 'thread/status':
           runningRef.current = ev.busy
+          setRunning(ev.busy)
           setIter(ev.iter)
           if (ev.maxIter !== undefined) setMaxIter(ev.maxIter)
           break
@@ -336,7 +341,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         case 'turn/completed':
           messagesRef.current = [...host.transcript]
           setActive((a) => ({ ...a, streaming: false }))
-          setActivity({ state: 'idle' })
+          // aborted 终态不被 idle 覆盖（⚠ 已中断 保留到下一轮 thinking——M13 中断观感修复）
+          setActivity((cur) => (cur.state === 'aborted' ? cur : { state: 'idle' }))
           break
         case 'warn':
           pushNoticeFn('warn', ev.text)
@@ -856,11 +862,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     return `MCP ${connected}/${enabled.length}`
   }, [mcpSnapshots])
 
-  const busy =
-    active.streamingText !== '' ||
-    activity.state === 'thinking' ||
-    activity.state === 'tool' ||
-    activity.state === 'retry'
+  // placeholder 判据改运行态镜像（streamingText 延迟 commit 常驻的旧病根治）
+  const busy = running
 
   // systemMsgs（命令反馈）不进 committed——是即时系统消息（非对话历史），
   // 独立渲染在 InputStream 上方（见 return），避免压在当前轮对话之上
@@ -888,6 +891,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       onCancel={clearConfirm}
       activity={activity.state}
       activityText={activity.text}
+      running={running}
       mcp={mcpSegment}
       sandbox={sandboxMode === 'default' ? undefined : sandboxMode}
       sandboxDanger={sandboxMode === 'full-access'}

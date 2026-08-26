@@ -41,7 +41,9 @@ export interface MuxConnection {
   dispose(): void
 }
 
-/** 连接 mux 流。onFrame/onHost/onReconnect 全部由调用方装配状态。 */
+/** 连接 mux 流。onFrame/onHost/onReconnect 全部由调用方装配状态。
+ * sessionId：订阅指定会话（缺省=项目默认会话）——serve 只向订阅者推该会话的信封帧，
+ * 切会话须带 ?sessionId= 重订（G3 实测：不订则恢复会话的 delta/turn/审批帧全部丢失）。 */
 export function connectMux(
   base: string,
   handlers: {
@@ -50,10 +52,15 @@ export function connectMux(
     onReconnect?: () => void
     onState?: (s: 'connecting' | 'open' | 'backoff') => void
   },
+  sessionId?: string,
 ): MuxConnection {
   let disposed = false
   let attempt = 0
   const abort = new AbortController()
+  const muxUrl =
+    sessionId !== undefined && sessionId !== ''
+      ? `${base}/api/events.mux?sessionId=${encodeURIComponent(sessionId)}`
+      : `${base}/api/events.mux`
 
   const visibilityResume = (): void => {
     if (document.visibilityState === 'visible' && attempt > 0) {
@@ -68,7 +75,7 @@ export function connectMux(
       try {
         handlers.onState?.('connecting')
         const openTimer = setTimeout(() => abort.abort(), OPEN_TIMEOUT_MS)
-        const res = await fetch(`${base}/api/events.mux`, {
+        const res = await fetch(muxUrl, {
           headers: { authorization: `Bearer ${getToken()}` },
           signal: abort.signal,
         })

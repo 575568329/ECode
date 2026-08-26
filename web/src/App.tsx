@@ -86,23 +86,45 @@ export function App(): React.JSX.Element {
       .finally(() => setChecked(true))
   }, [])
 
-  // mux 连接（ready 后建立一次）
+  // mux 连接（ready 后建立；随选中会话重订——serve 按订阅会话推帧，切会话不重订则收不到
+  // 该会话的 delta/turn/审批帧，G3 实测缺口；未选会话时订阅项目默认流保 host 列表帧）
   useEffect(() => {
     if (!ready) return
     let conn: MuxConnection | undefined
-    conn = connectMux(BASE, {
-      onFrame: applyFrame,
-      onHost: applyHost,
-      onState: setConn,
-      onReconnect: () => {
-        fetchProjects(BASE).then((p) => setProjects([...new Set([...(p.registered ?? []).map((x) => x.path), ...(p.history ?? [])])])).catch(() => {})
+    // 连接建立（含切会话重订/断线重连）即补拉会话列表——重订间隙会丢 thread/status 帧
+    // （新会话转正瞬间 busy 帧丢失卡"运行中"，G3 实测）；session/list 幂等便宜
+    const refreshSessions = (): void => {
+      fetchProjects(BASE).then((p) => setProjects([...new Set([...(p.registered ?? []).map((x) => x.path), ...(p.history ?? [])])])).catch(() => {})
+      if (selectedProject !== null) {
+        sendCommand(BASE, selectedProject, undefined, { op: 'session/list' })
+          .then((r) => {
+            if (r.ok && Array.isArray(r.value)) {
+              for (const m of r.value as Array<{ sessionId: string; firstUser: string; createdAt: string; running?: boolean }>) {
+                upsertSession({ project: selectedProject, sessionId: m.sessionId, running: m.running ?? false, title: m.firstUser ?? '', updatedAt: m.createdAt ? Date.parse(m.createdAt) : Date.now() })
+              }
+            }
+          })
+          .catch(() => {})
+      }
+    }
+    conn = connectMux(
+      BASE,
+      {
+        onFrame: applyFrame,
+        onHost: applyHost,
+        onState: (s) => {
+          setConn(s)
+          if (s === 'open') refreshSessions()
+        },
       },
-    })
+      selectedSession ?? undefined,
+    )
     fetchProjects(BASE)
       .then((p) => setProjects([...new Set([...(p.registered ?? []).map((x) => x.path), ...(p.history ?? [])])]))
       .catch(() => {})
     return () => conn?.dispose()
-  }, [ready, applyFrame, applyHost, setConn, setProjects])
+    // upsertSession 稳定（zustand action）；refreshSessions 闭包按 selectedProject 重建
+  }, [ready, selectedSession, selectedProject, applyFrame, applyHost, setConn, setProjects, upsertSession])
 
   // 选项目 → 拉该会话列表（session/list——冷热合并）
   useEffect(() => {

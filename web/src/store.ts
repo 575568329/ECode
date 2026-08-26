@@ -60,6 +60,8 @@ interface AppState {
   upsertSession: (b: SessionBrief) => void
   /** W6a：历史补拉（session/read 返回的 HistoryLine 投影为 entries） */
   loadHistory: (sessionId: string, lines: unknown) => void
+  /** 发送成功即时上屏 user 消息（当前轮 user 不经任何帧回推——G3 实测缺口） */
+  appendUser: (sessionId: string, text: string) => void
 }
 
 const patchView = (state: AppState, sessionId: string, patch: (v: SessionView) => SessionView): Partial<AppState> => ({
@@ -102,13 +104,25 @@ export const useApp = create<AppState>((set) => ({
         return { ...v, entries, loaded: true }
       }),
     ),
+  appendUser: (sessionId, text) =>
+    set((st) =>
+      patchView(st, sessionId, (v) => ({
+        ...v,
+        entries: [...v.entries, { kind: 'user' as const, text }],
+      })),
+    ),
   applyHost: (h) =>
     set((st) => {
       switch (h.type) {
         case 'session/baseline':
+          // 按会话订阅的 baseline 只含订阅会话的 brief——合并而非整体替换
+          // （替换会洗掉列表里其他会话；G3 实测）
           return {
             projects: [...new Set([...st.projects, ...h.projects])],
-            sessions: h.sessions,
+            sessions: [
+              ...h.sessions,
+              ...st.sessions.filter((s) => !h.sessions.some((b) => b.sessionId === s.sessionId)),
+            ],
           }
         case 'project/added':
           return { projects: [...new Set([...st.projects, h.project])] }

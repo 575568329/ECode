@@ -19,6 +19,7 @@ export function Composer({ project, sessionId, running }: { project: string; ses
   const select = useApp((s) => s.select)
   const upsertSession = useApp((s) => s.upsertSession)
   const loadHistory = useApp((s) => s.loadHistory)
+  const appendUser = useApp((s) => s.appendUser)
 
   const submit = async (): Promise<void> => {
     const t = text.trim()
@@ -34,8 +35,11 @@ export function Composer({ project, sessionId, running }: { project: string; ses
         const sid = String(r.sessionId ?? '')
         if (isNew && sid !== '') {
           loadHistory(sid, [])
+          appendUser(sid, t)
           upsertSession({ project, sessionId: sid, running: true, title: t.slice(0, 60), updatedAt: Date.now() })
           select(project, sid)
+        } else {
+          appendUser(sessionId, t)
         }
       } else {
         // G3 冒烟缺口：发送失败此前静默吞（输入不清空、无提示）——红字展示宿主错误

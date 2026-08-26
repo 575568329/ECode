@@ -27,3 +27,5 @@ Thumbs.db
 # M13-W5：web 前端（依赖与构建产物不入库——源码入库）
 web/node_modules/
 web/dist/
+.claude/browser-pilot-shots/
+.playwright-mcp/

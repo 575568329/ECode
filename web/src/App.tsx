@@ -184,11 +184,12 @@ export function App(): React.JSX.Element {
             <span className="truncate text-sm text-neutral-500">{selectedProject?.split('/').filter(Boolean).slice(-2).join('/')}</span>
           </div>
         )}
-        {selectedProject === null || selectedSession === null || selectedSession === '' ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-neutral-600">
-            {selectedProject === null ? '选择左侧项目' : selectedSession === null ? '选择会话或新建对话' : '输入你的问题开始对话（W6b 接入）'}
-          </div>
+        {selectedProject === null ? (
+          <div className="flex flex-1 items-center justify-center text-sm text-neutral-600">选择左侧项目</div>
+        ) : selectedSession === null ? (
+          <div className="flex flex-1 items-center justify-center text-sm text-neutral-600">选择会话或新建对话</div>
         ) : (
+          // selectedSession 可能是空串（+ 新对话 占位）——Conversation 空态 + Composer isNew 发送后转正
           <Conversation project={selectedProject} sessionId={selectedSession} />
         )}
       </main>

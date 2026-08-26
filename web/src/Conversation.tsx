@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Terminal } from 'lucide-react'
 import { sendCommand } from './connect'
 import { useApp, type ToolItem } from './store'
+import { emptyView } from './store'
 import { Composer } from './Composer'
 
 /** 流式/历史文本渲染（Streamdown W6a 后续接入——骨架先用等宽预格式，样式分层已留） */
@@ -50,18 +51,27 @@ function KeyboardAware({ children }: { children: React.ReactNode }): React.JSX.E
 }
 
 export function Conversation({ project, sessionId }: { project: string; sessionId: string }): React.JSX.Element {
-  const view = useApp((s) => s.views[sessionId])
+  // 新会话（sessionId='' 占位）：空视图（loaded=true 不触发补拉；Composer isNew 路径发送后转正选中）
+  const view = useApp((s) => (sessionId === '' ? { ...emptyView(), loaded: true } : s.views[sessionId]))
   const running = useApp((s) => s.sessions.find((x) => x.sessionId === sessionId)?.running ?? false)
   const loadHistory = useApp((s) => s.loadHistory)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // 历史补拉（选中且未加载时一次；断线重连后的补拉由 W6b 的 onReconnect 触发 select 重置 loaded）
+  // 历史补拉（选中且未加载时一次；断线重连后的补拉由 onReconnect 触发 select 重置 loaded）。
+  // 冷会话须先 session/restore 拉起（宿主对冷会话仅 restore 放行——G3 冒烟实测缺口），再 read
   useEffect(() => {
-    if (view?.loaded === true) return
-    sendCommand(project === '' ? '' : project, project, sessionId, { op: 'session/read', sessionId })
+    if (sessionId === '' || view?.loaded === true) return
+    sendCommand(project === '' ? '' : project, project, sessionId, { op: 'session/restore', sessionId })
       .then((r) => {
-        if (r.ok) loadHistory(sessionId, r.value)
-        else loadHistory(sessionId, [])
+        if (!r.ok) {
+          loadHistory(sessionId, [])
+          return
+        }
+        return sendCommand(project === '' ? '' : project, project, sessionId, { op: 'session/read', sessionId }).then(
+          (r2) => {
+            loadHistory(sessionId, r2.ok ? r2.value : [])
+          },
+        )
       })
       .catch(() => loadHistory(sessionId, []))
   }, [project, sessionId, view?.loaded, loadHistory])

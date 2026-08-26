@@ -13,6 +13,7 @@ import { useApp } from './store'
 export function Composer({ project, sessionId, running }: { project: string; sessionId: string; running: boolean }): React.JSX.Element {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
+  const [err, setErr] = useState('')
   const composingRef = useRef(false)
   const view = useApp((s) => s.views[sessionId])
   const select = useApp((s) => s.select)
@@ -23,6 +24,7 @@ export function Composer({ project, sessionId, running }: { project: string; ses
     const t = text.trim()
     if (t === '' || sending) return
     setSending(true)
+    setErr('')
     try {
       // 新会话（sessionId 为占位空串）：prompt 不带 sessionId=隐式建（三态③），回执带新 id 转正选中
       const isNew = sessionId === ''
@@ -35,7 +37,12 @@ export function Composer({ project, sessionId, running }: { project: string; ses
           upsertSession({ project, sessionId: sid, running: true, title: t.slice(0, 60), updatedAt: Date.now() })
           select(project, sid)
         }
+      } else {
+        // G3 冒烟缺口：发送失败此前静默吞（输入不清空、无提示）——红字展示宿主错误
+        setErr(String(r.error ?? '发送失败'))
       }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setSending(false)
     }
@@ -111,10 +118,14 @@ export function Composer({ project, sessionId, running }: { project: string; ses
   // —— 常态输入区 ——
   return (
     <div className="border-t border-neutral-800 px-4 py-3">
+      {err !== '' && <div className="mx-auto mb-2 max-w-3xl text-xs text-red-400">⚠ {err}</div>}
       <div className="mx-auto flex max-w-3xl items-end gap-2">
         <textarea
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value)
+            if (err !== '') setErr('')
+          }}
           onCompositionStart={() => (composingRef.current = true)}
           onCompositionEnd={() => (composingRef.current = false)}
           onKeyDown={(e) => {

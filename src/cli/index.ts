@@ -276,6 +276,8 @@ function makeConversationDeps(
     ensureConversation: async (sid) => {
       const proj = projectRef.current
       if (proj === undefined) return { ok: false, error: 'ProjectHost 未装配', code: 'NOT_IMPLEMENTED' }
+      // 会话 id 合法性守卫（G3 冒烟实测：垃圾 id 会静默起空会话）——本项目 id 恒为 ISO 时间戳形态
+      if (!/^\d{4}-\d{2}-\d{2}T/.test(sid)) return { ok: false, error: `会话 id 非法：${sid}`, code: 'BAD_SESSION_ID' }
       await proj.ensureRestore(sid)
       return { ok: true, sessionId: sid }
     },

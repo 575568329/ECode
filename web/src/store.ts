@@ -42,7 +42,7 @@ export interface SessionView {
   askSelect: { requestId: string; title: string; options: string[] } | null
 }
 
-const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, approval: null, askSelect: null })
+export const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, approval: null, askSelect: null })
 
 interface AppState {
   connState: 'connecting' | 'open' | 'backoff'

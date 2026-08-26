@@ -5,7 +5,7 @@
  * IME：isComposing 期间 Enter 不提交（中文输入法必踩）。
  */
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Ban, Check, ShieldAlert, Trash2 } from 'lucide-react'
 import { sendCommand } from './connect'
 import { useApp } from './store'
@@ -52,14 +52,23 @@ export function Composer({ project, sessionId, running }: { project: string; ses
     }
   }
 
+  // —— takeover 一次性守卫 ref（Hook 规则：无条件置顶——审批/单选帧从无到有时若在
+  // 条件分支内新增 useRef 会触发 React #310 崩溃，G3 审批实测踩响）；
+  // takeover 卸载（resolved）即复位——下次审批到达可再次应答 ——
+  const decidedRef = useRef(false)
+  const pickedRef = useRef(false)
+  useEffect(() => {
+    if (view?.approval == null) decidedRef.current = false
+    if (view?.askSelect == null) pickedRef.current = false
+  }, [view?.approval, view?.askSelect])
+
   // —— 审批 takeover：挂起时替代输入区（一 shot；resolved 帧到达自动卸载） ——
   if (view?.approval != null) {
     const a = view.approval
     const sensitive = a.kind === 'sensitive'
-    const decided = useRef(false)
     const answer = async (decision: string): Promise<void> => {
-      if (decided.current) return
-      decided.current = true
+      if (decidedRef.current) return
+      decidedRef.current = true
       await sendCommand('', project, sessionId, { op: 'approval/respond', requestId: a.requestId, decision }).catch(() => {})
     }
     return (
@@ -94,10 +103,9 @@ export function Composer({ project, sessionId, running }: { project: string; ses
   // —— askSelect takeover（单选面板） ——
   if (view?.askSelect != null) {
     const q = view.askSelect
-    const picked = useRef(false)
     const answer = async (choice: string | null): Promise<void> => {
-      if (picked.current) return
-      picked.current = true
+      if (pickedRef.current) return
+      pickedRef.current = true
       await sendCommand('', project, sessionId, { op: 'askSelect/respond', requestId: q.requestId, choice }).catch(() => {})
     }
     return (

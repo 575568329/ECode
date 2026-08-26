@@ -124,7 +124,7 @@ export const useApp = create<AppState>((set) => ({
             }
           }
         }
-        return { ...v, entries, loaded: true, loadError: '' }
+        return { ...v, entries, loaded: true, loadError: '', streaming: '', items: [], queue: [] }
       }),
     ),
   setLoadError: (sessionId, msg) => set((st) => patchView(st, sessionId, (v) => ({ ...v, loaded: true, loadError: msg }))),

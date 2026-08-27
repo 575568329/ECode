@@ -199,6 +199,18 @@ export class TaskRegistry {
     return [...this.tasks.values()].some((t) => t.status === 'running')
   }
 
+  /** 只读快照（M14-V3 /output 列表与任务状态行消费；不暴露 child 句柄）。 */
+  snapshot(): Array<{ id: string; command: string; outputFile: string; status: BackgroundTask['status']; exitCode: number | null; startedAt: number }> {
+    return [...this.tasks.values()].map((t) => ({
+      id: t.id,
+      command: t.command,
+      outputFile: t.outputFile,
+      status: t.status,
+      exitCode: t.exitCode,
+      startedAt: t.startedAt,
+    }))
+  }
+
   /** 会话结束/退出：全杀（gracefulShutdown 预算内调用）。 */
   cleanup(): void {
     for (const t of this.tasks.values()) {

@@ -31,6 +31,7 @@ export interface CommandResult {
     | 'mcp-reconnect'
     | 'open-plugin-panel'
     | 'open-warnings-panel'
+    | 'open-output-panel'
     | 'open-rewind-panel'
     | 'open-sandbox-panel'
     | 'git-undo'
@@ -170,6 +171,11 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     name: 'warnings',
     description: '告警中心（查看全部 提示/警告/严重 问题的队列）',
     run: () => ({ action: 'open-warnings-panel' as const }),
+  })
+  registry.register({
+    name: 'output',
+    description: '输出查看器（工具全文/后台任务日志实时跟随/子代理 transcript——任意长滚动+搜索）',
+    run: () => ({ action: 'open-output-panel' as const }),
   })
   registry.register({
     name: 'sandbox',

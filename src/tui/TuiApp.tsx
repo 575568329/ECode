@@ -56,6 +56,9 @@ import { saveConfigKey } from '../services/configFs.js'
 import { nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
 import type { SubagentStatus } from '../services/subagent.js'
 import { SubagentBar } from './SubagentBar.js'
+import { TasksBar } from './TasksBar.js'
+import { OutputListPage, OutputViewer, toolResultSource, taskFileSource, subagentSource, type OutputEntry, type RecentTool } from './OutputViewer.js'
+import { taskRegistry } from '../services/tasks.js'
 import { undoEcodeCommit } from '../services/git.js'
 import { readClipboardImage } from '../services/clipboard.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
@@ -255,11 +258,15 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     | { kind: 'rewind-panel' }
     | { kind: 'sandbox-panel' }
     | { kind: 'config-panel' }
+    | { kind: 'output-panel' }
+    | { kind: 'output-view'; source: import('./OutputViewer.js').LineSource; title: string }
     | { kind: 'select'; title: string; options: string[]; resolve: (v: string | undefined) => void }
     // M8 ask_user：工具发起的提问面板（Promise 桥——resolve 回工具 execute）
     | { kind: 'question-panel'; questions: AskUserQuestion[]; resolve: (r: AskUserResult) => void }
     | null
   >(null)
+  // M14-V3：最近工具调用环形缓冲（/output 列表数据源——item/completed 帧记录，50 封顶）
+  const [recentTools, setRecentTools] = useState<RecentTool[]>([])
   // 面板回填通道（S-P6 D32：SkillPanel Enter → `/name ` 写入输入框，不直接执行）
   const [insert, setInsert] = useState<{ text: string; seq: number } | undefined>(undefined)
   // /history 打开时载入的会话列表（loadAll 只在打开时调一次，避免 render 热路径同步 IO）
@@ -309,6 +316,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           setActivity({ state: 'tool', text: ev.name })
           break
         case 'item/completed': {
+          // M14-V3：环形缓冲记录全文（/output 查看器数据源；前台 bash 有工具层 30KB 截断边界）
+          setRecentTools((prev) => {
+            const next = [{ itemId: ev.itemId, name: ev.name, content: ev.content, isError: ev.isError, at: Date.now() }, ...prev]
+            return next.length > 50 ? next.slice(0, 50) : next
+          })
           setActive((a) => {
             const tools = [...a.tools]
             const idx = tools.findIndex((t) => t.status === 'running' && t.name === ev.name)
@@ -914,6 +926,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       }
     >
       <SubagentBar agents={subagents} />
+      <TasksBar />
       {interjectPreview !== null && (
         <Box paddingLeft={1}>
           <Text dimColor>
@@ -1034,6 +1047,31 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             setOverlay(null)
           }}
         />
+      )}
+      {overlay?.kind === 'output-panel' && (
+        <OutputListPage
+          recentTools={recentTools}
+          onOpen={(entry: OutputEntry) => {
+            const cols = process.stdout.columns ?? 80
+            const width = Math.max(10, cols - 4)
+            if (entry.kind === 'tool') {
+              setOverlay({ kind: 'output-view', title: `${entry.tool.name}（${entry.tool.itemId}）`, source: toolResultSource(entry.tool, width) })
+            } else if (entry.kind === 'task') {
+              const snap = taskRegistry.snapshot().find((t) => t.id === entry.id)
+              setOverlay({
+                kind: 'output-view',
+                title: `task ${entry.id}：${snap?.command.slice(0, 50) ?? ''}（${snap?.status ?? '?'}）`,
+                source: taskFileSource(entry.id, width),
+              })
+            } else {
+              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, width) })
+            }
+          }}
+          onExit={() => setOverlay(null)}
+        />
+      )}
+      {overlay?.kind === 'output-view' && (
+        <OutputViewer title={overlay.title} source={overlay.source} onBack={() => setOverlay({ kind: 'output-panel' })} />
       )}
       {overlay?.kind === 'config-panel' && (
         <ConfigPanel
@@ -1213,6 +1251,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           if (result.action === 'open-warnings-panel') {
             pickerRef.current = true
             setOverlay({ kind: 'warnings-panel' })
+            return
+          }
+          if (result.action === 'open-output-panel') {
+            pickerRef.current = true
+            setOverlay({ kind: 'output-panel' })
             return
           }
           if (result.action === 'open-config-panel') {

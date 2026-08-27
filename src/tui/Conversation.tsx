@@ -9,6 +9,7 @@ import { Box, Text, Static } from 'ink'
 import { ToolGroupView } from './ToolGroupView.js'
 import { ConfirmPrompt } from './ConfirmPrompt.js'
 import { foldStreamText } from './stream.js'
+import { useViewport } from './viewport.js'
 import { UserMessage } from './UserMessage.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import type { CommittedItem, ActiveState, ActiveTool, CommittedToolCall } from './types.js'
@@ -16,9 +17,11 @@ import type { CommittedItem, ActiveState, ActiveTool, CommittedToolCall } from '
 /** 用户输入折叠上限（P1-A：防粘贴长代码撑爆动态区） */
 const USER_INPUT_MAX_LINES = 2
 
-/** 流式灰字占位（commit 前用；超 STREAM_MAX_LINES 行折叠头部） */
+/** 流式灰字占位（commit 前用；超 STREAM_MAX_LINES 行折叠头部）。
+ *  M14-V2：宽度感知物理行折叠（超长单行不再爆物理行）。 */
 export function GrayStreaming({ text }: { text: string }): ReactElement {
-  const { lines, folded, total } = foldStreamText(text)
+  const { columns } = useViewport()
+  const { lines, folded, total } = foldStreamText(text, undefined, columns)
   return (
     <Box flexDirection="column">
       {folded > 0 && <Text dimColor>↑ {folded} 行已折叠（共 {total} 行）</Text>}
@@ -27,9 +30,10 @@ export function GrayStreaming({ text }: { text: string }): ReactElement {
   )
 }
 
-/** 折叠用户输入到 USER_INPUT_MAX_LINES 行（复用 foldStreamText，P1-A） */
+/** 折叠用户输入到 USER_INPUT_MAX_LINES 行（复用 foldStreamText，P1-A；M14-V2 物理行化） */
 function FoldedUserInput({ text }: { text: string }): ReactElement {
-  const { lines, folded, total } = foldStreamText(text, USER_INPUT_MAX_LINES)
+  const { columns } = useViewport()
+  const { lines, folded, total } = foldStreamText(text, USER_INPUT_MAX_LINES, columns)
   return (
     <Box flexDirection="column" marginTop={1}>
       {folded > 0 && <Text dimColor>↑ {folded} 行已折叠（共 {total} 行）</Text>}

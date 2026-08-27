@@ -4,6 +4,7 @@ import { mergeToolGroup, inputDigest, previewLine } from './toolview.js'
 import { DiffLine } from './DiffLine.js'
 import { theme } from './theme.js'
 import { symbols } from './symbols.js'
+import { foldLines, useViewport } from './viewport.js'
 import type { ActiveTool } from './types.js'
 
 /** 字节数格式化（B/KB/MB）。与 ToolCallView 一致，复用同一展示约定。 */
@@ -12,6 +13,10 @@ function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
   return `${(n / 1024 / 1024).toFixed(1)}MB`
 }
+
+/** 展开输出行数上限（M14-V2 §3.2：Ctrl+O 展开的工具输出 head-tail 上限——
+ *  min(12, budget/2)；V3 OutputViewer 落地后此为"就地瞥"，全文回看走 /output） */
+const EXPAND_CAP = 12
 
 /**
  * 工具合并块（详设 §3 超额策略）。
@@ -37,6 +42,10 @@ interface ToolGroupViewProps {
 }
 
 export function ToolGroupView({ tools, expanded = false, done, onToggle }: ToolGroupViewProps): ReactElement {
+  const { budget, columns } = useViewport()
+  // M14-V2：展开输出 head-tail 上限（预算一半封顶、绝对上限 12；宽度扣 paddingLeft3+缩进2）
+  const expandCap = Math.min(EXPAND_CAP, Math.max(3, Math.floor(budget / 2)))
+  const expandWidth = Math.max(10, columns - 6)
   if (tools.length === 0) return <Box />
   const { count, visible, overflow } = mergeToolGroup(tools)
   const shown = expanded ? tools : visible
@@ -124,18 +133,47 @@ export function ToolGroupView({ tools, expanded = false, done, onToggle }: ToolG
                       {'  '}
                       {symbols.foldExpanded} 输出 ({formatBytes(bytes)})
                     </Text>
-                    {isSideEffect ? (
-                      // edit_file/write_file：按行着色（diff 风格：- 红 / + 绿 / @@ 蓝）
-                      content.split('\n').map((line, i) => (
-                        <Box key={i}>
-                          <DiffLine line={line} />
-                        </Box>
-                      ))
-                    ) : (
-                      <Text color={t.status === 'error' ? theme.error : undefined}>
-                        {content}
-                      </Text>
-                    )}
+                    {(() => {
+                      // M14-V2：展开全文不再无界——物理行 head-tail（头 3 定位 + 尾最新），中段折叠提示
+                      const fold = foldLines(content, expandCap, expandWidth, 'head-tail')
+                      const head = fold.visible.slice(0, fold.markerAt)
+                      const tail = fold.visible.slice(fold.markerAt)
+                      const marker =
+                        fold.foldedCount > 0 ? (
+                          <Text dimColor>
+                            {'  ⋯ '}
+                            {fold.foldedCount} 行已折叠（共 {fold.totalPhysical} 行）
+                          </Text>
+                        ) : null
+                      if (isSideEffect) {
+                        return (
+                          <>
+                            {head.map((line, i) => (
+                              <Box key={`h${i}`}>
+                                <DiffLine line={line} />
+                              </Box>
+                            ))}
+                            {marker}
+                            {tail.map((line, i) => (
+                              <Box key={`t${i}`}>
+                                <DiffLine line={line} />
+                              </Box>
+                            ))}
+                          </>
+                        )
+                      }
+                      return (
+                        <>
+                          {head.length > 0 && (
+                            <Text color={t.status === 'error' ? theme.error : undefined}>{head.join('\n')}</Text>
+                          )}
+                          {marker}
+                          {tail.length > 0 && (
+                            <Text color={t.status === 'error' ? theme.error : undefined}>{tail.join('\n')}</Text>
+                          )}
+                        </>
+                      )
+                    })()}
                   </>
                 ) : (
                   <Text dimColor>

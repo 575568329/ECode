@@ -182,3 +182,28 @@ describe('历史默认全收起（用户拍板：发送新对话后 Static 工�
     expect(f).toContain('edit_file')
   })
 })
+
+describe('ToolGroupView 展开输出上限（M14-V2）', () => {
+  const bigContent = Array.from({ length: 40 }, (_, i) => `line-${i}`).join('\n')
+
+  it('展开态超长输出 head-tail 折叠 + 提示行（不再无界渲染）', () => {
+    const tools: ActiveTool[] = [
+      { name: 'bash', use: { type: 'tool_use', id: 'u1', name: 'bash', input: {} }, result: { content: bigContent, is_error: false }, status: 'done' },
+    ]
+    const { lastFrame } = render(<ToolGroupView tools={tools} expanded />)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('line-0') // 头段保留
+    expect(frame).toContain('line-39') // 尾段保留
+    expect(frame).toContain('行已折叠（共 40 行）')
+    expect(frame).not.toContain('line-10') // 中段被折叠（cap=min(12, floor(22/2))=11：头3+尾8 → line-8..line-31 折叠）
+    expect(frame).not.toContain('line-25')
+  })
+
+  it('短输出不受影响（无提示行）', () => {
+    const tools: ActiveTool[] = [
+      { name: 'bash', use: { type: 'tool_use', id: 'u1', name: 'bash', input: {} }, result: { content: 'a\nb\nc', is_error: false }, status: 'done' },
+    ]
+    const { lastFrame } = render(<ToolGroupView tools={tools} expanded />)
+    expect(lastFrame()).not.toContain('行已折叠')
+  })
+})

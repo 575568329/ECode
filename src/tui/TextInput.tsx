@@ -1,5 +1,7 @@
 import type { ReactElement } from 'react'
 import { useInput, Text, Box } from 'ink'
+import wrapAnsi from 'wrap-ansi'
+import stringWidth from 'string-width'
 import {
   insert,
   backspace,
@@ -14,6 +16,7 @@ import {
 } from './cursor.js'
 import { symbols } from './symbols.js'
 import { theme } from './theme.js'
+import { useViewport } from './viewport.js'
 
 interface InputRenderProps {
   text: string
@@ -43,35 +46,96 @@ function caretLineCol(lines: string[], caret: number): { line: number; col: numb
   return { line: last, col: countGraphemes(lines[last] ?? '') }
 }
 
+/** 单逻辑行 wrap 成物理行（与 viewport.foldLines 同参：hard 断长 token、保留缩进） */
+function physicalLines(line: string, width: number): string[] {
+  if (line === '') return ['']
+  return wrapAnsi(line, width, { hard: true, trim: false }).split('\n')
+}
+
+/** 物理行总数（M14-V2：折叠判定与指示行计数用物理行——超长单行也计入） */
+export function physicalLineCount(text: string, width: number): number {
+  if (!(Number.isFinite(width) && width >= 1)) return text.split('\n').length
+  let n = 0
+  for (const line of text.split('\n')) n += physicalLines(line, width).length
+  return n
+}
+
 /**
  * 输入框折叠视图：≤ maxLines 原样；超过则显示头部 maxLines 行（看内容是什么——头窗偏置，
  * 用户拍板；CC「+N lines pasted」同形态）+ 底部折叠指示。caret 在折叠区时额外亮出
  * caret 所在行（粘贴后 caret 在末尾，不亮出来打字不可见）。纯显示折叠，提交不受影响。
+ *
+ * M14-V2：width 提供时按**物理行**折叠（超长单行 wrap 后计入窗口；caret 映射到
+ * 物理行 + 显示列）；无 width 保持逻辑行旧行为（无视口上下文调用方/测试）。
  */
-export function foldInputView(text: string, caret: number, maxLines = INPUT_FOLD_MAX_LINES): { rows: FoldRow[]; caretRow: number; caretCol: number } {
-  const lines = text.split('\n')
-  const { line: cl, col: caretCol } = caretLineCol(lines, caret)
-  if (lines.length <= maxLines) {
-    return { rows: lines.map((t) => ({ kind: 'text' as const, text: t, count: 0 })), caretRow: cl, caretCol }
+export function foldInputView(
+  text: string,
+  caret: number,
+  maxLines = INPUT_FOLD_MAX_LINES,
+  width?: number,
+): { rows: FoldRow[]; caretRow: number; caretCol: number; totalPhysical: number } {
+  if (width === undefined || !Number.isFinite(width) || width < 1) {
+    const lines = text.split('\n')
+    const { line: cl, col: caretCol } = caretLineCol(lines, caret)
+    if (lines.length <= maxLines) {
+      return { rows: lines.map((t) => ({ kind: 'text' as const, text: t, count: 0 })), caretRow: cl, caretCol, totalPhysical: lines.length }
+    }
+    const rows: FoldRow[] = lines.slice(0, maxLines).map((t) => ({ kind: 'text' as const, text: t, count: 0 }))
+    if (cl < maxLines) {
+      // caret 在头部窗内：剩余尾部整体折叠
+      rows.push({ kind: 'folded', text: '', count: lines.length - maxLines })
+      return { rows, caretRow: cl, caretCol, totalPhysical: lines.length }
+    }
+    // caret 在折叠区：头部窗 + 上侧折叠指示 + caret 行 + 下侧折叠指示
+    const above = cl - maxLines
+    if (above > 0) rows.push({ kind: 'folded', text: '', count: above })
+    rows.push({ kind: 'text', text: lines[cl] as string, count: 0 })
+    const below = lines.length - 1 - cl
+    if (below > 0) rows.push({ kind: 'folded', text: '', count: below })
+    return { rows, caretRow: rows.length - (below > 0 ? 2 : 1), caretCol, totalPhysical: lines.length }
   }
-  const rows: FoldRow[] = lines.slice(0, maxLines).map((t) => ({ kind: 'text' as const, text: t, count: 0 }))
-  if (cl < maxLines) {
-    // caret 在头部窗内：剩余尾部整体折叠
-    rows.push({ kind: 'folded', text: '', count: lines.length - maxLines })
-    return { rows, caretRow: cl, caretCol }
+  // 物理行路径：每逻辑行 wrap → caret 定位物理行 + 显示列（stringWidth）
+  const logical = text.split('\n')
+  const physPerLine = logical.map((l) => physicalLines(l, width))
+  const totalPhysical = physPerLine.reduce((n, p) => n + p.length, 0)
+  const { line: cl, col: charCol } = caretLineCol(logical, caret)
+  let physIdx = 0
+  let physStart = 0
+  for (let i = 0; i < (physPerLine[cl] ?? []).length; i++) {
+    const len = countGraphemes((physPerLine[cl] as string[])[i] as string)
+    if (charCol <= physStart + len) {
+      physIdx = i
+      break
+    }
+    physIdx = i
+    physStart += len
   }
-  // caret 在折叠区：头部窗 + 上侧折叠指示 + caret 行 + 下侧折叠指示
-  const above = cl - maxLines
+  const physText = physPerLine[cl]?.[physIdx] ?? ''
+  const caretCol = stringWidth(physText.slice(0, Math.max(0, charCol - physStart)))
+  const caretGlobalPhys = physPerLine.slice(0, cl).reduce((n, p) => n + p.length, 0) + physIdx
+  const flat: string[] = []
+  physPerLine.forEach((p) => flat.push(...p))
+  if (totalPhysical <= maxLines) {
+    return { rows: flat.map((t) => ({ kind: 'text' as const, text: t, count: 0 })), caretRow: caretGlobalPhys, caretCol, totalPhysical }
+  }
+  const rows: FoldRow[] = flat.slice(0, maxLines).map((t) => ({ kind: 'text' as const, text: t, count: 0 }))
+  if (caretGlobalPhys < maxLines) {
+    rows.push({ kind: 'folded', text: '', count: totalPhysical - maxLines })
+    return { rows, caretRow: caretGlobalPhys, caretCol, totalPhysical }
+  }
+  const above = caretGlobalPhys - maxLines
   if (above > 0) rows.push({ kind: 'folded', text: '', count: above })
-  rows.push({ kind: 'text', text: lines[cl] as string, count: 0 })
-  const below = lines.length - 1 - cl
+  rows.push({ kind: 'text', text: physText, count: 0 })
+  const below = totalPhysical - 1 - caretGlobalPhys
   if (below > 0) rows.push({ kind: 'folded', text: '', count: below })
-  return { rows, caretRow: rows.length - (below > 0 ? 2 : 1), caretCol }
+  return { rows, caretRow: rows.length - (below > 0 ? 2 : 1), caretCol, totalPhysical }
 }
 
 /** 输入渲染：❯ + 反色 caret 字素（设计理念 §7.2：反色不塞 ▋，跨字素不错位） */
 export function InputRender({ text, caret, placeholder }: InputRenderProps): ReactElement {
-  const folded = text.split('\n').length > INPUT_FOLD_MAX_LINES
+  const { columns } = useViewport()
+  const width = columns - 2 // ❯ 前缀占 2 列
+  const folded = physicalLineCount(text, width) > INPUT_FOLD_MAX_LINES
   return (
     <Box>
       <Text color={theme.user}>{symbols.prompt}</Text>
@@ -79,7 +143,7 @@ export function InputRender({ text, caret, placeholder }: InputRenderProps): Rea
       {text === '' && placeholder !== undefined ? (
         <Text dimColor>{placeholder}</Text>
       ) : folded ? (
-        <FoldedCaretText text={text} caret={caret} />
+        <FoldedCaretText text={text} caret={caret} width={width} />
       ) : (
         <CaretText text={text} caret={caret} />
       )}
@@ -88,14 +152,13 @@ export function InputRender({ text, caret, placeholder }: InputRenderProps): Rea
 }
 
 /** 折叠态输入：可见窗内 caret 行反色，折叠段用指示行替代（CC「+N lines」同款形态） */
-function FoldedCaretText({ text, caret }: { text: string; caret: number }): ReactElement {
-  const total = text.split('\n').length
-  const view = foldInputView(text, caret)
+function FoldedCaretText({ text, caret, width }: { text: string; caret: number; width: number }): ReactElement {
+  const view = foldInputView(text, caret, INPUT_FOLD_MAX_LINES, width)
   return (
     <Box flexDirection="column">
       {view.rows.map((row, i) =>
         row.kind === 'folded' ? (
-          <Text key={i} dimColor>{`…已折叠 ${row.count} 行（共 ${total} 行）`}</Text>
+          <Text key={i} dimColor>{`…已折叠 ${row.count} 行（共 ${view.totalPhysical} 行）`}</Text>
         ) : i === view.caretRow ? (
           <CaretText key={i} text={row.text} caret={view.caretCol} />
         ) : (

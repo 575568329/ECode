@@ -179,3 +179,45 @@ describe('手动换行三键位（legacy 终端 Shift+Enter 与 Enter 同字节�
     expect(onInput).not.toHaveBeenCalled()
   })
 })
+
+describe('foldInputView 物理行感知（M14-V2）', () => {
+  it('超长单行 wrap 计入折叠窗（头窗 5 物理行 + 尾部折叠指示）', () => {
+    const text = 'y'.repeat(100) // 40 列宽下 3 物理行 × 3 逻辑行
+    const three = ['a'.repeat(100), 'b'.repeat(100), 'c'.repeat(100)].join('\n')
+    const r1 = foldInputView(three, three.length, 5, 40)
+    expect(r1.totalPhysical).toBe(9) // 每逻辑行 ceil(100/40)=3
+    // caret 在末尾（折叠区）：头窗 5 + 上折叠指示 3 + caret 物理行（'c' 第 3 段）
+    expect(r1.rows).toHaveLength(7)
+    expect(r1.rows[5]).toMatchObject({ kind: 'folded', count: 3 })
+    expect(r1.rows[6]?.text).toBe('c'.repeat(20))
+    expect(r1.rows[0]?.text).toBe('a'.repeat(40))
+  })
+
+  it('caret 在折叠区：caret 物理行亮出 + 上下折叠指示', () => {
+    const lines = ['short', ...Array.from({ length: 10 }, (_, i) => `L${i}${'z'.repeat(100)}`)]
+    const text = lines.join('\n')
+    const caret = text.length // 末尾
+    const r = foldInputView(text, caret, 5, 40)
+    // caret 在最后一物理行（全局 30/共 31）：头窗 5 + 上指示 25 + caret 行（末行无下指示）
+    expect(r.rows).toHaveLength(7)
+    expect(r.rows[5]).toMatchObject({ kind: 'folded', count: 25 })
+    expect(r.rows[6]?.kind).toBe('text') // caret 行=L9 逻辑行的第 3 物理段（'L9' 前缀在折叠区）
+    expect(r.rows[6]?.text).toMatch(/^z+$/)
+  })
+
+  it('caret 物理列按显示宽度（CJK 2 列）', () => {
+    const text = '中中中中中'
+    // width 8：物理行 [中中中中, 中]；caret=4=第 4 字后→首物理行末（列 8，与下行首同点——
+    // 行末归上一行，与 caretLineCol 边界语义一致）；caret=5=第 5 字后→第二行末（列 2）
+    expect(foldInputView(text, 4, 5, 8)).toMatchObject({ caretRow: 0, caretCol: 8 })
+    expect(foldInputView(text, 5, 5, 8)).toMatchObject({ caretRow: 1, caretCol: 2 })
+  })
+
+  it('无 width 保持逻辑行旧行为', () => {
+    const text = Array.from({ length: 8 }, (_, i) => `L${i}`).join('\n')
+    const r = foldInputView(text, text.length, 5)
+    expect(r.totalPhysical).toBe(8)
+    expect(r.rows[0]?.text).toBe('L0')
+    expect(r.rows.some((row) => row.kind === 'folded')).toBe(true)
+  })
+})

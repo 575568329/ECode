@@ -12,9 +12,15 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { theme } from './theme.js'
+import { sectionBudget, useViewport } from './viewport.js'
 
-/** 窗口化滚动高度（T1：超 12 行滚动 + 边缘提示）。 */
+/** 窗口化滚动高度上限（T1：超 12 行滚动 + 边缘提示）。 */
 const MAX_VISIBLE = 12
+/** 高度感知预留（M14-V2；相对 budget=rows−2）：面板骨架（marginTop1+边框2+标题1+副标题1+
+ * 提示行1+搜索行1）+ 底部三行 + 余量——24 行兜底终端下仍得 12（现测试行为不变） */
+const VISIBLE_RESERVE = 10
+/** 极矮终端保命线 */
+const MIN_VISIBLE = 3
 
 export type PanelRow<T> = { type: 'header'; label: string } | { type: 'item'; value: T; label: ReactNode; disabled?: boolean }
 
@@ -67,6 +73,10 @@ export function PanelShell<T>({
 }: PanelShellProps<T>): ReactElement {
   const [query, setQuery] = useState('')
   const [idx, setIdx] = useState(0)
+  // M14-V2 rows 感知：窗口高度 = min(12, budget−10)——矮终端面板不再撑爆动态区；
+  // 24 行兜底终端下仍为 12（VISIBLE_RESERVE 换算保持现行为）
+  const { budget } = useViewport()
+  const maxVisible = Math.max(MIN_VISIBLE, sectionBudget(budget, VISIBLE_RESERVE, MAX_VISIBLE))
   // 光标项回调在下方 items/cursor 计算后经 useEffect 触发（见 items 定义处）
 
   // 过滤：只对 item 行；空组（过滤后无条目）的 header 丢弃
@@ -109,7 +119,7 @@ export function PanelShell<T>({
   }, [currentVal])
 
   // 窗口化滚动：光标为中心（对齐调研实现），窗口 [start, start+MAX_VISIBLE)
-  const windowStart = items.length <= MAX_VISIBLE ? 0 : Math.max(0, Math.min(items.length - MAX_VISIBLE, cursor - Math.floor(MAX_VISIBLE / 2)))
+  const windowStart = items.length <= maxVisible ? 0 : Math.max(0, Math.min(items.length - maxVisible, cursor - Math.floor(maxVisible / 2)))
   // visible 行序 → 窗口内渲染（header 只要出现在窗口区间就保留）
   let itemPos = -1
   const rendered: ReactElement[] = []
@@ -117,7 +127,7 @@ export function PanelShell<T>({
     const r = visible[vi]
     if (r.type === 'header') {
       const nextItem = visible.findIndex((x, j) => j > vi && x.type === 'item')
-      const inWindow = items.length <= MAX_VISIBLE || itemPos + 1 < windowStart + MAX_VISIBLE
+      const inWindow = items.length <= maxVisible || itemPos + 1 < windowStart + maxVisible
       if (inWindow && (nextItem === -1 || visiblePosToItemPos(nextItem) >= windowStart)) {
         rendered.push(
           <Text key={`h${vi}`} bold color={theme.info}>
@@ -128,7 +138,7 @@ export function PanelShell<T>({
       }
     } else {
       itemPos++
-      if (itemPos < windowStart || itemPos >= windowStart + MAX_VISIBLE) continue
+      if (itemPos < windowStart || itemPos >= windowStart + maxVisible) continue
       const selected = itemPos === cursor
       rendered.push(
         <Text key={`i${vi}`} inverse={selected} bold={selected} color={r.disabled ? theme.border : undefined}>
@@ -163,9 +173,9 @@ export function PanelShell<T>({
     } else if (key.downArrow) {
       setIdx(cursor >= items.length - 1 ? 0 : cursor + 1)
     } else if (key.pageUp) {
-      setIdx(clamp(cursor - MAX_VISIBLE))
+      setIdx(clamp(cursor - maxVisible))
     } else if (key.pageDown) {
-      setIdx(clamp(cursor + MAX_VISIBLE))
+      setIdx(clamp(cursor + maxVisible))
     } else if (key.return) {
       const item = items[cursor]
       if (item !== undefined && !item.disabled) onPick(item.value)
@@ -182,7 +192,7 @@ export function PanelShell<T>({
   })
 
   const hiddenAbove = windowStart > 0 ? windowStart : 0
-  const hiddenBelow = Math.max(0, items.length - (windowStart + MAX_VISIBLE))
+  const hiddenBelow = Math.max(0, items.length - (windowStart + maxVisible))
   const empty = items.length === 0
 
   return (

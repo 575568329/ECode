@@ -54,3 +54,30 @@ describe('foldStreamText', () => {
     expect(r.lines).toEqual(['c'])
   })
 })
+
+describe('foldStreamText 物理行化（M14-V2）', () => {
+  it('width 提供时超长单行按物理行折叠', () => {
+    const r = foldStreamText('x'.repeat(100), 3, 30)
+    expect(r.total).toBe(4) // ceil(100/30)
+    expect(r.lines).toEqual(['x'.repeat(30), 'x'.repeat(30), 'x'.repeat(10)]) // 尾 3 物理行
+    expect(r.folded).toBe(1)
+  })
+
+  it('CJK 宽度感知（中 = 2 列）', () => {
+    const r = foldStreamText('中'.repeat(20), 2, 10)
+    expect(r.total).toBe(4) // 每行 5 字
+    expect(r.folded).toBe(2)
+  })
+
+  it('无 width 保持逻辑行旧行为', () => {
+    const r = foldStreamText('1\n2\n3\n4\n5', 3)
+    expect(r.lines).toEqual(['3', '4', '5'])
+    expect(r.folded).toBe(2)
+    expect(r.total).toBe(5)
+  })
+
+  it('宽度非法（0）回退逻辑行', () => {
+    const r = foldStreamText('1\n2\n3\n4\n5', 3, 0)
+    expect(r.total).toBe(5)
+  })
+})

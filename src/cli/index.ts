@@ -411,15 +411,37 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
  * M12-B7：`ecode serve` 常驻模式——单会话宿主上 HTTP（多项目 ProjectRegistry 在 B8）。
  * ready 单行 JSON 契约（orca 式）：stdout 只给端口与注册文件路径——**token 不打 stdout**（防本机进程读屏）。
  */
-/** M12：`ecode serve stop`——读注册文件 → 验存活 → SIGTERM（调研结论：常驻+手动停，三家同款） */
+/**
+ * M14-C2④：PID 校验杀——kill 前连 /api/health 比对注册 id。PID 回收复用是真实风险
+ * （旧注册文件残留 + pid 被系统分给无关进程），身份不符/不可核验一律拒绝（宁可不杀）。
+ * 返回是否已发 SIGTERM。
+ */
+async function killServeByReg(reg: { pid: number; port: number; id?: string }, label: string): Promise<boolean> {
+  process.kill(reg.pid, 0) // 探活：已死则 ESRCH 抛给调用方 catch
+  if (reg.id !== undefined) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${reg.port}/api/health`, { signal: AbortSignal.timeout(1500) })
+      const info = (await res.json()) as { id?: string | null }
+      if (info.id !== reg.id) {
+        process.stdout.write(`${label}：pid ${reg.pid} 身份不符（health id 不匹配——疑似 PID 回收复用），拒绝误杀\n`)
+        return false
+      }
+    } catch {
+      process.stdout.write(`${label}：pid ${reg.pid} 无法核验身份（health 不可达），拒绝盲杀（如确认无误可手动 kill）\n`)
+      return false
+    }
+  }
+  process.kill(reg.pid, 'SIGTERM')
+  return true
+}
+
+/** M12：`ecode serve stop`——读注册文件 → 身份核验（M14-C2④）→ SIGTERM（常驻+手动停，三家同款） */
 async function serveStop(): Promise<void> {
   const regPath = join(os.homedir(), '.ecode', 'server.json')
   try {
-    const reg = JSON.parse(readFileSync(regPath, 'utf8')) as { pid: number; port: number }
-    process.kill(reg.pid, 0) // 探活：已死则 ESRCH 走 catch
-    process.kill(reg.pid, 'SIGTERM')
-    process.stdout.write(`已停止 serve（pid ${reg.pid}）
-`)
+    const reg = JSON.parse(readFileSync(regPath, 'utf8')) as { pid: number; port: number; id?: string }
+    const killed = await killServeByReg(reg, 'serve stop')
+    if (killed) process.stdout.write(`已停止 serve（pid ${reg.pid}）\n`)
   } catch (e) {
     process.stdout.write(`无需停止：${(e as { code?: string }).code === 'ESRCH' ? '进程已不在' : '注册文件不存在或损坏'}
 `)
@@ -432,12 +454,15 @@ async function serveStop(): Promise<void> {
 }
 
 async function serveMode(): Promise<void> {
-  // 启动接管（调研结论 2）：旧 daemon 活着 → SIGTERM 让位（版本升级/重复启动即换新）
+  // 启动接管（调研结论 2）：旧 daemon 活着 → 身份核验（M14-C2④）→ SIGTERM 让位（版本升级/重复启动即换新）
   try {
     const regPath = join(os.homedir(), '.ecode', 'server.json')
-    const old = JSON.parse(readFileSync(regPath, 'utf8')) as { pid: number }
-    process.kill(old.pid, 0)
-    process.kill(old.pid, 'SIGTERM')
+    const old = JSON.parse(readFileSync(regPath, 'utf8')) as { pid: number; port: number; id?: string }
+    const killed = await killServeByReg(old, 'serve takeover')
+    if (!killed) {
+      process.stderr.write('✗ 旧 serve 实例无法核验/让位——拒绝并发启动（可先 ecode serve stop 清理）\n')
+      process.exit(1)
+    }
     await new Promise((r) => setTimeout(r, 800)) // 等旧进程清锁退出
   } catch {
     // 无旧实例/已死——直接起
@@ -480,7 +505,7 @@ async function serveMode(): Promise<void> {
   const webDir = existsSync(webDirCandidate) ? webDirCandidate : undefined
   const srv = await serveMulti(
     { registry, defaultCwd: process.cwd() },
-    { port: Number(process.env.ECODE_SERVE_PORT ?? 0), host: serveHost, password: servePassword, ...(webDir !== undefined ? { webDir } : {}) },
+    { port: Number(process.env.ECODE_SERVE_PORT ?? 0), host: serveHost, password: servePassword, id: sessionId, ...(webDir !== undefined ? { webDir } : {}) },
   )
   // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读
   const regPath = join(os.homedir(), '.ecode', 'server.json')

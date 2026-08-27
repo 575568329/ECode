@@ -14,6 +14,8 @@ import type { HostSession } from '../host/session.js'
 import type { ProjectHost } from '../host/project.js'
 import { randomUUID } from 'node:crypto'
 import { LOOPBACK_ADDRS } from './loopback.js'
+import { CredentialStore } from './credentials.js'
+import { guardedSseWrite } from './sse.js'
 import type { MuxFrame, SessionBrief } from '../protocol/mux.js'
 import { collectProjectCwds } from '../services/history.js'
 import { createReadStream, existsSync, statSync } from 'node:fs'
@@ -27,6 +29,13 @@ export interface MultiServeDeps {
 }
 
 const MULTI_BODY_CAP = 1024 * 1024
+
+/**
+ * M14-C2③：静态托管 CSP。img-src 需 data:（历史图片 base64 直渲）、blob:；
+ * style-src 'unsafe-inline'（React 运行时 style 属性）；connect-src 同源 fetch+SSE。
+ */
+const STATIC_CSP =
+  "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 
 
 /**
@@ -43,6 +52,10 @@ export function serveMulti(
     sessionsDir?: string
     /** M13-W5：web/dist 托管目录（存在即挂 / 静态路由 + SPA fallback；缺省不挂） */
     webDir?: string
+    /** M14-C2④：实例标识（/api/health 回显——serveStop kill 前比对防陈旧 PID 误杀） */
+    id?: string
+    /** M14-C2①/D13：追加凭据条目（device 级测试注入口；产品化线 R1 配对设备正式写入处） */
+    extraCredentials?: Array<{ secret: string; class: 'primary' | 'lan-password' | 'device' }>
   } = {},
 ): Promise<ServeResult> {
   const token = randomBytes(24).toString('hex')
@@ -53,8 +66,13 @@ export function serveMulti(
   if (!isLoopbackBind && (opts.password === undefined || opts.password === '')) {
     return Promise.reject(new Error('非 loopback 绑定必须设置密码（拒绝启动——防裸奔局域网）'))
   }
-  // M13-W3（三预留①多凭据结构）：token 为首项，密码为第二项——M14 配对设备追加凭据条目即在此列表
-  const credentials = new Set<string>([token, ...(opts.password !== undefined && opts.password !== '' ? [opts.password] : [])])
+  // M13-W3（三预留①多凭据结构）+ M14-C2①（D13 凭据条目化）：token=primary、密码=lan-password
+  // （同为一等信任——用户亲手设置）；product 线 R1 配对设备以 device 级追加（不可 confirm 豁免）。
+  // 比较走 CredentialStore 常量时校验（digest+timingSafeEqual）；Basic 形态退役（审阅 P2 收敛——web 全 Bearer）
+  const credentials = new CredentialStore()
+  credentials.add(token, 'primary')
+  if (opts.password !== undefined && opts.password !== '') credentials.add(opts.password, 'lan-password')
+  for (const c of opts.extraCredentials ?? []) credentials.add(c.secret, c.class)
   const muxFilter = opts.muxFilter
 
   /** 新会话 id（cli 生成策略同款：ISO 时间戳 + 短随机尾防同秒碰撞） */
@@ -95,9 +113,15 @@ export function serveMulti(
     return { conv, sessionId: sid }
   }
 
-  const resolveHost = async (project: string | null, confirm: boolean): Promise<{ host: ProjectHost } | { error: string; code: number }> => {
+  const resolveHost = async (
+    project: string | null,
+    credClass: 'primary' | 'lan-password' | 'device' | null,
+  ): Promise<{ host: ProjectHost } | { error: string; code: number }> => {
     // 协议约定：项目路径一律正斜杠（Windows 反斜杠 %5C 会被 WHATWG URL 规范化为 / 碎段——实测坑）
     const cwd = project !== null ? decodeURIComponent(project).split(String.fromCharCode(92)).join('/') : deps.defaultCwd
+    // M14-C2①：confirm 豁免不再由 `?confirm=true` 客户端自报（审阅 P1-7——对脚本化客户端护栏为零），
+    // 改为凭据分级派生——一等凭据（primary/lan-password，用户亲手持有）即栅栏同意；device 级不放行
+    const confirm = credClass === 'primary' || credClass === 'lan-password'
     const r = await registry.acquire(cwd, { confirm })
     if (r.ok && r.host !== undefined) return { host: r.host }
     if (r.reason === 'need-confirm') return { error: '历史反推项目首次拉起需 confirm:true 二次确认（防恶意仓库 hooks）', code: 428 }
@@ -115,7 +139,8 @@ export function serveMulti(
       }
       const remote = req.socket.remoteAddress ?? ''
       if (!LOOPBACK_ADDRS.has(remote)) return json(403, { error: '非 loopback 连接被拒' })
-      if (req.method === 'GET' && url.pathname === '/api/health') return json(200, { ok: true })
+      // M14-C2④：health 回显实例标识（serveStop kill 前比对——PID 回收复用防误杀）
+      if (req.method === 'GET' && url.pathname === '/api/health') return json(200, { ok: true, id: opts.id ?? null })
 
       // M13-W5：静态托管（SPA 壳免鉴权——HTML/JS 无敏感内容，API 全鉴权；TokenGate 是应用层）
       if (opts.webDir !== undefined && req.method === 'GET' && !url.pathname.startsWith('/api/')) {
@@ -131,7 +156,11 @@ export function serveMulti(
           // open 失败是异步 emit，try 覆盖不到——无监听会走 uncaughtException 击落整个
           // daemon（审阅 P1-1：dist 重建竞态窗口/权限变化/文件被删）；headers 已发无法改状态码，销毁连接即可
           stream.on('error', () => res.destroy())
-          res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', 'cache-control': extname(file) === '.html' ? 'no-cache' : 'public, max-age=3600' })
+          res.writeHead(200, {
+            'content-type': MIME[extname(file)] ?? 'application/octet-stream',
+            'cache-control': extname(file) === '.html' ? 'no-cache' : 'public, max-age=3600',
+            'content-security-policy': STATIC_CSP,
+          })
           stream.pipe(res)
         } catch {
           res.writeHead(500)
@@ -139,9 +168,11 @@ export function serveMulti(
         }
         return
       }
+      // M14-C2①②：Bearer-only + CredentialStore 常量时校验（Basic 形态退役——审阅 P2 双凭据解析留一）
       const auth = req.headers.authorization ?? ''
-      const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : auth.startsWith('Basic ') ? (Buffer.from(auth.slice(6), 'base64').toString('utf8').split(':').pop() ?? '') : ''
-      if (!credentials.has(bearer)) return json(401, { error: '未授权' })
+      const presented = auth.startsWith('Bearer ') ? auth.slice(7) : ''
+      const credClass = credentials.verify(presented)
+      if (credClass === null) return json(401, { error: '未授权' })
 
       // 项目列表（M13-W4 三源并集：显式注册 ∪ 活项目 ∪ 历史反推 meta.cwd——Web 打开即见本机所有有历史的项目）
       if (req.method === 'GET' && url.pathname === '/api/projects') {
@@ -169,6 +200,8 @@ export function serveMulti(
             if (typeof path !== 'string' || path.trim() === '') return json(400, { ok: false, error: '缺少 path' })
             if (!existsSync(path)) return json(404, { ok: false, error: `路径不存在：${path}` })
             if (!statSync(path).isDirectory()) return json(400, { ok: false, error: `不是目录：${path}` })
+            // M14-C2①：项目注册是一等凭据动作（device 级不放行——R 线配对设备不能替用户注册任意目录）
+            if (credClass === 'device') return json(403, { ok: false, error: '设备凭据不可注册项目（需用户级凭据）' })
             return json(200, { ok: true, path: registry.register(path) })
           } catch (e) {
             json(400, { ok: false, error: e instanceof Error ? e.message : String(e) })
@@ -188,18 +221,20 @@ export function serveMulti(
           connection: 'keep-alive',
           'x-accel-buffering': 'no',
         })
-        // 预留②per-client 过滤钩子（当前 undefined=全放行；M14 配对设备接 per-device 会话订阅过滤）
+        // M14-C2⑧：mux 观察型连接须声明 canAnswer=1 才计入审批 fail-closed 判定——
+        // 否则任一常开仪表盘订阅就使 sensitive 门"零订阅者 fail-closed"退化为 15min 挂起（审阅 P1-8）
+        const canAnswer = url.searchParams.get('canAnswer') === '1'
+        // 预留②per-client 过滤钩子（当前 undefined=全放行；产品化线 R 线接 per-device 会话订阅过滤）
+        const write = guardedSseWrite(res)
         const send = (frame: MuxFrame): void => {
           if (muxFilter !== undefined && !muxFilter(frame)) return
           const eventName = 'host' in frame ? frame.host.type : frame.ev.type
-          if (res.write(`event: ${eventName}\n\ndata: ${JSON.stringify(frame)}\n\n`) === false) {
-            res.once('drain', () => {})
-          }
+          write(`event: ${eventName}\n\ndata: ${JSON.stringify(frame)}\n\n`)
         }
         const unsubs: Array<() => void> = []
         const attachProject = (cwd: string, host: ProjectHost): void => {
           for (const [sid, conv] of host.conversationsSnapshot()) {
-            unsubs.push(conv.subscribe((ev) => send({ project: cwd, sessionId: sid, ev })))
+            unsubs.push(conv.subscribe((ev) => send({ project: cwd, sessionId: sid, ev }), { canAnswer }))
           }
           // 新会话动态补订 ev 流（审阅 P2-2：曾只发生命周期帧不订阅——新会话 delta/approval 全丢，
           // 现网靠 web 切会话重订整条 SSE 的副作用兜住；补订后单连接自洽）
@@ -208,7 +243,7 @@ export function serveMulti(
               if (kind === 'created') {
                 send({ host: { type: 'session/created', brief: info.brief ?? { project: cwd, sessionId: info.sessionId, running: false, title: '', updatedAt: Date.now() } } })
                 const conv = host.conversation(info.sessionId)
-                if (conv !== undefined) unsubs.push(conv.subscribe((ev) => send({ project: cwd, sessionId: info.sessionId, ev })))
+                if (conv !== undefined) unsubs.push(conv.subscribe((ev) => send({ project: cwd, sessionId: info.sessionId, ev }), { canAnswer }))
               } else {
                 send({ host: { type: 'session/removed', project: cwd, sessionId: info.sessionId } })
               }
@@ -236,7 +271,7 @@ export function serveMulti(
           }
           send({ host: { type: 'session/baseline', projects, sessions } })
         })()
-        const ping = setInterval(() => res.write(': ping\n\n'), 15_000)
+        const ping = setInterval(() => write(': ping\n\n'), 15_000)
         res.on('close', () => {
           clearInterval(ping)
           for (const u of unsubs) u()
@@ -244,11 +279,12 @@ export function serveMulti(
         return
       }
 
-      // 项目维度路由：/api/p/:p/(cmd|events)；无前缀=默认项目
+      // 项目维度路由：/api/p/:p/(cmd|events)；无前缀=默认项目。
+      // M14-C2①：`?confirm=true` 客户端自报退役（豁免随凭据分级派生，见 resolveHost）——
+      // 旧客户端仍发此参数被忽略（web 端恒带，无害）
       const m = /^\/api\/(?:p\/([^/]+)\/)?(cmd|events)$/.exec(url.pathname)
       if (m === null) return json(404, { error: 'no route' })
       const project = m[1] ?? null
-      const confirm = url.searchParams.get('confirm') === 'true' || url.searchParams.get('confirm') === '1'
 
       if (m[2] === 'cmd' && req.method === 'POST') {
         void (async () => {
@@ -261,7 +297,7 @@ export function serveMulti(
               chunks.push(c as Buffer)
             }
             const cmd = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown>
-            const h = await resolveHost(project, confirm)
+            const h = await resolveHost(project, credClass)
             if ('error' in h) return json(h.code, { ok: false, error: h.error })
             // 项目级 session/new：真新建（区别于缺省路由的 ensureDefault 复用默认会话——
             // 「+新对话」两次进同一会话的病灶）。ensure 即挂活 + created 帧广播（mux 列表
@@ -290,7 +326,7 @@ export function serveMulti(
         // uncaughtException 击落 daemon——serve 模式无 unhandledRejection 兜底）
         void (async () => {
           try {
-            const h = await resolveHost(project, confirm)
+            const h = await resolveHost(project, credClass)
             if ('error' in h) return json(h.code, { ok: false, error: h.error })
             // W2：?sessionId= 指定会话（冷会话 ensureRestore 拉起后订阅）；缺省=默认会话
             const wantSid = url.searchParams.get('sessionId')
@@ -299,10 +335,12 @@ export function serveMulti(
                 ? h.host.conversation(wantSid) ?? (await h.host.ensureRestore(wantSid))
                 : h.host.ensureDefault(freshSessionId())
             res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' })
+            // 单会话流是交互型客户端（CLI 时代语义）——计可应答（M14-C2⑧）
+            const write = guardedSseWrite(res)
             const unsub = target.subscribe((ev) => {
-              if (res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`) === false) res.once('drain', () => {})
+              write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`)
             })
-            const ping = setInterval(() => res.write(': ping\n\n'), 15_000)
+            const ping = setInterval(() => write(': ping\n\n'), 15_000)
             res.on('close', () => {
               clearInterval(ping)
               unsub()

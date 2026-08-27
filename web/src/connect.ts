@@ -64,8 +64,8 @@ export function connectMux(
   let attempt = 0
   const muxUrl =
     sessionId !== undefined && sessionId !== ''
-      ? `${base}/api/events.mux?sessionId=${encodeURIComponent(sessionId)}`
-      : `${base}/api/events.mux`
+      ? `${base}/api/events.mux?sessionId=${encodeURIComponent(sessionId)}&canAnswer=1`
+      : `${base}/api/events.mux?canAnswer=1`
 
   // 每个 connectMux 实例一个 controller；loop 每次迭代重建（审阅 P0-2：曾整个循环共用
   // 一个——visibilityResume abort 一次后永久废弃，此后每次 fetch 立即 AbortError=

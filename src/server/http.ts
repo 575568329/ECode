@@ -15,6 +15,8 @@ import http from 'node:http'
 import { randomBytes } from 'node:crypto'
 import type { HostSession } from '../host/session.js'
 import { LOOPBACK_ADDRS } from './loopback.js'
+import { CredentialStore } from './credentials.js'
+import { guardedSseWrite } from './sse.js'
 
 const BODY_CAP = 1024 * 1024
 
@@ -26,22 +28,17 @@ export interface ServeResult {
   close(): Promise<void>
 }
 
-export function serveHost(host: HostSession, opts: { port?: number; hostname?: string } = {}): Promise<ServeResult> {
+export function serveHost(host: HostSession, opts: { port?: number; hostname?: string; id?: string } = {}): Promise<ServeResult> {
   const token = randomBytes(24).toString('hex')
   const hostname = opts.hostname ?? '127.0.0.1'
+  // M14-C2①②：单 token=primary 一等凭据；Bearer-only + 常量时校验（Basic 形态退役）
+  const credentials = new CredentialStore()
+  credentials.add(token, 'primary')
 
-  const authorized = (req: http.IncomingMessage): boolean => {
+  const authorized = (req: http.IncomingMessage): boolean => credentials.verify(bearerOf(req)) !== null
+  const bearerOf = (req: http.IncomingMessage): string => {
     const auth = req.headers.authorization ?? ''
-    if (auth.startsWith('Bearer ')) return auth.slice(7) === token
-    if (auth.startsWith('Basic ')) {
-      try {
-        const decoded = Buffer.from(auth.slice(6), 'base64').toString('utf8')
-        return decoded === `ecode:${token}` || decoded === `:${token}`
-      } catch {
-        return false
-      }
-    }
-    return false
+    return auth.startsWith('Bearer ') ? auth.slice(7) : ''
   }
 
   const readBody = (req: http.IncomingMessage): Promise<unknown> =>
@@ -80,7 +77,7 @@ export function serveHost(host: HostSession, opts: { port?: number; hostname?: s
       }
 
       if (req.method === 'GET' && url.pathname === '/api/health') {
-        return json(200, { ok: true })
+        return json(200, { ok: true, id: opts.id ?? null })
       }
       if (!authorized(req)) {
         return json(401, { error: '未授权（Bearer <token>，token 见 serve 启动输出/注册文件）' })
@@ -106,13 +103,12 @@ export function serveHost(host: HostSession, opts: { port?: number; hostname?: s
           connection: 'keep-alive',
         })
         // 订阅即重放 pending 可答帧（HostSession.subscribe 内含 broker.replayPending）
+        // M14-C2⑦：慢消费者守卫（持续无 drain 销毁连接——防 SSE 缓冲无界）
+        const write = guardedSseWrite(res)
         const unsub = host.subscribe((ev) => {
-          // 背压：write false 时挂起等 drain（慢消费者不无限缓冲）
-          if (res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`) === false) {
-            res.once('drain', () => {})
-          }
+          write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`)
         })
-        const ping = setInterval(() => res.write(': ping\n\n'), 15_000)
+        const ping = setInterval(() => write(': ping\n\n'), 15_000)
         res.on('close', () => {
           clearInterval(ping)
           unsub()

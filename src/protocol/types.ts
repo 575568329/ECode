@@ -56,6 +56,7 @@ export type ProtocolEvent =
   | { type: 'turn/completed'; seq: number; turnId: string }
   | { type: 'thread/status'; seq: number; busy: boolean; waitingOn: 'approval' | 'userInput' | null; iter: number; maxIter?: number }
   | { type: 'approval/requested'; seq: number; requestId: string; kind: ApprovalKind; tool: string; preview: string; decisions: ApprovalDecision[] }
+  | { type: 'approval/claimed'; seq: number; requestId: string; claimant: string }
   | { type: 'approval/resolved'; seq: number; requestId: string; outcome: ApprovalOutcome }
   | { type: 'askUser/requested'; seq: number; requestId: string; questions: unknown[] } // B2 迁 AskUserQuestion 时收紧
   | { type: 'askUser/resolved'; seq: number; requestId: string; answers: unknown }
@@ -91,6 +92,7 @@ export type PromptRouted = 'Started' | 'Steered' | 'Queued' | 'Rejected'
 export type ProtocolCommand =
   | { op: 'prompt'; text: string; mode: PromptMode; images?: ImagePayload[] }
   | { op: 'approval/respond'; requestId: string; decision: ApprovalDecision; message?: string }
+  | { op: 'approval/claim'; requestId: string; claimant?: string }
   | { op: 'askUser/respond'; requestId: string; answers: unknown }
   | { op: 'askSelect/respond'; requestId: string; choice: string | null }
   | { op: 'interrupt' }

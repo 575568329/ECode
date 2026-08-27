@@ -87,14 +87,24 @@ registry.register(dirB)
 let srv: Awaited<ReturnType<typeof serveMulti>>
 let base: string
 let auth: Record<string, string>
+// M14-C2：第二实例带 device 级凭据 + 实例 id（分级语义/health 回显验收）
+let base2 = ''
+const deviceToken = 'dev-token-c2-test'
+let srv2: Awaited<ReturnType<typeof serveMulti>> | null = null
 
 beforeAll(async () => {
   srv = await serveMulti({ registry, defaultCwd: dirA })
   base = `http://127.0.0.1:${srv.port}`
   auth = { authorization: `Bearer ${srv.token}` }
+  srv2 = await serveMulti(
+    { registry: new ProjectRegistry(mk), defaultCwd: dirA },
+    { extraCredentials: [{ secret: deviceToken, class: 'device' }], id: 'test-instance-id' },
+  )
+  base2 = `http://127.0.0.1:${srv2.port}`
 })
 afterAll(async () => {
   await srv.close()
+  await srv2?.close()
   rmSync(dirA, { recursive: true, force: true })
   rmSync(dirB, { recursive: true, force: true })
 })
@@ -114,13 +124,50 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     expect(seenCwds).toContain(dirB.split(String.fromCharCode(92)).join('/'))
   })
 
-  it('need-confirm 栅栏：未注册项目首次拉起 428；confirm 后放行', async () => {
+  it('M14-C2① confirm 随凭据分级派生：primary 直接过（?confirm 退役被忽略）；device 级 428；Basic 形态拒收', async () => {
     const dirC = mkdtempSync(join(tmpdir(), 'ecode-projC-'))
+    // primary 持有方：无需任何 query 即过栅栏（原 need-confirm 428 语义让位于分级派生）
     const r1 = await (await fetch(`${base}/api/p/${enc(dirC)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/list' } }) })).json()
-    expect(r1).toMatchObject({ ok: false, error: expect.stringContaining('confirm') })
-    const r2 = await (await fetch(`${base}/api/p/${enc(dirC)}/cmd?confirm=true`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/list' } }) })).json()
-    expect(r2).toMatchObject({ ok: true })
+    expect(r1).toMatchObject({ ok: true })
+    // device 凭据：不可 confirm 豁免——未注册项目首次拉起 428
+    const r2 = await (
+      await fetch(`${base2}/api/p/${enc(dirC)}/cmd`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${deviceToken}` },
+        body: JSON.stringify({ op: { op: 'session/list' } }),
+      })
+    ).json()
+    expect(r2).toMatchObject({ ok: false, error: expect.stringContaining('confirm') })
+    // device 凭据自报 ?confirm=true 也不放行（客户端自报已退役）
+    const r3 = await (
+      await fetch(`${base2}/api/p/${enc(dirC)}/cmd?confirm=true`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${deviceToken}` },
+        body: JSON.stringify({ op: { op: 'session/list' } }),
+      })
+    ).json()
+    expect(r3).toMatchObject({ ok: false })
+    // Basic 形态退役：即便密码正确也 401（双凭据解析留一——web 全 Bearer）
+    const r4 = await fetch(`${base}/api/projects`, { headers: { authorization: `Basic ${Buffer.from(`x:${srv.token}`).toString('base64')}` } })
+    expect(r4.status).toBe(401)
     rmSync(dirC, { recursive: true, force: true })
+  })
+
+  it('M14-C2① device 凭据不可注册项目（一等凭据动作）；M14-C2④ health 回显实例 id', async () => {
+    const dirD = mkdtempSync(join(tmpdir(), 'ecode-projD-'))
+    const r1 = await (
+      await fetch(`${base2}/api/projects`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${deviceToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ path: dirD }),
+      })
+    ).json()
+    expect(r1).toMatchObject({ ok: false, error: expect.stringContaining('设备凭据') })
+    const h2 = await (await fetch(`${base2}/api/health`)).json()
+    expect(h2).toMatchObject({ ok: true, id: 'test-instance-id' })
+    const h1 = await (await fetch(`${base}/api/health`)).json()
+    expect(h1).toMatchObject({ ok: true, id: null })
+    rmSync(dirD, { recursive: true, force: true })
   })
 
   it('M13-W2 命令信封三态：显式命中/冷会话 404/缺省走默认并回执 sessionId', async () => {

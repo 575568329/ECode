@@ -11,6 +11,12 @@ import type { CommandResult, ProtocolCommand, ProtocolEvent, PublishableEvent } 
 export type EventHandler = (ev: ProtocolEvent) => void
 export type CommandDispatcher = (cmd: ProtocolCommand) => Promise<CommandResult>
 
+/** 订阅者能力声明（M14-C2⑧）：canAnswer=false 的订阅只看不应答（mux 观察型连接），
+ *  不计入审批 fail-closed 判定——否则任一常开仪表盘就破坏 sensitive 门的 fail-fast。 */
+export interface SubscribeOptions {
+  canAnswer?: boolean
+}
+
 /** 客户端侧统一数据访问面（TuiApp/Web/手机共契约） */
 export interface ClientTransport {
   send(cmd: ProtocolCommand): Promise<CommandResult>
@@ -27,6 +33,7 @@ export interface ClientTransport {
 export class InMemoryChannel implements ClientTransport {
   private seq = 0
   private readonly handlers = new Set<EventHandler>()
+  private readonly passiveHandlers = new Set<EventHandler>()
   private dispatcher: CommandDispatcher | null = null
   private disposed = false
 
@@ -42,6 +49,7 @@ export class InMemoryChannel implements ClientTransport {
     const full = { ...structuredClone(ev), seq: ++this.seq } as ProtocolEvent
     if (!this.disposed) {
       for (const h of this.handlers) h(full)
+      for (const h of this.passiveHandlers) h(full)
     }
     return full
   }
@@ -51,7 +59,8 @@ export class InMemoryChannel implements ClientTransport {
     return this.seq
   }
 
-  /** 订阅者数（B2 审批 fail-closed 判定：零订阅者=无应答渠道） */
+  /** 可应答订阅者数（B2 审批 fail-closed 判定：零可应答者=无应答渠道；
+   *  M14-C2⑧：passive（canAnswer=false）订阅不计入——观察型连接不撑起 sensitive 门） */
   get subscriberCount(): number {
     return this.handlers.size
   }
@@ -71,15 +80,18 @@ export class InMemoryChannel implements ClientTransport {
     }))
   }
 
-  subscribe(handler: EventHandler): () => void {
-    this.handlers.add(handler)
+  subscribe(handler: EventHandler, opts: SubscribeOptions = {}): () => void {
+    const passive = opts.canAnswer === false
+    const set = passive ? this.passiveHandlers : this.handlers
+    set.add(handler)
     return () => {
-      this.handlers.delete(handler)
+      set.delete(handler)
     }
   }
 
   dispose(): void {
     this.disposed = true
     this.handlers.clear()
+    this.passiveHandlers.clear()
   }
 }

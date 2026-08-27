@@ -27,10 +27,18 @@ interface PendingEntry {
   resolve: (value: unknown) => void
   /** M13-B2 审批超时定时器（respond/dispose 清；触发=自动 reject + resolved('timeout')） */
   timer?: ReturnType<typeof setTimeout>
+  /** M14-C2⑤ 审批 claim（D12 advisory）：认领方与租约到期时刻——不改先答先得权威语义，纯可视 */
+  claim?: { claimant: string; expiresAt: number }
 }
 
 /** 可答帧的构造形态（不含 seq——通道分配；requestId 为公共字段） */
 type AnswerableFrame = PublishableEvent & { requestId: string; kind?: ApprovalKind }
+
+/** 审批审计落盘（M14-C2⑥）：asked（挂起登记后）/decided（respond/timeout/dispose 收敛） */
+export type ApprovalAuditSink = (event: 'asked' | 'decided', info: Record<string, unknown>) => void
+
+/** claim 租约时长（D12：CC 300s 租约先例取半——认领端崩溃后最多 2 分钟可被重新认领/他人应答提示恢复） */
+const CLAIM_TTL_MS = 120_000
 
 export interface PermissionAnswer {
   allow: boolean
@@ -46,6 +54,8 @@ export class ApprovalBroker {
     private readonly policy: ApprovalPolicy = 'ask',
     /** M13-B2：挂起超时毫秒（config.approvalTimeoutMs；0=不限——默认值由宿主层填） */
     private readonly timeoutMs = 0,
+    /** M14-C2⑥：审计落盘钩子（宿主接 LogStore——设备审批留痕是产品化线前置） */
+    private readonly audit: ApprovalAuditSink | null = null,
   ) {}
 
   get pendingCount(): number {
@@ -165,12 +175,29 @@ export class ApprovalBroker {
       }
       this.pending.set(requestId, entry)
       entry.frame = this.publish(frame) // 广播后回填带 seq 的完整帧（重放源）
+      this.audit?.('asked', { requestId, kind: entry.kind, tool: (frame as { tool?: string }).tool ?? '' })
       // M13-B2：超时自动 reject（resolved 带 'timeout' 轨迹；unref 不占事件循环——测试短时限可调）
       if (this.timeoutMs > 0) {
         entry.timer = setTimeout(() => this.timeoutResolve(requestId), this.timeoutMs)
         entry.timer.unref?.()
       }
     })
+  }
+
+  /** M14-C2⑤ 认领（D12 advisory）：登记租约并广播 claimed 帧。不改权威语义——
+   *  非认领方仍可 respond（防劫持），认领方崩溃由 TTL 过期自愈。重复 claim 刷新租约。 */
+  claim(requestId: string, claimant: string): { accepted: boolean; reason?: string } {
+    const entry = this.pending.get(requestId)
+    if (entry === undefined) return { accepted: false, reason: 'not-pending' }
+    entry.claim = { claimant, expiresAt: Date.now() + CLAIM_TTL_MS }
+    this.publish({ type: 'approval/claimed', requestId, claimant })
+    return { accepted: true }
+  }
+
+  /** 当前有效 claim（过期视为无——惰性判定，无需清理定时器） */
+  private activeClaim(entry: PendingEntry): { claimant: string } | null {
+    if (entry.claim === undefined) return null
+    return entry.claim.expiresAt > Date.now() ? entry.claim : null
   }
 
   /** 超时收敛：无人应答的挂起按 kind 给默认拒绝值 + resolved('timeout')（多端延迟答审批的止损） */
@@ -182,6 +209,7 @@ export class ApprovalBroker {
     else if (entry.kind === 'ask-select') entry.resolve(null)
     else if (entry.kind === 'ask-user') entry.resolve(null)
     else entry.resolve(false)
+    this.audit?.('decided', { requestId, kind: entry.kind, outcome: 'timeout' })
     if (entry.kind === 'tool-confirm' || entry.kind === 'sensitive' || entry.kind === 'mcp-permission') {
       this.publish({ type: 'approval/resolved', requestId, outcome: 'timeout' })
     } else if (entry.kind === 'ask-user') {
@@ -230,6 +258,7 @@ export class ApprovalBroker {
     } else {
       entry.resolve(true)
     }
+    this.audit?.('decided', { requestId, kind: entry.kind, outcome: decision, message })
     this.publish({ type: 'approval/resolved', requestId, outcome: decision })
     return { accepted: true }
   }
@@ -254,9 +283,14 @@ export class ApprovalBroker {
     return { accepted: true }
   }
 
-  /** 重连重放：把仍 pending 的可答帧原样（含 requestId）重投给新订阅者（SSE 场景） */
+  /** 重连重放：把仍 pending 的可答帧原样（含 requestId）重投给新订阅者（SSE 场景）。
+   *  M14-C2⑤：有效 claim 的租约随帧一并重放（断线重连端能看到"已在某端处理"状态） */
   replayPending(handler: (ev: ProtocolEvent) => void): void {
-    for (const p of this.pending.values()) handler(p.frame)
+    for (const p of this.pending.values()) {
+      handler(p.frame)
+      const c = this.activeClaim(p)
+      if (c !== null) handler({ type: 'approval/claimed', seq: 0, requestId: p.requestId, claimant: c.claimant })
+    }
   }
 
   /** 实例销毁：全部 pending fail-closed 收敛（不留悬挂 Promise——opencode finalizer 同款） */
@@ -268,6 +302,7 @@ export class ApprovalBroker {
       else if (p.kind === 'ask-select') p.resolve(null)
       else if (p.kind === 'ask-user') p.resolve(null)
       else p.resolve(false)
+      this.audit?.('decided', { requestId: id, kind: p.kind, outcome: 'cancelled' })
       this.publish({ type: 'approval/resolved', requestId: id, outcome: 'cancelled' })
     }
   }

@@ -401,6 +401,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           confirmRef.current = false
           setActive((a) => (a.confirm !== null && a.confirm !== undefined ? { ...a, confirm: null } : a))
           break
+        case 'approval/claimed':
+          // M14-C2⑤（D12 advisory）：另一端认领审批——TUI 不撤弹窗（先答先得权威不变），告警中心留痕供扫一眼
+          pushNoticeFn('info', `审批已由「${ev.claimant}」端认领处理中（仍可在本端作答）`)
+          break
         case 'askUser/requested':
           pickerRef.current = true
           setOverlay({

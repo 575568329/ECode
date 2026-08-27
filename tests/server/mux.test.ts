@@ -205,7 +205,7 @@ describe('M13-W3 mux 单流', () => {
     await srvF.close()
   }, 10_000)
 
-  it('非 loopback 绑定强制密码（预留③）：无密码拒绝启动；有密码 Basic 可用', async () => {
+  it('非 loopback 绑定强制密码（预留③）：无密码拒绝启动；有密码 Bearer 可用（M14-C2② Basic 形态退役）', async () => {
     await expect(
       serveMulti({ registry, defaultCwd: dirA }, { host: '0.0.0.0' }),
     ).rejects.toThrow('密码')
@@ -215,9 +215,9 @@ describe('M13-W3 mux 单流', () => {
     const denied = await fetch(`http://127.0.0.1:${srvP.port}/api/projects`)
     expect(denied.status).toBe(401)
     const allowed = await fetch(`http://127.0.0.1:${srvP.port}/api/projects`, {
-      headers: { authorization: `Basic ${Buffer.from('user:pw123').toString('base64')}` },
+      headers: { authorization: `Bearer pw123` },
     })
-    expect(allowed.status).toBe(200) // 密码作为第二凭据（预留①多凭据列表）
+    expect(allowed.status).toBe(200) // 密码作为第二凭据（lan-password 级——D13 凭据条目化）
     await srvP.close()
   })
 })

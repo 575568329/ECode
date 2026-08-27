@@ -120,14 +120,18 @@ export class HostSession {
 
   constructor(private readonly deps: HostDeps) {
     this.channel.bind((cmd) => this.dispatch(cmd))
-    this.broker = new ApprovalBroker(this.channel, deps.approvalPolicy ?? 'ask', deps.getConfig().approvalTimeoutMs ?? 900_000)
+    // M14-C2⑥ 审批审计：asked/decided 落 LogStore（asked 含 kind/tool；decided 含 outcome——产品化线设备审批留痕前置）
+    this.broker = new ApprovalBroker(this.channel, deps.approvalPolicy ?? 'ask', deps.getConfig().approvalTimeoutMs ?? 900_000, (event, info) => {
+      deps.logger.info('approval', event, info)
+    })
     this.sandboxMode =
       (this.cfg().sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default'
   }
 
-  /** 客户端订阅事件流（B2：订阅即重放 pending 可答帧——重连/换端恢复确认上下文） */
-  subscribe(handler: (ev: ProtocolEvent) => void): () => void {
-    const unsub = this.channel.subscribe(handler)
+  /** 客户端订阅事件流（B2：订阅即重放 pending 可答帧——重连/换端恢复确认上下文）。
+   *  M14-C2⑧：canAnswer=false 的观察型订阅不计入审批 fail-closed 判定（透传通道语义） */
+  subscribe(handler: (ev: ProtocolEvent) => void, opts: { canAnswer?: boolean } = {}): () => void {
+    const unsub = this.channel.subscribe(handler, opts)
     this.broker.replayPending(handler)
     return unsub
   }
@@ -429,6 +433,11 @@ export class HostSession {
         return { ok: true }
       case 'approval/respond': {
         const r = this.broker.respondApproval(cmd.requestId, cmd.decision, cmd.message)
+        return r.accepted ? { ok: true } : { ok: false, error: r.reason ?? 'not-pending', code: 'NOT_PENDING' }
+      }
+      case 'approval/claim': {
+        // M14-C2⑤（D12 advisory）：多端同开时的认领可视——不改先答先得权威
+        const r = this.broker.claim(cmd.requestId, cmd.claimant ?? 'client')
         return r.accepted ? { ok: true } : { ok: false, error: r.reason ?? 'not-pending', code: 'NOT_PENDING' }
       }
       case 'askUser/respond': {

@@ -2,7 +2,7 @@
  * M12-B2 审批 Broker 测试：分策略表（D6）/fail-closed/always·reject 级联/重放/销毁收敛；
  * spike 场景 3/4/5（可答帧双端收敛、拒绝路径、断线重放）在此转正。
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ApprovalBroker } from '../../src/host/approval.js'
 import { InMemoryChannel } from '../../src/protocol/channel.js'
 import type { ProtocolEvent } from '../../src/protocol/types.js'
@@ -106,5 +106,78 @@ describe('ApprovalBroker（B2 分策略表）', () => {
   it('not-pending 回执：重复/伪造 respond 被拒', () => {
     const { broker } = setup()
     expect(broker.respondApproval('00000000-0000-0000-0000-000000000000', 'once')).toMatchObject({ accepted: false, reason: 'not-pending' })
+  })
+})
+
+describe('ApprovalBroker（M14-C2⑤⑥ claim/审计）', () => {
+  it('claim：登记租约 + claimed 广播；advisory——非认领方仍可 respond（防劫持）', async () => {
+    const { broker, events } = setup()
+    const p = broker.confirm(use('write_file'), 'x')
+    const req = events.find((e) => e.type === 'approval/requested')
+    if (req?.type !== 'approval/requested') throw new Error('unreachable')
+    const r = broker.claim(req.requestId, 'web')
+    expect(r.accepted).toBe(true)
+    expect(events.some((e) => e.type === 'approval/claimed' && e.requestId === req.requestId && e.claimant === 'web')).toBe(true)
+    // 另一端（非认领方）respond 仍被接受——先答先得权威不变
+    expect(broker.respondApproval(req.requestId, 'once').accepted).toBe(true)
+    expect(await p).toBe(true)
+  })
+
+  it('claim not-pending 回执拒绝', () => {
+    const { broker } = setup()
+    expect(broker.claim('00000000-0000-0000-0000-000000000000', 'web')).toMatchObject({ accepted: false, reason: 'not-pending' })
+  })
+
+  it('claim TTL 过期：replayPending 不再重放 claim（认领端崩溃自愈）', async () => {
+    vi.useFakeTimers()
+    try {
+      const ch = new InMemoryChannel()
+      const broker = new ApprovalBroker(ch, 'ask')
+      const events: ProtocolEvent[] = []
+      ch.subscribe((e) => events.push(e))
+      const p = broker.confirm(use('write_file'), 'x')
+      const req = events.find((e) => e.type === 'approval/requested')
+      if (req?.type !== 'approval/requested') throw new Error('unreachable')
+      broker.claim(req.requestId, 'web')
+      vi.advanceTimersByTime(121_000) // CLAIM_TTL_MS=120s 过期
+      const replayed: ProtocolEvent[] = []
+      broker.replayPending((e) => replayed.push(e))
+      expect(replayed.some((e) => e.type === 'approval/claimed')).toBe(false)
+      expect(replayed.some((e) => e.type === 'approval/requested')).toBe(true)
+      // 权威不受影响：仍可应答
+      expect(broker.respondApproval(req.requestId, 'reject').accepted).toBe(true)
+      expect(await p).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('replayPending：有效 claim 随帧重放（断线重连端可见"已在某端处理"）', async () => {
+    const { broker, events } = setup()
+    const p = broker.confirm(use('write_file'), 'x')
+    const req = events.find((e) => e.type === 'approval/requested')
+    if (req?.type !== 'approval/requested') throw new Error('unreachable')
+    broker.claim(req.requestId, 'feishu')
+    const replayed: ProtocolEvent[] = []
+    broker.replayPending((e) => replayed.push(e))
+    expect(replayed.some((e) => e.type === 'approval/claimed' && e.claimant === 'feishu')).toBe(true)
+    broker.respondApproval(req.requestId, 'once')
+    await p
+  })
+
+  it('审计钩子：asked（登记后）/decided（respond 收敛）成对落钩子', async () => {
+    const ch = new InMemoryChannel()
+    ch.subscribe(() => {})
+    const audit: Array<{ event: string; info: Record<string, unknown> }> = []
+    const broker = new ApprovalBroker(ch, 'ask', 0, (event, info) => audit.push({ event, info }))
+    const p = broker.confirm(use('write_file'), 'x')
+    // asked 审计在登记后同步触发——requestId 从钩子取（避免事件订阅竞态）
+    const asked = audit.find((a) => a.event === 'asked')
+    if (asked === undefined) throw new Error('asked 审计未触发')
+    broker.respondApproval(String(asked.info.requestId), 'reject', '不要动这个文件')
+    await p
+    expect(audit.map((a) => a.event)).toEqual(['asked', 'decided'])
+    expect(asked.info).toMatchObject({ kind: 'tool-confirm', tool: 'write_file' })
+    expect(audit[1]?.info).toMatchObject({ outcome: 'reject', message: '不要动这个文件' })
   })
 })

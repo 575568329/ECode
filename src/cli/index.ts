@@ -450,7 +450,10 @@ async function serveMode(): Promise<void> {
       // M13-W1：每项目独立 skills/extHooks 实例（多项目 /clear 不串台）+ 会话取自 ProjectHost；
       // ProjectRegistry 本批不动（W2 升维 path→ProjectHost）——对 registry 而言仍是"每项目一个 HostSession"
       const sid = new Date().toISOString().replace(/[:.]/g, '-')
-      const deps = makeDeps(config, logger, sid, cwd, { freshRegistries: true })
+      // model/set 改的是 getConfig() 活引用的 current——共享同一 config 对象会把 A 项目切的
+      // 模型串给所有项目；每项目浅克隆隔离 current（providers 只读共享，浅层足够）
+      const pcfg = { ...config, current: { ...config.current } }
+      const deps = makeDeps(pcfg, logger, sid, cwd, { freshRegistries: true })
       if (deps.project === undefined) throw new Error('ProjectHost missing in makeDeps')
       deps.project.ensure(sid) // 首会话（W2：registry 存 ProjectHost，会话 Map 内含；信封三态按需增会话）
       return deps.project

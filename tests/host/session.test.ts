@@ -394,6 +394,25 @@ describe('B5：session 命令面', () => {
     expect(r).toMatchObject({ ok: true })
     host.dispose()
   })
+
+  it('W9 model/set：成功改 current + config/changed 广播脱敏；config/get 同样不带 apiKey 原文', async () => {
+    const deps = makeDeps(new MockProvider([]))
+    ;(deps.getConfig().providers.m as { models: string[] }).models.push('m2') // 第二个模型供切换
+    const host = new HostSession(deps)
+    const events = collect(host)
+    const bad = await host.send({ op: 'model/set', provider: 'm', model: '不存在' })
+    expect(bad.ok).toBe(false)
+    const good = await host.send({ op: 'model/set', provider: 'm', model: 'm2' })
+    expect(good).toMatchObject({ ok: true })
+    expect(deps.getConfig().current).toEqual({ name: 'm', model: 'm2' }) // 活引用生效
+    const changed = events.find((e) => e.type === 'config/changed') as { config?: Record<string, unknown> } | undefined
+    expect(changed?.config).toBeDefined()
+    expect(JSON.stringify(changed?.config)).not.toContain('"sk"') // redact 后密钥不出通道
+    const g = await host.send({ op: 'config/get' })
+    expect(g.ok).toBe(true)
+    expect(JSON.stringify(g.value)).not.toContain('"sk"')
+    host.dispose()
+  })
 })
 
 describe('中断不自动续投（Ctrl+C「无法中断」根因修复）', () => {

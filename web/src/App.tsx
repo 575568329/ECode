@@ -5,9 +5,9 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Plus } from 'lucide-react'
+import { ArrowLeft, ChevronDown, Plus } from 'lucide-react'
 import { addProject, connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
-import { useApp, type SessionBrief } from './store'
+import { toConfigView, useApp, type SessionBrief } from './store'
 import { makeHash, parseHash, type RoutePos } from './routing'
 import { Conversation } from './Conversation'
 import { Composer } from './Composer'
@@ -89,6 +89,50 @@ function KeyboardAware({ children }: { children: React.ReactNode }): React.JSX.E
   return <div style={{ height: 'var(--vvh, auto)' }}>{children}</div>
 }
 
+/** W9 顶栏模型芯片：显示当前 model，下拉列出当前 provider 的可选模型，选中发 model/set
+ * （宿主改活引用 current + config/changed 广播——全端同步；model/set 经缺省路由到项目默认会话） */
+function ModelChip(): React.JSX.Element {
+  const cv = useApp((s) => s.configView)
+  const project = useApp((s) => s.selectedProject) // 缺省路由会落到 serve 启动目录——必须显式带选中项目
+  const [open, setOpen] = useState(false)
+  const models = cv.modelsByProvider[cv.currentName] ?? []
+  const pick = (m: string): void => {
+    setOpen(false)
+    if (m !== cv.currentModel && project !== null) {
+      void sendCommand('', project, undefined, { op: 'model/set', provider: cv.currentName, model: m }).catch(() => {})
+    }
+  }
+  return (
+    <span className="relative">
+      <button
+        onClick={() => models.length > 0 && setOpen(!open)}
+        className="flex items-center gap-1 rounded border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:border-neutral-600 hover:text-neutral-200"
+        title={`provider: ${cv.currentName}`}
+      >
+        {cv.currentModel === '' ? '…' : cv.currentModel}
+        {models.length > 1 && <ChevronDown size={11} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />}
+      </button>
+      {open && (
+        <>
+          {/* 点外面收起（透明遮罩层） */}
+          <button aria-label="关闭" className="fixed inset-0 z-10 cursor-default" onClick={() => setOpen(false)} />
+          <span className="absolute right-0 z-20 mt-1 block max-h-64 overflow-y-auto rounded border border-neutral-700 bg-neutral-900 py-1 shadow-xl">
+            {models.map((m) => (
+              <button
+                key={m}
+                onClick={() => pick(m)}
+                className={`block w-full px-3 py-1.5 text-left text-xs whitespace-nowrap hover:bg-neutral-800 ${m === cv.currentModel ? 'text-emerald-400' : 'text-neutral-300'}`}
+              >
+                {m}
+              </button>
+            ))}
+          </span>
+        </>
+      )}
+    </span>
+  )
+}
+
 export function App(): React.JSX.Element {
   const [ready, setReady] = useState(getToken() !== '')
   const [checked, setChecked] = useState(false)
@@ -99,7 +143,7 @@ export function App(): React.JSX.Element {
   const [newPath, setNewPath] = useState('')
   const [addErr, setAddErr] = useState('')
   const [creating, setCreating] = useState(false)
-  const { projects, sessions, selectedProject, selectedSession, select, setProjects, applyHost, applyFrame, setConn, upsertSession } = useApp()
+  const { projects, sessions, selectedProject, selectedSession, select, setProjects, applyHost, applyFrame, setConn, upsertSession, setConfigView } = useApp()
   const loadHistory = useApp((s) => s.loadHistory)
   // hashchange 闭包读最新选中态（effect 只挂一次 select 依赖）
   const selectedProjectRef = useRef(selectedProject)
@@ -179,9 +223,16 @@ export function App(): React.JSX.Element {
     // upsertSession 稳定（zustand action）；refreshSessions 闭包按 selectedProject 重建
   }, [ready, selectedSession, selectedProject, applyFrame, applyHost, setConn, setProjects, upsertSession, loadHistory])
 
-  // 选项目 → 拉该会话列表（session/list——冷热合并）
+  // 选项目 → 拉该会话列表（session/list——冷热合并）+ 该项目模型视图（config/get——
+  // 每项目独立 current，顶栏芯片须跟随选中项目；切走再切回也重拉防陈旧）
   useEffect(() => {
     if (selectedProject === null) return
+    sendCommand(BASE, selectedProject, undefined, { op: 'config/get' })
+      .then((r) => {
+        const v = r.ok ? toConfigView(r.value) : null
+        if (v !== null) setConfigView(v)
+      })
+      .catch(() => {})
     sendCommand(BASE, selectedProject, undefined, { op: 'session/list' })
       .then((r) => {
         if (r.ok && Array.isArray(r.value)) {
@@ -193,11 +244,8 @@ export function App(): React.JSX.Element {
       .catch(() => {})
   }, [selectedProject, upsertSession])
 
-  // —— hash 路由双向同步（store→hash 写历史记录；hash→store 供后退/深链/刷新；先比对防回环） ——
-  useEffect(() => {
-    const fromStore: RoutePos = { p: selectedProject, s: selectedSession }
-    if (makeHash(fromStore) !== location.hash) location.hash = makeHash(fromStore)
-  }, [selectedProject, selectedSession])
+  // —— hash 路由双向同步。顺序敏感：hash→store 必须先声明——首帧 store→hash 会把未初始化
+  // 的 null 选择态写回 hash，冷启动/刷新深链（#/p/.../s/...）在挂载 effect 链里被覆盖丢失 ——
   useEffect(() => {
     const apply = (): void => {
       const h = parseHash(location.hash)
@@ -208,6 +256,10 @@ export function App(): React.JSX.Element {
     window.addEventListener('hashchange', apply)
     return () => window.removeEventListener('hashchange', apply)
   }, [select])
+  useEffect(() => {
+    const fromStore: RoutePos = { p: selectedProject, s: selectedSession }
+    if (makeHash(fromStore) !== location.hash) location.hash = makeHash(fromStore)
+  }, [selectedProject, selectedSession])
 
   const projectSessions = useMemo(
     () => sessions.filter((s) => s.project === selectedProject).sort((a, b) => b.updatedAt - a.updatedAt),
@@ -363,6 +415,18 @@ export function App(): React.JSX.Element {
               <ArrowLeft size={16} /> 返回
             </button>
             <span className="truncate text-sm text-neutral-500">{selectedProject?.split('/').filter(Boolean).slice(-2).join('/')}</span>
+            <span className="ml-auto">
+              <ModelChip />
+            </span>
+          </div>
+        )}
+        {/* 桌面顶栏：项目路径 + 模型芯片（model/set 入口） */}
+        {selectedProject !== null && (
+          <div className="hidden items-center justify-between border-b border-neutral-800 px-4 py-1.5 md:flex">
+            <span className="truncate text-xs text-neutral-500" title={selectedProject}>
+              {selectedProject}
+            </span>
+            <ModelChip />
           </div>
         )}
         {selectedProject === null ? (

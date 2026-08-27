@@ -3,7 +3,7 @@
  * store 只依赖类型层（connect 的 import type 编译期擦除）——node 环境直测，无 DOM/网络。
  */
 import { beforeEach, describe, expect, it } from 'vitest'
-import { emptyView, useApp } from '../src/store'
+import { emptyView, toConfigView, useApp } from '../src/store'
 
 const initial = useApp.getState()
 beforeEach(() => {
@@ -129,6 +129,25 @@ describe('loadHistory 历史投影', () => {
     useApp.getState().loadHistory('s1', undefined)
     expect(useApp.getState().views.s1?.loaded).toBe(true)
     expect(useApp.getState().views.s1?.entries).toEqual([])
+  })
+})
+
+describe('config/changed 投影（W9 顶栏）', () => {
+  it('redact 后 config → 窄视图；非典型负载保持旧值', () => {
+    const cfg = { current: { name: 'p1', model: 'glm-x' }, providers: { p1: { models: ['glm-x', 'glm-y'], apiKey: '***' }, p2: { models: '坏的' } } }
+    useApp.getState().applyFrame({ project: 'D:/proj', sessionId: 's1', ev: { type: 'config/changed', config: cfg } })
+    expect(useApp.getState().configView).toEqual({ currentName: 'p1', currentModel: 'glm-x', modelsByProvider: { p1: ['glm-x', 'glm-y'] } })
+    // 坏负载：视图保持
+    useApp.getState().applyFrame({ project: 'D:/proj', sessionId: 's1', ev: { type: 'config/changed', config: null } })
+    expect(useApp.getState().configView.currentModel).toBe('glm-x')
+  })
+  it('toConfigView 直接解析（含 models 非字符串元素过滤）', () => {
+    expect(toConfigView({ current: { name: 'a', model: 'm' }, providers: { a: { models: ['m', 3, null] } } })).toEqual({
+      currentName: 'a',
+      currentModel: 'm',
+      modelsByProvider: { a: ['m'] },
+    })
+    expect(toConfigView('x')).toBeNull()
   })
 })
 

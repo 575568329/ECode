@@ -105,6 +105,9 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
             ↑ 显示更早（还有 {hidden} 条）
           </button>
         )}
+        {shown.length === 0 && view.items.length === 0 && view.streaming === '' && view.loadError === '' && (
+          <div className="pt-16 text-center text-sm text-neutral-600">新对话——在下方输入第一句话</div>
+        )}
         {shown.map((e, i) =>
           e.kind === 'user' ? (
             <div key={i} className="ml-auto max-w-[85%] space-y-1.5 rounded-lg bg-neutral-800 px-3 py-2">

@@ -44,6 +44,7 @@ import { ApprovalBroker, type ApprovalPolicy } from './approval.js'
 import { buildPreview } from '../services/preview.js'
 import { setSubagentBridge, setSubagentProgressHandler, currentSubagentBridge, currentSubagentProgressHandler, type SubagentBridge } from '../services/subagent.js'
 import { setPermissionAsker, currentPermissionAsker } from '../services/permissions.js'
+import { redact } from '../services/redact.js'
 import { setAskUserHandler, currentAskUserHandler, type AskUserHandler } from '../tools/builtin/askUserBridge.js'
 import type { SkillHooksPort } from '../services/hooks/global.js'
 
@@ -461,6 +462,22 @@ export class HostSession {
       }
       case 'session/read':
         return { ok: true, value: this.deps.history.restoreFull(cmd.sessionId) }
+      case 'model/set': {
+        // 切模型（web 顶栏/协议面；TUI /model 走客户端本地 setConfig 不经此）。getConfig 是
+        // 活引用——改 current 后下一轮 provider/getProvider/ctxWindow 即取新值（TUI 同语义）；
+        // config/changed 广播经 redact（apiKey 不出会话通道）
+        const cfg = this.cfg()
+        const prov = cfg.providers[cmd.provider]
+        if (prov === undefined) return { ok: false, error: `provider 不存在：${cmd.provider}`, code: 'BAD_PROVIDER' }
+        if (!prov.models.includes(cmd.model)) return { ok: false, error: `模型 ${cmd.model} 不在 provider ${cmd.provider} 的列表中`, code: 'BAD_MODEL' }
+        cfg.current = { name: cmd.provider, model: cmd.model }
+        this.publish('config/changed', { config: redact(cfg) })
+        this.deps.logger.info('system', 'model_set', { provider: cmd.provider, model: cmd.model })
+        return { ok: true }
+      }
+      case 'config/get':
+        // 脱敏视图（web 顶栏读 current/models；apiKey 永不出 serve 通道——5.2 铁律）
+        return { ok: true, value: redact(this.cfg()) }
       case 'sandbox/set':
         // 提权门槛（v1.2 P1-4）：提档 full-access 需经审批（有订阅者）；降档直接生效
         if (cmd.mode === 'full-access' && cmd.mode !== this.sandboxMode) {

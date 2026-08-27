@@ -51,10 +51,28 @@ export interface SessionView {
   /** W6b：挂起审批（approval/requested 帧——composer-takeover 渲染） */
   approval: { requestId: string; kind?: string; tool: string; preview: string; decisions: string[] } | null
   /** W6b：挂起单选（askSelect/requested 帧） */
-  askSelect: { requestId: string; title: string; options: string[] } | null
-}
+  askSelect: { requestId: string; title: string; options: string[] } | null}
 
 export const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, loadError: '', approval: null, askSelect: null })
+
+/** 模型视图（config/get 脱敏回执投影——顶栏只看 current + 各 provider 可选模型） */
+export interface ConfigView {
+  currentName: string
+  currentModel: string
+  modelsByProvider: Record<string, string[]>
+}
+
+/** redact 后的 config 对象（apiKey 已是掩码，不读）→ 顶栏需要的窄视图 */
+export function toConfigView(raw: unknown): ConfigView | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const cfg = raw as { current?: { name?: unknown; model?: unknown }; providers?: Record<string, { models?: unknown }> }
+  if (typeof cfg.current?.name !== 'string' || typeof cfg.current.model !== 'string' || typeof cfg.providers !== 'object') return null
+  const modelsByProvider: Record<string, string[]> = {}
+  for (const [name, p] of Object.entries(cfg.providers)) {
+    if (Array.isArray(p.models)) modelsByProvider[name] = p.models.filter((m): m is string => typeof m === 'string')
+  }
+  return { currentName: cfg.current.name, currentModel: cfg.current.model, modelsByProvider }
+}
 
 interface AppState {
   connState: 'connecting' | 'open' | 'backoff'
@@ -64,12 +82,15 @@ interface AppState {
   selectedSession: string | null
   /** W6a：per-session 视图（key=sessionId——mux 帧按 sessionId 分发） */
   views: Record<string, SessionView>
+  /** W9 顶栏：当前模型视图（config/get 初载 + config/changed 增量——任一会话切了模型全端同步） */
+  configView: ConfigView
   applyHost: (h: HostEventFrame['host']) => void
   applyFrame: (f: MuxFrame) => void
   setConn: (s: 'connecting' | 'open' | 'backoff') => void
   setProjects: (ps: string[]) => void
   select: (project: string | null, session: string | null) => void
   upsertSession: (b: SessionBrief) => void
+  setConfigView: (c: ConfigView) => void
   /** W6a：历史补拉（session/read 返回的 HistoryLine 投影为 entries——含工具调用配对投影） */
   loadHistory: (sessionId: string, lines: unknown) => void
   /** 补拉失败标记（顶部红条 + 重试入口）；retryLoad 清标记并重置 loaded 触发重拉 */
@@ -104,9 +125,11 @@ export const useApp = create<AppState>((set) => ({
   selectedProject: null,
   selectedSession: null,
   views: {},
+  configView: { currentName: '', currentModel: '', modelsByProvider: {} },
   setConn: (connState) => set({ connState }),
   setProjects: (projects) => set({ projects }),
   select: (selectedProject, selectedSession) => set({ selectedProject, selectedSession }),
+  setConfigView: (configView) => set({ configView }),
   upsertSession: (b) =>
     set((st) => {
       const i = st.sessions.findIndex((s) => s.sessionId === b.sessionId)
@@ -196,6 +219,12 @@ export const useApp = create<AppState>((set) => ({
         return { ...st, sessions }
       }
       switch (f.ev.type) {
+        case 'config/changed': {
+          // 顶栏模型视图同步——只认当前选中项目的帧（每项目独立 current，别项目切换不应刷掉本屏）
+          if (st.selectedProject !== null && f.project !== st.selectedProject) return st
+          const v = toConfigView(f.ev.config)
+          return v !== null ? { configView: v } : st
+        }
         case 'delta':
           return patchView(st, f.sessionId, (v) => ({ ...v, streaming: v.streaming + String(f.ev.text ?? '') }))
         case 'item/started':

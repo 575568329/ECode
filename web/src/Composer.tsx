@@ -27,7 +27,7 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
   const loadHistory = useApp((s) => s.loadHistory)
   const appendUser = useApp((s) => s.appendUser)
 
-  const submit = async (): Promise<void> => {
+    const submit = async (): Promise<void> => {
     const t = text.trim()
     if (t === '' || sending || project === null) return
     setSending(true)
@@ -47,6 +47,11 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
         select(project, sid)
       }
       const r = await sendCommand('', project, sid, { op: 'prompt', text: t, mode: 'StartOrSteer' })
+      if (r.ok && r.routed === 'Rejected') {
+        // 过期 turnId 插话被宿主拒（routed 字段曾无人消费——假成功清空输入，审阅 P2-4）
+        setErr('插话未送达（会话已切换轮次）——内容已保留，请重试')
+        return
+      }
       if (r.ok) {
         setText('')
         appendUser(sid, t)
@@ -78,7 +83,11 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
     const answer = async (decision: string): Promise<void> => {
       if (decidedRef.current) return
       decidedRef.current = true
-      await sendCommand('', project ?? '', sessionId, { op: 'approval/respond', requestId: a.requestId, decision }).catch(() => {})
+      try {
+        await sendCommand('', project ?? '', sessionId, { op: 'approval/respond', requestId: a.requestId, decision })
+      } catch {
+        decidedRef.current = false // 网络失败复位一次性守卫（曾吞错后面板点击永久无效干等超时）
+      }
     }
     return (
       <div className="border-t border-amber-900/50 bg-amber-950/20 px-4 py-3">
@@ -115,7 +124,11 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
     const answer = async (choice: string | null): Promise<void> => {
       if (pickedRef.current) return
       pickedRef.current = true
-      await sendCommand('', project ?? '', sessionId, { op: 'askSelect/respond', requestId: q.requestId, choice }).catch(() => {})
+      try {
+        await sendCommand('', project ?? '', sessionId, { op: 'askSelect/respond', requestId: q.requestId, choice })
+      } catch {
+        pickedRef.current = false
+      }
     }
     return (
       <div className="border-t border-neutral-800 bg-neutral-900/50 px-4 py-3">

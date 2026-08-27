@@ -46,8 +46,8 @@ export interface MuxConnection {
 }
 
 /** 连接 mux 流。onFrame/onHost/onReconnect 全部由调用方装配状态。
- * sessionId：订阅指定会话（缺省=项目默认会话）——serve 只向订阅者推该会话的信封帧，
- * 切会话须带 ?sessionId= 重订（G3 实测：不订则恢复会话的 delta/turn/审批帧全部丢失）。 */
+ * sessionId 参数已废弃（服务端全量广播语义，参数被有意忽略——审阅 P1-5 注释改真；
+ * 保留签名兼容调用方）。M14 配对设备在此接 per-device 过滤。 */
 export function connectMux(
   base: string,
   handlers: {
@@ -62,28 +62,33 @@ export function connectMux(
 ): MuxConnection {
   let disposed = false
   let attempt = 0
-  const abort = new AbortController()
   const muxUrl =
     sessionId !== undefined && sessionId !== ''
-      ? `${base}/api/events.mux?sessionId=${encodeURIComponent(sessionId)}&confirm=true`
-      : `${base}/api/events.mux?confirm=true`
+      ? `${base}/api/events.mux?sessionId=${encodeURIComponent(sessionId)}`
+      : `${base}/api/events.mux`
+
+  // 每个 connectMux 实例一个 controller；loop 每次迭代重建（审阅 P0-2：曾整个循环共用
+  // 一个——visibilityResume abort 一次后永久废弃，此后每次 fetch 立即 AbortError=
+  // 手机切后台回前台永久断连只靠手动刷新）
+  let openAbort: AbortController | null = null
 
   const visibilityResume = (): void => {
     if (document.visibilityState === 'visible' && attempt > 0) {
       attempt = 0
-      abort.abort()
+      openAbort?.abort()
     }
   }
   document.addEventListener('visibilitychange', visibilityResume)
 
   const loop = async (): Promise<void> => {
     while (!disposed) {
+      openAbort = new AbortController()
       try {
         handlers.onState?.('connecting')
-        const openTimer = setTimeout(() => abort.abort(), OPEN_TIMEOUT_MS)
+        const openTimer = setTimeout(() => openAbort?.abort(), OPEN_TIMEOUT_MS)
         const res = await fetch(muxUrl, {
           headers: { authorization: `Bearer ${getToken()}` },
-          signal: abort.signal,
+          signal: openAbort.signal,
         })
         clearTimeout(openTimer)
         if (res.status === 401) {
@@ -132,7 +137,7 @@ export function connectMux(
     dispose() {
       disposed = true
       document.removeEventListener('visibilitychange', visibilityResume)
-      abort.abort()
+      openAbort?.abort()
     },
   }
 }

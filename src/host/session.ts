@@ -454,9 +454,11 @@ export class HostSession {
         }
         return this.deps.ensureConversation(cmd.sessionId)
       case 'session/list': {
-        // M13-W4 冷热合并：历史 meta（冷）∪ 活会话 running 态（热）——前端一份列表两端状态
+        // M13-W4 冷热合并：历史 meta（冷）∪ 活会话 running 态（热）——前端一份列表两端状态。
+        // cwd 过滤（审阅 P0-3②）：history 目录用户级全局，无过滤会把本机所有项目的会话
+        // 全量返回给任一项目（web 端又无条件标注 selectedProject，跨项目会话混列）
         const states = this.deps.conversationStates?.()
-        const metas = this.deps.history.loadAll()
+        const metas = this.deps.history.loadAll(this.deps.cwd)
         if (states === undefined) return { ok: true, value: metas }
         return { ok: true, value: metas.map((m) => (states.has(m.sessionId) ? { ...m, running: states.get(m.sessionId) } : m)) }
       }

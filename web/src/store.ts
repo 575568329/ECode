@@ -170,11 +170,13 @@ export const useApp = create<AppState>((set) => ({
             }
           }
         }
-        return { ...v, entries, loaded: true, loadError: '', streaming: '', items: [], queue: [] }
+        // 补拉落定与流式 delta 竞态（审阅 P1-10）：session/read 快照若早于已到的增量，
+        // 直接清 streaming 会丢字——把缓冲并入 entries 尾部再清
+        const tail = v.streaming !== '' ? [{ kind: 'assistant' as const, text: v.streaming }] : []
+        return { ...v, entries: [...entries, ...tail], loaded: true, loadError: '', streaming: '', items: [], queue: [] }
       }),
     ),
-  setLoadError: (sessionId, msg) => set((st) => patchView(st, sessionId, (v) => ({ ...v, loaded: true, loadError: msg }))),
-  retryLoad: (sessionId) => set((st) => patchView(st, sessionId, (v) => ({ ...v, loaded: false, loadError: '' }))),
+  setLoadError: (sessionId, msg) => set((st) => patchView(st, sessionId, (v) => ({ ...v, loaded: true, loadError: msg }))),  retryLoad: (sessionId) => set((st) => patchView(st, sessionId, (v) => ({ ...v, loaded: false, loadError: '' }))),
   appendUser: (sessionId, text) =>
     set((st) =>
       patchView(st, sessionId, (v) => ({

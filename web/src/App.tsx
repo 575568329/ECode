@@ -169,8 +169,9 @@ export function App(): React.JSX.Element {
       .finally(() => setChecked(true))
   }, [])
 
-  // mux 连接（ready 后建立；随选中会话重订——serve 按订阅会话推帧，切会话不重订则收不到
-  // 该会话的 delta/turn/审批帧，G3 实测缺口；未选会话时订阅项目默认流保 host 列表帧）
+  // mux 连接（ready 后建立）。服务端为全量广播语义（?sessionId 被忽略——审阅 P1-5 注释改真）；
+  // 随选中会话重订保留作兜底：重建连接触发 baseline+refreshSessions 补拉，恰好覆盖
+  // "切会话间隙丢帧"与断线重放两个场景
   useEffect(() => {
     if (!ready) return
     let conn: MuxConnection | undefined

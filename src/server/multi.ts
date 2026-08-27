@@ -77,12 +77,13 @@ export function serveMulti(
         host.touch(sessionId)
         return { conv: live, sessionId }
       }
-      // 冷会话：仅 restore 可拉起——命令由默认会话的 dispatch 承载（ensureConversation 端口
-      // 落 ProjectHost.ensureRestore——与 TuiApp/进程内同一条命令路径）；其余命令指名不存在的会话=失联
+      // 冷会话：直接 ensureRestore 拉起并作为路由结果（审阅 P0-3①：曾取 ensureDefault(fresh)
+      // 当"载体会话"承载 restore 命令——冷项目凭空多出一个幻影空默认会话进列表广播；
+      // restore 命令再发到自身 dispatch 时 ensureRestore 活复用幂等）
       if (op.op === 'session/restore') {
-        const carrier = host.ensureDefault(freshSessionId())
+        const conv = await host.ensureRestore(sessionId)
         host.touch(sessionId)
-        return { conv: carrier, sessionId }
+        return { conv, sessionId }
       }
       return { error: `会话 ${sessionId} 不存在（冷会话仅 session/restore 可拉起）`, code: 404 }
     }
@@ -171,6 +172,8 @@ export function serveMulti(
       }
 
       // M13-W3：mux 单流——一条 SSE 汇所有项目所有会话（HostEvent 生命周期帧 + 信封事件帧）。
+      // **全量广播语义**（loopback 单用户信任域）：?sessionId 参数被有意忽略——曾双侧注释谎称
+      // "按订阅会话推帧"而实现恒全量（审阅 P1-5）；per-device 过滤在 M14 配对设备接 muxFilter 预留①。
       // 连接三连：baseline（活项目+活会话）→ pending 审批重放（HostSession.subscribe 自带）→ 持续广播
       if (req.method === 'GET' && url.pathname === '/api/events.mux') {
         res.writeHead(200, {
@@ -192,11 +195,14 @@ export function serveMulti(
           for (const [sid, conv] of host.conversationsSnapshot()) {
             unsubs.push(conv.subscribe((ev) => send({ project: cwd, sessionId: sid, ev })))
           }
-          // 新会话动态补订（sweep 收掉的会话 channel.dispose 自动停流——无需退订）
+          // 新会话动态补订 ev 流（审阅 P2-2：曾只发生命周期帧不订阅——新会话 delta/approval 全丢，
+          // 现网靠 web 切会话重订整条 SSE 的副作用兜住；补订后单连接自洽）
           unsubs.push(
             host.onSessionEvent((kind, info) => {
               if (kind === 'created') {
                 send({ host: { type: 'session/created', brief: info.brief ?? { project: cwd, sessionId: info.sessionId, running: false, title: '', updatedAt: Date.now() } } })
+                const conv = host.conversation(info.sessionId)
+                if (conv !== undefined) unsubs.push(conv.subscribe((ev) => send({ project: cwd, sessionId: info.sessionId, ev })))
               } else {
                 send({ host: { type: 'session/removed', project: cwd, sessionId: info.sessionId } })
               }

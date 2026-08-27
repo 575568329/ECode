@@ -130,6 +130,16 @@ describe('loadHistory 历史投影', () => {
     expect(useApp.getState().views.s1?.loaded).toBe(true)
     expect(useApp.getState().views.s1?.entries).toEqual([])
   })
+  it('审阅批：补拉落定时流式缓冲并入 entries 尾部（不再丢字）', () => {
+    frame('s1', { type: 'delta', text: '迟到的增量' }) // read 快照晚于 delta 到达的竞态窗口
+    useApp.getState().loadHistory('s1', [{ role: 'user', content: [{ type: 'text', text: '问' }] }])
+    const v = useApp.getState().views.s1
+    expect(v?.entries).toEqual([
+      { kind: 'user', text: '问' },
+      { kind: 'assistant', text: '迟到的增量' },
+    ])
+    expect(v?.streaming).toBe('')
+  })
 })
 
 describe('config/changed 投影（W9 顶栏）', () => {

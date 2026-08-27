@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import type { ReactElement } from 'react'
-import { Box, Text, useInput, useStdout } from 'ink'
+import { Box, Text, useInput } from 'ink'
 import type { ConfirmState } from './types.js'
 import { theme } from './theme.js'
 import { DiffLine } from './DiffLine.js'
+import { ROWS_FALLBACK, computeBudget, sectionBudget, useViewport } from './viewport.js'
 
 /**
  * 确认弹窗（详设 §7.3）：副作用工具执行前给用户决策。
@@ -27,18 +28,17 @@ import { DiffLine } from './DiffLine.js'
  * y/n/回车后组件由父卸载（active.confirm=null），不残留动态区。
  */
 
-/** 预留 = 弹窗骨架 7（marginTop×3+边框 2+标题 1+选项 1）+ 弹窗时动态区共存 9（折叠用户输入 3 +
- * 折叠工具组 4 + ActivityBar/状态行/输入行 3）+ 余量 1。审阅实测推导——Ink 是 >= 判定，
- * 恰好占满也触发 fullscreen，低估 1 行就破防。 */
-const PREVIEW_RESERVE = 17
+/** 预留（相对 budget=rows−2；原 rows−17 换算）= 弹窗骨架 7（marginTop×3+边框 2+标题 1+
+ * 选项 1）+ 弹窗时动态区共存 9（折叠用户输入 3 + 折叠工具组 4 + ActivityBar/状态行/输入行 3）
+ * + 余量 1。审阅实测推导——Ink 是 >= 判定，恰好占满也触发 fullscreen，低估 1 行就破防。 */
+const PREVIEW_RESERVE = 15
 /** 极矮终端保命线：preview 至少留 5 行（头 3 + 省略 1 + 尾 1） */
 const PREVIEW_MIN_LINES = 5
-/** 非 TTY 环境 rows 未知时的兜底视口行数 */
-const ROWS_FALLBACK = 24
 
-/** preview 可见行上限 = 视口行数 - 预留（导出供单测锁 rows 路径；渲染组合由 ink-testing 用例覆盖兜底路径） */
+/** preview 可见行上限 = 帧高预算 − 预留（M14-V1 收敛 viewport 公式；导出供单测锁
+ * rows 路径；渲染组合由 ink-testing 用例覆盖兜底路径） */
 export function previewMaxLines(rows: number | undefined): number {
-  return Math.max(PREVIEW_MIN_LINES, (rows ?? ROWS_FALLBACK) - PREVIEW_RESERVE)
+  return Math.max(PREVIEW_MIN_LINES, sectionBudget(computeBudget(rows ?? ROWS_FALLBACK), PREVIEW_RESERVE))
 }
 
 /** 超高 preview 保头尾截断：头 2/3（diff 文件名/hunk 定位）+ 省略计数 + 尾 1/3（最近改动） */
@@ -70,8 +70,8 @@ export function ConfirmPrompt({ state, onConfirm, onCancel }: ConfirmPromptProps
   const isMcp = rememberText !== undefined
   // 默认选中「执行」（y）—— 直接回车就继续，符合「确认优先」直觉
   const [selected, setSelected] = useState<'y' | 'n' | 'a'>('y')
-  const { stdout } = useStdout()
-  const previewLines = clampPreviewLines(state.preview.split('\n'), previewMaxLines(stdout?.rows))
+  const { rows } = useViewport()
+  const previewLines = clampPreviewLines(state.preview.split('\n'), previewMaxLines(rows))
 
   const decide = (ok: boolean, always = false) => {
     state.resolve(ok, always)

@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
-import { Box, Text, useInput, useStdout } from 'ink'
+import { Box, Text, useInput } from 'ink'
 import { theme } from './theme.js'
+import { sectionBudget, useViewport } from './viewport.js'
 
 /**
  * 通用列表选择器（D5 自建，P1-3 从 ModelPicker 提炼）。
@@ -13,19 +14,19 @@ import { theme } from './theme.js'
  * 选中靠 inverse 反色（不用箭头字符，规避 ambiguous 字符宽度问题）。
  * 空列表：显示 emptyHint + 仅响应 Esc（不崩，通用空态）。
  *
- * 窗口化（对齐 PanelShell）+ 高度感知（M9 审阅 P1-2）：可见行数 = min(12, 视口-14)——
- * Ink 是 >= 判定（恰好占满即触发 fullscreen 清 scrollback），中段双指示态 Select 总高 ≈ 窗口+11
+ * 窗口化（对齐 PanelShell）+ 高度感知（M9 审阅 P1-2 → M14-V1 收敛 viewport 公式）：
+ * 可见行数 = min(12, budget−12)（budget = 视口−2）——Ink 是 >= 判定（恰好占满即
+ * 触发 fullscreen 清 scrollback），中段双指示态 Select 总高 ≈ 窗口+11
  * （骨架 9 + ActivityBar/状态/输入 3 中取保守和），80×24 最小终端下窗口 10 才留得出余量。
  */
 
 /** 可见窗口行数上限（与 PanelShell MAX_VISIBLE 同值；实际取 min(此值, 视口感知)） */
 const MAX_VISIBLE = 12
-/** 高度感知预留：中段态骨架（marginTop1+边框2+title1+列表margin1+双指示2+底提示2+margin1）+ 底部三行 + 余量 */
-const VISIBLE_RESERVE = 14
+/** 高度感知预留（相对 budget=rows−2；原 rows−14 换算）：中段态骨架（marginTop1+边框2+
+ * title1+列表margin1+双指示2+底提示2+margin1）+ 底部三行 + 余量 */
+const VISIBLE_RESERVE = 12
 /** 极矮终端保命线 */
 const MIN_VISIBLE = 3
-/** 非 TTY 环境 rows 未知时的兜底视口行数 */
-const ROWS_FALLBACK = 24
 
 export interface SelectItem<T> {
   /** 渲染文本（调用方组装，如 'glm-5.2 / astron' 或 '首条消息 · 时间'） */
@@ -49,8 +50,8 @@ export function Select<T>({ title, items, onSelect, onCancel, emptyHint }: Selec
   // 初始光标定位到 active 项；无 active 回退第一项（findIndex 找不到返回 -1 → Math.max 兜底 0）
   const initialIdx = Math.max(0, items.findIndex((it) => it.active))
   const [idx, setIdx] = useState(initialIdx)
-  const { stdout } = useStdout()
-  const maxVisible = Math.min(MAX_VISIBLE, Math.max(MIN_VISIBLE, (stdout?.rows ?? ROWS_FALLBACK) - VISIBLE_RESERVE))
+  const { budget } = useViewport()
+  const maxVisible = Math.max(MIN_VISIBLE, sectionBudget(budget, VISIBLE_RESERVE, MAX_VISIBLE))
   const clamp = (v: number): number => Math.max(0, Math.min(items.length - 1, v))
 
   useInput((input, key) => {

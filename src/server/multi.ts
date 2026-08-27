@@ -70,7 +70,8 @@ export function serveMulti(
   ): Promise<{ conv: HostSession; sessionId: string } | { error: string; code: number }> => {
     const sessionId = raw.sessionId as string | undefined
     const op = (typeof raw.op === 'object' && raw.op !== null ? raw.op : {}) as { op: string }
-    if (op.op === '') return { error: '信封缺少 op 字段', code: 400 }
+    // 裸 ProtocolCommand 已退役（审阅 B2）——缺信封/缺 op 字符串一律 400 明示，不落 NOT_IMPLEMENTED 兜底
+    if (typeof op.op !== 'string' || op.op === '') return { error: '信封缺少 op 字段（期望 {op:{...}, sessionId?}）', code: 400 }
     if (sessionId !== undefined && sessionId !== '') {
       const live = host.conversation(sessionId)
       if (live !== undefined) {

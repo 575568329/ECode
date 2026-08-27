@@ -10,7 +10,10 @@ import type { Delta } from '../../src/core/types.js'
 import { ToolRegistryImpl } from '../../src/tools/registry.js'
 import type { Tool } from '../../src/tools/interface.js'
 import type { Logger } from '../../src/services/logger.js'
-import { NoopHistoryStore, type HistoryStore } from '../../src/services/history.js'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { FileHistoryStore, NoopHistoryStore, type HistoryStore } from '../../src/services/history.js'
 import { emptyShellConfig, type Config } from '../../src/services/config.js'
 import { CompactionOrchestrator } from '../../src/services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../../src/services/compaction/summarize.js'
@@ -431,5 +434,76 @@ describe('中断不自动续投（Ctrl+C「无法中断」根因修复）', () =
     // 队列不弃（CC 同款）：systemMsg 提示保留条数，queue/snapshot 仍含条目
     expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('插话队列保留 1 条'))).toBe(true)
     expect(events.some((e) => e.type === 'queue/snapshot' && (e.items ?? []).includes('排队的'))).toBe(true)
+  })
+})
+
+describe('M14-C1b 工具全文 summary+read 与 transcript 分页', () => {
+  const bigTool: Tool = {
+    name: 'bigout',
+    description: 'big output',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    readonly: true,
+    async execute() {
+      return { content: `B${'x'.repeat(10_000)}` } // 10KB——超 4KB 帧上限
+    },
+  }
+
+  function makeBigDeps(provider: LLMProvider): HostDeps {
+    const d = makeDeps(provider)
+    ;(d as { tools?: ToolRegistry }).tools?.register(bigTool)
+    return d
+  }
+
+  it('⑤ 超长输出：帧 content 截断 4KB + truncated 标志；item/read 返回全文', async () => {
+    const p = new MockProvider([
+      [
+        { type: 'text', text: '跑' },
+        { type: 'tool_use_start', id: 't9', name: 'bigout' },
+        { type: 'tool_use_end', id: 't9' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: '完成' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const host = new HostSession(makeBigDeps(p))
+    const events: ProtocolEvent[] = []
+    host.subscribe((e) => events.push(e))
+    await host.send({ op: 'prompt', text: '跑', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    const frame = events.find((e) => e.type === 'item/completed')
+    if (frame?.type !== 'item/completed') throw new Error('item/completed 未到达')
+    expect(frame.truncated).toBe(true)
+    expect(frame.content.length).toBe(4096)
+    expect(frame.content.startsWith('B')).toBe(true)
+    const read = await host.send({ op: 'item/read', itemId: frame.itemId })
+    expect(read.ok).toBe(true)
+    expect((read.value as { content: string }).content.length).toBe(10_001)
+    host.dispose()
+  })
+
+  it('⑤ item/read：不存在的 itemId 404 语义', async () => {
+    const host = new HostSession(makeDeps(new MockProvider([[{ type: 'done', stop_reason: 'end' }]])))
+    const r = await host.send({ op: 'item/read', itemId: 'nope' })
+    expect(r).toMatchObject({ ok: false, code: 'ITEM_NOT_FOUND' })
+    host.dispose()
+  })
+
+  it('①a session/read 分页：缺省全量数组；fromLine/limit 返回 { lines, total, fromLine }', async () => {
+    // NoopHistoryStore.restoreFull 恒空——换真 FileHistoryStore（tmpdir）让 transcript 有行
+    const deps = makeDeps(new MockProvider([[{ type: 'text', text: 'ok' }, { type: 'done', stop_reason: 'end' }]]))
+    const sid = `c1b-${Date.now()}`
+    ;(deps as { history: HistoryStore }).history = new FileHistoryStore({ sessionId: sid, model: 'm', cwd: '/tmp', dir: mkdtempSync(join(tmpdir(), 'ecode-c1b-')) })
+    const host = new HostSession(deps)
+    await host.send({ op: 'prompt', text: '跑', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    const full = await host.send({ op: 'session/read', sessionId: sid })
+    expect(Array.isArray(full.value)).toBe(true)
+    expect((full.value as unknown[]).length).toBeGreaterThanOrEqual(2) // user + assistant
+    const paged = await host.send({ op: 'session/read', sessionId: sid, fromLine: 0, limit: 1 })
+    expect(paged.ok).toBe(true)
+    const v = paged.value as { lines: unknown[]; total: number; fromLine: number }
+    expect(v.lines.length).toBe(1)
+    expect(v.total).toBe((full.value as unknown[]).length)
+    expect(v.fromLine).toBe(0)
+    host.dispose()
   })
 })

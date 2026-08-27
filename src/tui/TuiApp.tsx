@@ -316,11 +316,20 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           setActivity({ state: 'tool', text: ev.name })
           break
         case 'item/completed': {
-          // M14-V3：环形缓冲记录全文（/output 查看器数据源；前台 bash 有工具层 30KB 截断边界）
+          // M14-V3：环形缓冲记录（/output 查看器数据源；前台 bash 有工具层 30KB 截断边界）
           setRecentTools((prev) => {
             const next = [{ itemId: ev.itemId, name: ev.name, content: ev.content, isError: ev.isError, at: Date.now() }, ...prev]
             return next.length > 50 ? next.slice(0, 50) : next
           })
+          // M14-C1⑤：帧 content 已截断 4KB——异步 item/read 补全全文（打开 /output 前通常已就绪）
+          if (ev.truncated === true) {
+            void host.send({ op: 'item/read', itemId: ev.itemId }).then((r) => {
+              if (r.ok && r.value !== undefined && typeof (r.value as { content?: unknown }).content === 'string') {
+                const full = (r.value as { content: string }).content
+                setRecentTools((prev) => prev.map((t) => (t.itemId === ev.itemId ? { ...t, content: full } : t)))
+              }
+            })
+          }
           setActive((a) => {
             const tools = [...a.tools]
             const idx = tools.findIndex((t) => t.status === 'running' && t.name === ev.name)

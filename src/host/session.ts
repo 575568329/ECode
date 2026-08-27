@@ -51,6 +51,11 @@ import type { SkillHooksPort } from '../services/hooks/global.js'
 /** buildSystemPrompt 的技能清单入参形态（结构化取参，避免依赖 skill 具体类型） */
 type SkillPromptSource = Parameters<typeof buildSystemPrompt>[0]
 
+/** M14-C1⑤：item/completed 帧内 content 上限（超出截断+truncated 标志，全文走 item/read） */
+const ITEM_FRAME_CAP = 4096
+/** M14-C1⑤：item/read 单响应上限（read_file 等可产出大内容——上限内才允许出宿主） */
+const ITEM_READ_CAP = 1024 * 1024
+
 export interface HostDeps {
   providerRegistry: LLMProviderRegistry
   tools: ToolRegistry
@@ -472,7 +477,33 @@ export class HostSession {
         return { ok: true, value: metas.map((m) => (states.has(m.sessionId) ? { ...m, running: states.get(m.sessionId) } : m)) }
       }
       case 'session/read':
-        return { ok: true, value: this.deps.history.restoreFull(cmd.sessionId) }
+        // M14-C1①a：分页带宽选项——fromLine/limit 是 **transcript 行索引**语义（原 beforeSeq 名义
+        // 事件 seq，但 transcript 行与事件 seq 是两个 ID 空间，改名澄清）。缺省全量（web 断线
+        // 全量补拉维持 M13-Q10 非目标不变）；带参返回 { lines, total, fromLine } 形态
+        {
+          const all = this.deps.history.restoreFull(cmd.sessionId)
+          if (cmd.fromLine === undefined && cmd.limit === undefined) return { ok: true, value: all }
+          const from = Math.max(0, Math.floor(cmd.fromLine ?? 0))
+          const limit = Math.max(1, Math.floor(cmd.limit ?? 200))
+          return { ok: true, value: { lines: all.slice(from, from + limit), total: all.length, fromLine: from } }
+        }
+      case 'item/read': {
+        // M14-C1⑤：工具全文按需读取（帧内 4KB 截断的补全通道）。transcript 权威源——
+        // messages 里 tool_use.id 命中后取其配对 tool_result；未落盘（运行中/不存在）404 语义
+        const target = this.messages
+          .filter(isMessageLine)
+          .filter((l) => l.role === 'user')
+          .flatMap((l) => (typeof l.content === 'string' ? [] : l.content))
+          .find((b) => b.type === 'tool_result' && b.tool_use_id === cmd.itemId)
+        if (target === undefined || target.type !== 'tool_result') {
+          return { ok: false, error: `工具结果 ${cmd.itemId} 不存在或未落盘`, code: 'ITEM_NOT_FOUND' }
+        }
+        const content = typeof target.content === 'string' ? target.content : JSON.stringify(target.content)
+        if (content.length > ITEM_READ_CAP) {
+          return { ok: true, value: { content: content.slice(0, ITEM_READ_CAP), truncated: true } }
+        }
+        return { ok: true, value: { content } }
+      }
       case 'model/set': {
         // 切模型（web 顶栏/协议面；TUI /model 走客户端本地 setConfig 不经此）。getConfig 是
         // 活引用——改 current 后下一轮 provider/getProvider/ctxWindow 即取新值（TUI 同语义）；
@@ -602,12 +633,17 @@ export class HostSession {
             // M13-B2：同参检测原料（name+input 精确签名——D3 同款精确匹配零误伤；D4 记变体：
             // use 块在事件翻译层现成，免 PostToolUse hook 的项目级跨会话路由）
             if (use !== undefined && use.type === 'tool_use') this.roundUses.push(`${use.name}:${JSON.stringify(use.input)}`)
+            // M14-C1⑤ 工具全文 summary+read 分野：帧内 content 截断 4KB（mux 全文出帧=LAN 旁听面，
+            // MB 级输出也拖累每连接带宽）；全文走 item/read 按需（transcript 权威源）
+            const full = r.content as string
+            const truncated = full.length > ITEM_FRAME_CAP
             this.publish('item/completed', {
               itemId: id,
               name,
               isError: r.is_error === true,
-              summary: (r.content as string).split('\n')[0]?.slice(0, 80) ?? '',
-              content: r.content as string,
+              summary: full.split('\n')[0]?.slice(0, 80) ?? '',
+              content: truncated ? full.slice(0, ITEM_FRAME_CAP) : full,
+              ...(truncated ? { truncated: true } : {}),
               ...(use !== undefined ? { use: use as unknown } : {}),
             })
           },

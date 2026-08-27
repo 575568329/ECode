@@ -283,3 +283,16 @@ describe('M14-C1 协议与服务端收口', () => {
     expect(body.error).toContain('events.mux')
   })
 })
+
+describe('M14-C1b 工具全文 summary+read（HTTP 契约）', () => {
+  it('item/read 经 cmd 信封可达：不存在 itemId 的 404 语义（全文/截断路径由 host 单测锁定）', async () => {
+    const read = await (
+      await fetch(`${base}/api/cmd`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ op: { op: 'item/read', itemId: 'nope' } }),
+      })
+    ).json()
+    expect(read).toMatchObject({ ok: false, code: 'ITEM_NOT_FOUND' })
+  })
+})

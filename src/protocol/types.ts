@@ -50,7 +50,7 @@ export interface McpServerStatusView {
 export type ProtocolEvent =
   | { type: 'delta'; seq: number; turnId: string; text: string }
   | { type: 'item/started'; seq: number; itemId: string; name: string }
-  | { type: 'item/completed'; seq: number; itemId: string; name: string; isError: boolean; summary: string; content: string; use?: unknown }
+  | { type: 'item/completed'; seq: number; itemId: string; name: string; isError: boolean; summary: string; content: string; truncated?: boolean; use?: unknown }
   | { type: 'usage'; seq: number; input: number; output: number; cacheRead?: number; cacheCreation?: number; costCny?: number }
   | { type: 'turn/started'; seq: number; turnId: string }
   | { type: 'turn/completed'; seq: number; turnId: string }
@@ -99,7 +99,9 @@ export type ProtocolCommand =
   | { op: 'interjection/clear' }
   | { op: 'command/exec'; name: string; args?: string }
   | { op: 'session/list' }
-  | { op: 'session/read'; sessionId: string; beforeSeq?: number; limit?: number }
+  | { op: 'session/read'; sessionId: string; fromLine?: number; limit?: number }
+  /** M14-C1⑤ 工具全文按需读取（帧内 content 已截断 4KB——summary+read 分野；上限 1MB） */
+  | { op: 'item/read'; itemId: string }
   | { op: 'session/restore'; sessionId: string }
   /** 真新建会话（web「+新对话」）——项目级命令，serve 信封层（multi.ts）直接拦截不走会话
    *  dispatch：经会话承载会让冷项目为承载命令多起一个空默认会话；回执 sessionId。 */

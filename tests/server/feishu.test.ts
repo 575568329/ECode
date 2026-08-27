@@ -104,3 +104,23 @@ describe('审阅批：白名单与审批会话回填', () => {
     expect(cap.commands[0]?.op).toMatchObject({ op: 'session/new' })
   })
 })
+
+describe('M14-C5③ markdownToPost（飞书 post 富文本转换）', () => {
+  it('块级：标题 bold / 列表 • / 空行分段 / 围栏代码逐行 code 带语言', async () => {
+    const { markdownToPost } = await import('../../src/server/im/feishu.js')
+    const post = markdownToPost('## 标题\n\n- 项目一\n正文 **粗** 段\n```ts\nconst a = 1\nconst b = 2\n```')
+    expect(post[0]).toEqual([{ tag: 'bold', text: '标题' }])
+    expect(post[1]).toEqual([])
+    expect(post[2]).toEqual([{ tag: 'text', text: '• ' }, { tag: 'text', text: '项目一' }])
+    expect(post[3]).toEqual([{ tag: 'text', text: '正文 ' }, { tag: 'bold', text: '粗' }, { tag: 'text', text: ' 段' }])
+    expect(post[4]).toEqual([{ tag: 'code', text: 'const a = 1', language: 'ts' }])
+    expect(post[5]).toEqual([{ tag: 'code', text: 'const b = 2', language: 'ts' }])
+  })
+  it('行内：`code` 与 [链接](url)；未闭合围栏兜底 flush；纯文本单元素', async () => {
+    const { markdownToPost } = await import('../../src/server/im/feishu.js')
+    const post = markdownToPost('跑 `npm test` 见 [报告](https://x.example/r) 详情')
+    expect(post[0]).toEqual([{ tag: 'text', text: '跑 ' }, { tag: 'code', text: 'npm test' }, { tag: 'text', text: ' 见 ' }, { tag: 'a', text: '报告', href: 'https://x.example/r' }, { tag: 'text', text: ' 详情' }])
+    expect(markdownToPost('```js\nunterminated')).toEqual([[{ tag: 'code', text: 'unterminated', language: 'js' }]])
+    expect(markdownToPost('普通一行')).toEqual([[{ tag: 'text', text: '普通一行' }]])
+  })
+})

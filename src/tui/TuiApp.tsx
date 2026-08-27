@@ -727,9 +727,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     }
   }
 
-  const restoreSession = (sessionId: string) => {
-    // P0-3：用 restoreFull（含 boundary），让压缩态跨重启存活；restore() 过滤 boundary 会导致恢复即超限
-    const messages = deps.history.restoreFull(sessionId)
+  const restoreSession = async (sessionId: string) => {
+    // M14-C5①：载入经 ProjectHost.ensureRestore（与 web/飞书 session/restore 命令同一条载入
+    // 路径——损坏降级空会话/并发单飞/活复用单源化）；TUI 保持 fork 续写语义（灌当前 host +
+    // 起新 id）。测试 fake 无 project 走直调兜底（与 M12 等价）
+    const messages =
+      deps.project !== undefined
+        ? [...(await deps.project.ensureRestore(sessionId)).transcript]
+        : deps.history.restoreFull(sessionId)
     // P1-10：restore 返回空（文件缺失/损坏/真空会话）→ 保留当前会话 + 提示，不静默清空
     if (messages.length === 0) {
       setSystemMsgs(['⚠ 恢复失败：该会话为空或已损坏（文件缺失/无消息），未切换'])
@@ -764,7 +769,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // host 由 hostRef 渲染期惰性构造，effect 执行时已就绪；restoreSession 每渲染重建不列依赖，
   // prop 为启动期常量——仅随它触发一次。
   useEffect(() => {
-    if (initialHistorySessionId !== undefined) restoreSession(initialHistorySessionId)
+    if (initialHistorySessionId !== undefined) void restoreSession(initialHistorySessionId)
   }, [initialHistorySessionId])
 
   const { warning } = useInterrupt({
@@ -964,7 +969,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         <HistoryPicker
           metas={historyMetas}
           onSelect={(sid) => {
-            restoreSession(sid)
+            void restoreSession(sid)
             pickerRef.current = false
             setOverlay(null)
           }}

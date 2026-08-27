@@ -20,7 +20,7 @@ import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
 import type { HistoryLine, ImageBlock, Message } from '../core/types.js'
 import { buildProviderReq, buildProviderReqFor, type Config } from '../services/config.js'
-import { makeOnBeforeRequest } from '../services/compaction/hook.js'
+import { makeOnBeforeRequest, type SummaryRole } from '../services/compaction/hook.js'
 import { SUMMARY_WINDOW_FLOOR } from '../services/compaction/summarize.js'
 import type { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import { resolveContextWindow } from '../services/contextWindow.js'
@@ -189,6 +189,8 @@ export class HostSession {
       getSandbox: () =>
         makeSandbox(this.sandboxMode, this.deps.cwd ?? process.cwd(), this.cfg().sandbox?.blockedCommands ?? []),
       getModel: () => this.cfg().current.model,
+      // M14-C5②：子代理压缩链摘要换笔与主链同源（resolveSummaryRole 含缓存/floor 告警）
+      getSummaryRole: () => this.resolveSummaryRole(),
     }
     setSubagentBridge(this.installedBridge)
     this.installedProgress = (agents) =>
@@ -314,9 +316,9 @@ export class HostSession {
    * 窗口下限校验：resolveContextWindow 结果 < SUMMARY_WINDOW_FLOOR（批预算常量反算 2 倍余量）
    * → warn 一次并回退主模型（保底批也装不下，批批超限）。配置键缓存（含模型名——/model 不影响 roles）。
    */
-  private summaryRoleCache: { key: string; value: { provider: import('../providers/interface.js').LLMProvider; providerReq: import('../providers/interface.js').ProviderReq; window: number } | null } | null = null
+  private summaryRoleCache: { key: string; value: SummaryRole | null } | null = null
   private summaryFloorWarned = false
-  private async resolveSummaryRole(): Promise<{ provider: import('../providers/interface.js').LLMProvider; providerReq: import('../providers/interface.js').ProviderReq; window: number } | null> {
+  private async resolveSummaryRole(): Promise<SummaryRole | null> {
     const cfg = this.cfg()
     const role = cfg.roles?.summary
     if (role === undefined) return null

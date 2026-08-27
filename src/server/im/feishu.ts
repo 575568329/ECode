@@ -268,11 +268,88 @@ export class FeishuGateway {
 
   private async replyMarkdown(chatId: string, text: string): Promise<void> {
     if (chatId === '') return
+    // M14-C5③：post 富文本（此前名不副实发纯 text——LLM 回复的 markdown 全成裸符号）
     void this.client.im.message
       .create({
         params: { receive_id_type: 'chat_id' },
-        data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }) },
+        data: { receive_id: chatId, msg_type: 'post', content: JSON.stringify({ zh_cn: { title: '', content: markdownToPost(text) } }) },
       })
       .catch((e: unknown) => this.deps.logger.warn('im', 'feishu_reply_failed', { message: e instanceof Error ? e.message : String(e) }))
   }
+}
+
+/** post 富文本行内元素（飞书 im/v1 content.post.zh_cn.content 二维数组的叶子） */
+interface PostElement {
+  tag: string
+  text?: string
+  href?: string
+  language?: string
+}
+
+/**
+ * M14-C5③：markdown → 飞书 post 结构（务实最小解析，非全量 AST）。
+ * 块级：```围栏代码块``` → 逐行 code 元素（post 无真正块代码）；# 标题 → bold 行；
+ * -/* 列表行加 "•"；空行分段。行内：**bold**、`code`、[text](url)。
+ * 未知语法保持原文本（飞书 text 元素按字面渲染，零丢失）。
+ */
+export function markdownToPost(text: string): PostElement[][] {
+  const out: PostElement[][] = []
+  const lines = text.split('\n')
+  let codeBuf: string[] | null = null
+  let codeLang = ''
+  const flushCode = (): void => {
+    if (codeBuf === null) return
+    for (const l of codeBuf) out.push([{ tag: 'code', text: l, ...(codeLang !== '' ? { language: codeLang } : {}) }])
+    codeBuf = null
+    codeLang = ''
+  }
+  for (const raw of lines) {
+    const fence = /^```(\w*)\s*$/.exec(raw.trim())
+    if (fence !== null) {
+      if (codeBuf !== null) flushCode()
+      else {
+        codeBuf = []
+        codeLang = fence[1] ?? ''
+      }
+      continue
+    }
+    if (codeBuf !== null) {
+      codeBuf.push(raw)
+      continue
+    }
+    const t = raw.trim()
+    if (t === '') {
+      out.push([])
+      continue
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(t)
+    if (heading !== null) {
+      out.push([{ tag: 'bold', text: heading[2] }])
+      continue
+    }
+    const li = /^[-*]\s+(.*)$/.exec(t)
+    if (li !== null) {
+      out.push([{ tag: 'text', text: '• ' }, ...inlineRuns(li[1])])
+      continue
+    }
+    out.push(inlineRuns(t))
+  }
+  flushCode() // 未闭合围栏兜底
+  return out
+}
+
+/** 行内三模式 tokenizer：**bold** / `code` / [text](url)；段间原样 text */
+function inlineRuns(line: string): PostElement[] {
+  const runs: PostElement[] = []
+  const re = /\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)\)/g
+  let last = 0
+  for (let m = re.exec(line); m !== null; m = re.exec(line)) {
+    if (m.index > last) runs.push({ tag: 'text', text: line.slice(last, m.index) })
+    if (m[1] !== undefined) runs.push({ tag: 'bold', text: m[1] })
+    else if (m[2] !== undefined) runs.push({ tag: 'code', text: m[2] })
+    else if (m[3] !== undefined && m[4] !== undefined) runs.push({ tag: 'a', text: m[3], href: m[4] })
+    last = m.index + m[0].length
+  }
+  if (last < line.length) runs.push({ tag: 'text', text: line.slice(last) })
+  return runs.length > 0 ? runs : [{ tag: 'text', text: '' }]
 }

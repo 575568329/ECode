@@ -25,7 +25,7 @@ import type { Logger } from './logger.js'
 import { NoopHistoryStore } from './history.js'
 import { CompactionOrchestrator } from './compaction/orchestrator.js'
 import { SummarizeStrategy } from './compaction/summarize.js'
-import { makeOnBeforeRequest } from './compaction/hook.js'
+import { makeOnBeforeRequest, type SummaryRole } from './compaction/hook.js'
 import type { Sandbox } from './sandbox.js'
 
 /** 子代理默认迭代上限（方案 D6：钳 min(父,25) 的常数半边；跑飞防御） */
@@ -93,6 +93,9 @@ export interface SubagentBridge {
   getProvider?: () => LLMProvider
   getSandbox?: () => import('./sandbox.js').Sandbox
   getModel?: () => string
+  /** M14-C5②：摘要角色 getter（宿主桥实现 resolveSummaryRole——子代理压缩链与主链同源换笔；
+   *  makeSubagentOpts 是同步函数拿不到 config/registry，经桥 getter 异步解析后传参） */
+  getSummaryRole?: () => Promise<SummaryRole | null>
 }
 
 let bridge: SubagentBridge | null = null
@@ -221,6 +224,8 @@ export function makeSubagentOpts(
   onActivity?: (name: string) => void,
   sessionConfirm?: (use: ToolUseBlock) => Promise<boolean | string>,
   sessPort?: SessionPort['session'],
+  /** M14-C5②：宿主桥解析好的摘要角色（roles.summary 换笔——子代理独立压缩链与主链同源；null=回退主模型） */
+  summaryRole?: SummaryRole | null,
 ): LoopRunOptions {
   // 审阅 P1-1/P1-2：桥 getter 优先（TuiApp 运行态：/model 切换、Tab 切沙箱档后取新值）；
   // 构造时取一次=子代理生命周期内配置快照（中途切换影响下一批，优于 cli 静态闭包的永远旧值）
@@ -242,6 +247,7 @@ export function makeSubagentOpts(
     tools: tools.specs(),
     onCompacted: async () => {}, // no-op：子代理无 committed 重建（boundary 在内存 messages 存活）
     onUsage: reportUsage,
+    ...(summaryRole != null ? { summary: summaryRole } : {}), // M14-C5②：roles.summary 换笔
   })
   return {
     provider,
@@ -420,6 +426,9 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
       // 硬超时与用户中断取或（Node 20+ AbortSignal.any）
       const timeout = AbortSignal.timeout(SUB_TIMEOUT_MS)
       const signal = AbortSignal.any([ctx.signal, timeout])
+      // M14-C5②：摘要角色经宿主桥异步解析（resolveSummaryRole 与主链同源——roles.summary
+      // 配了换笔；桥缺省/未挂（argv 单次/旧测试）=null 回退子代理主模型，行为不变）
+      const summaryRole = await (bridge?.getSummaryRole?.() ?? null)
       const opts = makeSubagentOpts(deps, agentId, description, type, signal, (name) => {
         if (sess?.updateSubagent !== undefined) {
           sess.updateSubagent({ id: agentId, description, activity: name })
@@ -430,7 +439,7 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
             notifyProgress()
           }
         }
-      }, sess?.confirmTool, sess)
+      }, sess?.confirmTool, sess, summaryRole)
       const messages: HistoryLine[] = []
       try {
         await runLoop(messages, prompt, opts)

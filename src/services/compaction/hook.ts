@@ -45,8 +45,16 @@ export interface OnBeforeRequestOpts {
   /**
    * M13-B3（roles.summary 分流）：摘要专用 provider/req/窗口。缺省回退主模型（现状）。
    * 审阅 P0 修复：此前只拆窗口不换笔——装配链透传主会话 provider，分流完全失效。
+   * M14-C5②：类型抽出（主链 resolveSummaryRole 与子代理桥 getter 共用——SubagentBridge 契约）。
    */
-  summary?: { provider: LLMProvider; providerReq: ProviderReq; window: number }
+  summary?: SummaryRole
+}
+
+/** 摘要角色（roles.summary 解析产物）：换笔三件——专用 provider/请求/窗口 */
+export interface SummaryRole {
+  provider: LLMProvider
+  providerReq: ProviderReq
+  window: number
 }
 
 /**

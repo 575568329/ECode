@@ -229,4 +229,24 @@ describe('M11 审阅修复批：桥优先与 SubRegistry 视图', () => {
     expect(exp.get('bash')).toBeUndefined()
     expect(exp.get('read_file')).toBeDefined()
   })
+
+  it('M14-C5②：桥挂 getSummaryRole 时 task execute 解析摘要角色（roles.summary 换笔通子代理压缩链）；未挂不炸', async () => {
+    let asked = 0
+    setSubagentBridge({
+      confirm: async () => true,
+      getSummaryRole: async () => {
+        asked++
+        return null // 值形态的换笔行为由主链 hook 测试覆盖；此处锁「子代理取到桥角色」的通路
+      },
+    })
+    try {
+      const deps = makeDeps()
+      const tool = makeTaskTool(deps)
+      const r = await tool.execute({ description: '换笔通路', prompt: '跑一句' }, ctx)
+      expect(r.is_error).toBeFalsy()
+      expect(asked).toBe(1) // execute 内解析过桥角色（传参进 makeSubagentOpts）
+    } finally {
+      setSubagentBridge(null)
+    }
+  })
 })

@@ -141,21 +141,29 @@ export interface PermissionAnswer {
   remember: boolean
 }
 
-let asker: ((owner: string, event: string) => Promise<PermissionAnswer>) | null = null
+export type PermissionAsker = (owner: string, event: string) => Promise<PermissionAnswer>
 
-/** TuiApp 挂载时注入（ConfirmPrompt 弹窗）；卸载置 null（argv/测试：ask 默认拒绝，fail-closed） */
-export function setPermissionAsker(h: ((owner: string, event: string) => Promise<PermissionAnswer>) | null): void {
-  asker = h
+/** M14-C3②：键控多槽（键 = sessionId）。原模块级单槽被每会话挂载覆写——多宿主下 A 会话的
+ *  hook 权限 ask 会路由到后挂的 B 会话 broker（跨端审批错发）。键控后按发起会话路由，
+ *  无命中槽 fail-closed（ask 默认拒）。消费方（tools/subagent/session 三执行域）共用
+ *  项目级 HookRunner，经 sessionRef.id 取当前会话键（W1"最后 ensure 者胜"近似不变）。 */
+const askers = new Map<string, PermissionAsker>()
+
+/** 宿主挂载（mountBridges 时注入 broker 适配器）；null = 卸载该键 */
+export function setPermissionAsker(key: string, h: PermissionAsker | null): void {
+  if (h === null) askers.delete(key)
+  else askers.set(key, h)
 }
 
-/** M13-W1：当前槽位只读（ConversationHost dispose 归属守卫） */
-export function currentPermissionAsker(): ((owner: string, event: string) => Promise<PermissionAnswer>) | null {
-  return asker
+/** M13-W1：槽位只读（ConversationHost dispose 归属守卫——identity 比较） */
+export function currentPermissionAsker(key: string): PermissionAsker | null {
+  return askers.get(key) ?? null
 }
 
-export async function askPermissionInteractive(owner: string, event: string): Promise<PermissionAnswer | null> {
-  if (asker === null) return null
-  return asker(owner, event)
+export async function askPermissionInteractive(key: string, owner: string, event: string): Promise<PermissionAnswer | null> {
+  const h = askers.get(key)
+  if (h === undefined) return null
+  return h(owner, event)
 }
 
 export { EMPTY_RULES }

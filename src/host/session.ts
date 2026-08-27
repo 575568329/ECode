@@ -117,6 +117,8 @@ export class HostSession {
   private roundUses: string[] = []
   private readonly queue: QueueEntry[] = []
   private running = false
+  /** M14-C3③（P1-12）：prompt 已判定开轮、startTurn 尚未置 running 的同步占位——堵 buildBlocks 的 await 窗口 */
+  private starting = false
   private currentTurnId: string | null = null
   private abort = new AbortController()
   private ctxWindowCache: number | null = null
@@ -147,9 +149,11 @@ export class HostSession {
     this.broker.dispose()
     this.abort.abort()
     // M13-W1 归属守卫：模块槽是"最后挂载者"语义——仅当槽内仍是自己装的才清，
-    // 防止 A 会话 dispose 误清后挂的 B 会话桥（多会话共存的正确卸载语义）
+    // 防止 A 会话 dispose 误清后挂的 B 会话桥（多会话共存的正确卸载语义）。
+    // M14-C3②：asker 槽键控（本会话 id）——其余桥仍单槽（消费域单一，串台面不存在）
     if (this.bridgesMounted) {
-      if (currentPermissionAsker() === this.installedAsker) setPermissionAsker(null)
+      const key = this.deps.history.currentSessionId()
+      if (currentPermissionAsker(key) === this.installedAsker) setPermissionAsker(key, null)
       if (currentAskUserHandler() === this.installedAskUser) setAskUserHandler(null)
       if (currentSubagentBridge() === this.installedBridge) setSubagentBridge(null)
       if (currentSubagentProgressHandler() === this.installedProgress) setSubagentProgressHandler(null)
@@ -166,7 +170,7 @@ export class HostSession {
     if (this.bridgesMounted) return
     this.bridgesMounted = true
     this.installedAsker = async (owner, event) => this.broker.permission(owner, event)
-    setPermissionAsker(this.installedAsker)
+    setPermissionAsker(this.deps.history.currentSessionId(), this.installedAsker)
     this.installedAskUser = (async (questions: Parameters<AskUserHandler>[0]) => {
       const r = await this.broker.askUser(questions)
       return (r ?? { kind: 'cancel' }) as ReturnType<AskUserHandler>
@@ -199,7 +203,7 @@ export class HostSession {
 
   /** M13-W2：运行态（loop 在跑或队列有货）——会话级 sweep 三闸之一（运行态永不收） */
   get isBusy(): boolean {
-    return this.running || this.queue.length > 0
+    return this.running || this.starting || this.queue.length > 0
   }
 
   /** B4（D5）：会话级子代理进度上报（task 工具经 ctx.session 调用；发布 subagent/progress 事件） */
@@ -340,7 +344,7 @@ export class HostSession {
 
   /** 等到空闲（argv 模式收尾用；含轮末兜底队列排空） */
   async whenIdle(): Promise<void> {
-    if (!this.running && this.queue.length === 0) return
+    if (!this.running && !this.starting && this.queue.length === 0) return
     await new Promise<void>((resolve) => this.idleResolvers.push(resolve))
   }
 
@@ -406,8 +410,21 @@ export class HostSession {
   private async dispatch(cmd: ProtocolCommand): Promise<CommandResult> {
     switch (cmd.op) {
       case 'prompt': {
+        // M14-C3③（P1-12）：同步占位先于 buildBlocks 的 await——原检查在 await 后，带图 prompt
+        // 并发双发会双双通过 running 检查双开轮；startTurn 同步段清 starting（早退路径也不泄漏）
+        const idle = !this.running && !this.starting
+        if (idle) this.starting = true
         const blocks = cmd.images !== undefined && cmd.images.length > 0 ? await this.buildBlocks(cmd.images) : undefined
-        if (this.running) {
+        if (!idle) {
+          // 复查：await 窗口内轮可能已结束（入口判定过时）——此刻已空闲则直接开轮，
+          // 防插话入队后滞留无人 drain（whenIdle 死等；原被双开轮 bug 遮蔽的伴生竞态）
+          if (!this.running && !this.starting) {
+            void this.startTurn(cmd.text, blocks).catch((e: unknown) => {
+              this.publish('error', { message: e instanceof Error ? e.message : String(e) })
+              this.deps.logger.error('system', 'start_turn_failed', { message: e instanceof Error ? e.message : String(e) })
+            })
+            return { ok: true, routed: 'Started' }
+          }
           if (cmd.mode === 'StartIfIdle') {
             this.queue.push({ text: cmd.text, blocks, midTurn: false })
             this.publish('queue/snapshot', { items: this.queue.map((q) => q.text) })
@@ -556,9 +573,11 @@ export class HostSession {
   }
 
   private async startTurn(input: string, blocks?: ImageBlock[]): Promise<void> {
+    this.starting = false // M14-C3③：dispatch 已同步置位；startTurn 到首个 await 前同步清（配置不完整早退也不泄漏占位）
     const deps = this.deps
     if (this.cfg().providers[this.cfg().current.name] === undefined) {
       this.publish('systemMsg', { text: '配置不完整（/setup）' })
+      this.notifyIdle() // M14-C3③：starting 窗口内挂起的 whenIdle 等待者（此早退不置 running，不归 finishTurn 收敛）
       return
     }
     this.running = true

@@ -42,7 +42,7 @@ const echoTool: Tool = {
   },
 }
 
-function makeHostDeps(provider: LLMProvider): HostDeps {
+function makeHostDeps(provider: LLMProvider, sessionId = 's-test'): HostDeps {
   const reg = new ToolRegistryImpl()
   reg.register(echoTool)
   const orchestrator = new CompactionOrchestrator()
@@ -55,11 +55,17 @@ function makeHostDeps(provider: LLMProvider): HostDeps {
     current: { name: 'm', model: 'm' },
     maxIterations: 10,
   }
+  // M14-C3②：asker 槽键 = currentSessionId——Noop 恒空串会让两会话同键（键控失效），
+  // 固定 id 子类让测试路径与真实 FileHistoryStore 语义一致
+  class FixedIdHistory extends NoopHistoryStore {
+    constructor(private readonly fixedId: string) { super() }
+    currentSessionId(): string { return this.fixedId }
+  }
   return {
     providerRegistry: { getByType: () => provider } as HostDeps['providerRegistry'],
     tools: reg,
     logger: noopLogger,
-    history: new NoopHistoryStore(),
+    history: new FixedIdHistory(sessionId),
     getConfig: () => config,
     orchestrator,
     skillListForPrompt: () => [],
@@ -134,17 +140,19 @@ describe('ProjectHost（M13-W1）', () => {
     expect(pb.extHooks.entries().some((e) => e.owner === 'skill:beta')).toBe(true) // B 项目不受 A 项目 /clear 影响
   })
 
-  it('桥归属守卫（审阅 P0-2）：后挂覆盖前挂时，A dispose 不误清 B 的模块槽', () => {
-    const before = currentPermissionAsker()
-    const pa = new ProjectHost({ createConversation: (sid) => makeHostDeps(new MockProvider()) })
-    const pb = new ProjectHost({ createConversation: (sid) => makeHostDeps(new MockProvider()) })
-    const a = pa.ensure('s-a') // 挂 A 的桥
-    const b = pb.ensure('s-b') // 挂 B 的桥（模块槽=B）
-    expect(currentPermissionAsker()).not.toBe(before)
-    a.dispose() // A 销毁——槽内是 B 的，不应清
-    expect(currentPermissionAsker()).not.toBeNull()
-    b.dispose() // B 销毁——槽内是自己的，清
-    expect(currentPermissionAsker()).toBeNull()
+  it('M14-C3② asker 键控：两会话挂桥互不覆盖（各挂各键）；dispose 各清各键（串台与误清双防）', () => {
+    const pa = new ProjectHost({ createConversation: (sid) => makeHostDeps(new MockProvider(), sid) })
+    const pb = new ProjectHost({ createConversation: (sid) => makeHostDeps(new MockProvider(), sid) })
+    const a = pa.ensure('s-a') // 挂 A 的桥（键 's-a'）
+    const b = pb.ensure('s-b') // 挂 B 的桥（键 's-b'——键控下不再覆盖 A）
+    expect(currentPermissionAsker('s-a')).not.toBeNull()
+    expect(currentPermissionAsker('s-b')).not.toBeNull()
+    expect(currentPermissionAsker('s-a')).not.toBe(currentPermissionAsker('s-b'))
+    a.dispose() // A 销毁——只清自己的键
+    expect(currentPermissionAsker('s-a')).toBeNull()
+    expect(currentPermissionAsker('s-b')).not.toBeNull() // B 不受影响
+    b.dispose()
+    expect(currentPermissionAsker('s-b')).toBeNull()
   })
 
   it('disposeConversation：默认会话被收后 currentSessionId 置空，ensureDefault 重建新默认', () => {
@@ -171,9 +179,15 @@ describe('ProjectHost（M13-W1）', () => {
 })
 
 describe('ProjectHost M13-W2（restore=ensure / 会话级 sweep）', () => {
+  // M14-C3②：asker 键控需要 currentSessionId——spread 会丢 Noop 原型方法，改子类形态
+  let stubSeq = 0
   const mkConvDeps = (lines: HistoryLine[] = []) => {
-    const store = new NoopHistoryStore()
-    return { ...makeHostDeps(new MockProvider()), history: { ...store, restoreFull: () => lines } }
+    class StubHistory extends NoopHistoryStore {
+      constructor() { super() }
+      restoreFull(): HistoryLine[] { return lines }
+      currentSessionId(): string { return `stub-${++stubSeq}` }
+    }
+    return { ...makeHostDeps(new MockProvider()), history: new StubHistory() }
   }
 
   it('ensureRestore 冷会话：载入 restoreFull 内容为新会话', async () => {
@@ -225,7 +239,8 @@ describe('ProjectHost M13-W2（restore=ensure / 会话级 sweep）', () => {
   })
 })
 
-// 模块槽卫生：本文件动过 permissionAsker 槽，收尾清空防串到其他用例
+// 模块槽卫生：本文件动过 permissionAsker 槽，收尾清空防串到其他用例（M14-C3② 键控——本文件测试键）
 afterAll(() => {
-  setPermissionAsker(null)
+  setPermissionAsker('s-a', null)
+  setPermissionAsker('s-b', null)
 })

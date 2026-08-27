@@ -10,7 +10,7 @@ import type { Delta } from '../../src/core/types.js'
 import { ToolRegistryImpl } from '../../src/tools/registry.js'
 import type { Tool } from '../../src/tools/interface.js'
 import type { Logger } from '../../src/services/logger.js'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileHistoryStore, NoopHistoryStore, type HistoryStore } from '../../src/services/history.js'
@@ -504,6 +504,72 @@ describe('M14-C1b 工具全文 summary+read 与 transcript 分页', () => {
     expect(v.lines.length).toBe(1)
     expect(v.total).toBe((full.value as unknown[]).length)
     expect(v.fromLine).toBe(0)
+    host.dispose()
+  })
+})
+
+describe('M14-C3③（P1-12）：带图 prompt 并发双发不开双轮', () => {
+  function png1x1(): Buffer {
+    const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const len = Buffer.from([0, 0, 0, 13])
+    const ihdr = Buffer.from('IHDR')
+    const data = Buffer.alloc(13)
+    data.writeUInt32BE(1, 0)
+    data.writeUInt32BE(1, 4)
+    return Buffer.concat([sig, len, ihdr, data, Buffer.alloc(4)])
+  }
+
+  it('两个带图 prompt 同步连发：starting 同步占位堵 buildBlocks await 窗口——turn 严格串行（started/completed 交替）且 whenIdle 收敛不滞留', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ecode-p1-12-'))
+    const imgPath = join(dir, 'p.png')
+    writeFileSync(imgPath, png1x1())
+    const p = new MockProvider([[{ type: 'text', text: 'ok' }, { type: 'done', stop_reason: 'end' }]])
+    const host = new HostSession(makeDeps(p))
+    const events: ProtocolEvent[] = []
+    host.subscribe((e) => events.push(e))
+    // 同步连发（send 同步进 dispatch）：第一条在 buildBlocks 的 readFile await 处挂起时
+    // 第二条到达 running 检查——修复前两者都过检查并发双开轮（同时两个 turn/started），
+    // 修复后第二条被 starting 占位挡下（Steered 插话或轮已结束转 Started 顺序开轮）
+    const [r1, r2] = await Promise.all([
+      host.send({ op: 'prompt', text: '第一张图', mode: 'StartOrSteer', images: [{ path: imgPath, mime: 'image/png' }] }),
+      host.send({ op: 'prompt', text: '第二张图', mode: 'StartOrSteer', images: [{ path: imgPath, mime: 'image/png' }] }),
+    ])
+    expect(r1).toMatchObject({ ok: true, routed: 'Started' })
+    expect(r2).toMatchObject({ ok: true })
+    await host.whenIdle() // 滞留竞态回归哨兵：busy 判定过时若只入队不复查，此处死等超时
+    // 串行性：started/completed 严格交替（任意前缀 started 计数 ≥ completed 且差 ≤ 1）
+    let open = 0
+    let maxOverlap = 0
+    for (const e of events) {
+      if (e.type === 'turn/started') maxOverlap = Math.max(maxOverlap, ++open)
+      if (e.type === 'turn/completed') open--
+    }
+    expect(maxOverlap).toBe(1)
+    // 两条输入都被消费（顺序两轮）
+    expect(events.filter((e) => e.type === 'turn/started').length).toBe(2)
+    host.dispose()
+  })
+
+  it('startTurn 配置不完整早退：starting 占位不泄漏（后续 prompt 仍可正常开轮）+ whenIdle 不死等', async () => {
+    const deps = makeDeps(new MockProvider([[{ type: 'done', stop_reason: 'end' }]]))
+    // 构造 provider 名缺失：providers 里删掉 current 指向的条目
+    const broken = {
+      ...deps,
+      getConfig: () => {
+        const c = deps.getConfig()
+        return { ...c, current: { name: 'missing', model: 'x' } }
+      },
+    } as HostDeps
+    const host = new HostSession(broken)
+    const imgPath = join(mkdtempSync(join(tmpdir(), 'ecode-p1-12b-')), 'p.png')
+    writeFileSync(imgPath, png1x1())
+    const r1 = await host.send({ op: 'prompt', text: '带图开轮', mode: 'StartOrSteer', images: [{ path: imgPath, mime: 'image/png' }] })
+    expect(r1).toMatchObject({ ok: true, routed: 'Started' })
+    await host.whenIdle() // 早退路径 notifyIdle——不死等
+    // 占位已清：无图 prompt 立即再开轮（而非被误判 busy 入队）
+    const r2 = await host.send({ op: 'prompt', text: '再来', mode: 'StartOrSteer' })
+    expect(r2).toMatchObject({ ok: true, routed: 'Started' })
+    await host.whenIdle()
     host.dispose()
   })
 })

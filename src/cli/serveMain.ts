@@ -1,0 +1,259 @@
+/**
+ * `ecode serve` 常驻模式（M14-C3① 自 cli/index.ts 拆出）。
+ *
+ * 三职责：启动接管（旧 daemon 身份核验后让位）/serveStop（读注册文件 → PID 校验杀）/
+ * serveMode（多项目 ProjectRegistry + HTTP + 飞书 IM gateway + 生命周期：空闲回收 sweep、
+ * 防脑裂 watchdog、信号收敛）。入口分流见 cli/index.ts 的 main()。
+ */
+import { loadConfig } from '../services/config.js'
+import { JsonlLogger } from '../services/logger.js'
+import { LogStore } from '../services/logstore.js'
+import { join } from 'node:path'
+import { writeFileSync, chmodSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import * as os from 'node:os'
+import { fileURLToPath } from 'node:url'
+import { ProjectRegistry } from '../server/projects.js'
+import { serveMulti } from '../server/multi.js'
+import { FeishuGateway } from '../server/im/feishu.js'
+import { makeDeps } from './assembly.js'
+
+/**
+ * M12-B7：`ecode serve` 常驻模式——单会话宿主上 HTTP（多项目 ProjectRegistry 在 B8）。
+ * ready 单行 JSON 契约（orca 式）：stdout 只给端口与注册文件路径——**token 不打 stdout**（防本机进程读屏）。
+ */
+/**
+ * M14-C2④：PID 校验杀——kill 前连 /api/health 比对注册 id。PID 回收复用是真实风险
+ * （旧注册文件残留 + pid 被系统分给无关进程），身份不符/不可核验一律拒绝（宁可不杀）。
+ * 返回是否已发 SIGTERM。
+ */
+async function killServeByReg(reg: { pid: number; port: number; id?: string }, label: string): Promise<boolean> {
+  process.kill(reg.pid, 0) // 探活：已死则 ESRCH 抛给调用方 catch
+  if (reg.id !== undefined) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${reg.port}/api/health`, { signal: AbortSignal.timeout(1500) })
+      const info = (await res.json()) as { id?: string | null }
+      if (info.id !== reg.id) {
+        process.stdout.write(`${label}：pid ${reg.pid} 身份不符（health id 不匹配——疑似 PID 回收复用），拒绝误杀\n`)
+        return false
+      }
+    } catch {
+      process.stdout.write(`${label}：pid ${reg.pid} 无法核验身份（health 不可达），拒绝盲杀（如确认无误可手动 kill）\n`)
+      return false
+    }
+  }
+  process.kill(reg.pid, 'SIGTERM')
+  return true
+}
+
+/** M12：`ecode serve stop`——读注册文件 → 身份核验（M14-C2④）→ SIGTERM（常驻+手动停，三家同款） */
+export async function serveStop(): Promise<void> {
+  const regPath = join(os.homedir(), '.ecode', 'server.json')
+  try {
+    const reg = JSON.parse(readFileSync(regPath, 'utf8')) as { pid: number; port: number; id?: string }
+    const killed = await killServeByReg(reg, 'serve stop')
+    if (killed) process.stdout.write(`已停止 serve（pid ${reg.pid}）\n`)
+  } catch (e) {
+    process.stdout.write(`无需停止：${(e as { code?: string }).code === 'ESRCH' ? '进程已不在' : '注册文件不存在或损坏'}
+`)
+  }
+  try {
+    rmSync(regPath, { force: true })
+  } catch {
+    // 幂等
+  }
+}
+
+export async function serveMode(): Promise<void> {
+  // 启动接管（调研结论 2）：旧 daemon 活着 → 身份核验（M14-C2④）→ SIGTERM 让位（版本升级/重复启动即换新）
+  try {
+    const regPath = join(os.homedir(), '.ecode', 'server.json')
+    const old = JSON.parse(readFileSync(regPath, 'utf8')) as { pid: number; port: number; id?: string }
+    const killed = await killServeByReg(old, 'serve takeover')
+    if (!killed) {
+      process.stderr.write('✗ 旧 serve 实例无法核验/让位——拒绝并发启动（可先 ecode serve stop 清理）\n')
+      process.exit(1)
+    }
+    await new Promise((r) => setTimeout(r, 800)) // 等旧进程清锁退出
+  } catch {
+    // 无旧实例/已死——直接起
+  }
+  const sessionId = new Date().toISOString().replace(/[:.]/g, '-')
+  const logger = new JsonlLogger(new LogStore(join(process.cwd(), '.ecode', 'logs', `serve-${sessionId}.jsonl`), sessionId))
+  const config = loadConfig()
+  const registry = new ProjectRegistry({
+    createSession: async (cwd) => {
+      // M13-W1：每项目独立 skills/extHooks 实例（多项目 /clear 不串台）+ 会话取自 ProjectHost；
+      // ProjectRegistry 本批不动（W2 升维 path→ProjectHost）——对 registry 而言仍是"每项目一个 HostSession"
+      const sid = new Date().toISOString().replace(/[:.]/g, '-')
+      // model/set 改的是 getConfig() 活引用的 current——共享同一 config 对象会把 A 项目切的
+      // 模型串给所有项目；每项目浅克隆隔离 current（providers 只读共享，浅层足够）
+      const pcfg = { ...config, current: { ...config.current } }
+      const deps = makeDeps(pcfg, logger, sid, cwd, { freshRegistries: true })
+      if (deps.project === undefined) throw new Error('ProjectHost missing in makeDeps')
+      deps.project.ensure(sid) // 首会话（W2：registry 存 ProjectHost，会话 Map 内含；信封三态按需增会话）
+      // M14-C3⑤：serve 路径补加载 skills/plugins（原 load 只在 REPL——serve 下用户技能/插件全
+      // 失效是功能缺口）。冷启动时点执行（acquire 内 await），懒项目零成本；plugin 命令装进
+      // 本项目 commands 实例（C3④——不跨项目串台）
+      await deps.skillRegistry
+        .load({ builtinCommandNames: deps.commands.list().map((c) => c.name) })
+        .catch((e: unknown) => logger.warn('skill', 'load_failed', { cwd, message: e instanceof Error ? e.message : String(e) }))
+      for (const w of deps.skillRegistry.loadWarnings) logger.warn('skill', 'load_warning', { cwd, message: w })
+      logger.info('skill', 'loaded', { cwd, count: deps.skillRegistry.list().length })
+      const pluginWarnings = await deps.pluginLoader
+        ?.loadAll(deps.skillRegistry, deps.mcpManager, deps.commands)
+        .catch((e: unknown) => [`plugin loadAll 失败：${e instanceof Error ? e.message : String(e)}`]) ?? []
+      for (const w of pluginWarnings) logger.warn('plugin', 'load_warning', { cwd, message: w })
+      if (deps.pluginLoader !== null) {
+        logger.info('plugin', 'loaded', { cwd, count: deps.pluginLoader.list().length })
+      }
+      return deps.project
+    },
+  })
+  registry.register(process.cwd())
+  // 多项目 serve（B8.2）：默认项目=启动 cwd；/api/projects 列表 + /api/p/<path>/ 项目路由
+  // M13-W3（绑定语义显式化 + 启动体验）：ECODE_SERVE_HOST 三态（loopback 默认/局域网 IP/LAN 全网卡）；
+  // 非 loopback 强制 ECODE_SERVER_PASSWORD（serveMulti 同款校验双保险）；启动打印完整访问 URL
+  const serveHost = process.env.ECODE_SERVE_HOST ?? '127.0.0.1'
+  const servePassword = process.env.ECODE_SERVER_PASSWORD ?? ''
+  const isLoopbackServe = serveHost === '127.0.0.1' || serveHost === '::1' || serveHost === 'localhost'
+  if (!isLoopbackServe && servePassword === '') {
+    process.stderr.write('✗ 非 loopback 绑定（ECODE_SERVE_HOST=' + serveHost + '）必须设置 ECODE_SERVER_PASSWORD——拒绝启动（防裸奔局域网）\n')
+    process.exit(1)
+  }
+  // M13-W5：web/dist 托管（存在即挂——开发期没 build 则纯 API 形态不变）。
+  // 解析序：ECODE_WEB_DIR 显式覆盖 > 包内相对（import.meta.url——tsx 源码跑=仓库根/web/dist，
+  // npm 发布跑=包根/web/dist；files 字段带 web/dist）> 不托管。不再看 cwd（其他项目目录起 serve
+  // 时 cwd/web/dist 是错误形态——审阅修正）
+  const webDirFromEnv = process.env.ECODE_WEB_DIR
+  const webDirFromPkg = fileURLToPath(new URL('../../web/dist', import.meta.url))
+  const webDirCandidate = webDirFromEnv !== undefined && webDirFromEnv !== '' ? webDirFromEnv : webDirFromPkg
+  const webDir = existsSync(webDirCandidate) ? webDirCandidate : undefined
+  const srv = await serveMulti(
+    { registry, defaultCwd: process.cwd() },
+    { port: Number(process.env.ECODE_SERVE_PORT ?? 0), host: serveHost, password: servePassword, id: sessionId, ...(webDir !== undefined ? { webDir } : {}) },
+  )
+  // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读
+  const regPath = join(os.homedir(), '.ecode', 'server.json')
+  writeFileSync(regPath, JSON.stringify({ id: sessionId, port: srv.port, token: srv.token, pid: process.pid }, null, 2), { mode: 0o600 })
+  chmodSync(regPath, 0o600)
+  console.log(JSON.stringify({ type: 'ready', schemaVersion: 1, bound: `${serveHost}:${srv.port}`, register: regPath }))
+  // 局域网形态打印手机可直接点击的访问 URL（半行代码消除"我该在手机输什么"的摩擦——审阅 P1）
+  if (!isLoopbackServe) {
+    const lanIp = Object.values(os.networkInterfaces())
+      .flat()
+      .find((n): n is os.NetworkInterfaceInfo => n !== undefined && n.family === 'IPv4' && n.internal === false)?.address
+    if (lanIp !== undefined) process.stdout.write(`Mobile: http://${lanIp}:${srv.port}\n`)
+    process.stdout.write('提示：DHCP 可能变动局域网 IP——建议为公司电脑配置静态 IP（中继形态 M14 后此问题消失）\n')
+  }
+  // M13-W8：飞书 IM gateway（配置了凭据才激活——长连接免公网，公司电脑零暴露）
+  let feishuGw: FeishuGateway | undefined
+  if (config.feishu !== undefined && config.feishu.appId !== '' && config.feishu.appSecret !== '') {
+    const projectRoot = process.cwd().split(String.fromCharCode(92)).join('/')
+    feishuGw = new FeishuGateway({
+      appId: config.feishu.appId,
+      appSecret: config.feishu.appSecret,
+      allowUsers: config.feishu.allowUsers, // 白名单（缺省/空=拒绝所有——审阅 P0-1）
+      logger,
+      project: projectRoot,
+      sendCommand: async (sessionId, op) => {
+        // 真新建特判（审阅 P1-3：飞书 /new 曾只解绑定，下一条消息 ensureDefault 复用旧默认
+        // 会话——「新建」实为继续旧聊；与 multi.ts 信封层拦截同语义）
+        if ((op as { op?: string }).op === 'session/new') {
+          const r = await registry.acquire(projectRoot, { confirm: true })
+          if (!r.ok || r.host === undefined) return { ok: false, error: 'project acquire failed' }
+          const sid = `${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 10)}`
+          r.host.ensure(sid)
+          return { ok: true, sessionId: sid }
+        }
+        const r = await registry.acquire(projectRoot, { confirm: true })
+        if (!r.ok || r.host === undefined) return { ok: false, error: 'project acquire failed' }
+        const conv = sessionId !== undefined ? r.host.conversation(sessionId) ?? (await r.host.ensureRestore(sessionId)) : r.host.ensureDefault(`${new Date().toISOString().replace(/[:.]/g, '-')}-im`)
+        const result = (await conv.send(op as Parameters<typeof conv.send>[0])) as { ok: boolean; error?: string; sessionId?: string; value?: unknown }
+        return { ...result, sessionId: sessionId ?? r.host.currentSessionId }
+      },
+      subscribe: (handler) => {
+        // mux 语义的最小进程内形态：订阅默认项目全部会话（registry 层面——W8 简化走 registry 快照轮询不可行，
+        // 直接用 ProjectHost 会话订阅：acquire 后 conversationsSnapshot 订阅现有+onSessionEvent 增量）
+        const unsubs: Array<() => void> = []
+        void registry.acquire(projectRoot, { confirm: true }).then((r) => {
+          if (!r.ok || r.host === undefined) return
+          const attach = (): void => {
+            for (const [sid, conv] of r.host!.conversationsSnapshot()) {
+              unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: sid, ev })))
+            }
+            unsubs.push(
+              r.host!.onSessionEvent((kind, info) => {
+                if (kind === 'created') {
+                  const conv = r.host!.conversation(info.sessionId)
+                  if (conv !== undefined) unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: info.sessionId, ev })))
+                }
+              }),
+            )
+          }
+          attach()
+        })
+        return () => {
+          for (const u of unsubs) u()
+        }
+      },
+      listSessions: async () => {
+        const r = await registry.acquire(projectRoot, { confirm: true })
+        if (!r.ok || r.host === undefined) return []
+        const conv = r.host.ensureDefault(`list-${Date.now()}`)
+        const res = (await conv.send({ op: 'session/list' })) as { ok: boolean; value?: unknown }
+        return Array.isArray(res.value) ? (res.value as Array<{ sessionId: string; firstUser: string; running?: boolean }>) : []
+      },
+    })
+    void feishuGw.start().catch((e: unknown) => {
+      process.stderr.write(`飞书 gateway 启动失败：${e instanceof Error ? e.message : String(e)}
+`)
+      feishuGw = undefined
+    })
+  }
+
+  // 空闲回收（30 分钟 sweep；审批/UI 挂起不回收）
+  // M13-W2：会话级回收（项目基座常驻——Q5 两家实证）；sessionIdleMinutes 默认 120，0=不收
+  const sessionIdleMinutes = config.sessionIdleMinutes ?? 120
+  const sweep = sessionIdleMinutes > 0 ? setInterval(() => void registry.sweepSessions(sessionIdleMinutes), 60_000) : null
+  // 防脑裂（opencode 同款）：10s 校验注册 id 仍是自己——被更新版接管即让位自杀
+  const myId = sessionId
+  const watchdog = setInterval(() => {
+    try {
+      const cur = JSON.parse(readFileSync(join(os.homedir(), '.ecode', 'server.json'), 'utf8')) as { id: string }
+      if (cur.id !== myId) {
+        clearInterval(watchdog)
+        if (sweep !== null) clearInterval(sweep)
+        registry.disposeAll()
+        process.exit(0)
+      }
+    } catch {
+      // 注册文件被删（stop 已发 SIGTERM——此路径兜底）
+    }
+  }, 10_000)
+  void watchdog
+  // 审阅 P1-4：serve 分流先于 main 的 handler 注册——此处自管生命周期：
+  // 一次信号 = 全量清理后退出（server.close 断流 → registry.disposeAll（锁释放/审批收敛）→ exit）
+  const shutdown = (code: number): void => {
+    if (sweep !== null) clearInterval(sweep)
+    void (async () => {
+      feishuGw?.dispose()
+      await srv.close()
+      registry.disposeAll()
+      process.exit(code)
+    })()
+  }
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as const) {
+    process.once(sig, () => shutdown(0))
+  }
+  process.on('uncaughtException', (e) => {
+    process.stderr.write(`serve 崩溃：${e instanceof Error ? e.message : String(e)}
+`)
+    shutdown(1)
+  })
+  // 常驻 daemon 显式收敛 unhandledRejection（Node≥15 默认 throw 直接退进程——审阅 P1-2：
+  // 曾只有 TUI 分支注册此 handler，serve 路径异步异常一击即溃全部项目）
+  process.on('unhandledRejection', (reason) => {
+    process.stderr.write(`serve 异步拒绝（不退出）：${reason instanceof Error ? reason.message : String(reason)}\n`)
+  })
+  await new Promise<never>(() => {}) // 常驻（无客户端不退——生命周期由上方 handler 管）
+}

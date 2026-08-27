@@ -8,6 +8,9 @@ import {
   evalPermission,
   loadPermissionLayers,
   saveLocalPermission,
+  setPermissionAsker,
+  currentPermissionAsker,
+  askPermissionInteractive,
   type PermissionLayers,
 } from '../../src/services/permissions.js'
 
@@ -127,5 +130,35 @@ describe('三层存储（真实文件）', () => {
     saveLocalPermission(dir, 'allow', 'Hook(skill:x)')
     const files = readdirSync(join(dir, '.ecode'))
     expect(files).toEqual(['settings.local.json'])
+  })
+})
+
+describe('M14-C3② asker 键控（多宿主不串台）', () => {
+  it('两会话各挂各键：ask 按键路由命中各自的 handler；无挂载键 fail-closed 返回 null', async () => {
+    const seen: string[] = []
+    setPermissionAsker('sess-a', async (owner) => {
+      seen.push(`a:${owner}`)
+      return { allow: true, remember: false }
+    })
+    setPermissionAsker('sess-b', async (owner) => {
+      seen.push(`b:${owner}`)
+      return { allow: false, remember: false }
+    })
+    const ra = await askPermissionInteractive('sess-a', 'skill:foo', 'PreToolUse')
+    expect(ra).toEqual({ allow: true, remember: false })
+    const rb = await askPermissionInteractive('sess-b', 'skill:foo', 'PreToolUse')
+    expect(rb).toEqual({ allow: false, remember: false })
+    expect(seen).toEqual(['a:skill:foo', 'b:skill:foo']) // 各走各桥，无交叉
+    expect(await askPermissionInteractive('sess-none', 'x', 'y')).toBeNull() // 无挂载 → fail-closed
+  })
+
+  it('null 卸载指定键；他键不受影响；归属守卫只读口径', async () => {
+    setPermissionAsker('k1', async () => ({ allow: true, remember: false }))
+    setPermissionAsker('k2', async () => ({ allow: true, remember: false }))
+    expect(currentPermissionAsker('k1')).not.toBeNull()
+    setPermissionAsker('k1', null)
+    expect(currentPermissionAsker('k1')).toBeNull()
+    expect(currentPermissionAsker('k2')).not.toBeNull() // 卸 K1 不动 K2
+    setPermissionAsker('k2', null)
   })
 })

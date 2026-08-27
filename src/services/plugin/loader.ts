@@ -22,7 +22,7 @@ import type { McpManager } from '../mcp/manager.js'
 import type { McpServerConfig, McpServerEntry } from '../mcp/config.js'
 import { expandEnvVars, validateServerConfig } from '../mcp/config.js'
 import { sanitizeToolName } from '../mcp/adapt.js'
-import { commandRegistry } from '../../commands/registry.js'
+import { commandRegistry, type CommandRegistry } from '../../commands/registry.js'
 import type { ToolRegistry } from '../../tools/interface.js'
 import { defaultConfigPath } from '../config.js'
 import { globalExtensionHooks } from '../hooks/global.js'
@@ -468,6 +468,7 @@ export class PluginLoader {
     skillReg: SkillRegistry,
     tools: ToolRegistry | null,
     mcp: McpManager | null,
+    commands: CommandRegistry = commandRegistry,
   ): Promise<void> {
     if (mcp !== null) {
       const prefix = `plugin:${p.name}/`
@@ -491,7 +492,7 @@ export class PluginLoader {
     for (const dir of comps?.commandsDirs ?? []) {
       try {
         for (const f of fs.readdirSync(dir)) {
-          if (f.endsWith('.md')) commandRegistry.unregister(`${p.name}:${f.replace(/\.md$/, '')}`)
+          if (f.endsWith('.md')) commands.unregister(`${p.name}:${f.replace(/\.md$/, '')}`)
         }
       } catch {
         // 目录已不存在：无命令可反注册
@@ -514,11 +515,12 @@ export class PluginLoader {
 
   // —— P4.3 资源接入 ——
 
-  /** 扫描 enabled 插件 → 组件分发到各 Registry（启动期与 install/enable 后共用 loadOne）。 */
-  async loadAll(skillReg: SkillRegistry, mcp: McpManager | null): Promise<string[]> {
+  /** 扫描 enabled 插件 → 组件分发到各 Registry（启动期与 install/enable 后共用 loadOne）。
+   *  M14-C3④：commands 注入化（缺省模块单例——serve 多项目传每项目实例防 plugin 命令串台）。 */
+  async loadAll(skillReg: SkillRegistry, mcp: McpManager | null, commands: CommandRegistry = commandRegistry): Promise<string[]> {
     const warnings: string[] = []
     for (const p of this.list().filter((x) => x.enabled)) {
-      warnings.push(...(await this.loadOne(p, skillReg, mcp)))
+      warnings.push(...(await this.loadOne(p, skillReg, mcp, commands)))
     }
     return warnings
   }
@@ -529,7 +531,7 @@ export class PluginLoader {
    * `${ECODE_PLUGIN_ROOT}` 在加载时展开为 cache 绝对路径（绝不存展开后的路径——版本升级 cache 会变）；
    * `${ENV_VAR}` 走 M6 同款 expandEnvVars + validateServerConfig（缺失/非法 skip + warn，P1-3）。
    */
-  async loadOne(p: InstalledPlugin, skillReg: SkillRegistry, mcp: McpManager | null): Promise<string[]> {
+  async loadOne(p: InstalledPlugin, skillReg: SkillRegistry, mcp: McpManager | null, commands: CommandRegistry = commandRegistry): Promise<string[]> {
     const warnings: string[] = []
     let comps: PluginComponents
     try {
@@ -544,7 +546,7 @@ export class PluginLoader {
     }
     // commands（P1-5）：commands/*.md → `/plugin-name:cmd`（output 型命令；$ARGUMENTS 占位同 skill 展开语义）
     for (const dir of comps.commandsDirs) {
-      warnings.push(...loadPluginCommands(dir, p.name))
+      warnings.push(...loadPluginCommands(dir, p.name, commands))
     }
     if (mcp !== null) {
       const entries: McpServerEntry[] = []
@@ -572,8 +574,8 @@ export class PluginLoader {
   }
 }
 
-/** commands/*.md → CommandRegistry（命名空间 `/plugin-name:cmd`；P1-5）。 */
-function loadPluginCommands(dir: string, pluginName: string): string[] {
+/** commands/*.md → CommandRegistry（命名空间 `/plugin-name:cmd`；P1-5；M14-C3④ commands 注入）。 */
+function loadPluginCommands(dir: string, pluginName: string, commands: CommandRegistry = commandRegistry): string[] {
   const warnings: string[] = []
   let files: string[]
   try {
@@ -596,7 +598,7 @@ function loadPluginCommands(dir: string, pluginName: string): string[] {
       continue
     }
     const firstLine = content.split(/\r?\n/).find((l) => l.trim() !== '') ?? ''
-    commandRegistry.register({
+    commands.register({
       name: cmdName,
       description: `plugin ${pluginName}：${firstLine.slice(0, 50).replace(/^#*\s*/, '')}`,
       run: (args?: string) => ({
@@ -606,8 +608,7 @@ function loadPluginCommands(dir: string, pluginName: string): string[] {
             ? content.replaceAll('$ARGUMENTS', '')
             : content,
       }),
-    })
-  }
+    })  }
   return warnings
 }
 

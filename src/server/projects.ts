@@ -31,8 +31,9 @@ export interface AcquireResult {
 }
 
 export interface ProjectHostOptions {
-  /** 项目宿主工厂（cli 传入：makeDeps(cwd)+ProjectHost 装配——M13-W2 起每项目一个容器） */
-  createSession: (cwd: string) => ProjectHost
+  /** 项目宿主工厂（cli 传入：makeDeps(cwd)+ProjectHost 装配——M13-W2 起每项目一个容器）。
+   *  M14-C3⑤：允许 async——冷启动体内 await（serve 补加载 skills/plugins 等 async 装配资源） */
+  createSession: (cwd: string) => ProjectHost | Promise<ProjectHost>
   lockDir?: string
 }
 
@@ -176,7 +177,7 @@ export class ProjectRegistry {
         return
       }
       try {
-        const host = this.opts.createSession(cwd)
+        const host = await this.opts.createSession(cwd)
         this.hosts.set(cwd, host)
         this.pendingAcquire.delete(cwd)
         for (const cb of this.hostListeners) cb(cwd, host)

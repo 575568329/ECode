@@ -62,15 +62,15 @@ export function serveMulti(
 
   /**
    * 信封三态路由（§3.2）。返回会话 + 其 id；错误：冷会话非 restore → 404。
-   * body 解析：含顶层 op 字段=信封；否则裸 ProtocolCommand（过渡兼容，W5 移除）。
+   * body 一律信封 {op:{...}, sessionId?}（裸 ProtocolCommand 过渡兼容已随 W5 退役——审阅 B2 双轨清理）。
    */
   const routeConversation = async (
     host: ProjectHost,
     raw: Record<string, unknown>,
   ): Promise<{ conv: HostSession; sessionId: string } | { error: string; code: number }> => {
-    const envelope = typeof raw.op === 'object' && raw.op !== null && 'op' in (raw.op as Record<string, unknown>)
-    const sessionId = envelope ? (raw.sessionId as string | undefined) : undefined
-    const op = (envelope ? raw.op : raw) as { op: string }
+    const sessionId = raw.sessionId as string | undefined
+    const op = (typeof raw.op === 'object' && raw.op !== null ? raw.op : {}) as { op: string }
+    if (op.op === '') return { error: '信封缺少 op 字段', code: 400 }
     if (sessionId !== undefined && sessionId !== '') {
       const live = host.conversation(sessionId)
       if (live !== undefined) {
@@ -157,7 +157,12 @@ export function serveMulti(
         void (async () => {
           try {
             const chunks: Buffer[] = []
-            for await (const c of req) chunks.push(c as Buffer)
+            let size = 0
+            for await (const c of req) {
+              size += (c as Buffer).length
+              if (size > MULTI_BODY_CAP) throw Object.assign(new Error('body 超限'), { statusCode: 413 })
+              chunks.push(c as Buffer)
+            }
             const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as { path?: unknown }
             const path = body.path
             if (typeof path !== 'string' || path.trim() === '') return json(400, { ok: false, error: '缺少 path' })
@@ -260,7 +265,7 @@ export function serveMulti(
             // 项目级 session/new：真新建（区别于缺省路由的 ensureDefault 复用默认会话——
             // 「+新对话」两次进同一会话的病灶）。ensure 即挂活 + created 帧广播（mux 列表
             // 自动同步）；冷项目首个新会话顺位成默认（缺省路由随后命中），不额外起承载会话
-            const opName = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : cmd) as { op?: string }
+            const opName = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : {}) as { op?: string }
             if (opName.op === 'session/new') {
               const sid = freshSessionId()
               h.host.ensure(sid)
@@ -269,7 +274,7 @@ export function serveMulti(
             }
             const routed = await routeConversation(h.host, cmd)
             if ('error' in routed) return json(routed.code, { ok: false, error: routed.error })
-            const inner = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : cmd) as Parameters<HostSession['send']>[0]
+            const inner = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : {}) as Parameters<HostSession['send']>[0]
             const result = await routed.conv.send(inner)
             json(200, { ...result, sessionId: routed.sessionId })
           } catch (e) {

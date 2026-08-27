@@ -90,7 +90,7 @@ export type PromptRouted = 'Started' | 'Steered' | 'Queued' | 'Rejected'
 
 export type ProtocolCommand =
   | { op: 'prompt'; text: string; mode: PromptMode; images?: ImagePayload[] }
-  | { op: 'approval/respond'; requestId: string; decision: ApprovalDecision }
+  | { op: 'approval/respond'; requestId: string; decision: ApprovalDecision; message?: string }
   | { op: 'askUser/respond'; requestId: string; answers: unknown }
   | { op: 'askSelect/respond'; requestId: string; choice: string | null }
   | { op: 'interrupt' }

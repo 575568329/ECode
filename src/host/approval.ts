@@ -65,8 +65,9 @@ export class ApprovalBroker {
     return this.channel.publish(frame)
   }
 
-  /** 工具副作用确认（tool-confirm）。preview 由宿主生成（buildPreview；此处出口再消毒兜底）。 */
-  confirm(use: ToolUseBlock, preview: string): Promise<boolean> {
+  /** 工具副作用确认（tool-confirm）。preview 由宿主生成（buildPreview；此处出口再消毒兜底）。
+   *  返回 false=无名拒绝；返回 string=拒绝反馈（喂回模型——对标 A1：模型不再瞎猜取消原因） */
+  confirm(use: ToolUseBlock, preview: string): Promise<boolean | string> {
     const mcpPrefix = use.name.startsWith('mcp__') ? use.name.split('__').slice(0, 2).join('__') : null
     if (mcpPrefix !== null && this.confirmAlways.has(mcpPrefix)) return Promise.resolve(true)
     if (!this.hasSubscriber && this.policy === 'auto-approve') return Promise.resolve(true)
@@ -86,11 +87,11 @@ export class ApprovalBroker {
       this.publish({ type: 'approval/resolved', requestId, outcome: 'cancelled' })
       return Promise.resolve(false)
     }
-    return this.suspendOnce(frame, (v) => v === true)
+    return this.suspendOnce(frame, (v) => (typeof v === 'string' && v !== '' ? v : v === true))
   }
 
   /** 敏感路径读取确认（sensitive）：永远要求交互，auto-approve 不豁免（D6）。 */
-  sensitive(tool: string, description: string): Promise<boolean> {
+  sensitive(tool: string, description: string): Promise<boolean | string> {
     const requestId = randomUUID()
     const frame: AnswerableFrame = {
       type: 'approval/requested',
@@ -105,7 +106,7 @@ export class ApprovalBroker {
       this.publish({ type: 'approval/resolved', requestId, outcome: 'cancelled' })
       return Promise.resolve(false)
     }
-    return this.suspendOnce(frame, (v) => v === true)
+    return this.suspendOnce(frame, (v) => (typeof v === 'string' && v !== '' ? v : v === true))
   }
 
   /** 扩展 hook 首次执行授权（mcp-permission）：auto-approve 不豁免（第三方面不可控）。 */
@@ -190,8 +191,9 @@ export class ApprovalBroker {
     }
   }
 
-  /** approval/respond 命令处理：回执 accepted；权威结果经 resolved 广播 */
-  respondApproval(requestId: string, decision: ApprovalDecision): { accepted: boolean; reason?: string } {
+  /** approval/respond 命令处理：回执 accepted；权威结果经 resolved 广播。
+   *  message=拒绝反馈（decision==='reject' 时透传给挂起方——喂回模型） */
+  respondApproval(requestId: string, decision: ApprovalDecision, message?: string): { accepted: boolean; reason?: string } {
     const entry = this.pending.get(requestId)
     if (entry === undefined) return { accepted: false, reason: 'not-pending' }
     const tool = (entry.frame as { tool: string }).tool
@@ -214,8 +216,9 @@ export class ApprovalBroker {
         }
       }
     } else if (decision === 'reject') {
-      entry.resolve(false)
-      // 级联：本会话全部 pending tool-confirm 一并拒绝（opencode 同款语义）
+      const feedback = typeof message === 'string' && message.trim() !== '' ? message.trim() : false
+      entry.resolve(feedback)
+      // 级联：本会话全部 pending tool-confirm 一并拒绝（opencode 同款语义；连带拒无具体理由=false）
       for (const [id, p] of [...this.pending]) {
         if (p.kind === 'tool-confirm') {
           if (p.timer !== undefined) clearTimeout(p.timer)

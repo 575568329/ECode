@@ -39,7 +39,7 @@ export interface ToolContext {
     updateSubagent?(st: { id: string; description: string; activity: string }): void
     removeSubagent?(id: string): void
     /** B8.2：子代理 confirm 会话化（多宿主不串台——模块级桥降为单会话兜底） */
-    confirmTool?(use: import('../core/types.js').ToolUseBlock): Promise<boolean>
+    confirmTool?(use: import('../core/types.js').ToolUseBlock): Promise<boolean | string>
     /** M12-P0 审阅 P1-4：子代理 usage 经会话窄端口归账（多宿主不串台；模块桥降兜底） */
     recordUsage?(inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }): void
     /** M12-P0 审阅 P1-2：子代理发起的 mcp__ 调用计数 */
@@ -78,7 +78,7 @@ export interface ToolContext {
    * 返回 true 才放行。由上层注入（TUI 弹窗）；无此回调 = 当前模式无法确认
    * （argv 无头等）→ 工具侧 fail-closed 拒绝（宁拦勿泄）。心脏只透传不认识「敏感」。
    */
-  confirmSensitive?: (description: string) => Promise<boolean>
+  confirmSensitive?: (description: string) => Promise<boolean | string>
 }
 
 export interface Tool {

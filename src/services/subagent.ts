@@ -44,7 +44,7 @@ interface SessionPort {
   session?: {
     updateSubagent?(st: SubagentStatus): void
     removeSubagent?(id: string): void
-    confirmTool?(use: ToolUseBlock): Promise<boolean>
+    confirmTool?(use: ToolUseBlock): Promise<boolean | string>
     /** 审阅 P1-4：子代理 usage 经会话窄端口归账（多宿主不串台；缺省走模块桥兜底） */
     recordUsage?(inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }): void
     /** 审阅 P1-2：子代理发起的 mcp__ 调用计数（此前只计主循环——子代理是 MCP 搜索主力场景） */
@@ -81,7 +81,7 @@ export interface SubagentDeps {
 // confirm 缺省 false（argv/未挂载 fail-closed——子代理副作用无 UI 即拒）；warn/usage 缺省丢弃。
 export interface SubagentBridge {
   /** 父 confirm——TuiApp 必须挂串行队列包装版（makeConfirmQueue，方案 §1.3） */
-  confirm: (use: ToolUseBlock) => Promise<boolean>
+  confirm: (use: ToolUseBlock) => Promise<boolean | string>
   warn?: (msg: string) => void
   usage?: (inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }) => void
   /** 审阅 P0-2：写前钩子（TuiApp 版含 editedFilesRef 归主——父轮末 autoCommit 提交集；
@@ -106,7 +106,7 @@ export function currentSubagentBridge(): SubagentBridge | null {
   return bridge
 }
 
-function bridgeConfirm(use: ToolUseBlock): Promise<boolean> {
+function bridgeConfirm(use: ToolUseBlock): Promise<boolean | string> {
   return bridge !== null ? bridge.confirm(use) : Promise.resolve(false)
 }
 
@@ -219,7 +219,7 @@ export function makeSubagentOpts(
   type: SubagentType,
   signal: AbortSignal,
   onActivity?: (name: string) => void,
-  sessionConfirm?: (use: ToolUseBlock) => Promise<boolean>,
+  sessionConfirm?: (use: ToolUseBlock) => Promise<boolean | string>,
   sessPort?: SessionPort['session'],
 ): LoopRunOptions {
   // 审阅 P1-1/P1-2：桥 getter 优先（TuiApp 运行态：/model 切换、Tab 切沙箱档后取新值）；

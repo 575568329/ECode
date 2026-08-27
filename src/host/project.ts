@@ -125,10 +125,13 @@ export class ProjectHost {
   private briefOf(sessionId: string): import('../protocol/mux.js').SessionBrief {
     const host = this.conversations.get(sessionId)
     const firstUser = host?.transcript.find((l) => typeof l === 'object' && 'role' in l && l.role === 'user')
-    const title =
+    const rawTitle =
       firstUser !== undefined && 'content' in firstUser && Array.isArray(firstUser.content)
         ? (firstUser.content.find((b) => b.type === 'text') as { text?: string } | undefined)?.text ?? ''
         : ''
+    // 截断（审阅 P1-8）：title 随 baseline/created 帧广播给每个订阅者——首条 user 全文原样
+    // 出帧会把用户贴进对话的密钥/口令泄漏给 LAN 内其他持凭据端；列表标题 80 字足够
+    const title = rawTitle.length > 80 ? `${rawTitle.slice(0, 80)}…` : rawTitle
     return { project: this.cwd, sessionId, running: host?.isBusy ?? false, title, updatedAt: this.lastActive.get(sessionId) ?? Date.now() }
   }
 

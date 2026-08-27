@@ -41,6 +41,15 @@ describe('ApprovalBroker（B2 分策略表）', () => {
     expect(broker.pendingCount).toBe(0) // 不留悬挂
   })
 
+  it('审阅批：reject 带 message → confirm 返回反馈串喂回模型（对标 A1）；无 message=false', async () => {
+    const { broker, events } = setup()
+    const p = broker.confirm(use('bash'), 'rm -rf tmp')
+    const req = events.find((e) => e.type === 'approval/requested')
+    if (req?.type !== 'approval/requested') throw new Error('unreachable')
+    broker.respondApproval(req.requestId, 'reject', '别删 tmp，改用 /tmp 下新目录')
+    expect(await p).toBe('别删 tmp，改用 /tmp 下新目录')
+  })
+
   it('D6 分策略表：auto-approve（--yes）只豁免 tool-confirm；sensitive/mcp-permission 永不豁免', async () => {
     const s = setup('auto-approve', false)
     expect(await s.broker.confirm(use('write_file'), 'x')).toBe(true) // --yes 放行副作用工具

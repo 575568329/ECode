@@ -105,9 +105,9 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
   it('projects 列表；两项目各自 prompt 互不串台（实例隔离）', async () => {
     const list = await (await fetch(`${base}/api/projects`, { headers: auth })).json()
     expect(list.registered.length).toBe(2)
-    const rA = await (await fetch(`${base}/api/p/${enc(dirA)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: 'session/clear' }) })).json()
+    const rA = await (await fetch(`${base}/api/p/${enc(dirA)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/clear' } }) })).json()
     expect(rA).toMatchObject({ ok: true })
-    const rB = await (await fetch(`${base}/api/p/${enc(dirB)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: 'session/clear' }) })).json()
+    const rB = await (await fetch(`${base}/api/p/${enc(dirB)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/clear' } }) })).json()
     expect(rB).toMatchObject({ ok: true })
     expect(created.length).toBe(2) // 两项目各装配一个 ProjectHost 首会话
     expect(seenCwds).toContain(dirA.split(String.fromCharCode(92)).join('/')) // cwd 真接线（审阅 P0-1：曾 void cwd 掩护断线）
@@ -116,9 +116,9 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
 
   it('need-confirm 栅栏：未注册项目首次拉起 428；confirm 后放行', async () => {
     const dirC = mkdtempSync(join(tmpdir(), 'ecode-projC-'))
-    const r1 = await (await fetch(`${base}/api/p/${enc(dirC)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: 'session/list' }) })).json()
+    const r1 = await (await fetch(`${base}/api/p/${enc(dirC)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/list' } }) })).json()
     expect(r1).toMatchObject({ ok: false, error: expect.stringContaining('confirm') })
-    const r2 = await (await fetch(`${base}/api/p/${enc(dirC)}/cmd?confirm=true`, { method: 'POST', headers: auth, body: JSON.stringify({ op: 'session/list' }) })).json()
+    const r2 = await (await fetch(`${base}/api/p/${enc(dirC)}/cmd?confirm=true`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/list' } }) })).json()
     expect(r2).toMatchObject({ ok: true })
     rmSync(dirC, { recursive: true, force: true })
   })
@@ -137,9 +137,9 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     // ②缺省 → 默认会话（sess-A）回执
     const r4 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/list' } }) })).json()
     expect(r4).toMatchObject({ ok: true, sessionId: 'sess-A' })
-    // 过渡兼容：裸 ProtocolCommand（无信封）仍可用
+    // 裸 ProtocolCommand 已退役（审阅 B2 双轨清理）：缺信封 → 400
     const r5 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: 'session/list' }) })).json()
-    expect(r5).toMatchObject({ ok: true, sessionId: 'sess-A' })
+    expect(r5).toMatchObject({ ok: false })
   })
 
   it('W8 session/new 真新建：回执新 id 挂活（显式路由可达）；两次新建不落同一会话', async () => {
@@ -154,9 +154,9 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     // 第二次新建 → 不同 id（经会话承载的旧实现会因 ensureDefault 复用落同会话）
     const r3 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/new' } }) })).json()
     expect(r3.sessionId).not.toBe(sid1)
-    // 裸命令形态同效（过渡兼容）
+    // 裸命令形态已退役（审阅 B2）——session/new 同样只认信封
     const r4 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: 'session/new' }) })).json()
-    expect(r4).toMatchObject({ ok: true })
+    expect(r4).toMatchObject({ ok: false })
   })
 
   it('W8 POST /api/projects：注册入列（规范化回执）+ 路径校验 + 注册项目免 confirm', async () => {
@@ -182,20 +182,38 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     }
   })
 
-  it('G2 双客户端附着：HttpTransport 双端事件一致（B7 已验证的订阅实现）', async () => {
-    const t1 = new HttpTransport(base, srv.token)
-    const t2 = new HttpTransport(base, srv.token)
-    const evs1: string[] = []
-    const evs2: string[] = []
-    t1.subscribe((e) => evs1.push(e.type))
-    t2.subscribe((e) => evs2.push(e.type))
-    // 事件经 /api/cmd（默认项目=dirA）触发
-    const r = await t1.send({ op: 'prompt', text: 'hi', mode: 'StartOrSteer' })
-    expect(r).toMatchObject({ ok: true, routed: 'Started' })
-    for (let i = 0; i < 60 && !evs1.includes('turn/completed'); i++) await new Promise((res) => setTimeout(res, 100))
-    expect(evs1).toContain('turn/completed')
-    expect(evs2).toContain('turn/completed') // 双端同帧收敛
-    t1.dispose()
-    t2.dispose()
+  it('G2 双客户端同帧收敛：mux 双订阅 + 信封 prompt（HttpTransport 与 serveHost 配对不经 multi）', async () => {
+    const readStream = async (push: (t: string) => void, stop: () => boolean): Promise<() => void> => {
+      const ac = new AbortController()
+      void (async () => {
+        try {
+          const res = await fetch(`${base}/api/events.mux`, { headers: auth, signal: ac.signal })
+          const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader()
+          for (;;) {
+            const { value, done } = await reader.read()
+            if (done) break
+            push(value ?? '')
+            if (stop()) break
+          }
+        } catch {
+          /* aborted */
+        }
+      })()
+      return () => ac.abort()
+    }
+    let s1 = ''
+    let s2 = ''
+    const stops: Array<() => void> = []
+    let done1 = false
+    let done2 = false
+    stops.push(await readStream((t) => { s1 += t; if (s1.includes('turn/completed')) done1 = true }, () => done1))
+    stops.push(await readStream((t) => { s2 += t; if (s2.includes('turn/completed')) done2 = true }, () => done2))
+    await new Promise((r) => setTimeout(r, 300)) // baseline 落定
+    const r = await (await fetch(`${base}/api/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'prompt', text: 'hi', mode: 'StartOrSteer' } }) })).json()
+    expect(r).toMatchObject({ ok: true })
+    for (let i = 0; i < 60 && !(done1 && done2); i++) await new Promise((res) => setTimeout(res, 100))
+    expect(done1).toBe(true)
+    expect(done2).toBe(true) // 双端同帧收敛
+    for (const s of stops) s()
   }, 15_000)
 })

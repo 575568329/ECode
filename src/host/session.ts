@@ -428,7 +428,7 @@ export class HostSession {
         this.publish('queue/snapshot', { items: [] })
         return { ok: true }
       case 'approval/respond': {
-        const r = this.broker.respondApproval(cmd.requestId, cmd.decision)
+        const r = this.broker.respondApproval(cmd.requestId, cmd.decision, cmd.message)
         return r.accepted ? { ok: true } : { ok: false, error: r.reason ?? 'not-pending', code: 'NOT_PENDING' }
       }
       case 'askUser/respond': {
@@ -688,7 +688,7 @@ export class HostSession {
   }
 
   /** B2 宿主侧确认策略（doConfirm 语义迁入：full-access 跳过 / read-only MCP 拒绝 / 其余过 Broker） */
-  private async hostConfirm(use: import('../core/types.js').ToolUseBlock): Promise<boolean> {
+  private async hostConfirm(use: import('../core/types.js').ToolUseBlock): Promise<boolean | string> {
     if (this.sandboxMode === 'full-access') return true
     if (this.sandboxMode === 'read-only' && use.name.startsWith('mcp__')) {
       this.publish('systemMsg', { text: `read-only 模式：MCP 工具 ${use.name} 被拒绝` })

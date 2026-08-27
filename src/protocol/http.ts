@@ -27,6 +27,8 @@ export class HttpTransport implements ClientTransport {
       const res = await fetch(`${this.baseUrl}/api/cmd`, {
         method: 'POST',
         headers: this.headers,
+        // 裸 ProtocolCommand——本 transport 与单会话 serveHost（/api/cmd）配对；multi 的
+        // 信封路由由 web/feishu 各自的连接层负责（审阅 B2 后两服务形态并存、契约各自明确）
         body: JSON.stringify(cmd),
       })
       return (await res.json()) as CommandResult

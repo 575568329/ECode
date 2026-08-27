@@ -84,7 +84,7 @@ export interface LoopRunOptions {
   toolCtx: ToolContext
   /** M10-P2b：首条 user 消息的附着块（图片粘贴 ImageBlock；显示层占位符与内容分离） */
   userBlocks?: ContentBlock[]
-  confirm?: (use: ToolUseBlock) => Promise<boolean>
+  confirm?: (use: ToolUseBlock) => Promise<boolean | string>
   signal?: AbortSignal
   /** M5：每轮 provider.run 前的压缩 hook（投影+压缩+返回子集喂 LLM）。不配则 messages 直接喂。 */
   onBeforeRequest?: (messages: HistoryLine[], trigger?: 'pressure' | 'overflow') => Promise<Message[]>
@@ -106,7 +106,7 @@ export interface LoopRunOptions {
    * TuiApp 注入 UI 弹窗；argv 无头模式不传即工具侧 fail-closed。
    * loop 只做数据转发——何时算敏感由工具自判（心脏不特判工具，铁律不破）。
    */
-  onSensitiveAccess?: (description: string) => Promise<boolean>
+  onSensitiveAccess?: (description: string) => Promise<boolean | string>
 }
 
 /**
@@ -447,9 +447,14 @@ async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<Tool
 
   if (!tool.readonly) {
     const confirmed = opts.confirm ? await opts.confirm(use) : true
-    if (!confirmed) {
-      opts.callbacks.onToolResult?.(use.id, use.name, { content: '用户已取消', is_error: true })
-      return { type: 'tool_result', tool_use_id: use.id, content: '用户已取消', is_error: true }
+    if (confirmed !== true) {
+      // string=带反馈的拒绝（对标 A1：模型知道为什么被拒，可换方法而非瞎猜）；false=无名取消
+      const msg =
+        typeof confirmed === 'string'
+          ? `用户拒绝了本次操作：${confirmed}`
+          : '用户已取消'
+      opts.callbacks.onToolResult?.(use.id, use.name, { content: msg, is_error: true })
+      return { type: 'tool_result', tool_use_id: use.id, content: msg, is_error: true }
     }
   }
 

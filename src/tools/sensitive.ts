@@ -63,7 +63,7 @@ export function isSensitivePath(abs: string): boolean {
 /** 统一敏感门：不敏感或用户已确认 → undefined（放行）；拒绝 → is_error 文案。 */
 export async function sensitiveGate(
   abs: string,
-  ctx: { confirmSensitive?: (description: string) => Promise<boolean> },
+  ctx: { confirmSensitive?: (description: string) => Promise<boolean | string> },
   toolName: string,
 ): Promise<{ content: string; is_error: true } | undefined> {
   if (!isSensitivePath(abs)) return undefined
@@ -71,8 +71,10 @@ export async function sensitiveGate(
   // 兜底为 recoverable is_error（UI 层错误 → 工具错误反馈）
   if (ctx.confirmSensitive !== undefined) {
     const allowed = await ctx.confirmSensitive(`${toolName} 读取敏感路径 ${abs}`)
-    if (allowed) return undefined
-    return { content: `用户已拒绝读取敏感路径 ${abs}`, is_error: true }
+    // string=带反馈的拒绝（对标 A1：模型知道为什么被拒可换方法）；false=无名拒绝
+    if (allowed === true) return undefined
+    const reason = typeof allowed === 'string' && allowed !== '' ? `（原因：${allowed}）` : ''
+    return { content: `用户已拒绝读取敏感路径 ${abs}${reason}`, is_error: true }
   }
   // 无确认通路（argv 无头模式）fail-closed——宁拦勿泄
   return {

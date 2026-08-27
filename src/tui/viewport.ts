@@ -54,6 +54,33 @@ export function sectionBudget(budget: number, reserve: number, cap = Number.POSI
   return Math.max(1, Math.min(cap, budget - reserve))
 }
 
+/** M14-V5（§3.4）总守卫：动态区顶层一次分配 */
+export interface DynamicAllocation {
+  /** 退化保护：终端过小（budget < 12）——markdown/stream/工具区不渲染（宁可不显示也不触发 3J） */
+  degraded: boolean
+  /** 流式灰字/轮末残留 markdown 行上限（拿大头——§3.4 公式） */
+  streamMaxLines: number
+  /** 工具组可见数上限（每组收起恒 ≤4 行；超出折叠为「…还有 N 组」提示） */
+  toolGroupCap: number
+}
+
+/**
+ * 动态区总预算分配（M14-V5 §3.4）：各段独立截断不保证**总和** < rows（病态组合
+ * 8 组工具×4 行+灰字+输入仍超 24 行终端），Conversation 顶层算一次下发各段。
+ * 预留 = 输入区 3（粘贴折叠钳制后）+ ActivityBar 1 + StatusBar 1 + 子代理/任务条 ~5
+ * （App 骨架实际占用对齐）；confirm/overlay 打开时 ConfirmPrompt 自管公式（不变）。
+ */
+export function allocateDynamic(budget: number): DynamicAllocation {
+  const USER_INPUT_LINES = 3
+  const CHROME_RESERVE = 5 // 恒在骨架：ActivityBar 1 + StatusBar 1 + 输入区空隙 ~3（子代理/任务条是条件段，活跃时挤占 stream 余量）
+  const STREAM_MIN = 4 // 流式区保底（tail 折叠天然弹性，是余量的缓冲垫）
+  if (budget < 12) return { degraded: true, streamMaxLines: 0, toolGroupCap: 0 }
+  const content = Math.max(4, budget - CHROME_RESERVE - USER_INPUT_LINES)
+  const toolGroupCap = Math.max(1, Math.min(6, Math.floor((content - STREAM_MIN) / 4)))
+  const streamMaxLines = Math.max(STREAM_MIN, content - toolGroupCap * 4)
+  return { degraded: false, streamMaxLines, toolGroupCap }
+}
+
 /** 折叠模式：tail=只留尾部（流式灰字/输入粘贴）；head-tail=头尾都留（diff/长输出） */
 export type FoldMode = 'tail' | 'head-tail'
 

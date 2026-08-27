@@ -39,16 +39,23 @@ interface ToolGroupViewProps {
   /** 本轮是否结束（runLoop 完成）。副作用工具仅在本轮结束时展开 diff，进行中折叠省空间（本轮可能多 edit） */
   done?: boolean
   onToggle?: () => void
+  /** M14-V5 总守卫：可见工具数上限（每组收起恒 ≤4 行不随数增长，但组内工具并行 8 个仍 32 行——
+   *  超出截断为提示行；缺省不设限=Static 收起固化语义不变） */
+  maxTools?: number
 }
 
-export function ToolGroupView({ tools, expanded = false, done, onToggle }: ToolGroupViewProps): ReactElement {
+export function ToolGroupView({ tools, expanded = false, done, onToggle, maxTools }: ToolGroupViewProps): ReactElement {
   const { budget, columns } = useViewport()
   // M14-V2：展开输出 head-tail 上限（预算一半封顶、绝对上限 12；宽度扣 paddingLeft3+缩进2）
   const expandCap = Math.min(EXPAND_CAP, Math.max(3, Math.floor(budget / 2)))
   const expandWidth = Math.max(10, columns - 6)
   if (tools.length === 0) return <Box />
-  const { count, visible, overflow } = mergeToolGroup(tools)
-  const shown = expanded ? tools : visible
+  // M14-V5：可见上限截断（expanded 态同截——展开大输出本就有 expandCap，工具数也须收口）
+  const capped = maxTools !== undefined && tools.length > maxTools
+  const toolsShown = capped ? tools.slice(0, maxTools) : tools
+  const hiddenTools = capped ? tools.length - maxTools : 0
+  const { count, visible, overflow } = mergeToolGroup(toolsShown)
+  const shown = expanded ? toolsShown : visible
   const namesPreview = visible.map((t) => t.name).join(', ')
   const headerSuffix = overflow > 0 ? ` ${symbols.trunc} +${overflow} 个` : ''
 
@@ -192,6 +199,11 @@ export function ToolGroupView({ tools, expanded = false, done, onToggle }: ToolG
       {!expanded && overflow > 0 && (
         <Box paddingLeft={3}>
           <Text dimColor>还有 {overflow} 个工具</Text>
+        </Box>
+      )}
+      {capped && (
+        <Box paddingLeft={3}>
+          <Text dimColor>…还有 {hiddenTools} 个工具因终端预算折叠（Ctrl+O 展开 / /output 查看全文）</Text>
         </Box>
       )}
     </Box>

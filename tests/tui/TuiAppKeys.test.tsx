@@ -155,3 +155,37 @@ describe('Ctrl+C 中断（按键 → useInterrupt → 宿主 interrupt → loop 
     expect(onExit).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('M14-V4：轮末即 commit（§3.3 查因后方案一）', () => {
+  it('轮完成后内容进 Static 不滞留动态区——第二轮提交后两轮内容齐全且不重复渲染 user 行', async () => {
+    let turn = 0
+    class TwoTurnProvider implements LLMProvider {
+      readonly type = 'mock'
+      async *run(): AsyncIterable<Delta> {
+        turn++
+        yield { type: 'text', text: `第${turn}轮结论` }
+        yield { type: 'done', stop_reason: 'end' }
+      }
+    }
+    const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(new TwoTurnProvider()) }))
+    await flush()
+    stdin.write('问一')
+    await flush()
+    stdin.write('\r')
+    await flush(400)
+    let f = lastFrame() ?? ''
+    expect(f).toContain('问一')
+    expect(f).toContain('第1轮结论')
+    // 轮末已 commit：userInput 不再滞留动态区（延迟 commit 时代「问一」留在输入折叠区）
+    expect(f).not.toContain('▸')
+    stdin.write('问二')
+    await flush()
+    stdin.write('\r')
+    await flush(400)
+    f = lastFrame() ?? ''
+    expect(f).toContain('问一')
+    expect(f).toContain('第1轮结论')
+    expect(f).toContain('问二')
+    expect(f).toContain('第2轮结论')
+  })
+})

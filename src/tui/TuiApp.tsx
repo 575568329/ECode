@@ -361,9 +361,19 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           break
         case 'turn/completed':
           messagesRef.current = [...host.transcript]
-          setActive((a) => ({ ...a, streaming: false }))
-          // aborted 终态不被 idle 覆盖（⚠ 已中断 保留到下一轮 thinking——M13 中断观感修复）
           setActivity((cur) => (cur.state === 'aborted' ? cur : { state: 'idle' }))
+          // M14-V4（§3.3 查因后拍板方案一）：轮末即 commit——本轮 transcript 在 completed 时已
+          // 终局（afterTools 是轮间回喂、跨 turn 通知是下轮注入，无漏消息风险），全量送 Static
+          // 后动态区清零（空闲态只剩输入+状态栏，永不超限——轮末 markdown 滞留是最大溢出源）。
+          // M2 的延迟 commit（下次 submit 才收）是「留动态区可 Ctrl+O 展开」的交互决策；
+          // Static 的工具组本就展开（M3 §7.5），滚轮回看语义更优。error 轮无 completed 帧，
+          // submit 开头的兑现兜底保留
+          if (host.transcript.length > 0) {
+            setCommitted(messagesToCommitted([...host.transcript]))
+            setActive(createActive())
+          } else {
+            setActive((a) => ({ ...a, streaming: false }))
+          }
           break
         case 'warn':
           pushNoticeFn('warn', ev.text)
@@ -487,7 +497,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       setBanner('配置不完整，输入 /setup 配置')
       return
     }
-    // 兑现上一轮延迟 commit（宿主持有全量 messages）
+    // error 轮兜底 commit（正常轮在 turn/completed 已进 Static——V4；error 轮无 completed 帧，
+    // transcript 里的本轮内容在这里收进 Static 再开新轮）
     if (host.transcript.length > 0) {
       setCommitted(messagesToCommitted([...host.transcript]))
     }

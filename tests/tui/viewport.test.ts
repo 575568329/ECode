@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MIN_BUDGET, computeBudget, foldLines, sectionBudget } from '../../src/tui/viewport.js'
+import { MIN_BUDGET, computeBudget, foldLines, sectionBudget, allocateDynamic } from '../../src/tui/viewport.js'
 
 describe('computeBudget 帧高预算', () => {
   it('rows 减安全余量（Windows 恰满屏也触发全清 ink #969）', () => {
@@ -108,5 +108,28 @@ describe('foldLines 物理行折叠', () => {
     const r = foldLines('abc\n def\nghi', 2, 0)
     expect(r.totalPhysical).toBe(3)
     expect(r.visible).toEqual([' def', 'ghi'])
+  })
+})
+
+describe('M14-V5 allocateDynamic（动态区总守卫分配）', () => {
+  it('退化保护：budget < 12 全降级（宁可不显示也不触发 3J）', () => {
+    expect(allocateDynamic(8)).toEqual({ degraded: true, streamMaxLines: 0, toolGroupCap: 0 })
+    expect(allocateDynamic(11)).toEqual({ degraded: true, streamMaxLines: 0, toolGroupCap: 0 })
+  })
+  it('24 行终端（budget 22）：工具 ≥2 组 + stream 保底 4（常见最小终端可用性）', () => {
+    const a = allocateDynamic(22)
+    expect(a.degraded).toBe(false)
+    expect(a.toolGroupCap).toBeGreaterThanOrEqual(2)
+    expect(a.streamMaxLines).toBeGreaterThanOrEqual(4)
+  })
+  it('大终端：工具组封顶 6、stream 拿大头；总和恒 ≤ content（预算不变式）', () => {
+    for (const budget of [22, 40, 60, 100]) {
+      const a = allocateDynamic(budget)
+      const content = Math.max(4, budget - 5 - 3)
+      expect(a.toolGroupCap).toBeLessThanOrEqual(6)
+      expect(a.toolGroupCap * 4 + a.streamMaxLines).toBeLessThanOrEqual(content)
+    }
+    expect(allocateDynamic(98).toolGroupCap).toBe(6)
+    expect(allocateDynamic(98).streamMaxLines).toBeGreaterThanOrEqual(50)
   })
 })

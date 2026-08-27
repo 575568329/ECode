@@ -9,7 +9,7 @@ import { Box, Text, Static } from 'ink'
 import { ToolGroupView } from './ToolGroupView.js'
 import { ConfirmPrompt } from './ConfirmPrompt.js'
 import { foldStreamText } from './stream.js'
-import { useViewport } from './viewport.js'
+import { allocateDynamic, useViewport } from './viewport.js'
 import { UserMessage } from './UserMessage.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import type { CommittedItem, ActiveState, ActiveTool, CommittedToolCall } from './types.js'
@@ -17,11 +17,15 @@ import type { CommittedItem, ActiveState, ActiveTool, CommittedToolCall } from '
 /** 用户输入折叠上限（P1-A：防粘贴长代码撑爆动态区） */
 const USER_INPUT_MAX_LINES = 2
 
-/** 流式灰字占位（commit 前用；超 STREAM_MAX_LINES 行折叠头部）。
- *  M14-V2：宽度感知物理行折叠（超长单行不再爆物理行）。 */
-export function GrayStreaming({ text }: { text: string }): ReactElement {
+/** M14-V5 退化保护提示（budget < 12：宁可不显示也不触发 Ink 全清兜底） */
+const TOO_SMALL_HINT = '[终端过小，本轮内容已折叠——/output 查看]'
+
+/** 流式灰字占位（commit 前用；超 maxLines 行折叠头部）。
+ *  M14-V2：宽度感知物理行折叠（超长单行不再爆物理行）。
+ *  M14-V5：maxLines 来自 allocateDynamic 总分配（缺省 3=旧行为）。 */
+export function GrayStreaming({ text, maxLines }: { text: string; maxLines?: number }): ReactElement {
   const { columns } = useViewport()
-  const { lines, folded, total } = foldStreamText(text, undefined, columns)
+  const { lines, folded, total } = foldStreamText(text, maxLines, columns)
   return (
     <Box flexDirection="column">
       {folded > 0 && <Text dimColor>↑ {folded} 行已折叠（共 {total} 行）</Text>}
@@ -100,6 +104,10 @@ export function Conversation({
   const toolExpanded = active.tools.some(
     (t) => t.use && active.expandedTools.has(t.use.id),
   )
+  // M14-V5（§3.4）总守卫：动态区顶层一次分配（各段独立截断不保证总和 < rows——病态组合
+  // 8 组工具×4 行+灰字+输入仍超 24 行终端）；退化态 markdown/工具区不渲染
+  const { budget } = useViewport()
+  const alloc = allocateDynamic(budget)
   return (
     <Box flexDirection="column">
       <Static items={committed}>
@@ -109,20 +117,40 @@ export function Conversation({
       </Static>
       {/* 动态区：当前轮 ①②③ + confirm */}
       {active.userInput !== '' && <FoldedUserInput text={active.userInput} />}
-      {active.tools.length > 0 && (
-        <ToolGroupView tools={active.tools} expanded={toolExpanded} done={!active.streaming} onToggle={onToggleTool} />
-      )}
+      {active.tools.length > 0 &&
+        (alloc.degraded ? (
+          <Text dimColor>{TOO_SMALL_HINT}</Text>
+        ) : (
+          <ToolGroupView tools={active.tools} expanded={toolExpanded} done={!active.streaming} onToggle={onToggleTool} maxTools={alloc.toolGroupCap} />
+        ))}
       {active.confirm ? (
         <ConfirmPrompt state={active.confirm} onConfirm={onConfirm} onCancel={onCancel} />
       ) : (
         active.streamingText !== '' &&
-        (active.streaming ? (
-          <GrayStreaming text={active.streamingText} />
+        (alloc.degraded ? (
+          <Text dimColor>{TOO_SMALL_HINT}</Text>
+        ) : active.streaming ? (
+          <GrayStreaming text={active.streamingText} maxLines={alloc.streamMaxLines} />
         ) : (
-          <AssistantMessage text={active.streamingText} />
+          <CappedAssistantMessage text={active.streamingText} maxLines={alloc.streamMaxLines} />
         ))
       )}
       {children}
     </Box>
   )
+}
+
+/** M14-V5：轮末残留 markdown（error 轮无 completed 帧）超预算时不渲染全文（markdown 截断
+ *  会破碎语法）——降级提示行，全文在 transcript（/output 可看） */
+function CappedAssistantMessage({ text, maxLines }: { text: string; maxLines: number }): ReactElement {
+  const { columns } = useViewport()
+  const { total } = foldStreamText(text, undefined, columns)
+  if (total > maxLines * 2) {
+    return (
+      <Text dimColor>
+        ⋯ 本轮回复共 {total} 行，终端预算内不展示（/output 查看全文）
+      </Text>
+    )
+  }
+  return <AssistantMessage text={text} />
 }

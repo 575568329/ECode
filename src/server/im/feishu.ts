@@ -32,21 +32,32 @@ export interface FeishuGatewayDeps {
   project: string
   /** 历史会话列表（/sessions /switch 用——session/list 冷热合并） */
   listSessions: () => Promise<Array<{ sessionId: string; firstUser: string; running?: boolean }>>
+  /** 发送者白名单（open_id 列表；缺省=拒绝所有——p2p bot 整租户可见，无白名单=开放执行端点，审阅 P0-1） */
+  allowUsers?: string[]
   dispose?: () => void
 }
 
-/** 单聊用户 → 绑定会话 */
-const binding = new Map<string, string>()
+/** 单聊用户 → 绑定会话（实例字段——曾为模块级，多 gateway 实例串台 + 测试间污染） */
 
 export class FeishuGateway {
   private readonly client: lark.Client
   private ws?: lark.WSClient
   private unsub?: () => void
-  private readonly pendingCards = new Map<string, { chatId: string; messageId: string }>()
+  /** requestId → 卡片与审批归属会话（respond 回填 sessionId——曾丢落默认会话 broker，
+   *  非默认会话审批必然 not-pending 超时，审阅 P1-1） */
+  private readonly pendingCards = new Map<string, { chatId: string; messageId: string; sessionId?: string }>()
+  private readonly binding = new Map<string, string>()
   private disposed = false
 
   constructor(private readonly deps: FeishuGatewayDeps) {
     this.client = new lark.Client({ appId: deps.appId, appSecret: deps.appSecret })
+  }
+
+  /** 白名单守卫（缺省拒绝；空串 openId 一并拒） */
+  private allowed(openId: string): boolean {
+    const list = this.deps.allowUsers
+    if (list === undefined || list.length === 0) return false
+    return openId !== '' && list.includes(openId)
   }
 
   async start(): Promise<void> {
@@ -78,6 +89,12 @@ export class FeishuGateway {
   dispose(): void {
     this.disposed = true
     this.unsub?.()
+    // WSClient 关闭曾漏（dispose 只退订 mux）——gateway 单独重启用例连接不受管（审阅 P2-6）
+    try {
+      this.ws?.close()
+    } catch {
+      /* SDK close 幂等 */
+    }
     this.deps.dispose?.()
   }
 
@@ -89,6 +106,11 @@ export class FeishuGateway {
     const chatType = msg?.chat_type
     const openId = ev?.sender?.sender_id?.open_id ?? ''
     if (chatType !== 'p2p' || msg?.message_type !== 'text') return // 群聊/富文本忽略（Q14 单聊先行）
+    if (!this.allowed(openId)) {
+      // 非白名单静默忽略（不回执——不向陌生者暴露 bot 存活面）
+      this.deps.logger.warn('im', 'feishu_denied', { openId })
+      return
+    }
     let text = ''
     try {
       text = String(JSON.parse(msg.content ?? '{}').text ?? '')
@@ -102,8 +124,15 @@ export class FeishuGateway {
 
     // 命令面
     if (text.startsWith('/new')) {
-      binding.delete(openId)
-      await this.replyText(chatId, '已新建对话——下一条消息开始新会话。')
+      // 真新建并换绑（曾只删绑定——下一条消息隐式路由复用旧默认会话，审阅 P1-3）
+      const r = await this.deps.sendCommand(undefined, { op: 'session/new' })
+      const sid = r.sessionId ?? ''
+      if (r.ok && sid !== '') {
+        this.binding.set(openId, sid)
+        await this.replyText(chatId, `已新建对话（${sid.slice(-8)}）——直接发言即可。`)
+      } else {
+        await this.replyText(chatId, `新建失败：${r.error ?? '未知'}`)
+      }
       return
     }
     if (text.startsWith('/sessions')) {
@@ -120,16 +149,16 @@ export class FeishuGateway {
         await this.replyText(chatId, `序号无效（1-${Math.min(list.length, 10)}）。`)
         return
       }
-      binding.set(openId, target.sessionId)
+      this.binding.set(openId, target.sessionId)
       await this.replyText(chatId, `已切换到：${(target.firstUser ?? '').slice(0, 30)}`)
       return
     }
 
     // 会话驱动：绑定或隐式新建（三态③——sendCommand 不带 sessionId）
-    const bound = binding.get(openId)
+    const bound = this.binding.get(openId)
     await this.replyText(chatId, '收到，处理中…') // 3s 回执
     const r = await this.deps.sendCommand(bound, { op: 'prompt', text, mode: 'StartOrSteer' })
-    if (r.ok && r.sessionId !== undefined && r.sessionId !== '') binding.set(openId, r.sessionId)
+    if (r.ok && r.sessionId !== undefined && r.sessionId !== '') this.binding.set(openId, r.sessionId)
     if (!r.ok) await this.replyText(chatId, `执行失败：${r.error ?? '未知'}`)
   }
 
@@ -138,7 +167,7 @@ export class FeishuGateway {
     if (this.disposed || frame.project !== this.deps.project) return
     // 找绑定了该会话的用户（O(n) 单聊规模可接受）
     let openId: string | null = null
-    for (const [k, v] of binding) if (v === frame.sessionId) openId = k
+    for (const [k, v] of this.binding) if (v === frame.sessionId) openId = k
     if (openId === null) return
     const chatId = this.chatIdOf(openId)
     if (chatId === null) return
@@ -181,7 +210,7 @@ export class FeishuGateway {
         params: { receive_id_type: 'chat_id' },
         data: { receive_id: chatId, msg_type: 'interactive', content: JSON.stringify(card) },
       })
-      if (sent.data?.message_id !== undefined) this.pendingCards.set(requestId, { chatId, messageId: sent.data.message_id })
+      if (sent.data?.message_id !== undefined) this.pendingCards.set(requestId, { chatId, messageId: sent.data.message_id, sessionId: frame.sessionId })
       return
     }
     if (frame.ev.type === 'approval/resolved') {
@@ -204,9 +233,17 @@ export class FeishuGateway {
     const d = data as { event?: { action?: { value?: string }; operator?: { open_id?: string } } }
     const raw = d.event?.action?.value
     if (typeof raw !== 'string') return
+    // 操作者同走白名单（审批卡可能被转发到别的会话/由他人点按——审阅 P0-1 卡片侧）
+    const operator = d.event?.operator?.open_id ?? ''
+    if (!this.allowed(operator)) {
+      this.deps.logger.warn('im', 'feishu_card_denied', { openId: operator })
+      return
+    }
     try {
       const { requestId, decision } = JSON.parse(raw) as { requestId: string; decision: string }
-      await this.deps.sendCommand(undefined, { op: 'approval/respond', requestId, decision })
+      // sessionId 从卡片登记回填（挂起帧携带的归属会话——undefined 曾落默认会话 broker 必 not-pending）
+      const card = this.pendingCards.get(requestId)
+      await this.deps.sendCommand(card?.sessionId, { op: 'approval/respond', requestId, decision })
     } catch {
       /* 无效载荷忽略 */
     }

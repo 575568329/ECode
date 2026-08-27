@@ -23,8 +23,10 @@ export interface ProjectEntry {
 
 export interface AcquireResult {
   ok: boolean
-  reason?: 'not-exist' | 'locked' | 'need-confirm'
+  reason?: 'not-exist' | 'locked' | 'need-confirm' | 'assemble-failed'
   lockHolder?: string
+  /** 装配失败原因（reason==='assemble-failed' 时供上层 500 文案） */
+  errorMessage?: string
   host?: ProjectHost
 }
 
@@ -37,6 +39,8 @@ export interface ProjectHostOptions {
 export class ProjectRegistry {
   private readonly hosts = new Map<string, ProjectHost>()
   private readonly pendingAcquire = new Map<string, Promise<ProjectHost | null>>()
+  /** 最近一次装配失败原因（acquire 重试时清除——失败不是终态，改完环境可再拉） */
+  private readonly assembleErrors = new Map<string, string>()
   private readonly registered = new Set<string>()
   private readonly lockDir: string
 
@@ -139,6 +143,7 @@ export class ProjectRegistry {
     if (!existsSync(rawPath)) return { ok: false, reason: 'not-exist' }
     const cwd = this.normalize(rawPath)
     if (!statSync(cwd).isDirectory()) return { ok: false, reason: 'not-exist' }
+    this.assembleErrors.delete(cwd) // 新一轮尝试：清上次装配失败标记
 
     // 历史反推项目（未显式注册）首次拉起需 confirm（防恶意仓库 hooks 静默执行）
     if (!this.registered.has(cwd) && this.hosts.get(cwd) === undefined && opts.confirm !== true) {
@@ -154,7 +159,7 @@ export class ProjectRegistry {
     const inflight = this.pendingAcquire.get(cwd)
     if (inflight !== undefined) {
       const h = await inflight
-      return h !== null ? { ok: true, host: h } : { ok: false, reason: 'locked' }
+      return h !== null ? { ok: true, host: h } : this.failureOf(cwd)
     }
 
     // deferred：先登记再去装配——promise 体同步失败时 delete 会先于 set 执行留下死条目（实测竞态）
@@ -170,14 +175,41 @@ export class ProjectRegistry {
         settle(null)
         return
       }
-      const host = this.opts.createSession(cwd)
-      this.hosts.set(cwd, host)
-      this.pendingAcquire.delete(cwd)
-      for (const cb of this.hostListeners) cb(cwd, host)
-      settle(host)
+      try {
+        const host = this.opts.createSession(cwd)
+        this.hosts.set(cwd, host)
+        this.pendingAcquire.delete(cwd)
+        for (const cb of this.hostListeners) cb(cwd, host)
+        settle(host)
+      } catch (e) {
+        // 异常收敛（审阅 P1-4）：createSession 抛错曾致 settle 永不调——pendingAcquire 死条目+
+        // 锁残留（pid 活着 stale 探测不放行）=该项目永久卡死；回滚三件并标记装配失败
+        this.pendingAcquire.delete(cwd)
+        this.unlock(cwd)
+        this.assembleErrors.set(cwd, e instanceof Error ? e.message : String(e))
+        settle(null)
+      }
     })()
     const h = await p
-    return h !== null ? { ok: true, host: h } : { ok: false, reason: 'locked', lockHolder: '' }
+    return h !== null ? { ok: true, host: h } : this.failureOf(cwd)
+  }
+
+  /** settle(null) 的失败归因：装配失败优先（带原因），否则按互斥锁占用 */
+  private failureOf(cwd: string): AcquireResult {
+    const errorMessage = this.assembleErrors.get(cwd)
+    if (errorMessage !== undefined) return { ok: false, reason: 'assemble-failed', errorMessage }
+    const lock = this.tryLockProbe(cwd)
+    return { ok: false, reason: 'locked', ...(lock.holder !== undefined ? { lockHolder: lock.holder } : {}) }
+  }
+
+  /** 只读探测锁占用者（不创建锁文件——failureOf 专用） */
+  private tryLockProbe(cwd: string): { holder?: string } {
+    try {
+      const pid = (JSON.parse(readFileSync(this.lockPath(cwd), 'utf8')) as { pid?: number }).pid
+      return { holder: pid !== undefined ? `pid ${pid}` : '未知持有者' }
+    } catch {
+      return {}
+    }
   }
 
   /**

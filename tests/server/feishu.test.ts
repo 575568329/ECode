@@ -19,9 +19,10 @@ interface Capture {
   frames: Array<(frame: { project: string; sessionId: string; ev: { type: string; [k: string]: unknown } }) => void>
 }
 
-const makeDeps = (cap: Capture): FeishuGatewayDeps => ({
+const makeDeps = (cap: Capture, allowUsers?: string[]): FeishuGatewayDeps => ({
   appId: 'test',
   appSecret: 'test',
+  allowUsers,
   logger: noopLogger,
   project: 'D:/proj',
   sendCommand: async (sessionId, op) => {
@@ -56,5 +57,50 @@ describe('M13-W8 飞书 gateway（逻辑面）', () => {
     void new FeishuGateway(makeDeps(cap))
     // start 才注册帧通道与 WSClient（单测无凭据不 start）——cap.frames 为空是预期
     expect(cap.frames).toHaveLength(0)
+  })
+})
+
+// —— 审阅修复批（2026-08-27）：私有路径直驱桥接（onMessage/onCardAction/onFrame 为 private，
+// 经 unknown 桥接调用——SDK 网络面不在单测范围不变） ——
+type MsgDriven = { onMessage(d: unknown): Promise<void> }
+type CardDriven = { onCardAction(d: unknown): Promise<void> }
+const msg = (openId: string, text: string): unknown => ({
+  event: { sender: { sender_id: { 'open_id': openId } }, message: { chat_id: 'chat-1', chat_type: 'p2p', message_type: 'text', content: JSON.stringify({ text }) } },
+})
+describe('审阅批：白名单与审批会话回填', () => {
+  it('无 allowUsers（缺省）→ 一切消息拒绝（不产生命令、不记绑定）', async () => {
+    const cap: Capture = { commands: [], replies: [], listRtn: [], frames: [] }
+    const gw = new FeishuGateway(makeDeps(cap)) as unknown as MsgDriven
+    await gw.onMessage(msg('ou_stranger', '你好'))
+    expect(cap.commands).toHaveLength(0)
+  })
+  it('allowUsers 命中 → 命令送达；未命中 openId 拒绝', async () => {
+    const cap: Capture = { commands: [], replies: [], listRtn: [], frames: [] }
+    const gw = new FeishuGateway(makeDeps(cap, ['ou_bob'])) as unknown as MsgDriven
+    await gw.onMessage(msg('ou_alice', '你好'))
+    expect(cap.commands).toHaveLength(0)
+    await gw.onMessage(msg('ou_bob', '你好'))
+    expect(cap.commands).toHaveLength(1)
+    expect(cap.commands[0]).toMatchObject({ op: { op: 'prompt', text: '你好' } })
+  })
+  it('卡片回调：operator 非白名单拒；命中时 approval/respond 回填挂起帧的 sessionId', async () => {
+    const cap: Capture = { commands: [], replies: [], listRtn: [], frames: [] }
+    const gw = new FeishuGateway(makeDeps(cap, ['ou_bob'])) as unknown as CardDriven & MsgDriven
+    // 先伪造一张挂起卡（模拟 onFrame 登记过 pendingCards）
+    type Cards = { pendingCards: Map<string, { chatId: string; messageId: string; sessionId?: string }> }
+    ;(gw as unknown as Cards).pendingCards.set('req-1', { chatId: 'chat-1', messageId: 'om_1', sessionId: 'sess-b' })
+    const payload = (oid: string, rid: string): unknown => ({ event: { operator: { open_id: oid }, action: { value: JSON.stringify({ requestId: rid, decision: 'once' }) } } })
+    await gw.onCardAction(payload('ou_alice', 'req-1'))
+    expect(cap.commands).toHaveLength(0) // 非白名单拒
+    await gw.onCardAction(payload('ou_bob', 'req-1'))
+    expect(cap.commands).toHaveLength(1)
+    expect(cap.commands[0]).toMatchObject({ sessionId: 'sess-b', op: { op: 'approval/respond', requestId: 'req-1' } })
+  })
+  it('/new 调 session/new 并换绑新 id（不再只删绑定复用旧默认会话）', async () => {
+    const cap: Capture = { commands: [], replies: [], listRtn: [], frames: [] }
+    const gw = new FeishuGateway(makeDeps(cap, ['ou_bob'])) as unknown as MsgDriven
+    await gw.onMessage(msg('ou_bob', '/new'))
+    expect(cap.commands).toHaveLength(1)
+    expect(cap.commands[0]?.op).toMatchObject({ op: 'session/new' })
   })
 })

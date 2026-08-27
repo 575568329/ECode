@@ -55,7 +55,10 @@ export interface Config {
    */
   roles?: { summary?: { provider: string; model: string } }
   /** M13-W8 飞书 IM gateway（企业自建应用凭据——配了才激活；长连接免公网） */
-  feishu?: { appId: string; appSecret: string }
+  /** 飞书 IM gateway（企业自建应用凭据——配了才激活；长连接免公网）。
+   *  allowUsers=open_id 白名单（审阅 P0-1：缺省/空=拒绝所有——p2p bot 整租户可见，
+   *  无白名单即开放执行端点） */
+  feishu?: { appId: string; appSecret: string; allowUsers?: string[] }
   /** M10-P1：联网搜索（provider 缺省 bing RSS 免费；preferMcp 显式声明搜索 MCP server 名；命中搜索 MCP 时内置不注册） */
   webSearch?: { provider?: 'bing' | 'zhipu'; apiKey?: string; engine?: 'search_std' | 'search_pro' | 'search_pro_sogou' | 'search_pro_quark'; preferMcp?: string[] }
   /** 指令/记忆注入单级上限 KB（M8：ECODE.md/CLAUDE.md/MEMORY.md 各级截断阈值，默认 32） */
@@ -96,7 +99,10 @@ interface ConfigFile {
   /** M13-B3：角色分流（summary=压缩摘要专用便宜模型；校验 provider 名存在） */
   roles?: { summary?: { provider: string; model: string } }
   /** M13-W8：飞书凭据（jsonc 透传） */
-  feishu?: { appId: string; appSecret: string }
+  /** 飞书 IM gateway（企业自建应用凭据——配了才激活；长连接免公网）。
+   *  allowUsers=open_id 白名单（审阅 P0-1：缺省/空=拒绝所有——p2p bot 整租户可见，
+   *  无白名单即开放执行端点） */
+  feishu?: { appId: string; appSecret: string; allowUsers?: string[] }
 }
 
 export interface LoadConfigOpts {

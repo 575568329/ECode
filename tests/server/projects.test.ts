@@ -57,6 +57,29 @@ describe('ProjectRegistry（B8 多项目核心）', () => {
     expect(created).toHaveLength(1)
   })
 
+  it('审阅批：createSession 抛错 → assemble-failed 带原因（不再卡死单飞），且可重试成功', async () => {
+    let shouldThrow = true
+    const created: ProjectHost[] = []
+    const reg = new ProjectRegistry({
+      createSession: () => {
+        if (shouldThrow) throw new Error('MCP 装配炸了')
+        const h = fakeProject()
+        created.push(h)
+        return h
+      },
+      lockDir: join(tmpdir(), `ecode-locks-${Date.now()}-${Math.random().toString(36).slice(2)}`),
+    })
+    const dir = mkd()
+    reg.register(dir)
+    const r1 = await reg.acquire(dir)
+    expect(r1).toMatchObject({ ok: false, reason: 'assemble-failed', errorMessage: 'MCP 装配炸了' })
+    // 锁已回滚：环境恢复后同一目录重试成功（旧实现 pendingAcquire 死条目+锁残留=永久卡死）
+    shouldThrow = false
+    const r2 = await reg.acquire(dir)
+    expect(r2.ok).toBe(true)
+    expect(created).toHaveLength(1)
+  })
+
   it('项目互斥：同路径二次 acquire（新 registry 实例=另一进程视角）被 lock 拒绝', async () => {
     const created: ProjectHost[] = []
     const opts = {

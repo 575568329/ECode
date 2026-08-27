@@ -502,9 +502,19 @@ async function serveMode(): Promise<void> {
     feishuGw = new FeishuGateway({
       appId: config.feishu.appId,
       appSecret: config.feishu.appSecret,
+      allowUsers: config.feishu.allowUsers, // 白名单（缺省/空=拒绝所有——审阅 P0-1）
       logger,
       project: projectRoot,
       sendCommand: async (sessionId, op) => {
+        // 真新建特判（审阅 P1-3：飞书 /new 曾只解绑定，下一条消息 ensureDefault 复用旧默认
+        // 会话——「新建」实为继续旧聊；与 multi.ts 信封层拦截同语义）
+        if ((op as { op?: string }).op === 'session/new') {
+          const r = await registry.acquire(projectRoot, { confirm: true })
+          if (!r.ok || r.host === undefined) return { ok: false, error: 'project acquire failed' }
+          const sid = `${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 10)}`
+          r.host.ensure(sid)
+          return { ok: true, sessionId: sid }
+        }
         const r = await registry.acquire(projectRoot, { confirm: true })
         if (!r.ok || r.host === undefined) return { ok: false, error: 'project acquire failed' }
         const conv = sessionId !== undefined ? r.host.conversation(sessionId) ?? (await r.host.ensureRestore(sessionId)) : r.host.ensureDefault(`${new Date().toISOString().replace(/[:.]/g, '-')}-im`)
@@ -589,6 +599,11 @@ async function serveMode(): Promise<void> {
     process.stderr.write(`serve 崩溃：${e instanceof Error ? e.message : String(e)}
 `)
     shutdown(1)
+  })
+  // 常驻 daemon 显式收敛 unhandledRejection（Node≥15 默认 throw 直接退进程——审阅 P1-2：
+  // 曾只有 TUI 分支注册此 handler，serve 路径异步异常一击即溃全部项目）
+  process.on('unhandledRejection', (reason) => {
+    process.stderr.write(`serve 异步拒绝（不退出）：${reason instanceof Error ? reason.message : String(reason)}\n`)
   })
   await new Promise<never>(() => {}) // 常驻（无客户端不退——生命周期由上方 handler 管）
 }

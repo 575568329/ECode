@@ -99,6 +99,7 @@ export function serveMulti(
     const r = await registry.acquire(cwd, { confirm })
     if (r.ok && r.host !== undefined) return { host: r.host }
     if (r.reason === 'need-confirm') return { error: '历史反推项目首次拉起需 confirm:true 二次确认（防恶意仓库 hooks）', code: 428 }
+    if (r.reason === 'assemble-failed') return { error: `项目装配失败：${r.errorMessage ?? '未知'}`, code: 500 }
     if (r.reason === 'locked') return { error: '该项目正被其他进程占用（项目级互斥）', code: 409 }
     return { error: '项目路径不存在', code: 404 }
   }
@@ -125,6 +126,9 @@ export function serveMulti(
           : pathJoin(opts.webDir, 'index.html')
         try {
           const stream = createReadStream(file)
+          // open 失败是异步 emit，try 覆盖不到——无监听会走 uncaughtException 击落整个
+          // daemon（审阅 P1-1：dist 重建竞态窗口/权限变化/文件被删）；headers 已发无法改状态码，销毁连接即可
+          stream.on('error', () => res.destroy())
           res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream', 'cache-control': extname(file) === '.html' ? 'no-cache' : 'public, max-age=3600' })
           stream.pipe(res)
         } catch {
@@ -270,24 +274,30 @@ export function serveMulti(
       }
 
       if (m[2] === 'events' && req.method === 'GET') {
+        // 包裹与 cmd 路由同款 catch-all（审阅 P1-2：裸 async 曾使 statSync 竞态 ENOENT 直达
+        // uncaughtException 击落 daemon——serve 模式无 unhandledRejection 兜底）
         void (async () => {
-          const h = await resolveHost(project, confirm)
-          if ('error' in h) return json(h.code, { ok: false, error: h.error })
-          // W2：?sessionId= 指定会话（冷会话 ensureRestore 拉起后订阅）；缺省=默认会话
-          const wantSid = url.searchParams.get('sessionId')
-          const target =
-            wantSid !== null && wantSid !== ''
-              ? h.host.conversation(wantSid) ?? (await h.host.ensureRestore(wantSid))
-              : h.host.ensureDefault(freshSessionId())
-          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' })
-          const unsub = target.subscribe((ev) => {
-            if (res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`) === false) res.once('drain', () => {})
-          })
-          const ping = setInterval(() => res.write(': ping\n\n'), 15_000)
-          res.on('close', () => {
-            clearInterval(ping)
-            unsub()
-          })
+          try {
+            const h = await resolveHost(project, confirm)
+            if ('error' in h) return json(h.code, { ok: false, error: h.error })
+            // W2：?sessionId= 指定会话（冷会话 ensureRestore 拉起后订阅）；缺省=默认会话
+            const wantSid = url.searchParams.get('sessionId')
+            const target =
+              wantSid !== null && wantSid !== ''
+                ? h.host.conversation(wantSid) ?? (await h.host.ensureRestore(wantSid))
+                : h.host.ensureDefault(freshSessionId())
+            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' })
+            const unsub = target.subscribe((ev) => {
+              if (res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`) === false) res.once('drain', () => {})
+            })
+            const ping = setInterval(() => res.write(': ping\n\n'), 15_000)
+            res.on('close', () => {
+              clearInterval(ping)
+              unsub()
+            })
+          } catch (e) {
+            json(500, { ok: false, error: e instanceof Error ? e.message : String(e) })
+          }
         })()
         return
       }

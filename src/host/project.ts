@@ -152,8 +152,14 @@ export class ProjectHost {
     })
     this.pendingRestore.set(sessionId, p)
     const host = this.ensure(sessionId)
-    const lines = this.convDeps.get(sessionId)?.history.restoreFull(sessionId) ?? []
-    host.restoreFrom(lines)
+    try {
+      const lines = this.convDeps.get(sessionId)?.history.restoreFull(sessionId) ?? []
+      host.restoreFrom(lines)
+    } catch (e) {
+      // 历史文件损坏（JSON.parse 抛错）不再泄漏 pendingRestore 条目（同 id 下一次请求会
+      // 永久悬挂，审阅 P1-3）——降级为空会话继续可用（损失历史不损失可用性）
+      process.stderr.write(`[ProjectHost] ${sessionId} 历史载入失败，降级为空会话：${e instanceof Error ? e.message : String(e)}\n`)
+    }
     this.pendingRestore.delete(sessionId)
     settle(host)
     return p

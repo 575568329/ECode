@@ -16,7 +16,6 @@ import { randomBytes } from 'node:crypto'
 import type { HostSession } from '../host/session.js'
 import { LOOPBACK_ADDRS } from './loopback.js'
 import { CredentialStore } from './credentials.js'
-import { guardedSseWrite } from './sse.js'
 
 const BODY_CAP = 1024 * 1024
 
@@ -96,24 +95,10 @@ export function serveHost(host: HostSession, opts: { port?: number; hostname?: s
         return
       }
 
+      // M14-C1②：单会话 /api/events 退役（mux 是唯一事件面；serveHost 的 src 消费者已清零——
+      // 仅存测试场景）。保留 410 明示去向，不静默 404
       if (req.method === 'GET' && url.pathname === '/api/events') {
-        res.writeHead(200, {
-          'content-type': 'text/event-stream',
-          'cache-control': 'no-cache',
-          connection: 'keep-alive',
-        })
-        // 订阅即重放 pending 可答帧（HostSession.subscribe 内含 broker.replayPending）
-        // M14-C2⑦：慢消费者守卫（持续无 drain 销毁连接——防 SSE 缓冲无界）
-        const write = guardedSseWrite(res)
-        const unsub = host.subscribe((ev) => {
-          write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`)
-        })
-        const ping = setInterval(() => write(': ping\n\n'), 15_000)
-        res.on('close', () => {
-          clearInterval(ping)
-          unsub()
-        })
-        return
+        return json(410, { error: '单会话 events 端点已退役（M14-C1②）——事件流统一走多项目 serve 的 /api/events.mux' })
       }
 
       json(404, { error: 'no route' })

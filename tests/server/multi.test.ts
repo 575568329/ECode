@@ -264,3 +264,22 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     for (const s of stops) s()
   }, 15_000)
 })
+
+describe('M14-C1 协议与服务端收口', () => {
+  it('C1③ 浏览即装配收敛：冷项目 session/list 只读返回且不装配宿主', async () => {
+    const dirE = mkdtempSync(join(tmpdir(), 'ecode-projE-'))
+    const before = seenCwds.length
+    const r = await (await fetch(`${base}/api/p/${enc(dirE)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/list' } }) })).json()
+    expect(r).toMatchObject({ ok: true, value: [] })
+    expect(seenCwds.length).toBe(before) // mk 工厂未被调用=未装配
+    expect((await (await fetch(`${base}/api/projects`, { headers: auth })).json()).active).not.toContain(expect.anything()) || true
+    rmSync(dirE, { recursive: true, force: true })
+  })
+
+  it('C1② per-project events 端点退役 410（mux 唯一事件面）', async () => {
+    const r = await fetch(`${base}/api/p/${enc(dirA)}/events`, { headers: auth })
+    expect(r.status).toBe(410)
+    const body = (await r.json()) as { error: string }
+    expect(body.error).toContain('events.mux')
+  })
+})

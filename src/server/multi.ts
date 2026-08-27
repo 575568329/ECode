@@ -17,10 +17,11 @@ import { LOOPBACK_ADDRS } from './loopback.js'
 import { CredentialStore } from './credentials.js'
 import { guardedSseWrite } from './sse.js'
 import type { MuxFrame, SessionBrief } from '../protocol/mux.js'
-import { collectProjectCwds } from '../services/history.js'
+import { FileHistoryStore, collectProjectCwds } from '../services/history.js'
+import { homedir } from 'node:os'
 import { createReadStream, existsSync, statSync } from 'node:fs'
-import { extname, join as pathJoin, normalize, sep } from 'node:path'
-import { serveHost, type ServeResult } from './http.js'
+import { extname, join, normalize, sep } from 'node:path'
+import type { ServeResult } from './http.js'
 import type { ProjectRegistry } from './projects.js'
 
 export interface MultiServeDeps {
@@ -113,12 +114,15 @@ export function serveMulti(
     return { conv, sessionId: sid }
   }
 
+  /** URL 项目段 → 正斜杠 cwd（协议约定：路径一律正斜杠——Windows 反斜杠 %5C 被 WHATWG 规范化为 / 碎段） */
+  const cwdOf = (project: string | null): string =>
+    project !== null ? decodeURIComponent(project).split(String.fromCharCode(92)).join('/') : deps.defaultCwd
+
   const resolveHost = async (
     project: string | null,
     credClass: 'primary' | 'lan-password' | 'device' | null,
   ): Promise<{ host: ProjectHost } | { error: string; code: number }> => {
-    // 协议约定：项目路径一律正斜杠（Windows 反斜杠 %5C 会被 WHATWG URL 规范化为 / 碎段——实测坑）
-    const cwd = project !== null ? decodeURIComponent(project).split(String.fromCharCode(92)).join('/') : deps.defaultCwd
+    const cwd = cwdOf(project)
     // M14-C2①：confirm 豁免不再由 `?confirm=true` 客户端自报（审阅 P1-7——对脚本化客户端护栏为零），
     // 改为凭据分级派生——一等凭据（primary/lan-password，用户亲手持有）即栅栏同意；device 级不放行
     const confirm = credClass === 'primary' || credClass === 'lan-password'
@@ -146,11 +150,11 @@ export function serveMulti(
       if (opts.webDir !== undefined && req.method === 'GET' && !url.pathname.startsWith('/api/')) {
         const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json' }
         const rel = normalize(url.pathname).split(sep).filter((x) => x !== '..').join(sep)
-        const candidate = pathJoin(opts.webDir, rel === sep || rel === '' ? 'index.html' : rel)
+        const candidate = join(opts.webDir, rel === sep || rel === '' ? 'index.html' : rel)
         // 路径逃逸守卫（normalize 后仍剥 .. 段）+ SPA fallback：不存在的一律 index.html
         const file = candidate.startsWith(opts.webDir) && existsSync(candidate) && statSync(candidate).isFile()
           ? candidate
-          : pathJoin(opts.webDir, 'index.html')
+          : join(opts.webDir, 'index.html')
         try {
           const stream = createReadStream(file)
           // open 失败是异步 emit，try 覆盖不到——无监听会走 uncaughtException 击落整个
@@ -224,10 +228,13 @@ export function serveMulti(
         // M14-C2⑧：mux 观察型连接须声明 canAnswer=1 才计入审批 fail-closed 判定——
         // 否则任一常开仪表盘订阅就使 sensitive 门"零订阅者 fail-closed"退化为 15min 挂起（审阅 P1-8）
         const canAnswer = url.searchParams.get('canAnswer') === '1'
-        // 预留②per-client 过滤钩子（当前 undefined=全放行；产品化线 R 线接 per-device 会话订阅过滤）
+        // M14-C1④ per-client 过滤管线：?sessionId= 声明只收该会话的 ev 帧（host 生命周期帧照发）。
+        // 仅管线不构成安全边界（客户端自报；强制过滤自凭据派生，依赖 C2① 分级，R 线兑现）
+        const wantSid = url.searchParams.get('sessionId')
         const write = guardedSseWrite(res)
         const send = (frame: MuxFrame): void => {
           if (muxFilter !== undefined && !muxFilter(frame)) return
+          if (wantSid !== null && wantSid !== '' && 'ev' in frame && frame.sessionId !== wantSid) return
           const eventName = 'host' in frame ? frame.host.type : frame.ev.type
           write(`event: ${eventName}\n\ndata: ${JSON.stringify(frame)}\n\n`)
         }
@@ -279,14 +286,20 @@ export function serveMulti(
         return
       }
 
-      // 项目维度路由：/api/p/:p/(cmd|events)；无前缀=默认项目。
+      // 项目维度路由：/api/p/:p/cmd；无前缀=默认项目。
       // M14-C2①：`?confirm=true` 客户端自报退役（豁免随凭据分级派生，见 resolveHost）——
-      // 旧客户端仍发此参数被忽略（web 端恒带，无害）
-      const m = /^\/api\/(?:p\/([^/]+)\/)?(cmd|events)$/.exec(url.pathname)
-      if (m === null) return json(404, { error: 'no route' })
+      // 旧客户端仍发此参数被忽略（web 端恒带，无害）。
+      // M14-C1②：per-project events 端点退役（mux 是唯一事件面——双轨 SSE 写点收敛为一）
+      const m = /^\/api\/(?:p\/([^/]+)\/)?cmd$/.exec(url.pathname)
+      if (m === null) {
+        if (/^\/api\/(?:p\/[^/]+\/)?events$/.test(url.pathname)) {
+          return json(410, { error: '单会话 events 端点已退役（M14-C1②）——事件流统一走 /api/events.mux' })
+        }
+        return json(404, { error: 'no route' })
+      }
       const project = m[1] ?? null
 
-      if (m[2] === 'cmd' && req.method === 'POST') {
+      if (req.method === 'POST') {
         void (async () => {
           try {
             const chunks: Buffer[] = []
@@ -297,6 +310,13 @@ export function serveMulti(
               chunks.push(c as Buffer)
             }
             const cmd = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown>
+            // M14-C1③ 浏览即装配收敛：session/list 是纯读浏览——冷项目走 history 静态读路径
+            // （不 resolveHost→acquire，点过的项目不再全变常驻）；项目已活则照旧走宿主（running 态准确）
+            const opPeek = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : {}) as { op?: string }
+            if (opPeek.op === 'session/list' && credClass !== 'device' && !registry.listActive().some((e) => e.path === cwdOf(project))) {
+              const metas = FileHistoryStore.listMetas(opts.sessionsDir ?? join(homedir(), '.ecode', 'sessions'), cwdOf(project))
+              return json(200, { ok: true, value: metas })
+            }
             const h = await resolveHost(project, credClass)
             if ('error' in h) return json(h.code, { ok: false, error: h.error })
             // 项目级 session/new：真新建（区别于缺省路由的 ensureDefault 复用默认会话——
@@ -321,36 +341,6 @@ export function serveMulti(
         return
       }
 
-      if (m[2] === 'events' && req.method === 'GET') {
-        // 包裹与 cmd 路由同款 catch-all（审阅 P1-2：裸 async 曾使 statSync 竞态 ENOENT 直达
-        // uncaughtException 击落 daemon——serve 模式无 unhandledRejection 兜底）
-        void (async () => {
-          try {
-            const h = await resolveHost(project, credClass)
-            if ('error' in h) return json(h.code, { ok: false, error: h.error })
-            // W2：?sessionId= 指定会话（冷会话 ensureRestore 拉起后订阅）；缺省=默认会话
-            const wantSid = url.searchParams.get('sessionId')
-            const target =
-              wantSid !== null && wantSid !== ''
-                ? h.host.conversation(wantSid) ?? (await h.host.ensureRestore(wantSid))
-                : h.host.ensureDefault(freshSessionId())
-            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' })
-            // 单会话流是交互型客户端（CLI 时代语义）——计可应答（M14-C2⑧）
-            const write = guardedSseWrite(res)
-            const unsub = target.subscribe((ev) => {
-              write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`)
-            })
-            const ping = setInterval(() => write(': ping\n\n'), 15_000)
-            res.on('close', () => {
-              clearInterval(ping)
-              unsub()
-            })
-          } catch (e) {
-            json(500, { ok: false, error: e instanceof Error ? e.message : String(e) })
-          }
-        })()
-        return
-      }
 
       json(404, { error: 'no route' })
     } catch (e) {
@@ -382,4 +372,3 @@ export function serveMulti(
 
 /** 类型再导出（serveHost 契约锚点） */
 export type { ServeResult }
-void serveHost

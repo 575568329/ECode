@@ -81,6 +81,18 @@ interface MetaLine extends SessionMeta {
   meta: true
 }
 
+/** 只读文件首行（P1-13：loadAll 避免全量读大 session 文件，读前 2048 字节取首行足够 meta） */
+function readFirstLineOf(filePath: string): string {
+  const fd = fs.openSync(filePath, 'r')
+  try {
+    const buf = Buffer.alloc(2048)
+    const n = fs.readSync(fd, buf, 0, 2048, 0)
+    return buf.toString('utf8', 0, n).split('\n')[0]
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
 export class FileHistoryStore implements HistoryStore {
   private readonly dir: string
   private model: string
@@ -207,29 +219,23 @@ export class FileHistoryStore implements HistoryStore {
     }
   }
 
-  /** 只读文件首行（P1-13：loadAll 避免全量读大 session 文件，读前 2048 字节取首行足够 meta） */
-  private readFirstLine(filePath: string): string {
-    const fd = fs.openSync(filePath, 'r')
-    try {
-      const buf = Buffer.alloc(2048)
-      const n = fs.readSync(fd, buf, 0, 2048, 0)
-      return buf.toString('utf8', 0, n).split('\n')[0]
-    } finally {
-      fs.closeSync(fd)
-    }
+  loadAll(cwd?: string): SessionMeta[] {
+    return FileHistoryStore.listMetas(this.dir, cwd)
   }
 
-  loadAll(cwd?: string): SessionMeta[] {
+  /** M14-C1③ 只读静态路径：浏览即装配收敛——serve 侧 session/list 对冷项目不装配宿主
+   *  （resolveHost→acquire 会让点过的项目全变常驻），经此读历史 meta 快照。 */
+  static listMetas(dir: string, cwd?: string): SessionMeta[] {
     let files: string[]
     try {
-      files = fs.readdirSync(this.dir).filter((f) => f.endsWith('.jsonl'))
+      files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
     } catch {
       return []
     }
     const metas: SessionMeta[] = []
     for (const f of files) {
       try {
-        const firstLine = this.readFirstLine(path.join(this.dir, f))
+        const firstLine = readFirstLineOf(path.join(dir, f))
         if (!firstLine.trim()) continue
         const parsed = JSON.parse(firstLine) as MetaLine
         if (parsed.meta) {

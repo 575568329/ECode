@@ -86,19 +86,12 @@ describe('B7：HTTP transport + serve 骨架', () => {
     expect(r).toMatchObject({ ok: true })
   })
 
-  it('全链路：HTTP prompt → SSE delta/turn 事件 → respond 审批 → item/completed', async () => {
-    const events: { type: string }[] = []
-    const unsub = client.subscribe((e) => events.push(e as { type: string }))
-    const r = await client.send({ op: 'prompt', text: '跑', mode: 'StartOrSteer' })
-    expect(r).toMatchObject({ ok: true, routed: 'Started' })
+  it('M14-C1②：/api/events 退役 410（mux 唯一事件面）；cmd 通路不受影响', async () => {
+    const r = await fetch(`http://127.0.0.1:${srv.port}/api/events`, { headers: { authorization: `Bearer ${srv.token}` } })
+    expect(r.status).toBe(410)
+    const r2 = await client.send({ op: 'prompt', text: '跑', mode: 'StartOrSteer' })
+    expect(r2).toMatchObject({ ok: true, routed: 'Started' })
     await host.whenIdle()
-    // SSE 到达（pump 异步启动，轮询等）
-    for (let i = 0; i < 50 && !events.some((e) => e.type === 'turn/completed'); i++) {
-      await new Promise((res) => setTimeout(res, 100))
-    }
-    expect(events.some((e) => e.type === 'delta')).toBe(true)
-    expect(events.some((e) => e.type === 'turn/completed')).toBe(true)
-    unsub()
   })
 
   it('token 不可猜测性 + loopback 判定单测（抽函数直测——socket.remoteAddress 无法在回环测试中伪造）', async () => {

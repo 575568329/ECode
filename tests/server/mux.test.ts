@@ -130,7 +130,8 @@ const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)
 describe('M13-W3 mux 单流', () => {
   it('连接三连：baseline（活项目+活会话清单）在首帧', async () => {
     // 先物化 A（mux 连接前 acquire——baseline 只含活项目）
-    await fetch(`${base}/api/p/${encodeURIComponent(fwd(dirA))}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${srv.token}` }, body: JSON.stringify({ op: { op: 'session/list' } }) })
+    // M14-C1③：session/list 已不走装配（只读）——用缺省路由 prompt 前的 session/new 显式挂活项目
+    await fetch(`${base}/api/p/${encodeURIComponent(fwd(dirA))}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${srv.token}` }, body: JSON.stringify({ op: { op: 'session/new' } }) })
     const c = await connect()
     await wait(600)
     const baseline = c.frames.find((f) => 'host' in f && f.host.type === 'session/baseline')
@@ -151,7 +152,7 @@ describe('M13-W3 mux 单流', () => {
     const r = await (await fetch(`${base}/api/p/${encodeURIComponent(fwdA)}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${srv.token}` }, body: JSON.stringify({ sessionId: 'sess-mux-A', op: { op: 'prompt', text: 'hi', mode: 'StartOrSteer' } }) })).json()
     expect(r).toMatchObject({ ok: true })
     // B 也触发（拉起+prompt——先 list 拉起再 prompt 太繁，直接 restore 拉起冷会话）
-    await fetch(`${base}/api/p/${encodeURIComponent(fwdB)}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${srv.token}` }, body: JSON.stringify({ op: { op: 'session/list' } }) })
+    await fetch(`${base}/api/p/${encodeURIComponent(fwdB)}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${srv.token}` }, body: JSON.stringify({ op: { op: 'session/new' } }) })
     await wait(900)
     const aFrames = c.frames.filter((f) => 'project' in f && f.project === fwdA && f.sessionId === 'sess-mux-A')
     expect(aFrames.some((f) => 'ev' in f && f.ev.type === 'delta')).toBe(true) // A 的 delta 经信封带维度
@@ -220,4 +221,50 @@ describe('M13-W3 mux 单流', () => {
     expect(allowed.status).toBe(200) // 密码作为第二凭据（lan-password 级——D13 凭据条目化）
     await srvP.close()
   })
+})
+
+describe('M14-C1④ mux per-client 过滤管线', () => {
+  it('?sessionId= 声明只收该会话 ev 帧；host 生命周期帧照发', async () => {
+    // 两会话挂活同一项目，过滤连接只订 sess-mux-A
+    await fetch(`${base}/api/p/${encodeURIComponent(fwd(dirA))}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${srv.token}` }, body: JSON.stringify({ op: { op: 'session/new' } }) }) // 现仅保底挂活项目
+    const filtered = await fetch(`${base}/api/events.mux?sessionId=sess-mux-A&canAnswer=1`, { headers: { authorization: `Bearer ${srv.token}` } })
+    if (filtered.body === null) throw new Error('no body')
+    const frames: MuxFrame[] = []
+    const acc = { buf: '' }
+    const reader = filtered.body.getReader()
+    let stopped = false
+    const pump = (async () => {
+      try {
+        for (;;) {
+          if (stopped) return
+          const chunk = await reader.read()
+          if (chunk.value !== undefined) acc.buf += new TextDecoder().decode(chunk.value)
+          if (chunk.done) return
+          for (;;) {
+            const i = acc.buf.indexOf('\ndata: ')
+            const e = acc.buf.indexOf('\n\n', i + 1)
+            if (i === -1 || e === -1) break
+            frames.push(JSON.parse(acc.buf.slice(i + 7, e)) as MuxFrame)
+            acc.buf = acc.buf.slice(e + 2)
+          }
+        }
+      } catch {
+        /* closed */
+      }
+    })()
+    void pump
+    // A 会话 prompt → delta 到达（过滤命自身）
+    await fetch(`${base}/api/p/${encodeURIComponent(fwd(dirA))}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${srv.token}` }, body: JSON.stringify({ sessionId: 'sess-mux-A', op: { op: 'prompt', text: 'hi', mode: 'StartOrSteer' } }) })
+    for (let i = 0; i < 50 && !frames.some((f) => 'ev' in f && f.ev.type === 'delta'); i++) await wait(100)
+    expect(frames.some((f) => 'ev' in f && f.sessionId === 'sess-mux-A' && f.ev.type === 'delta')).toBe(true)
+    // B 项目真建会话并 prompt（真实产生 ev 帧）→ 过滤连接不收 B 的 ev 帧；host 帧不受影响
+    const newB = (await (await fetch(`${base}/api/p/${encodeURIComponent(fwd(dirB))}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${srv.token}` }, body: JSON.stringify({ op: { op: 'session/new' } }) })).json()) as { ok: boolean; sessionId?: string }
+    expect(newB.ok).toBe(true)
+    await fetch(`${base}/api/p/${encodeURIComponent(fwd(dirB))}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${srv.token}` }, body: JSON.stringify({ sessionId: newB.sessionId, op: { op: 'prompt', text: 'yo', mode: 'StartOrSteer' } }) })
+    for (let i = 0; i < 50 && !frames.some((f) => 'host' in f && f.host.type === 'project/added'); i++) await wait(100)
+    expect(frames.some((f) => 'ev' in f && f.sessionId === newB.sessionId)).toBe(false)
+    expect(frames.some((f) => 'host' in f)).toBe(true) // 生命周期帧照发
+    stopped = true
+    void reader.cancel()
+  }, 15_000)
 })

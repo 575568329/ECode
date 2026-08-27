@@ -118,7 +118,15 @@ describe('M13-W4 /api/projects 三源并集 + session/list 冷热合并', () => 
     const base = `http://127.0.0.1:${srv.port}`
     const auth = { authorization: `Bearer ${srv.token}` }
 
-    // 先物化项目（/api/projects 的 history 源来自落盘 meta——createSession 在首次 acquire 时跑）
+    // 先物化项目（/api/projects 的 history 源来自落盘 meta——createSession 在首次 acquire 时跑）。
+    // M14-C1③：session/list 已不走装配（只读）——物化改用 session/new（显式装配性 op）；
+    // 工厂 acquire 时 ensure('sess-w4') 落 meta（断言对象仍是 sess-w4，session/new 只负责挂活项目）
+    const mk = (await (await fetch(`${base}/api/p/${encodeURIComponent(dirA.split(String.fromCharCode(92)).join('/'))}/cmd`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ op: { op: 'session/new' } }),
+    })).json()) as { ok: boolean; sessionId?: string }
+    expect(mk).toMatchObject({ ok: true })
     const r = await (await fetch(`${base}/api/p/${encodeURIComponent(dirA.split(String.fromCharCode(92)).join('/'))}/cmd`, {
       method: 'POST',
       headers: auth,
@@ -130,8 +138,8 @@ describe('M13-W4 /api/projects 三源并集 + session/list 冷热合并', () => 
     expect(list.registered.length).toBe(1)
     expect(list.history.length).toBeGreaterThanOrEqual(1) // 历史反推源（写入过的 cwd）
     expect(list.history.every((c: string) => !c.includes(String.fromCharCode(92)))).toBe(true) // 归一正斜杠（realpath 8.3 短名不阻归一断言）
-    const metas = r.value as Array<{ sessionId: string; running?: boolean }>
-    expect(metas.some((m) => m.sessionId === 'sess-w4' && m.running === false)).toBe(true) // 活会话（非跑）注入 running=false
+    const metas = (r as { value?: Array<{ sessionId: string; running?: boolean }> }).value ?? []
+    expect(metas.some((m) => m.sessionId === 'sess-w4' && m.running === false)).toBe(true) // 活会话（非跑）注入 running=false（项目已活走宿主路径）
     await srv.close()
   })
 })

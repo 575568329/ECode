@@ -178,8 +178,31 @@ export async function fetchProjects(
   return (await res.json()) as { registered: Array<{ path: string }>; active: Array<{ path: string }>; history: string[] }
 }
 
-/** 添加项目（web 侧栏「+」）：注册入列表（不冷起宿主）；返回规范化路径（导航 /api/p/<path> 须用它）。 */
-export async function addProject(base: string, path: string): Promise<string> {
+/** 用量统计（M14-C4④）：/api/stats 聚合（days 过滤 byDay 尾部窗口） */
+export interface StatsPayload {
+  days: number
+  totals: { input: number; output: number; cacheRead: number; cacheCreation: number; costCny: number }
+  mcpCalls: number
+  sessions: number
+  costUnknownSessions: number
+  cacheHitRate: number
+  byDay: Array<{ date: string; sessions: number; input: number; output: number; costCny: number; mcpCalls: number }>
+  byModel: Array<{ model: string; input: number; output: number; costCny: number }>
+  byProject: Array<{ project: string; input: number; output: number; costCny: number; mcpCalls: number }>
+}
+export async function fetchStats(base: string, days = 7): Promise<StatsPayload> {
+  const res = await fetch(`${base}/api/stats?days=${days}`, { headers: { authorization: `Bearer ${getToken()}` } })
+  if (res.status === 401) {
+    clearToken()
+    throw new Error('未授权——token 已失效，请重新输入')
+  }
+  if (!res.ok) throw new Error(`stats HTTP ${res.status}`)
+  const r = (await res.json()) as StatsPayload & { ok?: boolean; error?: string }
+  if (r.ok === false) throw new Error(String(r.error ?? '统计不可用'))
+  return r
+}
+
+/** 添加项目（web 侧栏「+」）：注册入列表（不冷起宿主）；返回规范化路径（导航 /api/p/<path> 须用它）。 */export async function addProject(base: string, path: string): Promise<string> {
   const res = await fetch(`${base}/api/projects`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${getToken()}` },

@@ -129,7 +129,8 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
               {e.images !== undefined && e.images.length > 0 && <Images images={e.images} />}
             </div>
           ) : (
-            <div key={i} className="rounded border border-neutral-800 px-3 py-1.5 text-xs text-neutral-500">
+            <div key={i} className={`rounded border px-2.5 py-1.5 text-xs ${e.error === true ? 'border-red-900/60 bg-red-950/20 text-red-400' : 'border-neutral-800 text-neutral-500'}`}>
+              {e.error === true ? '✗ ' : ''}
               {e.text}
             </div>
           ),

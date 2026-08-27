@@ -5,12 +5,13 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, ChevronDown, Plus } from 'lucide-react'
+import { ArrowLeft, BarChart3, ChevronDown, Plus } from 'lucide-react'
 import { addProject, connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
 import { toConfigView, useApp, type SessionBrief } from './store'
 import { makeHash, parseHash, type RoutePos } from './routing'
 import { Conversation } from './Conversation'
 import { Composer } from './Composer'
+import { StatsPanel } from './StatsPanel'
 
 /** 同源定位 daemon（dev 模式经 vite proxy；托管形态同源直连） */
 const BASE = ''
@@ -143,6 +144,8 @@ export function App(): React.JSX.Element {
   const [newPath, setNewPath] = useState('')
   const [addErr, setAddErr] = useState('')
   const [creating, setCreating] = useState(false)
+  // C4-④：用量面板（侧栏底部入口——全局视角与项目选择无关）
+  const [statsOpen, setStatsOpen] = useState(false)
   const { projects, sessions, selectedProject, selectedSession, select, setProjects, applyHost, applyFrame, setConn, upsertSession, setConfigView } = useApp()
   const loadHistory = useApp((s) => s.loadHistory)
   // hashchange 闭包读最新选中态（effect 只挂一次 select 依赖）
@@ -323,7 +326,16 @@ export function App(): React.JSX.Element {
       <aside className={`flex w-full shrink-0 flex-col border-b border-neutral-800 md:flex md:w-72 md:border-b-0 md:border-r ${mobileDetail ? 'hidden' : 'flex'}`}>
         <div className="flex items-center justify-between px-3 py-2.5">
           <span className="text-sm font-semibold tracking-wide">ECode</span>
-          <ConnBadge />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setStatsOpen(true)}
+              title="用量统计（近 7 天）"
+              className="flex h-6 w-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
+            >
+              <BarChart3 size={13} />
+            </button>
+            <ConnBadge />
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-2">
           <div className="flex items-center justify-between px-1 pb-1 pt-2 text-[11px] uppercase tracking-wider text-neutral-600">
@@ -452,6 +464,7 @@ export function App(): React.JSX.Element {
           <Composer project={selectedProject} sessionId={selectedSession} />
         </KeyboardAware>
       </main>
+      {statsOpen && <StatsPanel onClose={() => setStatsOpen(false)} />}
     </div>
   )
 }

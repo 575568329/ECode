@@ -170,3 +170,58 @@ describe('appendUser（发送成功即时上屏——user 消息不经帧回推�
     expect(v?.streaming).toBe('')
   })
 })
+
+describe('M14-C4②：error/systemMsg/notice 帧入对话流', () => {
+  it('error 帧 → system 行 error 标记（红显）；systemMsg → 灰显 system 行', () => {
+    frame('s1', { type: 'error', message: '模型请求失败' })
+    frame('s1', { type: 'systemMsg', text: 'read-only 模式：MCP 工具被拒绝' })
+    const entries = useApp.getState().views.s1?.entries
+    expect(entries).toEqual([
+      { kind: 'system', text: '模型请求失败', error: true },
+      { kind: 'system', text: 'read-only 模式：MCP 工具被拒绝' },
+    ])
+  })
+  it('notice 三级：error 红 / warn·info 灰带前缀', () => {
+    frame('s1', { type: 'notice', level: 'warn', text: 'lint 有失败' })
+    frame('s1', { type: 'notice', level: 'error', text: '炸了' })
+    const entries = useApp.getState().views.s1?.entries
+    expect(entries?.[0]).toEqual({ kind: 'system', text: '⚠ lint 有失败' })
+    expect(entries?.[1]).toEqual({ kind: 'system', text: '✖ 炸了', error: true })
+  })
+})
+
+describe('M14-C4③：askUser 自由文本问答 takeover', () => {
+  it('requested 投影 questions（字段收窄）→ resolved 同 requestId 卸载', () => {
+    frame('s1', {
+      type: 'askUser/requested',
+      requestId: 'au1',
+      questions: [
+        { question: '用哪个数据库？', header: 'DB', options: [{ label: 'postgres' }, { label: 'mysql', description: '老项目' }], multiSelect: false },
+        { question: '选哪些特性？', header: 'FEAT', options: [{ label: 'a' }, { label: 'b' }], multiSelect: true },
+      ],
+    })
+    const v = useApp.getState().views.s1
+    expect(v?.askUser?.requestId).toBe('au1')
+    expect(v?.askUser?.questions[0]).toEqual({ question: '用哪个数据库？', header: 'DB', options: [{ label: 'postgres' }, { label: 'mysql', description: '老项目' }] })
+    expect(v?.askUser?.questions[1]?.multiSelect).toBe(true)
+    frame('s1', { type: 'askUser/resolved', requestId: 'au1' })
+    expect(useApp.getState().views.s1?.askUser).toBeNull()
+  })
+  it('resolved 异 requestId 不误卸载；非数组 questions 容错为空表单', () => {
+    frame('s1', { type: 'askUser/requested', requestId: 'au1', questions: 'not-array' })
+    expect(useApp.getState().views.s1?.askUser?.questions).toEqual([])
+    frame('s1', { type: 'askUser/requested', requestId: 'au2', questions: [{ question: 'q' }] })
+    frame('s1', { type: 'askUser/resolved', requestId: 'other' })
+    expect(useApp.getState().views.s1?.askUser?.requestId).toBe('au2')
+  })
+})
+
+describe('M14-C2⑤ 补账：approval/claimed 他端认领标记', () => {
+  it('claimed 帧给挂起审批加 claimedBy；resolved 卸载不受影响', () => {
+    frame('s1', { type: 'approval/requested', requestId: 'r1', tool: 'bash', preview: 'rm', decisions: ['once', 'reject'] })
+    frame('s1', { type: 'approval/claimed', requestId: 'r1', claimant: 'web-手机' })
+    expect(useApp.getState().views.s1?.approval?.claimedBy).toBe('web-手机')
+    frame('s1', { type: 'approval/resolved', requestId: 'r1' })
+    expect(useApp.getState().views.s1?.approval).toBeNull()
+  })
+})

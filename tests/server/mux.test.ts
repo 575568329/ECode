@@ -221,6 +221,31 @@ describe('M13-W3 mux 单流', () => {
     expect(allowed.status).toBe(200) // 密码作为第二凭据（lan-password 级——D13 凭据条目化）
     await srvP.close()
   })
+
+  it('M14-C4④ /api/stats：Bearer 可用返回聚合（days 窗口裁剪 byDay）；无 token 401；缓存落注入路径不碰真实 home', async () => {
+    const statsDir = mkdtempSync(join(tmpdir(), 'ecode-stats-'))
+    const cachePath = join(statsDir, 'stats-cache.json')
+    const srvS = await serveMulti({ registry, defaultCwd: dirA }, { sessionsDir: statsDir, statsCachePath: cachePath })
+    const denied = await fetch(`http://127.0.0.1:${srvS.port}/api/stats`)
+    expect(denied.status).toBe(401)
+    const res = await fetch(`http://127.0.0.1:${srvS.port}/api/stats?days=3`, {
+      headers: { authorization: `Bearer ${srvS.token}` },
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { ok: boolean; days: number; sessions: number; byDay: unknown[]; totals: { input: number } }
+    expect(body.ok).toBe(true)
+    expect(body.days).toBe(3) // 窗口参数透传
+    expect(body.sessions).toBe(0) // 空 sessions 目录：聚合空但结构完整
+    expect(body.byDay).toEqual([])
+    expect(body.totals.input).toBe(0)
+    // 带非数字 days 走缺省 7（防 NaN 崩端点）
+    const resDefault = await fetch(`http://127.0.0.1:${srvS.port}/api/stats?days=abc`, {
+      headers: { authorization: `Bearer ${srvS.token}` },
+    })
+    expect(((await resDefault.json()) as { days: number }).days).toBe(7)
+    await srvS.close()
+    rmSync(statsDir, { recursive: true, force: true })
+  })
 })
 
 describe('M14-C1④ mux per-client 过滤管线', () => {

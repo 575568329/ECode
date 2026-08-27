@@ -37,6 +37,16 @@ export interface ChatEntry {
   ok?: boolean
   /** user 消息携带图 / tool_result 附着图（read_file 读图） */
   images?: ChatImage[]
+  /** system 行的失败标记（error 帧红显；systemMsg/notice 灰显） */
+  error?: boolean
+}
+
+/** askUser 题（宿主 AskUserQuestion 投影——web 从简为「点选填入 + 自由文本」） */
+export interface AskUserQuestionView {
+  question: string
+  header: string
+  options: Array<{ label: string; description?: string }>
+  multiSelect?: boolean
 }
 
 export interface SessionView {
@@ -48,12 +58,14 @@ export interface SessionView {
   loaded: boolean
   /** 历史补拉失败原因（''=无；Conversation 顶部红条 + 重试） */
   loadError: string
-  /** W6b：挂起审批（approval/requested 帧——composer-takeover 渲染） */
-  approval: { requestId: string; kind?: string; tool: string; preview: string; decisions: string[] } | null
+  /** W6b：挂起审批（approval/requested 帧——composer-takeover 渲染）；claimedBy=他端已认领（advisory） */
+  approval: { requestId: string; kind?: string; tool: string; preview: string; decisions: string[]; claimedBy?: string } | null
   /** W6b：挂起单选（askSelect/requested 帧） */
-  askSelect: { requestId: string; title: string; options: string[] } | null}
+  askSelect: { requestId: string; title: string; options: string[] } | null
+  /** C4-③：挂起自由文本问答（askUser/requested 帧——表单 takeover） */
+  askUser: { requestId: string; questions: AskUserQuestionView[] } | null}
 
-export const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, loadError: '', approval: null, askSelect: null })
+export const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, loadError: '', approval: null, askSelect: null, askUser: null })
 
 /** 模型视图（config/get 脱敏回执投影——顶栏只看 current + 各 provider 可选模型） */
 export interface ConfigView {
@@ -263,6 +275,13 @@ export const useApp = create<AppState>((set) => ({
               decisions: Array.isArray(f.ev.decisions) ? (f.ev.decisions as string[]) : ['once', 'reject'],
             },
           }))
+        case 'approval/claimed':
+          // C2⑤ 补账（advisory）：他端认领——本端按钮降权提示（先答先得权威不变，仍可答）
+          return patchView(st, f.sessionId, (v) =>
+            v.approval !== null && v.approval.requestId === String(f.ev.requestId ?? '')
+              ? { ...v, approval: { ...v.approval, claimedBy: String(f.ev.claimant ?? '他端') } }
+              : v,
+          )
         case 'approval/resolved':
           return patchView(st, f.sessionId, (v) => (v.approval !== null && v.approval.requestId === String(f.ev.requestId ?? '') ? { ...v, approval: null } : v))
         case 'askSelect/requested':
@@ -272,6 +291,34 @@ export const useApp = create<AppState>((set) => ({
           }))
         case 'askSelect/resolved':
           return patchView(st, f.sessionId, (v) => (v.askSelect !== null && v.askSelect.requestId === String(f.ev.requestId ?? '') ? { ...v, askSelect: null } : v))
+        case 'askUser/requested': {
+          // C4-③：自由文本问答（questions 投影防御——unknown[] 逐字段收窄）
+          const raw = Array.isArray(f.ev.questions) ? (f.ev.questions as Array<Record<string, unknown>>) : []
+          const questions: AskUserQuestionView[] = raw
+            .filter((q) => typeof q?.question === 'string')
+            .map((q) => ({
+              question: String(q.question),
+              header: typeof q.header === 'string' ? q.header : '',
+              options: Array.isArray(q.options)
+                ? (q.options as Array<Record<string, unknown>>).filter((o) => typeof o?.label === 'string').map((o) => ({ label: String(o.label), ...(typeof o.description === 'string' ? { description: o.description } : {}) }))
+                : [],
+              ...(q.multiSelect === true ? { multiSelect: true } : {}),
+            }))
+          return patchView(st, f.sessionId, (v) => ({ ...v, askUser: { requestId: String(f.ev.requestId ?? ''), questions } }))
+        }
+        case 'askUser/resolved':
+          return patchView(st, f.sessionId, (v) => (v.askUser !== null && v.askUser.requestId === String(f.ev.requestId ?? '') ? { ...v, askUser: null } : v))
+        // C4-②：error/systemMsg/notice 帧此前全丢弃——轮次失败表现为「没下文」；
+        // 入对话流 system 行（error 红显），移动端同等可见
+        case 'error':
+          return patchView(st, f.sessionId, (v) => ({ ...v, entries: [...v.entries, { kind: 'system', text: String(f.ev.message ?? ''), error: true }] }))
+        case 'systemMsg':
+          return patchView(st, f.sessionId, (v) => ({ ...v, entries: [...v.entries, { kind: 'system', text: String(f.ev.text ?? '') }] }))
+        case 'notice':
+          return patchView(st, f.sessionId, (v) => ({
+            ...v,
+            entries: [...v.entries, { kind: 'system', text: `${f.ev.level === 'error' ? '✖' : f.ev.level === 'warn' ? '⚠' : 'ℹ'} ${String(f.ev.text ?? '')}`, ...(f.ev.level === 'error' ? { error: true } : {}) }],
+          }))
         default:
           return st
       }

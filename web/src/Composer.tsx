@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { Ban, Check, ShieldAlert, Trash2 } from 'lucide-react'
+import { Ban, Check, CircleHelp, ShieldAlert, Square, Trash2 } from 'lucide-react'
 import { sendCommand } from './connect'
 import { useApp } from './store'
 
@@ -71,10 +71,12 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
   // takeover 卸载（resolved）即复位——下次审批到达可再次应答 ——
   const decidedRef = useRef(false)
   const pickedRef = useRef(false)
+  const answeredRef = useRef(false)
   useEffect(() => {
     if (view?.approval == null) decidedRef.current = false
     if (view?.askSelect == null) pickedRef.current = false
-  }, [view?.approval, view?.askSelect])
+    if (view?.askUser == null) answeredRef.current = false
+  }, [view?.approval, view?.askSelect, view?.askUser])
 
   // —— 审批 takeover：挂起时替代输入区（一 shot；resolved 帧到达自动卸载） ——
   if (view?.approval != null && sessionId !== null) {
@@ -96,6 +98,7 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
             <ShieldAlert size={14} />
             {sensitive ? '敏感操作确认（不可记住）' : '需要审批'}
             <span className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] text-neutral-400">{a.tool}</span>
+            {a.claimedBy !== undefined && <span className="text-[11px] text-amber-600">（{a.claimedBy} 正在处理）</span>}
           </div>
           <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border border-neutral-800 bg-neutral-900/70 px-3 py-2 text-xs text-neutral-300">{a.preview}</pre>
           <div className="flex flex-wrap gap-2">
@@ -149,6 +152,21 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
     )
   }
 
+  // —— askUser takeover（C4-③ 自由文本问答：每题「点选填入 + 自由输入」；answers=等长字符串数组） ——
+  if (view?.askUser != null && sessionId !== null) {
+    const q = view.askUser
+    const submit = async (answers: string[]): Promise<void> => {
+      if (answeredRef.current) return
+      answeredRef.current = true
+      try {
+        await sendCommand('', project ?? '', sessionId, { op: 'askUser/respond', requestId: q.requestId, answers })
+      } catch {
+        answeredRef.current = false
+      }
+    }
+    return <AskUserForm key={q.requestId} questions={q.questions} multiHint={q.questions.some((x) => x.multiSelect === true)} onSubmit={submit} />
+  }
+
   // —— 常态输入区（未选项目=禁用占位；hero 态=「输入即开新对话」） ——
   const noProject = project === null
   return (
@@ -182,6 +200,16 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
           >
             {sessionId !== null && running ? '插话' : '发送'}
           </button>
+          {sessionId !== null && running && (
+            // C4-①：打断（手机可停——协议 interrupt 早有，web 零消费）
+            <button
+              onClick={() => void sendCommand('', project ?? '', sessionId, { op: 'interrupt' }).catch(() => {})}
+              className="flex items-center justify-center gap-1 rounded-lg border border-red-900/70 px-2 py-1 text-[11px] text-red-400 hover:border-red-700 hover:text-red-300"
+              title="打断当前轮"
+            >
+              <Square size={10} /> 停止
+            </button>
+          )}
           {sessionId !== null && view !== undefined && view.queue.length > 0 && (
             <button
               onClick={() => void sendCommand('', project ?? '', sessionId, { op: 'interjection/clear' }).catch(() => {})}
@@ -191,6 +219,74 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
               <Trash2 size={11} /> 清队列({view.queue.length})
             </button>
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** C4-③ askUser 表单（独立组件隔离 per-question state）：options 点选填入输入框（多选提示
+ *  逗号并打），answers 缺省「（未作答）」——与 TUI QuestionPanel 的空位语义一致。 */
+function AskUserForm({
+  questions,
+  multiHint,
+  onSubmit,
+}: {
+  questions: Array<{ question: string; header: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>
+  multiHint: boolean
+  onSubmit: (answers: string[]) => Promise<void>
+}): React.JSX.Element {
+  const [inputs, setInputs] = useState<string[]>(questions.map(() => ''))
+  const finish = (vals: string[]): void => {
+    void onSubmit(questions.map((_, i) => vals[i]?.trim() !== '' ? vals[i].trim() : '（未作答）'))
+  }
+  return (
+    <div className="border-t border-sky-900/50 bg-sky-950/20 px-4 py-3">
+      <div className="mx-auto max-h-72 max-w-3xl space-y-3 overflow-y-auto">
+        <div className="flex items-center gap-2 text-xs font-medium text-sky-400">
+          <CircleHelp size={14} /> 模型需要补充信息{multiHint ? '（多选题可用逗号并打多个）' : ''}
+        </div>
+        {questions.map((q, i) => (
+          <div key={i} className="space-y-1.5">
+            <div className="text-xs text-neutral-300">
+              {questions.length > 1 && <span className="mr-1 rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] text-neutral-400">{q.header !== '' ? q.header : `Q${i + 1}`}</span>}
+              {q.question}
+            </div>
+            {q.options.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {q.options.map((o) => (
+                  <button
+                    key={o.label}
+                    title={o.description ?? ''}
+                    onClick={() => setInputs((prev) => prev.map((v, j) => (j === i ? (v === '' ? o.label : `${v}, ${o.label}`) : v)))}
+                    className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:border-sky-600"
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <input
+              value={inputs[i]}
+              onChange={(e) => setInputs((prev) => prev.map((v, j) => (j === i ? e.target.value : v)))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  finish(inputs)
+                }
+              }}
+              placeholder="输入回答（点上方选项可快速填入）…"
+              className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none placeholder:text-neutral-600 focus:border-sky-600"
+            />
+          </div>
+        ))}
+        <div className="flex gap-2 pt-1">
+          <button onClick={() => finish(inputs)} className="flex min-h-11 items-center gap-1.5 rounded bg-sky-700 px-4 py-2 text-xs font-medium text-white hover:bg-sky-600">
+            <Check size={13} /> 提交回答
+          </button>
+          <button onClick={() => finish(questions.map(() => '（未作答）'))} className="rounded px-3 py-2 text-xs text-neutral-500 hover:text-neutral-300">
+            跳过
+          </button>
         </div>
       </div>
     </div>

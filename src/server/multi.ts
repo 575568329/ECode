@@ -18,6 +18,7 @@ import { CredentialStore } from './credentials.js'
 import { guardedSseWrite } from './sse.js'
 import type { MuxFrame, SessionBrief } from '../protocol/mux.js'
 import { FileHistoryStore, collectProjectCwds } from '../services/history.js'
+import { aggregateStats } from '../services/stats.js'
 import { homedir } from 'node:os'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, join, normalize, sep } from 'node:path'
@@ -51,6 +52,8 @@ export function serveMulti(
     password?: string
     muxFilter?: (frame: MuxFrame) => boolean
     sessionsDir?: string
+    /** M14-C4④：stats 聚合缓存路径（缺省 ~/.ecode/stats-cache.json；测试注入 tmpdir 隔离真实 home） */
+    statsCachePath?: string
     /** M13-W5：web/dist 托管目录（存在即挂 / 静态路由 + SPA fallback；缺省不挂） */
     webDir?: string
     /** M14-C2④：实例标识（/api/health 回显——serveStop kill 前比对防陈旧 PID 误杀） */
@@ -185,6 +188,18 @@ export function serveMulti(
           active: registry.listActive(),
           history: collectProjectCwds(opts.sessionsDir),
         })
+      }
+
+      // 用量统计（M14-C4④：宿主数据就绪 web 零消费——daemon 与 sessions 同机，聚合直读；
+      // ?days=N 过滤 byDay 尾部窗口，缺省 7；缓存写 ~/.ecode/stats-cache.json 与 TUI /stats 同源）
+      if (req.method === 'GET' && url.pathname === '/api/stats') {
+        const days = Math.max(1, Math.min(90, Number(url.searchParams.get('days') ?? 7) || 7))
+        try {
+          const agg = aggregateStats(opts.sessionsDir ?? join(homedir(), '.ecode', 'sessions'), opts.statsCachePath)
+          return json(200, { ok: true, days, ...agg, byDay: agg.byDay.slice(-days) })
+        } catch (e) {
+          return json(500, { ok: false, error: e instanceof Error ? e.message : String(e) })
+        }
       }
 
       // 项目添加（web 侧栏「+」）：注册即入列表（册上项目 acquire 免 confirm——projects.ts 三件套）。

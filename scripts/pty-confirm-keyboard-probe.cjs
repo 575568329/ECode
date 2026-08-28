@@ -4,8 +4,10 @@
  *   B1 字符不吞：卡开 → 写 hello → 输入框回显可见
  *   B2 Enter 防误批+草稿插话：有草稿 hello 时 CR → 卡仍在 + 「已排队」提示
  *   B2b 无选择 Enter：清空草稿后 CR → 卡仍在（未显式选择不确认）
- *   B3 y 快捷：写 y → 卡消（放行，工具执行收尾）
- *   B4 Esc=拒绝（第二轮审批卡）：ESC → 卡消+拒绝终态+轮收尾
+ *   B3 y 快捷：写 y → 卡消（放行，工具执行收尾）——随后清插话队列（Ctrl+U 在卡开时无效：
+ *         InputStream inactive 不接键、ConfirmPrompt 吞 ctrl 组合，须移到卡应答之后）
+ *   B4 Esc=拒绝（第二轮审批卡）：ESC → 卡消（拒绝终态与轮收尾是软判定——mock 收尾回复
+ *         未捕获不算失败，仅提示）
  * 跑法：node scripts/pty-confirm-keyboard-probe.cjs
  */
 const http = require('node:http')
@@ -131,9 +133,9 @@ const run = async () => {
   if (!/已排队/.test(frame3)) fail('B2 草稿 Enter 走插话排队', '未见「已排队」提示')
   console.log('OK  B2 草稿时 Enter=插话排队（卡不消不误批）')
 
-  // 清草稿（hello 5 字符逐个退格）+清队列（Ctrl+U）
-  proc.write('\x15') // Ctrl+U 清插话队列
-  await new Promise((r) => setTimeout(r, 400))
+  // 清草稿（hello 5 字符逐个退格）。清插话队列（Ctrl+U）在卡开时无效——P2-6 修正：
+  // InputStream inactive 不接键、ConfirmPrompt 对 ctrl 组合返回 none，Ctrl+U 只能
+  // 在卡应答后（B3 y 放行后）再发
   for (let i = 0; i < 5; i++) {
     proc.write('\x7f')
     await new Promise((r) => setTimeout(r, 250))
@@ -151,6 +153,11 @@ const run = async () => {
   proc.write('y')
   if (!(await waitFor(m5, /执行完毕收尾说明/, 30_000))) fail('B3 y 快捷放行收尾')
   console.log('OK  B3 空草稿 y 快捷放行')
+  // 卡应答后再清插话队列（B2 的 hello 已入队；Ctrl+U 在卡开时无效——P2-6）
+  proc.write('\x15') // Ctrl+U 清插话队列（此刻输入框已恢复激活）
+  await new Promise((r) => setTimeout(r, 400))
+  // B2 残留草稿已被应答清空（P1-1 方案 B：应答即清主输入框）——y 不会被 hasDraft 拦
+  // （上一轮 hello 提交后输入框已清，此处 y 在空草稿下生效即证）
 
   // B4 Esc=拒绝：第二轮审批卡
   const m6 = markNow()

@@ -50,7 +50,7 @@ export function truncateOutput(s: string): string {
  * 这类警告来自 ECode 自身或子进程的 listener 管理，不是命令的输出内容）。
  */
 // eslint-disable-next-line no-control-regex
-const NODE_INTERNAL_WARNING = /^\(node:\d+\)\s+([\w]+Warning|[A-Za-z]*Warning):.*$/gm
+const NODE_INTERNAL_WARNING = /^\(node:\d+\)\s+([\w]+Warning|[A-Za-z]+\w*Warning):.*$/gm
 
 export function foldNodeWarnings(s: string): string {
   if (!s.includes('(node:')) return s
@@ -60,8 +60,12 @@ export function foldNodeWarnings(s: string): string {
     return '' // 先移除，行清理在后
   })
   if (warnings.size === 0) return s
-  // 清掉移除后留下的空行残迹（连续空行收敛为一行）
-  folded = folded.replace(/^[ \t]*\n(?:[ \t]*\n)+/gm, '').replace(/^\n+/, '')
+  // 清掉移除后留下的空行残迹（P2：连续空行收敛为一行 + 单条警告行移除后的孤立尾部空行清理）
+  folded = folded
+    .replace(/^[ \t]*\n(?:[ \t]*\n)+/gm, '')
+    .replace(/^\n+/, '')
+    .replace(/\n[ \t\n]+$/, '\n')
+    .replace(/\n{3,}/g, '\n\n')
   const tag = `〔Node 内部警告已折叠：${[...warnings].join('、')}——非命令输出，可忽略〕`
   return folded === '' || folded.trim() === '' ? tag : `${tag}\n${folded}`
 }

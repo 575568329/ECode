@@ -133,8 +133,11 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
   }
 
   let retryCount = 0
-  // F-21：耗尽检测标志——循环走完（无 break）即迭代上限耗尽（对照 length 截断 onWarn 先例）
-  let exhausted = false
+  // F-21（审阅 P1-5 改判定基准）：耗尽 = 循环条件走完（iter > maxIterations）退出，而非
+  // 任一 break。break 各处置 done=true；循环后 !done 才算耗尽——CONTEXT_TOO_LONG 压缩重试
+  // 与 empty_tool_use 两个 continue 路径在最后一轮撞上限时不再漏报（此前 exhausted 赋值
+  // 位于两个 continue 之后，用户看到「已压缩后重试」但重试永不来且无耗尽提示）
+  let done = false
   for (let iter = 1; iter <= opts.maxIterations; iter++) {
     // M11-P7：插话步间注入——迭代顶部拉取（模型消化完上轮工具结果才见插话，非打断流中；
     // 顺序天然在 tool_result→afterTools 回喂之后）
@@ -266,6 +269,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
       if (isAborted) {
         opts.callbacks.onActivity?.('aborted')
         opts.logger.info('loop', 'aborted', { iter }, iter)
+        done = true
         break
       }
       // M5：CONTEXT_TOO_LONG 走压缩兜底（在 recoverable 退避前；P0-2 改为不 fatal throw 后此处可达）
@@ -276,6 +280,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         // P1-4: 检查是否真压缩（messages 增长=新 boundary）；未压缩 → 压缩失败，break 不空转到 maxIterations
         if (messages.length === lenBefore) {
           opts.callbacks.onWarn?.('上下文超限且压缩失败，建议 /clear 起新会话')
+          done = true
           break
         }
         opts.callbacks.onWarn?.('上下文超限，已压缩对话后重试')
@@ -294,6 +299,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
             { code: streamError.code, message: streamError.message, retryable: false },
             iter,
           )
+          done = true
           break
         }
         // P1-9：回滚本轮半截 assistant（history 已落盘保留作 trace），避免下轮
@@ -302,6 +308,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         retryCount += 1
         if (retryCount > MAX_RETRIES) {
           opts.callbacks.onWarn?.(`重试 ${MAX_RETRIES} 次仍失败：${streamError.message}`)
+          done = true
           break
         }
         const delay = Math.min(BASE_RETRY_MS * 2 ** (retryCount - 1), MAX_RETRY_CAP_MS)
@@ -317,6 +324,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
           await sleep(delay, opts.signal)
         } catch {
           opts.callbacks.onActivity?.('aborted')
+          done = true
           break
         }
         continue
@@ -332,18 +340,21 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     } else if (stopReason === 'end' || stopReason === 'aborted') {
       opts.callbacks.onActivity?.(stopReason === 'aborted' ? 'aborted' : 'idle')
       opts.logger.info('loop', 'stop', { stopReason, iter })
+      done = true
       break
     }
     if (stopReason === 'length') {
       opts.callbacks.onActivity?.('idle')
       opts.callbacks.onWarn?.('输出被截断（达到 max_tokens），输入"继续"可续写')
       opts.logger.warn('loop', 'max_tokens_truncated', { iter })
+      done = true
       break
     }
     if (stopReason === 'content_filter') {
       opts.callbacks.onActivity?.('idle')
       opts.callbacks.onWarn?.('内容被安全过滤')
       opts.logger.warn('loop', 'content_filter', { iter })
+      done = true
       break
     }
     if (stopReason === 'error') {
@@ -377,11 +388,10 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         opts.history.append(fbMsg)
       }
     }
-    if (iter === opts.maxIterations) exhausted = true // 最后一轮完整执行且未 break=耗尽
   }
-  // F-21（§10.5 拍板-2）：迭代上限耗尽不再静默 return——systemMsg 提示 + 告警
-  // （对照 length 截断 onWarn 先例；用户可输入「继续」开新轮续跑）
-  if (exhausted) {
+  // F-21（§10.5 拍板-2）：迭代上限耗尽不再静默 return——onWarn 告警（对照 length 截断先例；
+  // 用户可输入「继续」开新轮续跑）
+  if (!done) {
     opts.callbacks.onWarn?.(`已达到迭代上限（maxIterations=${opts.maxIterations}），本轮提前终止——输入「继续」可接着跑`)
     opts.logger.warn('loop', 'max_iterations_exhausted', { maxIterations: opts.maxIterations })
   }

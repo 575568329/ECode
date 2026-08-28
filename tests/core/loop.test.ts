@@ -160,6 +160,63 @@ describe('runLoop', () => {
     expect(onWarn).not.toHaveBeenCalledWith(expect.stringContaining('迭代上限'))
   })
 
+  it('F-21（审阅 P1-5①）：最后一轮撞 CONTEXT_TOO_LONG 压缩重试（continue 路径）仍有耗尽提示', async () => {
+    // 每轮都 CONTEXT_TOO_LONG 且压缩成功 → continue 重试；maxIterations=2 走完 → 必须报耗尽
+    // （修复前 exhausted 赋值在 continue 之后：用户看到「已压缩对话后重试」但重试永不来且无耗尽提示）
+    const p = new MockProvider([
+      [{ type: 'error', error: { code: 'CONTEXT_TOO_LONG', message: 'too long', recoverable: false } }],
+      [{ type: 'error', error: { code: 'CONTEXT_TOO_LONG', message: 'too long', recoverable: false } }],
+    ])
+    const onWarn = vi.fn()
+    const onBeforeRequest = vi.fn(async (messages: HistoryLine[], trigger?: string) => {
+      if (trigger === 'overflow') messages.push({ compact_boundary: true, summary: '压缩', tailStartIndex: 0, preTokens: 0 })
+      return messages.filter((m): m is Message => !('compact_boundary' in m))
+    })
+    await runLoop([], 'hello', {
+      ...makeOpts(p, []),
+      maxIterations: 2,
+      onBeforeRequest,
+      callbacks: { onText: vi.fn(), onWarn },
+    })
+    expect(onWarn).toHaveBeenCalledWith('上下文超限，已压缩对话后重试') // 压缩路径确实走过
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('迭代上限')) // 且耗尽不漏报
+  })
+
+  it('F-21（审阅 P1-5②）：最后一轮撞 empty_tool_use（continue 路径）也有耗尽提示', async () => {
+    // 每轮 stop=tool_use 但无工具块 → continue；maxIterations=2 走完 → 报耗尽
+    // （修复前同样漏报——「跳过本轮」文案失准，实为终止）
+    const p = new MockProvider([
+      [{ type: 'done', stop_reason: 'tool_use' }],
+      [{ type: 'done', stop_reason: 'tool_use' }],
+    ])
+    const onWarn = vi.fn()
+    await runLoop([], 'hello', {
+      ...makeOpts(p, []),
+      maxIterations: 2,
+      callbacks: { onText: vi.fn(), onWarn },
+    })
+    expect(onWarn).toHaveBeenCalledWith('LLM 要求工具调用但未给出工具，跳过本轮')
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('迭代上限'))
+  })
+
+  it('F-21（审阅 P1-5）：length/abort/retryable:false 各 break 不误报耗尽', async () => {
+    // length break
+    const pLen = new MockProvider([[{ type: 'text', text: 'x' }, { type: 'done', stop_reason: 'length' }]])
+    const warnLen = vi.fn()
+    await runLoop([], '问', { ...makeOpts(pLen, []), callbacks: { onText: vi.fn(), onWarn: warnLen } })
+    expect(warnLen).not.toHaveBeenCalledWith(expect.stringContaining('迭代上限'))
+    // retryable:false break
+    const p400: LLMProvider = {
+      type: 'mock',
+      async *run() {
+        yield { type: 'error', error: { code: 'HTTP_ERROR', message: '400', recoverable: true, retryable: false } }
+      },
+    }
+    const warn400 = vi.fn()
+    await runLoop([], '问', { ...makeOpts(p400, []), callbacks: { onText: vi.fn(), onWarn: warn400 } })
+    expect(warn400).not.toHaveBeenCalledWith(expect.stringContaining('迭代上限'))
+  })
+
   it('纯文本回复 → user + assistant，onText 收到增量', async () => {
     const onText = vi.fn()
     const p = new MockProvider([[{ type: 'text', text: 'hi' }, { type: 'done', stop_reason: 'end' }]])

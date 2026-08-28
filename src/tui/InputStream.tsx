@@ -84,6 +84,14 @@ interface InputStreamProps {
   inactive?: boolean
   /** 受控插入（面板回填通道，S-P6）：seq 变化时把 text 写入输入框（如 `/skillname `） */
   insert?: { text: string; seq: number }
+  /**
+   * 审阅 P1-1：主输入框草稿权威挂口（审批卡 hasDraft 判定用）。非 undefined 时挂载即
+   * 注册（InputDraft.read 返回 cur.text——inactive 期间仍真实），卸载/换实例时以 null
+   * 注销；cur.text 每变化回调 onDraftChange（TuiApp 同步 state 镜像驱动 ConfirmPrompt）
+   */
+  onRegisterDraft?: (port: { read(): string } | null) => void
+  /** 与 onRegisterDraft 配套：cur.text 变化通知（缺省忽略） */
+  onDraftChange?: (text: string) => void
   /** M9-P4/D13：Tab 专职沙箱模式循环（主输入空闲态；slash 补全态不拦截） */
   onTabSandbox?: () => void
   /** M10-P2b：Alt+V 粘贴剪贴板图片（图片数据不走 stdin，须专用键位主动读系统剪贴板）。
@@ -112,6 +120,8 @@ export function InputStream({
   placeholder,
   inactive,
   insert,
+  onRegisterDraft,
+  onDraftChange,
   onTabSandbox,
   onInterjectClear,
   onPasteImage,
@@ -123,6 +133,20 @@ export function InputStream({
   const [histIdx, setHistIdx] = useState(-1)
   const [slashIdx, setSlashIdx] = useState(-1)
   const lastInsertSeq = useRef(-1)
+  // 审阅 P1-1：cur 引用挂口（闭包不 stale；onRegisterDraft 仅挂载/卸载各调一次）
+  const curRef = useRef(cur)
+  curRef.current = cur
+
+  // 草稿权威注册（挂载注册 / 卸载注销；身份回调由父保证稳定）
+  useEffect(() => {
+    onRegisterDraft?.({ read: () => curRef.current.text })
+    return () => onRegisterDraft?.(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（onRegisterDraft 由父 useCallback 保证稳定）
+  }, [])
+  useEffect(() => {
+    onDraftChange?.(cur.text)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cur.text 变化即通知（onDraftChange 父侧稳定）
+  }, [cur.text])
 
   // cur.text 变化时重置 slashIdx：有匹配默认选中第一个（UI 高亮 + 回车执行第一个），
   // 无匹配 -1（不显示建议列表）

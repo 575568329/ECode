@@ -49,6 +49,8 @@ interface AppProps {
   /** 批2b ①②：审批卡字符转发主输入框 + 草稿镜像（Conversation→ConfirmPrompt 透传） */
   onDraftKey?: (input: string, key: { return?: boolean; backspace?: boolean; delete?: boolean; home?: boolean; end?: boolean }) => void
   draft?: string
+  /** 批2b-fix：按键时刻直读主输入框权威值（透传 ConfirmPrompt） */
+  readDraft?: () => string
   children?: ReactNode
 }
 
@@ -61,6 +63,7 @@ export function App({
   onCancel,
   onDraftKey,
   draft,
+  readDraft,
   activity,
   activityText,
   iter,
@@ -99,6 +102,7 @@ export function App({
         onCancel={onCancel}
         onDraftKey={onDraftKey}
         draft={draft}
+        readDraft={readDraft}
         conditions={conditions}
       >
         <ActivityBar state={activity} text={activityText} />

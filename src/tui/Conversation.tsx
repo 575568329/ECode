@@ -93,6 +93,8 @@ interface ConversationProps {
   /** 批2b ①：审批卡字符转发主输入框；②：草稿镜像（非空时单字母快捷失效） */
   onDraftKey?: (input: string, key: { return?: boolean; backspace?: boolean; delete?: boolean; home?: boolean; end?: boolean }) => void
   draft?: string
+  /** 批2b-fix：按键时刻直读主输入框权威值（透传 ConfirmPrompt） */
+  readDraft?: () => string
   children?: ReactNode
   /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar 各 ≤3 行——allocateDynamic 显式扣减） */
   conditions?: { tasksBar?: boolean; subagentBar?: boolean }
@@ -106,6 +108,7 @@ export function Conversation({
   onCancel,
   onDraftKey,
   draft,
+  readDraft,
   children,
   conditions,
 }: ConversationProps): ReactElement {
@@ -138,12 +141,17 @@ export function Conversation({
           />
         ))}
       {active.confirm ? (
+        // 审阅 P1-2：key=requestId——连续审批卡（resolved→下一张 requested 落同一渲染批）时
+        // 同位置同类型组件不卸载会跨卡继承 selected/expanded/reasonMode（上一张选过 y → 新卡
+        // Enter=静默批准，复活批2b④废除的行为）。key 换卡即重挂载，状态归零
         <ConfirmPrompt
+          key={active.confirm.use.id}
           state={active.confirm}
           onConfirm={onConfirm}
           onCancel={onCancel}
           onDraftKey={onDraftKey}
           draft={draft}
+          readDraft={readDraft}
         />
       ) : (
         active.streamingText !== '' &&

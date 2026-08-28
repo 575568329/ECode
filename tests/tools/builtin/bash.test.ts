@@ -75,6 +75,33 @@ describe('foldNodeWarnings（F-22 Node 内部警告折叠）', () => {
     const r = foldNodeWarnings(out)
     expect(r.match(/MaxListenersExceededWarning/g)).toHaveLength(1)
   })
+  it('F-22 截断边界（审阅 P1-缺口5）：bash 输出 >30KB 先 truncate 后 fold，警告行被切半仍不泄漏残行', () => {
+    // 构造：长前缀（把 30KB 边界推进警告行中间）+ 完整警告行 + 尾缀——truncate 头尾各半，
+    // 警告行总长 >30KB 的中段被切走后残留半条 "(node:123) DeprecationWar" 残行。
+    // 锁定行为：fold 的 tag 仍提取自完整匹配段；残行无 " Warning:" 结尾不再匹配正则，
+    // 会以原样残留在输出（截断本身即丢弃语义）。本用例确保完整警告行位于尾半窗时的行为：
+    // 头部被截 + 尾部警告行完整 → 折叠 tag 出现且残头不出现
+    const prefix = 'A'.repeat(31_000)
+    const warn = '(node:123) DeprecationWarning: x is deprecated'
+    const out = `${prefix}\n${warn}\ntail`
+    const r = foldNodeWarnings(truncateOutput(out))
+    expect(r).toContain('已折叠')
+    expect(r).toContain('DeprecationWarning')
+    expect(r).not.toContain('Possible EventEmitter') // 类比：完整警告全文不出现
+    expect(r).toContain('tail') // 尾部正常输出保留
+  })
+  it('F-22 空名警告（P2）：(node:1) Warning: 形态不折叠（正则要求非空名）', () => {
+    // 旧正则第二支 [A-Za-z]*Warning 允许空名——" Warning:" 出现空 tag 段；收紧后不匹配
+    const r = foldNodeWarnings('(node:1) Warning: something')
+    expect(r).toBe('(node:1) Warning: something') // 原样（不是 Node 内部警告形态）
+  })
+  it('F-22 单条警告移除后残留单空行清理（P2）', () => {
+    const out = '(node:1) DeprecationWarning: x is deprecated\n\nnormal line'
+    const r = foldNodeWarnings(out)
+    // 警告行移除后紧跟的孤立空行应被清掉：tag + normal（无空行夹层）
+    expect(r).not.toMatch(/^〔Node 内部警告已折叠：.*〕\n\n/)
+    expect(r).toContain('normal line')
+  })
 })
 
 describe('bashTool.execute 安全', () => {

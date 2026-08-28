@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { App } from './App.js'
 import { InputStream } from './InputStream.js'
@@ -66,6 +66,26 @@ import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.j
 import { Select } from './Select.js'
 import type { McpManager, McpServerSnapshot } from '../services/mcp/manager.js'
 import type { SessionMeta } from '../services/history.js'
+import type { InputDraftPort } from './draftPort.js'
+
+/**
+ * 主输入框草稿权威端口（审阅 P1-1 方案 B）：
+ * 既有通道已有三处权威镜像 InputDraft（insert prop / handleTextSubmit / setCur），此处只挂第四处。
+ * TuiApp 挂载时注册（InputStream 渲染闭包捕获 setCur），卸载时注销——多实例并存测试期间
+ * 遵循「最后挂载者拥有读权」（与 ink-testing 每测 unmount 后重挂的现实一致）。
+ */
+const draftPortRef: { current: InputDraftPort | null } = { current: null }
+function registerDraftPort(port: InputDraftPort | null): void {
+  draftPortRef.current = port
+}
+
+/** setInsert seq 生成（P2-4）：Date.now 同毫秒碰撞会被 InputStream 幂等忽略（丢一次可见回显）
+ * ——模块级单调递增计数器（TuiApp 实例单例，计数器跨实例单调更稳） */
+let insertSeqCounter = 0
+function nextInsertSeq(): number {
+  insertSeqCounter += 1
+  return insertSeqCounter
+}
 
 /** 清屏（可见区 + scrollback + 光标归位）；/clear 用，清可见区残留 */
 const CLEAR_TERMINAL = '\x1b[2J\x1b[3J\x1b[H'
@@ -134,10 +154,16 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const runningRef = useRef(false)
   // 同步 confirm 状态给 useInterrupt isActive（避免 stale closure；P0#1）
   const confirmRef = useRef(false)
-  // 批2b ①②：审批期草稿（权威 ref，state 镜像渲染；审批出现/应答复位——「应答后字还在」
-  // 与「连弹期间草稿跨卡持续」是同一状态机的两面）
-  const confirmDraftRef = useRef('')
-  const [confirmDraft, setConfirmDraft] = useState('')
+  // 审阅 P1-1（草稿状态机重设计，方案 B）：不维护独立镜像——草稿判定直接引用主输入框
+  // 权威值（readMainDraft 经 draftPort 挂 InputStream 的 cur）。三个好处：卡弹出前 busy
+  // 输入框已有的字自然成为草稿基线（不再从空串起步覆写可见文本 abc→d）；用户编辑/清空/
+  // 提交输入框后判定自动跟随（不再有「带草稿 Esc 后 hasDraft 假阳性/陈旧草稿被 Enter
+  // 当插话提交」）；应答时同步清输入框（卡语义终点的 UI 一致）。以下局部 ref/函数仅为
+  // 回调闭包提供稳定的同步读（渲染路径一律走 readMainDraft()，不走 state 镜像）
+  const clearMainDraft = (): void => {
+    setInputDraft({ text: '', seq: nextInsertSeq() })
+  }
+  const readMainDraft = (): string => draftPortRef.current?.read() ?? ''
   // M12-B3：插话预览由宿主 queue/snapshot 事件镜像（队列权威在宿主，D2）
   const [interjectPreview, setInterjectPreview] = useState<string | null>(null)
   const enqueueInterject = async (text: string, images?: { path: string; mime: string; label?: string }[]): Promise<void> => {
@@ -287,8 +313,16 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // 产生的新对象即时可见，不闭包打开时刻的快照）
   const recentToolsRef = useRef(recentTools)
   recentToolsRef.current = recentTools
-  // 面板回填通道（S-P6 D32：SkillPanel Enter → `/name ` 写入输入框，不直接执行）
-  const [insert, setInsert] = useState<{ text: string; seq: number } | undefined>(undefined)
+  // 面板回填通道（S-P6 D32：SkillPanel Enter → `/name ` 写入输入框，不直接执行）。
+  // 审阅 P1-1：此通道兼任「审批草稿 → 主输入框」的写通道（handleConfirmDraftKey 全走它）
+  const [insert, setInputDraft] = useState<{ text: string; seq: number } | undefined>(undefined)
+  // 审阅 P1-1：主输入框草稿 state 镜像（draftPort 挂 InputStream 时随 cur.text 同步——
+  // 供 App→ConfirmPrompt 的 draft prop 判定 hasDraft；权威仍是 InputDraft.read()）
+  const [mainDraft, setMainDraft] = useState('')
+  const registerPort = useCallback((port: InputDraftPort | null): void => {
+    registerDraftPort(port)
+    setMainDraft(port?.read() ?? '')
+  }, [])
   // /history 打开时载入的会话列表（loadAll 只在打开时调一次，避免 render 热路径同步 IO）
   const [historyMetas, setHistoryMetas] = useState<SessionMeta[]>([])
   // banner（配置无效提示；初始从 cli 传入，/setup 成功后清，submit 配置无效时设）
@@ -452,6 +486,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
                 : {}),
               resolve: (ok: boolean, always?: boolean, reason?: string) => {
                 confirmRef.current = false
+                // 审阅 P1-1(b)：本端应答即清主输入框草稿（卡语义终点——用户在卡上打的字
+                // 是给审批的，不应答后残留成下一张卡的 hasDraft 基线/被 Enter 误提交）
+                clearMainDraft()
                 void host.send({
                   op: 'approval/respond',
                   requestId: ev.requestId,
@@ -465,6 +502,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         }
         case 'approval/resolved':
           confirmRef.current = false
+          // 审阅 P1-1(b)：另一端应答同样清草稿（卡消失是语义终点，双端一致）
+          clearMainDraft()
           setActive((a) => (a.confirm !== null && a.confirm !== undefined ? { ...a, confirm: null } : a))
           break
         case 'approval/claimed':
@@ -565,6 +604,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // reject → void submit(...) 成 unhandledRejection → cli 顶层 handler exit(1) 杀掉整个 TUI。
   // 包装层整体兜底（含 runningRef 复位——hook dispatch 抛出时已置 true，不复位则 TUI 永久 busy）。
   const submit = async (input: string, display?: string, blocks?: ContentBlock[]): Promise<void> => {
+    // 提交即清草稿镜像（P1-1 补丁：InputStream submit 内部清框的 onDraftChange('') 传播
+    // 在重负载下可能滞后于下一张审批卡出现——hasDraft 假阳性会让 y/n/r 让位进草稿。此处
+    // 显式同步，镜像以「提交必然清空」为不变量）
+    setMainDraft('')
     try {
       await doSubmit(input, display, blocks)
     } catch (e) {
@@ -578,34 +621,31 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // 清 confirm（ConfirmPrompt 内先 resolve 再调它）
   const clearConfirm = () => {
     confirmRef.current = false
+    // 审阅 P1-1(b)：应答即清草稿镜像（与 resolve/approval/resolved 三点同步）
+    clearMainDraft()
     setActive((a) => ({ ...a, confirm: null }))
   }
 
-  // 批2b ①：审批卡按键转发——进草稿 buffer 并经 insert 通道实时写入输入框（可见渲染；
-  // TextInput 在审批期 inactive 只不接键，渲染不受影响），Enter 提交走插话通道（审批期
-  // loop 挂起即 running=true，submit 自然入队）；应答后 cur 保留 = 字还在可继续编辑
+  // 批2b ①：审批卡按键转发——草稿权威在主输入框（审阅 P1-1 方案 B）：字符/退格经 insert
+  // 通道写入输入框（可见渲染；TextInput 在审批期 inactive 只不接键，渲染不受影响），Enter
+  // 提交当前输入框内容走插话通道（审批期 loop 挂起即 running=true，submit 自然入队）；
+  // 应答后 cur 保留 = 字还在可继续编辑（clearMainDraft 只在应答时清）
   const handleConfirmDraftKey = (inputChar: string, key: { return?: boolean; backspace?: boolean; delete?: boolean }): void => {
     if (key.return) {
-      const text = confirmDraftRef.current
+      const text = readMainDraft()
       if (text.trim() === '') return
-      confirmDraftRef.current = ''
-      setConfirmDraft('')
-      setInsert({ text: '', seq: Date.now() })
+      setInputDraft({ text: '', seq: nextInsertSeq() })
       void submit(text) // 审批期 running=true → enqueueInterject（排队「后面的都拒绝」等指令）
       return
     }
     if (key.backspace) {
-      const next = confirmDraftRef.current.slice(0, -1)
-      confirmDraftRef.current = next
-      setConfirmDraft(next)
-      setInsert({ text: next, seq: Date.now() })
+      setInputDraft({ text: readMainDraft().slice(0, -1), seq: nextInsertSeq() })
       return
     }
+    // Delete 前向删除忽略：审批期光标恒在输入框末尾（insert 通道整串覆写语义），
+    // 前向删除无目标字符——等价 no-op（P2-5 明示）
     if (key.delete || inputChar === '') return
-    const next = confirmDraftRef.current + inputChar.replace(/\r\n?/g, '\n')
-    confirmDraftRef.current = next
-    setConfirmDraft(next)
-    setInsert({ text: next, seq: Date.now() })
+    setInputDraft({ text: readMainDraft() + inputChar.replace(/\r\n?/g, '\n'), seq: nextInsertSeq() })
   }
 
   // 清动态/瞬态状态（onClear 和 restoreSession 共用；committed 由调用方设，§9.2 P2-6 别重写一套）
@@ -994,7 +1034,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       onConfirm={clearConfirm}
       onCancel={clearConfirm}
       onDraftKey={handleConfirmDraftKey}
-      draft={confirmDraft}
+      draft={mainDraft}
+      readDraft={() => draftPortRef.current?.read() ?? ''}
       activity={activity.state}
       activityText={activity.text}
       running={running}
@@ -1081,7 +1122,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           skills={deps.skillRegistry.listForCompletion()}
           onPick={(fill) => {
             // D32：回填输入框（带尾随空格留传参位），不直接执行
-            setInsert({ text: fill, seq: Date.now() })
+            setInputDraft({ text: fill, seq: nextInsertSeq() })
             pickerRef.current = false
             setOverlay(null)
           }}
@@ -1430,6 +1471,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         // 避免 TextInput 与审批卡双吃按键）；确认/取消语义在 ConfirmPrompt 内
         inactive={overlay !== null || active.confirm !== null}
         insert={insert}
+        onRegisterDraft={registerPort}
+        onDraftChange={setMainDraft}
         placeholder={
           active.confirm !== null
             ? '（审批中…打字进草稿，y/n/Esc 应答）'

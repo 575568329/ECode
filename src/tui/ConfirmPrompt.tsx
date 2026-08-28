@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ReactElement } from 'react'
 import { Box, Text, useInput } from 'ink'
 import type { ConfirmState } from './types.js'
@@ -35,13 +35,16 @@ import { ROWS_FALLBACK, computeBudget, sectionBudget, useViewport } from './view
 const PREVIEW_RESERVE = 15
 /** 极矮终端保命线：preview 至少留 5 行 */
 const PREVIEW_MIN_LINES = 5
-/** F-10 看全文：完整态追加预算（头尾截断仍有，但多看 3 倍行数；再按可覆盖） */
-const EXPAND_EXTRA_RESERVE = 0
+/** F-10 展开态预留（审阅 P0-1 修复）：只放宽骨架+共存（≈9），经 sectionBudget 封顶——
+ * 24 行终端展开态 ≈13 行。语义=「多看几行」而非「全屏铺开」（旧 (rows−2)×3 公式
+ * rows=24 时 66 行+骨架 ≈8 行必超屏，触发 Ink fullscreen 清 scrollback） */
+const EXPAND_RESERVE = 9
 
 export function previewMaxLines(rows: number | undefined, expanded = false): number {
-  const base = Math.max(PREVIEW_MIN_LINES, sectionBudget(computeBudget(rows ?? ROWS_FALLBACK), PREVIEW_RESERVE))
+  const budget = computeBudget(rows ?? ROWS_FALLBACK)
+  const base = Math.max(PREVIEW_MIN_LINES, sectionBudget(budget, PREVIEW_RESERVE))
   if (!expanded) return base
-  return Math.max(base, sectionBudget(computeBudget(rows ?? ROWS_FALLBACK), EXPAND_EXTRA_RESERVE) * 3)
+  return Math.max(base, sectionBudget(budget, EXPAND_RESERVE))
 }
 
 /** 超高 preview 保头尾截断：头 2/3 + 省略计数 + 尾 1/3 */
@@ -159,11 +162,14 @@ interface ConfirmPromptProps {
   /** 批2b ①：按键转发主输入框（字符/退格/Enter 提交草稿——TextInput 在审批期 inactive，
    * 编辑与提交语义由 TuiApp 经 insert 通道兑现；ConfirmPrompt 独立渲染（测试）时缺省丢弃） */
   onDraftKey?: (input: string, key: { return?: boolean; backspace?: boolean; delete?: boolean; home?: boolean; end?: boolean }) => void
-  /** 批2b ①/②：主输入框草稿只读镜像（非空时单字母快捷失效） */
+  /** 批2b ①/②：主输入框草稿只读镜像（渲染提示用；hasDraft 判定优先走 readDraft 事件时直读） */
   draft?: string
+  /** 批2b-fix：按键时刻直读主输入框权威值（draftPort）——渲染镜像在重负载下可能滞后
+   * （提交清框的 onDraftChange 传播慢于卡出现），事件时直读根除 hasDraft 陈旧 */
+  readDraft?: () => string
 }
 
-export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = '' }: ConfirmPromptProps): ReactElement {
+export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = '', readDraft }: ConfirmPromptProps): ReactElement {
   const input = state.use.input as Record<string, unknown>
   const target = String(input.path ?? input.command ?? '')
   const isDiff = state.use.name === 'edit_file'
@@ -182,7 +188,13 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
 
   // F-13：bash 审批敏感命令 advisory（isSensitivePath 现成判定——命令文本里出现的绝对/带~路径
   // 逐段检验；黄字提示不做硬门）。敏感读已有 sensitiveGate 硬门，此处只覆盖「写/bash 泄密面」提示。
-  const sensitiveHit = state.use.name === 'bash' ? detectSensitiveCommand(String(input.command ?? '')) : false
+  // 审阅 P1-4：useMemo——tokenize+isSensitivePath 内部 realpathSync 是同步 IO，不能进渲染
+  // 热路径（draft 每字符变化/每个按键都重渲染）；只在 command 本身变化时算一次。
+  const commandText = String(input.command ?? '')
+  const sensitiveHit = useMemo(
+    () => (state.use.name === 'bash' ? detectSensitiveCommand(commandText) : false),
+    [state.use.name, commandText],
+  )
 
   const decide = (ok: boolean, always = false, reasonText?: string) => {
     state.resolve(ok, always, reasonText)
@@ -192,7 +204,7 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
 
   useInput((inputChar, key) => {
     const act = confirmKeyAction(inputChar, key, {
-      hasDraft: draft !== '',
+      hasDraft: (readDraft ? readDraft() : draft) !== '',
       selected,
       reasonMode,
       reason,
@@ -293,10 +305,12 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
 /** F-13：bash 命令里的敏感路径探测（词法提取路径段 → isSensitivePath 判定；返回命中段用于提示） */
 export function detectSensitiveCommand(command: string): string | null {
   if (command === '') return null
-  // 提取候选路径段：空白分隔 token + 常见路径形态（/…、~…、盘符…、./…）；截尾引号/逗号等
+  // 提取候选路径段：空白分隔 token + 常见路径形态（/…、~…、盘符…、./…）。
+  // 清洗（审阅 P1-3）：剥头尾引号（`cat "C:\Users\x/.ssh/id_rsa"` 曾漏报）+ 剥 `VAR=`
+  // 环境变量前缀（`FOO=~/.ssh/id_rsa` 同漏报）；截尾逗号等
   const tokens = command.match(/[^\s|;&<>]+/g) ?? []
   for (const raw of tokens) {
-    const t = raw.replace(/["',]+$/, '')
+    const t = raw.replace(/^["']*/, '').replace(/["',]+$/, '').replace(/^[A-Za-z_][A-Za-z0-9_]*=/, '')
     if (!(t.startsWith('/') || t.startsWith('~') || t.startsWith('./') || t.startsWith('../') || /^[a-zA-Z]:[\\/]/.test(t))) continue
     const abs = t.startsWith('~') ? t.replace(/^~/, getUserHome()) : t
     try {

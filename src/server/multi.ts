@@ -253,8 +253,8 @@ export function serveMulti(
       }
 
       // M13-W3：mux 单流——一条 SSE 汇所有项目所有会话（HostEvent 生命周期帧 + 信封事件帧）。
-      // **全量广播语义**（loopback 单用户信任域）：?sessionId 参数被有意忽略——曾双侧注释谎称
-      // "按订阅会话推帧"而实现恒全量（审阅 P1-5）；per-device 过滤在 M14 配对设备接 muxFilter 预留①。
+      // M14-C1④：?sessionId= 过滤管线已兑现（只收该会话 ev 帧、host 生命周期帧照发）——客户端
+      // 自报仅管线；强制过滤自凭据派生待 R 线（muxFilter 钩子预留①）。
       // 连接三连：baseline（活项目+活会话）→ pending 审批重放（HostSession.subscribe 自带）→ 持续广播
       if (req.method === 'GET' && url.pathname === '/api/events.mux') {
         res.writeHead(200, {

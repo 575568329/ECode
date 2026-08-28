@@ -17,7 +17,7 @@ import { ToolRegistryImpl } from '../tools/registry.js'
 import { FileHistoryStore } from '../services/history.js'
 import { CheckpointStore } from '../services/checkpoint.js'
 import { QualityGate, detectQualityCommands, makeShellRunner } from '../services/quality.js'
-import { makeSandbox } from '../services/sandbox.js'
+import { makeSandbox, type SandboxMode } from '../services/sandbox.js'
 import { resolveSearchProvider } from '../services/websearch.js'
 import { setWebSearchProvider } from '../tools/builtin/web_search.js'
 import { evalPermission, loadPermissionLayers, saveLocalPermission, askPermissionInteractive } from '../services/permissions.js'
@@ -201,7 +201,7 @@ export function makeProjectParts(
       await checkpoint?.snapshot(sessionRef.id, paths, { tool, messageId: toolUseId })
     },
     sandbox: makeSandbox(
-      (config.sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default',
+      (config.sandbox?.defaultMode as SandboxMode) ?? 'default',
       dir,
       config.sandbox?.blockedCommands ?? [],
     ),

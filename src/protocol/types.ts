@@ -111,7 +111,7 @@ export type ProtocolCommand =
   | { op: 'rewind/exec'; target: number }
   | { op: 'panel/data'; panel: 'skill' | 'mcp' | 'plugin' | 'doctor' }
   | { op: 'model/set'; provider: string; model: string }
-  | { op: 'sandbox/set'; mode: 'default' | 'read-only' | 'workspace-write' | 'full-access' }
+  | { op: 'sandbox/set'; mode: 'default' | 'accept-edits' | 'read-only' | 'workspace-write' | 'full-access' }
   | { op: 'config/get' }
   | { op: 'config/patch'; patch: Record<string, unknown> }
 

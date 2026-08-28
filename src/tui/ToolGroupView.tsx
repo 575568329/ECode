@@ -36,6 +36,8 @@ interface ToolGroupViewProps {
   tools: ActiveTool[]
   /** 受控展开（Ctrl+O 全展）；默认 false（折叠） */
   expanded?: boolean
+  /** 界面批 B1：单工具级展开 id 集（Ctrl+E 循环）——命中的工具独立展开看全文，不整组展开 */
+  expandedIds?: Set<string>
   /** 本轮是否结束（runLoop 完成）。副作用工具仅在本轮结束时展开 diff，进行中折叠省空间（本轮可能多 edit） */
   done?: boolean
   onToggle?: () => void
@@ -44,7 +46,7 @@ interface ToolGroupViewProps {
   maxTools?: number
 }
 
-export function ToolGroupView({ tools, expanded = false, done, onToggle, maxTools }: ToolGroupViewProps): ReactElement {
+export function ToolGroupView({ tools, expanded = false, expandedIds, done, onToggle, maxTools }: ToolGroupViewProps): ReactElement {
   const { budget, columns } = useViewport()
   // M14-V2：展开输出 head-tail 上限（预算一半封顶、绝对上限 12；宽度扣 paddingLeft3+缩进2）
   const expandCap = Math.min(EXPAND_CAP, Math.max(3, Math.floor(budget / 2)))
@@ -95,8 +97,9 @@ export function ToolGroupView({ tools, expanded = false, done, onToggle, maxTool
         // 只读工具默认折叠（▸ preview）；Ctrl+O 全展开覆盖
         const isSideEffect = t.name === 'edit_file' || t.name === 'write_file'
         // 副作用工具（edit_file/write_file）仅动态区轮末（done=true）展开 diff（看刚改了什么）；
-        // 进行中（done=false）与 Static 固化（done=undefined）都收起——历史默认全收起（用户拍板）
-        const showFull = expanded || (isSideEffect && done === true)
+        // 进行中（done=false）与 Static 固化（done=undefined）都收起——历史默认全收起（用户拍板）。
+        // 界面批 B1：expandedIds 命中的工具单选展开（Ctrl+E 循环，独立于组级 expanded）
+        const showFull = expanded || (isSideEffect && done === true) || (expandedIds !== undefined && t.use !== undefined && expandedIds.has(t.use.id))
         const preview = previewLine(content)
         // M11-P6 todo 特化：digest 显示完成度，展开态逐项 ASCII 状态符（[x]/[->]/[ ]——ambiguous 宽度教训只用 ASCII）
         const isTodo = t.name === 'todo'

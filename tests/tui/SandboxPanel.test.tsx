@@ -22,8 +22,11 @@ describe('SandboxPanel', () => {
     expect(f).toContain('全部免确认')
   })
 
-  it('Tab 循环下移 + 环绕（default → read-only → ... → full-access → default）', async () => {
+  it('Tab 循环下移 + 环绕（default → accept-edits → read-only → ... → full-access → default）', async () => {
     const { stdin, lastFrame } = panel('default')
+    stdin.write(TAB)
+    await flush()
+    expect(lastFrame() ?? '').toContain('纯编辑（edit_file/write_file）免确认放行') // 界面批 C1：default 后第一档是 accept-edits
     stdin.write(TAB)
     await flush()
     expect(lastFrame() ?? '').toContain('read-only —— write/edit/bash 全部拒绝；读类照常') // 选中态显示完整说明（非 dimColor）
@@ -31,6 +34,7 @@ describe('SandboxPanel', () => {
 
   it('Enter 选定非 full-access → onPick(该档)', async () => {
     const { stdin, onPick } = panel('default')
+    stdin.write(TAB) // → accept-edits
     stdin.write(TAB) // → read-only
     await flush()
     stdin.write('\r')
@@ -40,8 +44,8 @@ describe('SandboxPanel', () => {
 
   it('Enter 选 full-access → 二级确认页；y 生效 / Esc 返回', async () => {
     const { stdin, lastFrame, onPick } = panel('default')
-    // Tab×3 → full-access
-    for (let i = 0; i < 3; i++) {
+    // Tab×4 → full-access（五档：default→accept-edits→read-only→workspace-write→full-access）
+    for (let i = 0; i < 4; i++) {
       stdin.write(TAB)
       await flush()
     }

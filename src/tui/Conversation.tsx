@@ -115,6 +115,10 @@ export function Conversation({
   const toolExpanded = active.tools.some(
     (t) => t.use && active.expandedTools.has(t.use.id),
   )
+  // 界面批 B1：单工具展开态（expandedTools 只含 1 个且非组级全展——Ctrl+E 路径）。
+  // 预算口径与 V2 组展开同：任何展开态 maxTools 收 1（展开工具 expandCap+2 行 + 折叠组头 ≤4 行可控）
+  const singleExpanded =
+    !toolExpanded && active.expandedTools.size > 0
   // M14-V5（§3.4）总守卫：动态区顶层一次分配（各段独立截断不保证总和 < rows——病态组合
   // 8 组工具×4 行+灰字+输入仍超 24 行终端）；退化态 markdown/工具区不渲染
   const { budget } = useViewport()
@@ -135,9 +139,10 @@ export function Conversation({
           <ToolGroupView
             tools={active.tools}
             expanded={toolExpanded}
+            expandedIds={active.expandedTools}
             done={!active.streaming}
             onToggle={onToggleTool}
-            maxTools={toolExpanded ? Math.min(alloc.toolGroupCap, 1) : alloc.toolGroupCap} // 审阅 P1-3：展开态每组可占 expandCap+2 行，总高失控——收 1 组全文余折叠（全文走 /output）
+            maxTools={toolExpanded || singleExpanded ? Math.min(alloc.toolGroupCap, 1) : alloc.toolGroupCap} // 审阅 P1-3：展开态每组可占 expandCap+2 行，总高失控——收 1 组全文余折叠（全文走 /output）；B1 单展开同口径
           />
         ))}
       {active.confirm ? (

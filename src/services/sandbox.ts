@@ -1,8 +1,10 @@
 /**
  * 沙箱（M9-P4 / M9-D7/D9/D12）：软沙箱——工具层路径/命令校验，进程级围栏后置。
  *
- * 四档（default 档=现状=关，M9-D9 拍板"沙箱有就行，默认不开"）：
+ * 五档（default 档=现状=关，M9-D9 拍板"沙箱有就行，默认不开"；accept-edits 界面批 C1）：
  * - default：写/改文件与 bash 每次确认（现状）；无越界分流
+ * - accept-edits：纯编辑类（edit_file/write_file）免审批直放；bash/其他副作用仍走审批
+ *   （宿主 hostConfirm 按工具名放行）；写路径仍限 cwd 内（checkWrite 同 workspace-write）
  * - read-only：write/edit/bash 全拒（is_error）；读类照常
  * - workspace-write：write/edit 仅 cwd 内（resolve 后前缀校验，天然拦 .. 逃逸）；bash 确认
  * - full-access：全免确认；内置八条危险黑名单（proc.ts，任何档无条件）+
@@ -15,16 +17,16 @@
 import { realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 
-export type SandboxMode = 'default' | 'read-only' | 'workspace-write' | 'full-access'
+export type SandboxMode = 'default' | 'accept-edits' | 'read-only' | 'workspace-write' | 'full-access'
 
-export const SANDBOX_MODES: readonly SandboxMode[] = ['default', 'read-only', 'workspace-write', 'full-access']
+export const SANDBOX_MODES: readonly SandboxMode[] = ['default', 'accept-edits', 'read-only', 'workspace-write', 'full-access']
 
 export type WriteCheck = { ok: true } | { ok: false; reason: string }
 export type BashCheck = { action: 'allow' } | { action: 'confirm' } | { action: 'deny'; reason: string }
 
 export interface Sandbox {
   mode: SandboxMode
-  /** 写路径校验（write/edit execute 前置）：read-only 拒；workspace-write 仅 cwd 内 */
+  /** 写路径校验（write/edit execute 前置）：read-only 拒；accept-edits/workspace-write 仅 cwd 内 */
   checkWrite(absPath: string): WriteCheck
   /** bash 校验：blockedCommands 命中全档硬拒；read-only 拒；full-access 免确认；其余确认 */
   checkBash(command: string): BashCheck
@@ -140,13 +142,13 @@ export function makeSandbox(mode: SandboxMode, cwd: string, blockedCommands: str
       // resolve 自洽：.. 逃逸在此消化（不依赖调用方先 resolve 的纪律）；
       // 再叠加 realpath 校验：纯词法前缀拦不住"工作区内指向外部的 symlink/junction"（P2 修复），
       // 展开真实路径后比对才能防越界写
-      if (mode === 'workspace-write') {
+      if (mode === 'workspace-write' || mode === 'accept-edits') {
         const target = resolveReal(resolve(absPath))
         if (target === undefined) {
           return { ok: false, reason: `workspace-write 模式：无法解析真实路径（权限或路径异常，fail-closed 拒绝）：${absPath}` }
         }
         if (!norm(target).startsWith(`${cwdNorm}/`)) {
-          return { ok: false, reason: `workspace-write 模式：仅允许写入工作目录内（${cwd}），越界路径（含符号链接逃逸）被拒绝。` }
+          return { ok: false, reason: `${mode} 模式：仅允许写入工作目录内（${cwd}），越界路径（含符号链接逃逸）被拒绝。` }
         }
       }
       return { ok: true }

@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { render } from 'ink-testing-library'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { SlashSuggest, InputStream } from '../../src/tui/InputStream.js'
 import { commandRegistry, registerBuiltinCommands } from '../../src/commands/registry.js'
+
+afterEach(() => cleanup()) // 遗留挂载实例会让后续实例的 promise 微任务渲染掉帧（界面批实证）——逐测卸载根治
 
 beforeEach(() => {
   commandRegistry.clear()

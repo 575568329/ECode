@@ -16,6 +16,7 @@
  */
 
 import { randomUUID, createHash } from 'node:crypto'
+import { resolve } from 'node:path'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
 import type { HistoryLine, ImageBlock, Message } from '../core/types.js'
@@ -28,7 +29,8 @@ import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
 import { isMessageLine } from '../core/types.js'
 import { ecodeCommit } from '../services/git.js'
-import { makeSandbox } from '../services/sandbox.js'
+import { makeSandbox, type SandboxMode } from '../services/sandbox.js'
+import { isSensitivePath } from '../tools/sensitive.js'
 import { buildMediaBlock } from '../services/media.js'
 import { tokensToCost } from '../services/pricing.js'
 import { TaskRegistry } from '../services/tasks.js'
@@ -105,7 +107,7 @@ export class HostSession {
   private readonly subagentView = new Map<string, { id: string; description: string; activity: string }>()
   private readonly broker: ApprovalBroker
   /** 运行态沙箱档（Tab 切档经 sandbox/set 命令改此字段——B5 接线；confirm 策略消费） */
-  private sandboxMode: 'default' | 'read-only' | 'workspace-write' | 'full-access'
+  private sandboxMode: SandboxMode
   private readonly messages: HistoryLine[] = []
   private readonly editedFiles = new Set<string>()
   /** M13-B1（#4）：已读文件 mtime 表（readFileGuard 数据源——write/edit 后 mtime 变自然放行） */
@@ -143,7 +145,7 @@ export class HostSession {
     (info) => { void this.dispatchNotification('approval-pending', info.kind, info.tool) },
     notifySeconds > 0 ? notifySeconds * 1000 : 0)
     this.sandboxMode =
-      (this.cfg().sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default'
+      (this.cfg().sandbox?.defaultMode as SandboxMode) ?? 'default'
   }
 
   /** 客户端订阅事件流（B2：订阅即重放 pending 可答帧——重连/换端恢复确认上下文）。
@@ -777,9 +779,17 @@ export class HostSession {
     }
   }
 
-  /** B2 宿主侧确认策略（doConfirm 语义迁入：full-access 跳过 / read-only MCP 拒绝 / 其余过 Broker） */
+  /** B2 宿主侧确认策略（doConfirm 语义迁入：full-access 跳过 / read-only MCP 拒绝 / 其余过 Broker）。
+   *  界面批 C1 accept-edits：纯编辑类（edit_file/write_file）免审批直放——CC acceptEdits 对位；
+   *  sensitivePath 硬门例外：编辑 .ecode/settings* 等敏感路径仍照卡（安全敏感操作不随档位降级） */
   private async hostConfirm(use: import('../core/types.js').ToolUseBlock): Promise<boolean | string> {
     if (this.sandboxMode === 'full-access') return true
+    if (this.sandboxMode === 'accept-edits' && (use.name === 'edit_file' || use.name === 'write_file')) {
+      const target = typeof (use.input as { path?: unknown }).path === 'string' ? (use.input as { path: string }).path : ''
+      const abs = target === '' ? '' : resolve(this.deps.cwd ?? process.cwd(), target)
+      if (abs === '' || !isSensitivePath(abs)) return true
+      // 敏感路径编辑照卡（走 Broker 弹窗——文案由 buildPreview 生成）
+    }
     if (this.sandboxMode === 'read-only' && use.name.startsWith('mcp__')) {
       this.publish('systemMsg', { text: `read-only 模式：MCP 工具 ${use.name} 被拒绝` })
       return false

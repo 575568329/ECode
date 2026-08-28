@@ -13,6 +13,7 @@ import { SANDBOX_MODES, type SandboxMode } from '../services/sandbox.js'
 /** 各档一行说明（软沙箱诚实边界：bash 无法可靠解析写目标，read-only 整体拒绝、其余确认兜底） */
 const MODE_DESC: Record<SandboxMode, string> = {
   default: '写文件/bash 每次确认（现状）；无越界分流',
+  'accept-edits': '纯编辑（edit_file/write_file）免确认放行；bash/其他副作用仍每次确认；写路径仍限工作目录内',
   'read-only': 'write/edit/bash 全部拒绝；读类照常',
   'workspace-write': '写/改仅限工作目录内（越界直接拒绝，拦 .. 逃逸）；bash 每次确认',
   'full-access': '全部免确认（危险）；内置黑名单与 blockedCommands 仍硬拒',

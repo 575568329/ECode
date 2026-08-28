@@ -74,3 +74,17 @@ export function createActive(): ActiveState {
     confirm: null,
   }
 }
+
+/**
+ * 界面批 B1：单工具级展开的下一个选中（Ctrl+E 循环）。
+ * 规则：在「未展开的 done 工具」中取第一个；全展开 → 空集（全收起重置）。
+ * 单选展开（Set 只含一个）——行数入 V2 预算（ToolGroupView expandCap 钳制每个展开输出，
+ * Conversation 展开态 maxTools=min(cap,1) 限制可见组数）。
+ */
+export function nextSingleExpand(tools: Array<{ use?: { id: string } }>, current: Set<string>): Set<string> {
+  const dones = tools.filter((t) => t.use !== undefined) as Array<{ use: { id: string } }>
+  if (dones.length === 0) return current
+  const next = dones.find((t) => !current.has(t.use.id))
+  if (next === undefined) return new Set()
+  return new Set([next.use.id])
+}

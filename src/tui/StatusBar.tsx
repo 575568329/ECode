@@ -22,12 +22,29 @@ function formatTokens(n: number): string {
   return `${(n / 1000).toFixed(1)}k tok`
 }
 
+/** C2 档位可视化（CC ⏵⏵ 式）：default 无标记、accept-edits ⏵⏵ edits、其余各档箭头数递进 */
+export function sandboxArrows(mode: string): string {
+  switch (mode) {
+    case 'accept-edits':
+      return '⏵⏵ edits'
+    case 'workspace-write':
+      return '⏵⏵ write'
+    case 'full-access':
+      return '⏵⏵⏵'
+    case 'read-only':
+      return '⛔ read-only'
+    default:
+      return ''
+  }
+}
+
 /**
  * 顶栏：model / 轮数 / token / 成本（TUI 规范 §4.2/§7）。
  * warning 不在此渲染——运行时告警由 App 层渲染为底部独立第二行（长消息截断，
  * 防止 429 等含 JSON body 的错误把本行与快捷键提示挤碎）。
  */
 export function StatusBar({ model, iter, maxIter, tokens, cost, mcp, sandbox, sandboxDanger }: StatusBarProps): ReactElement {
+  const arrows = sandbox !== undefined ? sandboxArrows(sandbox) : ''
   return (
     <Box>
       <Text color={theme.status}>ECode · </Text>
@@ -43,8 +60,8 @@ export function StatusBar({ model, iter, maxIter, tokens, cost, mcp, sandbox, sa
       {mcp !== undefined && <Text dimColor> · {mcp}</Text>}
       {sandbox !== undefined && (
         sandboxDanger
-          ? <Text color={theme.error} bold> · ⚠ {sandbox}</Text>
-          : <Text dimColor> · {sandbox}</Text>
+          ? <Text color={theme.error} bold> · ⚠ {arrows !== '' ? `${arrows} ` : ''}{sandbox}</Text>
+          : <Text dimColor> · {arrows !== '' ? `${arrows} · ` : ''}{sandbox}</Text>
       )}
       {cost !== undefined && <Text dimColor> · {cost}</Text>}
     </Box>

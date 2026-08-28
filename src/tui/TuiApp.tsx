@@ -19,7 +19,7 @@ import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
-import { createActive, type CommittedItem, type ActiveState } from './types.js'
+import { createActive, nextSingleExpand, type CommittedItem, type ActiveState } from './types.js'
 import { messagesToCommitted } from './commit.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { expandSkill, type SkillRegistry } from '../services/skill.js'
@@ -988,12 +988,40 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     })
   }
 
+  // 界面批 B1：Ctrl+E 单工具级展开——在「未展开的工具」中循环展开下一个（再按展开下一个；
+  // 全展开后按=全收起重置）。与 Ctrl+O（组级全开/全收）互补：多工具轮里"看刚执行的这一个"。
+  // 展开行数仍入 V2 预算（ToolGroupView expandCap + Conversation 展开态 maxTools=min(cap,1) 钳制）
+  const expandNextTool = () => {
+    setActive((a) => ({ ...a, expandedTools: nextSingleExpand(a.tools, a.expandedTools) }))
+  }
+
   useInput(
     (input, key) => {
       if (key.ctrl && input === 'o') toggleExpand()
+      if (key.ctrl && input === 'e') expandNextTool()
     },
-    // P2-4：overlay/confirm 期间不抢 Ctrl+O（picker/confirm 独占输入）
+    // P2-4：overlay/confirm 期间不抢 Ctrl+O/Ctrl+E（picker/confirm 独占输入）
     { isActive: overlay === null && active.confirm === null },
+  )
+
+  // 界面批 C3：空闲态双击 Esc（间隔 <500ms）直达 /rewind 面板（CC 双击 Esc 零成本入口对位）。
+  // Esc 三态语义不破坏：面板开=关面板（overlay!==null 时不激活本 handler）、回填态=清空
+  // （InputStream slash 回填 Esc 自处理——本 handler 只在空闲态激活）、审批卡=拒绝（confirm
+  // 非 null 时不激活）。守卫：busy 不接管（运行中 rewind 有竞态）、checkpoint 未启用不响应
+  const lastEscRef = useRef(0)
+  useInput(
+    (_input, key) => {
+      if (!key.escape) return
+      const now = Date.now()
+      if (now - lastEscRef.current < 500 && deps.checkpoint != null) {
+        lastEscRef.current = 0
+        pickerRef.current = true
+        setOverlay({ kind: 'rewind-panel' })
+        return
+      }
+      lastEscRef.current = now
+    },
+    { isActive: overlay === null && active.confirm === null && !running },
   )
 
   // M6 M-P7：StatusBar MCP 段（有启用的 server 才显示；连接中瞬时态）

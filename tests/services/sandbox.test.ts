@@ -79,6 +79,19 @@ describe('checkBash', () => {
     expect(sandbox('read-only').checkBash('ls').action).toBe('deny')
   })
 
+  it('accept-edits（界面批 C1）：bash 仍 confirm；blockedCommands 照拒', () => {
+    expect(sandbox('accept-edits').checkBash('ls')).toEqual({ action: 'confirm' })
+    expect(sandbox('accept-edits', ['rm -rf /']).checkBash('rm -rf /').action).toBe('deny')
+  })
+
+  it('accept-edits（界面批 C1）：写路径同 workspace-write——cwd 内放行 / 越界拒', () => {
+    mkdirSync(join(root, 'other'))
+    expect(sandbox('accept-edits').checkWrite(join(ws, 'src', 'a.ts'))).toEqual({ ok: true })
+    const r = sandbox('accept-edits').checkWrite(join(root, 'other', 'sub', 'b.ts'))
+    expect(r).toMatchObject({ ok: false })
+    expect(r.ok === false && r.reason).toContain('accept-edits')
+  })
+
   it('blockedCommands 通配：全档硬拒（含 full-access）', () => {
     const blocked = ['git push --force*', 'npm publish*', 'rm -rf /']
     for (const mode of ['default', 'full-access'] as const) {
@@ -161,8 +174,9 @@ describe('matchesBlocked（归一化分词：防引号/路径/大小写绕过）
 })
 
 describe('nextSandboxMode（Tab 循环）', () => {
-  it('四档环绕', () => {
-    expect(nextSandboxMode('default')).toBe('read-only')
+  it('五档环绕（界面批 C1：default→accept-edits→read-only→workspace-write→full-access→default）', () => {
+    expect(nextSandboxMode('default')).toBe('accept-edits')
+    expect(nextSandboxMode('accept-edits')).toBe('read-only')
     expect(nextSandboxMode('read-only')).toBe('workspace-write')
     expect(nextSandboxMode('workspace-write')).toBe('full-access')
     expect(nextSandboxMode('full-access')).toBe('default')

@@ -137,9 +137,20 @@ export async function serveMode(): Promise<void> {
   const webDirFromPkg = fileURLToPath(new URL('../../web/dist', import.meta.url))
   const webDirCandidate = webDirFromEnv !== undefined && webDirFromEnv !== '' ? webDirFromEnv : webDirFromPkg
   const webDir = existsSync(webDirCandidate) ? webDirCandidate : undefined
+  // F-27：/api/cmd {op:'stop'} 优雅停机——与信号 handler 同一收敛路径（断 mux → registry
+  // dispose（锁释放/审批收敛）→ 日志 LogStore 同步 flush → exit）。watchdog 兼容：shutdown 前删
+  // 注册文件，防 watchdog 读到陈旧 id 误判「被接管」（其实是自己停）。本机 token 持有者即主人。
+  const stopServe = (): void => {
+    try {
+      rmSync(join(os.homedir(), '.ecode', 'server.json'), { force: true })
+    } catch {
+      /* 已删/不可达——信号路径兜底 */
+    }
+    shutdown(0)
+  }
   const srv = await serveMulti(
     { registry, defaultCwd: process.cwd() },
-    { port: Number(envOr('ECODE_SERVE_PORT') ?? 0), host: serveHost, password: servePassword, id: sessionId, ...(webDir !== undefined ? { webDir } : {}) },
+    { port: Number(envOr('ECODE_SERVE_PORT') ?? 0), host: serveHost, password: servePassword, id: sessionId, onStop: stopServe, ...(webDir !== undefined ? { webDir } : {}) },
   )
   // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读
   const regPath = join(os.homedir(), '.ecode', 'server.json')

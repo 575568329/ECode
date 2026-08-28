@@ -17,6 +17,7 @@ import { FileHistoryStore, NoopHistoryStore, type HistoryStore } from '../../src
 import { emptyShellConfig, type Config } from '../../src/services/config.js'
 import { CompactionOrchestrator } from '../../src/services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../../src/services/compaction/summarize.js'
+import { CommandRegistry, registerBuiltinCommands } from '../../src/commands/registry.js'
 
 class MockProvider implements LLMProvider {
   readonly type = 'mock'
@@ -569,6 +570,69 @@ describe('M14-C3③（P1-12）：带图 prompt 并发双发不开双轮', () => 
     // 占位已清：无图 prompt 立即再开轮（而非被误判 busy 入队）
     const r2 = await host.send({ op: 'prompt', text: '再来', mode: 'StartOrSteer' })
     expect(r2).toMatchObject({ ok: true, routed: 'Started' })
+    await host.whenIdle()
+    host.dispose()
+  })
+})
+
+// —— F-23：serve/web 端斜杠命令分流（绝不落入 LLM）——
+describe('F-23：斜杠命令分流（prompt 前置命令拦截）', () => {
+  const makeCmdDeps = (provider: LLMProvider): HostDeps => {
+    const deps = makeDeps(provider)
+    const reg = new CommandRegistry()
+    registerBuiltinCommands(reg)
+    return { ...deps, commands: reg }
+  }
+
+  it('host 命令（/help）：直接执行返回输出，不起 LLM 轮', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([])))
+    const events = collect(host)
+    const r = await host.send({ op: 'prompt', text: '/help', mode: 'StartOrSteer' })
+    expect(r.ok).toBe(true)
+    if (r.ok && 'routed' in r) expect(r.routed).toBe('Command')
+    expect((r as { output?: string }).output).toContain('/help')
+    // 未进 LLM：无 turn/started；systemMsg 帧带回执
+    await new Promise((res) => setTimeout(res, 20))
+    expect(events.some((e) => e.type === 'turn/started')).toBe(false)
+    expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('/help'))).toBe(true)
+    host.dispose()
+  })
+
+  it('TUI 专属命令（/model）：明确拒绝，不起 LLM 轮', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([])))
+    const events = collect(host)
+    const r = await host.send({ op: 'prompt', text: '/model', mode: 'StartOrSteer' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toContain('TUI')
+    await new Promise((res) => setTimeout(res, 20))
+    expect(events.some((e) => e.type === 'turn/started')).toBe(false)
+    expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('TUI'))).toBe(true)
+    host.dispose()
+  })
+
+  it('未知名（/nope）：明确拒绝（与 TUI 行为一致），不起 LLM 轮', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([])))
+    const r = await host.send({ op: 'prompt', text: '/nope', mode: 'StartOrSteer' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toContain('未知命令')
+    await new Promise((res) => setTimeout(res, 20))
+    host.dispose()
+  })
+
+  it('回归：非斜杠正常 prompt 不受分流影响（仍开 LLM 轮）', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([[{ type: 'text', text: 'ok' }, { type: 'done', stop_reason: 'end' }]])))
+    const events = collect(host)
+    const r = await host.send({ op: 'prompt', text: '正常问题', mode: 'StartOrSteer' })
+    expect(r).toMatchObject({ ok: true, routed: 'Started' })
+    await host.whenIdle()
+    expect(events.some((e) => e.type === 'turn/started')).toBe(true)
+    host.dispose()
+  })
+
+  it('回归：未注册命令面（deps.commands 缺省）——斜杠输入走原 prompt 路径（argv/旧装配兼容）', async () => {
+    const host = new HostSession(makeDeps(new MockProvider([[{ type: 'text', text: 'ok' }, { type: 'done', stop_reason: 'end' }]])))
+    const r = await host.send({ op: 'prompt', text: '/help', mode: 'StartOrSteer' })
+    expect(r).toMatchObject({ ok: true, routed: 'Started' }) // 不分流=原行为（当作 prompt）
     await host.whenIdle()
     host.dispose()
   })

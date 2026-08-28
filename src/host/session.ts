@@ -90,6 +90,11 @@ export interface HostDeps {
   ensureConversation?: (sessionId: string) => Promise<CommandResult>
   /** M13-W4：活会话运行态表（session/list 冷热合并——running 注入 meta 列表；缺省不注入） */
   conversationStates?: () => Map<string, boolean>
+  /** F-23：命令面（serve/web 端 / 命令分流——host 可执行命令直接跑，TUI 专属明确报错；
+   *  缺省不注册（argv/旧测试——斜杠输入走原 prompt 路径，行为不变） */
+  commands?: import('../commands/registry.js').CommandRegistry
+  /** F-23：/cost 宿主侧会话累计（TUI 由 usage 帧累计；serve 端命令分流本地累计） */
+  costAccumulator?: () => number
 }
 
 interface QueueEntry {
@@ -133,6 +138,13 @@ export class HostSession {
   private ctxWindowCache: number | null = null
   private itemSeq = 0
   private idleResolvers: Array<() => void> = []
+  /** F-23：会话累计成本（/cost 宿主命令分流用；recordUsage 顺带累计） */
+  private sessionCost = 0
+  /** F-23：最近一次 usage 快照（/cost 宿主命令展示） */
+  private lastIn = 0
+  private lastOut = 0
+  private lastCacheRead = 0
+  private lastCacheCreation = 0
 
   constructor(private readonly deps: HostDeps) {
     this.channel.bind((cmd) => this.dispatch(cmd))
@@ -381,6 +393,55 @@ export class HostSession {
     this.channel.publish({ type, ...data } as Parameters<InMemoryChannel['publish']>[0])
   }
 
+  /** F-23：斜杠命令分流。返回 undefined=非命令（正常 prompt 路径）；
+   *  {ok:true,output}=host 已执行；{ok:false,error}=TUI 专属面板或未知名（明确拒绝，不进 LLM）。
+   *  host 可执行白名单：/help /stats /cost /clear /compact——其余命令名的 action 均为
+   *  TUI 面板/客户端本地副作用（pick-model/open-*-panel/restart…），serve 端无法履约。 */
+  private interceptSlashCommand(text: string): { ok: true; output: string } | { ok: false; error: string } | undefined {
+    const reg = this.deps.commands
+    if (reg === undefined || !text.startsWith('/')) return undefined
+    const name = text.slice(1).split(/\s+/)[0] ?? ''
+    if (name === '') return undefined // 裸 "/" 交给 LLM（与 TUI 输入框行为一致）
+    const cmd = reg.get(name)
+    if (cmd === undefined) {
+      return { ok: false, error: `未知命令 /${name}（输入 /help 查看可用命令）` }
+    }
+    // host 可执行命令：纯输出或宿主已有权威操作
+    if (name === 'help' || name === 'stats') {
+      const args = text.slice(1 + name.length).trim()
+      const r = cmd.run(args === '' ? undefined : args)
+      return { ok: true, output: r.output ?? '' }
+    }
+    if (name === 'cost') {
+      const u = { input: this.lastIn, output: this.lastOut, cacheRead: this.lastCacheRead, cacheCreation: this.lastCacheCreation }
+      const lineCost = this.deps.costAccumulator?.() ?? this.sessionCost
+      const known = lineCost > 0 || this.sessionCost > 0
+      return {
+        ok: true,
+        output: known
+          ? `本轮 token：input ${u.input} / output ${u.output} / cache_read ${u.cacheRead} / cache_creation ${u.cacheCreation}\n会话累计成本：¥${lineCost.toFixed(4)}`
+          : `本轮 token：input ${u.input} / output ${u.output} / cache_read ${u.cacheRead} / cache_creation ${u.cacheCreation}\n会话累计成本：暂无（本会话尚无用量）`,
+      }
+    }
+    if (name === 'clear') {
+      this.messages.length = 0
+      this.queue.length = 0
+      this.editedFiles.clear()
+      this.readMtime.clear()
+      this.mcpCallCount = 0
+      this.publish('notice', { level: 'info', text: '会话已清空' })
+      return { ok: true, output: '会话已清空' }
+    }
+    if (name === 'compact') {
+      void this.compactManual().then((r) => {
+        this.publish('systemMsg', { text: r.ok ? '压缩完成' : `压缩失败：${r.reason ?? '未知'}` })
+      })
+      return { ok: true, output: '压缩已开始（完成后有 systemMsg 通知）' }
+    }
+    return { ok: false, error: `/${name} 为 TUI 面板/本地命令，serve 端不可用（可用：/help /stats /cost /clear /compact）` }
+  }
+
+
   /**
    * M12-P0：会话 usage 统一收口——主循环回调与压缩链上报共用（计价 + 协议帧广播）。
    * 批2 将在此挂累计器与 stats 行落盘。
@@ -395,6 +456,11 @@ export class HostSession {
       cacheRead: cache?.read ?? 0,
       cacheCreation: cache?.creation ?? 0,
     }, cur.providers[cur.current.name]?.pricing)
+    if (cost != null) this.sessionCost += cost // F-23：/cost 宿主累计
+    this.lastIn = inputTokens
+    this.lastOut = outputTokens
+    this.lastCacheRead = cache?.read ?? 0
+    this.lastCacheCreation = cache?.creation ?? 0
     this.publish('usage', {
       input: inputTokens,
       output: outputTokens,
@@ -426,6 +492,19 @@ export class HostSession {
   private async dispatch(cmd: ProtocolCommand): Promise<CommandResult> {
     switch (cmd.op) {
       case 'prompt': {
+        // F-23：斜杠命令分流（serve/web 端 /help 等直通 startTurn 会当 prompt 烧 LLM）——
+        // 注册了命令面时，/ 开头输入先查表：host 可执行→本地跑；TUI 专属/未知名→明确报错；
+        // 绝不落入 LLM。未注册命令面（argv/旧测试）行为不变。
+        const slash = this.interceptSlashCommand(cmd.text)
+        if (slash !== undefined) {
+          if (slash.ok) {
+            this.publish('systemMsg', { text: slash.output })
+            return { ok: true, routed: 'Command' as const, output: slash.output }
+          }
+          this.publish('systemMsg', { text: slash.error })
+          this.deps.logger.warn?.('system', 'slash_command_rejected', { text: cmd.text, reason: slash.error })
+          return { ok: false, error: slash.error, code: 'SLASH_COMMAND_TUI_ONLY' }
+        }
         // M14-C3③（P1-12）：同步占位先于 buildBlocks 的 await——原检查在 await 后，带图 prompt
         // 并发双发会双双通过 running 检查双开轮；startTurn 同步段清 starting（早退路径也不泄漏）
         const idle = !this.running && !this.starting

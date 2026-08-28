@@ -314,3 +314,42 @@ describe('M14-C1b 工具全文 summary+read（HTTP 契约）', () => {
     expect(read).toMatchObject({ ok: false, code: 'ITEM_NOT_FOUND' })
   })
 })
+
+// —— F-27：stop 命令接线（优雅停机信封拦截）——
+describe('F-27：POST /api/cmd {op:"stop"}', () => {
+  it('未接线（无 onStop）：501 NOT_IMPLEMENTED（原 B5 留账形态保留）', async () => {
+    const r = await fetch(`${base}/api/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'stop' } }) })
+    expect(r.status).toBe(501)
+    const body = (await r.json()) as { ok: boolean; code: string }
+    expect(body.ok).toBe(false)
+    expect(body.code).toBe('NOT_IMPLEMENTED')
+  })
+
+  it('已接线：回执 ok+stopping 且 onStop 被调用（与信号 handler 同路径）', async () => {
+    let stopped = 0
+    const srv3 = await serveMulti(
+      { registry: new ProjectRegistry(mk), defaultCwd: dirA },
+      { onStop: () => { stopped += 1 } },
+    )
+    try {
+      const r = await fetch(`http://127.0.0.1:${srv3.port}/api/cmd`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${srv3.token}` },
+        body: JSON.stringify({ op: { op: 'stop' } }),
+      })
+      expect(r.status).toBe(200)
+      const body = (await r.json()) as { ok: boolean; stopping: boolean }
+      expect(body.ok).toBe(true)
+      expect(body.stopping).toBe(true)
+      await new Promise((res) => setTimeout(res, 50))
+      expect(stopped).toBe(1)
+    } finally {
+      await srv3.close()
+    }
+  })
+
+  it('未授权 stop 被拒（401——token 持有者即主人）', async () => {
+    const r = await fetch(`${base}/api/cmd`, { method: 'POST', body: JSON.stringify({ op: { op: 'stop' } }) })
+    expect(r.status).toBe(401)
+  })
+})

@@ -247,6 +247,7 @@ export function makeConversationDeps(
   skillHooks: SkillHooksPort,
   projectRef: { current?: ProjectHost },
   approvalPolicy?: 'ask' | 'auto-approve',
+  commands?: CommandRegistry,
 ): { host: HostDeps; history: FileHistoryStore } {
   sessionRef.id = sessionId // 三单例收敛③：hook 事件 session_id 兜底动态化
   const history = new FileHistoryStore({ sessionId, model: config.current.model, cwd: dir }) // M13-W4：meta 落盘会话归属
@@ -275,6 +276,8 @@ export function makeConversationDeps(
     },
     // M13-W4：session/list 冷热合并（活会话 running 态注入 meta 列表）
     conversationStates: () => projectRef.current?.runningMap() ?? new Map(),
+    // F-23：命令面注入（serve/web 端 / 命令分流——/help 等不再落入 LLM）
+    ...(commands !== undefined ? { commands } : {}),
     ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),
   }
   return { host, history }
@@ -301,10 +304,10 @@ export function makeDeps(
   const sessionRef = { id: sessionId }
   const parts = makeProjectParts(config, logger, dir, { skills, extHooks }, sessionRef)
   const projectRef: { current?: ProjectHost } = {}
-  const conv0 = makeConversationDeps(parts, logger, config, sessionId, dir, sessionRef, skillHooks, projectRef, opts.approvalPolicy)
+  const conv0 = makeConversationDeps(parts, logger, config, sessionId, dir, sessionRef, skillHooks, projectRef, opts.approvalPolicy, commands)
   const project = new ProjectHost({
     createConversation: (sid) =>
-      makeConversationDeps(parts, logger, config, sid, dir, sessionRef, skillHooks, projectRef, opts.approvalPolicy).host,
+      makeConversationDeps(parts, logger, config, sid, dir, sessionRef, skillHooks, projectRef, opts.approvalPolicy, commands).host,
     skills,
     extHooks,
   })

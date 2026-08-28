@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { render } from 'ink-testing-library'
 import React from 'react'
@@ -140,5 +141,25 @@ describe('OutputListPage（M14-V3）', () => {
   it('全空：空态提示', () => {
     const { lastFrame } = render(<OutputListPage recentTools={[]} onOpen={() => {}} onExit={() => {}} />)
     expect(lastFrame()).toContain('暂无可查看的输出')
+  })
+})
+// —— F-26：/output 子代理列表上下文 ——
+describe('F-26：listSubagentTranscripts 摘要（裸 id → 时间+首行摘要）', () => {
+  it('读首条 user 文本做摘要 + 按 mtime 新→旧 + maxShow 截断', async () => {
+    const home = join(tmpdir(), 'ecode-ov-test-home')
+    const dir = join(home, '.ecode', 'agents')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'a-old.jsonl'), JSON.stringify({ role: 'user', content: [{ type: 'text', text: '旧任务\n细节' }] }) + '\n', 'utf8')
+    writeFileSync(join(dir, 'a-new.jsonl'), JSON.stringify({ role: 'user', content: '字符串 content 任务' }) + '\n', 'utf8')
+    const { listSubagentTranscripts } = await import('../../src/tui/OutputViewer.js')
+    const list = listSubagentTranscripts(10)
+    const ids = list.map((a) => a.id)
+    expect(ids).toContain('a-old')
+    expect(ids).toContain('a-new')
+    expect(list.find((a) => a.id === 'a-old')?.summary).toBe('旧任务')
+    expect(list.find((a) => a.id === 'a-new')?.summary).toBe('字符串 content 任务')
+    expect(listSubagentTranscripts(1).length).toBe(1)
+    // 清场：防污染同文件其他用例（OutputListPage 共享同一假 home 的模块级 homedir mock）
+    rmSync(dir, { recursive: true, force: true })
   })
 })

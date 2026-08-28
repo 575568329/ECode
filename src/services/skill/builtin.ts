@@ -129,7 +129,7 @@ providers 下新增 key（type/baseURL/apiKey/models）→ 重启 → /model 切
 
 - config 不热加载：改完重启生效（/model、/setup 例外，运行时生效）
 - 配置解析失败：启动报 [CONFIG_PARSE_FAILED] 并拒绝启动，**绝不覆盖写坏的文件**——手动修复，或删除后重启重新生成模板
-- 日志：~/.ecode/logs/<sessionId>.jsonl（logLevel 控制）；会话历史：~/.ecode/sessions/
+- 日志：<项目根>/.ecode/logs/<sessionId>.jsonl（cwd 级——serve 形态 serve-<sessionId>.jsonl；logLevel 控制）；会话历史：~/.ecode/sessions/
 - 修改配置保持 JSONC 合法（注释允许）；改前可备份 .bak，改后用 read_file 复查再重启`
 
 export function builtinSkillInfos(): SkillInfo[] {

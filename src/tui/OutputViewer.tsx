@@ -134,20 +134,53 @@ export function subagentSource(agentId: string, width: number): LineSource {
   }
 }
 
-/** 列出可查看的子代理 transcript 文件（id + mtime，新→旧） */
-export function listSubagentTranscripts(): Array<{ id: string; mtimeMs: number }> {
+/** 列出可查看的子代理 transcript 文件（id + mtime + 首行摘要，新→旧）。
+ *  F-26：裸 id 无可读性——逐文件读首 2KB 抽首条 user 文本做摘要；时间取文件 mtime。
+ *  无项目归属标记（transcript 只含消息行），扫描范围=全部文件但列表只显示最近 maxShow 条
+ *  （调用方截断）——避免跨项目历史条目刷屏。 */
+export function listSubagentTranscripts(maxShow = 30): Array<{ id: string; mtimeMs: number; summary: string }> {
   try {
     return readdirSync(join(homedir(), '.ecode', 'agents'))
       .filter((f) => f.endsWith('.jsonl'))
       .map((f) => {
         const full = join(homedir(), '.ecode', 'agents', f)
-        return { id: f.slice(0, -'.jsonl'.length), mtimeMs: statSync(full).mtimeMs }
+        return { id: f.slice(0, -'.jsonl'.length), mtimeMs: statSync(full).mtimeMs, summary: readFirstUserText(full) }
       })
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
+      .slice(0, maxShow)
   } catch {
     return []
   }
 }
+
+/** F-26：transcript 首条 user 文本（读首 2KB 截取——大文件不全量读） */
+function readFirstUserText(file: string): string {
+  try {
+    const head = readFileSync(file, 'utf8').slice(0, 2048)
+    for (const line of head.split('\n')) {
+      if (line.trim() === '') continue
+      try {
+        const m = JSON.parse(line) as { role?: string; content?: unknown }
+        if (m.role !== 'user') continue
+        if (typeof m.content === 'string') return firstLine(m.content)
+        if (Array.isArray(m.content)) {
+          for (const b of m.content) {
+            if (typeof b === 'object' && b !== null && (b as { type?: string }).type === 'text') {
+              return firstLine(String((b as { text?: string }).text ?? ''))
+            }
+          }
+        }
+      } catch {
+        /* 半行截断（2KB 边界）——跳过 */
+      }
+    }
+  } catch {
+    /* 读失败——无摘要 */
+  }
+  return ''
+}
+
+const firstLine = (s: string): string => (s.split('\n')[0] ?? '').trim()
 
 // —— OutputViewer：文本滚动窗 ——
 
@@ -354,9 +387,14 @@ export function OutputListPage({ recentTools, onOpen, onExit }: OutputListPagePr
       }
     }
     if (agents.length > 0) {
-      out.push({ type: 'header', label: '子代理 transcript' })
+      out.push({ type: 'header', label: '子代理 transcript（跨项目最近 30 条）' })
       for (const a of agents.slice(0, 10)) {
-        out.push({ type: 'item', value: { kind: 'agent', id: a.id }, label: clipWidth(`§ ${a.id}`, max) })
+        // F-26：裸 id → 时间 + 首行摘要（历史条目不再是一串无意义 id）
+        const t = new Date(a.mtimeMs)
+        const pad = (n: number): string => String(n).padStart(2, '0')
+        const when = `${t.getMonth() + 1}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`
+        const sum = a.summary === '' ? a.id : a.summary
+        out.push({ type: 'item', value: { kind: 'agent', id: a.id }, label: clipWidth(`§ ${when} ${sum}`, max) })
       }
     }
     return out

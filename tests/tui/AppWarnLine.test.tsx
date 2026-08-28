@@ -1,9 +1,13 @@
-import { describe, it, expect } from 'vitest'
-import { render } from 'ink-testing-library'
+import { describe, it, expect, afterEach } from 'vitest'
+import { render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { App } from '../../src/tui/App.js'
 import { renderNoticeLine } from '../../src/tui/notices.js'
 import type { CommittedItem, ActiveState } from '../../src/tui/types.js'
+
+// F-flake 卫生修复（Alt+V 破案结论同源）：遗留挂载实例 + 新实例挂载期同步/异步工作叠加
+// 会让 promise 微任务渲染掉帧（lastFrame 不更新）——并行全量下偶发红。逐测卸载根治。
+afterEach(() => cleanup())
 
 
 describe('App 底部告警第二行', () => {

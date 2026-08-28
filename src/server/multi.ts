@@ -62,6 +62,9 @@ export function serveMulti(
     id?: string
     /** M14-C2①/D13：追加凭据条目（device 级测试注入口；产品化线 R1 配对设备正式写入处） */
     extraCredentials?: Array<{ secret: string; class: 'primary' | 'lan-password' | 'device' }>
+    /** F-27：POST /api/cmd {op:'stop'} 优雅停机回调（serveMode 注入——断 mux → flush 日志 → exit；
+     *  缺省 501 NOT_IMPLEMENTED（测试/嵌入方未接线）。本机 token 持有者即主人，不需二次确认） */
+    onStop?: () => Promise<void> | void
   } = {},
 ): Promise<ServeResult> {
   const token = randomBytes(24).toString('hex')
@@ -348,6 +351,16 @@ export function serveMulti(
               chunks.push(c as Buffer)
             }
             const cmd = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown>
+            // F-27：stop 信封拦截（serve 进程级命令——不路由进任何会话；原形态走信封路由会
+            // 落到会话 dispatch 的 NOT_IMPLEMENTED 兜底）。auth 已过（primary/lan-password 一等凭据）。
+            const stopPeek = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : {}) as { op?: string }
+            if (stopPeek.op === 'stop') {
+              if (opts.onStop === undefined) return json(501, { ok: false, error: 'stop 未接线（无 onStop 回调）', code: 'NOT_IMPLEMENTED' })
+              // 先回执再停（响应写出后再拉连接——客户端能收到 ok）
+              json(200, { ok: true, stopping: true })
+              void Promise.resolve(opts.onStop()).catch(() => {})
+              return
+            }
             // M14-C1③ 浏览即装配收敛：session/list 是纯读浏览——冷项目走 history 静态读路径
             // （不 resolveHost→acquire，点过的项目不再全变常驻）；项目已活则照旧走宿主（running 态准确）
             const opPeek = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : {}) as { op?: string }

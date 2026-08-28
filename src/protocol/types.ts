@@ -87,7 +87,7 @@ type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K>
 /** 插话/排队三态（codex TurnInputMode；M11 双时点插话的协议化） */
 export type PromptMode = 'StartOrSteer' | 'StartIfIdle' | { Steer: { expectedTurnId: string } }
 
-export type PromptRouted = 'Started' | 'Steered' | 'Queued' | 'Rejected'
+export type PromptRouted = 'Started' | 'Steered' | 'Queued' | 'Rejected' | 'Command'
 
 export type ProtocolCommand =
   | { op: 'prompt'; text: string; mode: PromptMode; images?: ImagePayload[] }
@@ -125,6 +125,8 @@ export interface PromptResult extends CommandOk {
 export interface CommandOk {
   ok: true
   value?: unknown
+  /** F-23：host 命令分流的输出文本（routed:'Command' 时给 web 端直接展示；同文本也走 systemMsg 帧） */
+  output?: string
   /** M13-W2：路由命中的会话 id（信封路由/隐式建会话时回执——TuiApp 同进程路径不填） */
   sessionId?: string
 }

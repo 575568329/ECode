@@ -116,20 +116,28 @@ describe('M14-V5 allocateDynamic（动态区总守卫分配）', () => {
     expect(allocateDynamic(8)).toEqual({ degraded: true, streamMaxLines: 0, toolGroupCap: 0 })
     expect(allocateDynamic(11)).toEqual({ degraded: true, streamMaxLines: 0, toolGroupCap: 0 })
   })
-  it('24 行终端（budget 22）：工具 ≥2 组 + stream 保底 4（常见最小终端可用性）', () => {
+  it('24 行终端（budget 22）：工具 ≥1 组 + stream 保底 4（审阅批4 输入区实占 8 行后 24 行窗收紧）', () => {
     const a = allocateDynamic(22)
     expect(a.degraded).toBe(false)
-    expect(a.toolGroupCap).toBeGreaterThanOrEqual(2)
+    expect(a.toolGroupCap).toBeGreaterThanOrEqual(1)
     expect(a.streamMaxLines).toBeGreaterThanOrEqual(4)
+    // 条件段感知（审阅 P1-1）：TasksBar+SubagentBar 活跃显式扣减，退化线上移
+    const b = allocateDynamic(22, { tasksBar: true, subagentBar: true })
+    expect(b.degraded).toBe(true) // 22 < 12+6
+    const c = allocateDynamic(40, { tasksBar: true })
+    expect(c.degraded).toBe(false)
+    // 条件段已扣进 CHROME（8=5 骨架+3 任务条）——总和 ≤ content=40−8−8
+    expect(c.toolGroupCap * 4 + c.streamMaxLines).toBeLessThanOrEqual(40 - 8 - 8)
+    expect(allocateDynamic(40).streamMaxLines).toBeGreaterThan(c.streamMaxLines) // 条件段真实挤占（stream 吃弹性）
   })
   it('大终端：工具组封顶 6、stream 拿大头；总和恒 ≤ content（预算不变式）', () => {
     for (const budget of [22, 40, 60, 100]) {
       const a = allocateDynamic(budget)
-      const content = Math.max(4, budget - 5 - 3)
+      const content = Math.max(4, budget - 5 - 8)
       expect(a.toolGroupCap).toBeLessThanOrEqual(6)
       expect(a.toolGroupCap * 4 + a.streamMaxLines).toBeLessThanOrEqual(content)
     }
     expect(allocateDynamic(98).toolGroupCap).toBe(6)
-    expect(allocateDynamic(98).streamMaxLines).toBeGreaterThanOrEqual(50)
+    expect(allocateDynamic(98).streamMaxLines).toBeGreaterThanOrEqual(40)
   })
 })

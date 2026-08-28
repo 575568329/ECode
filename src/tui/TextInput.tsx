@@ -1,7 +1,6 @@
 import type { ReactElement } from 'react'
 import { useInput, Text, Box } from 'ink'
 import wrapAnsi from 'wrap-ansi'
-import stringWidth from 'string-width'
 import {
   insert,
   backspace,
@@ -12,6 +11,7 @@ import {
   moveEnd,
   splitAtCaret,
   countGraphemes,
+  graphemes,
   type CursorState,
 } from './cursor.js'
 import { symbols } from './symbols.js'
@@ -111,7 +111,9 @@ export function foldInputView(
     physStart += len
   }
   const physText = physPerLine[cl]?.[physIdx] ?? ''
-  const caretCol = stringWidth(physText.slice(0, Math.max(0, charCol - physStart)))
+  // 审阅 P1-9：caretCol 是字素索引（CaretText/splitAtCaret 口径）非显示列——原 stringWidth
+  // +UTF-16 slice 双重口径错位（'中中abc' caret 在 a 前反色落在 c）；按字素切取前缀
+  const caretCol = graphemes(physText).slice(0, Math.max(0, charCol - physStart)).length
   const caretGlobalPhys = physPerLine.slice(0, cl).reduce((n, p) => n + p.length, 0) + physIdx
   const flat: string[] = []
   physPerLine.forEach((p) => flat.push(...p))

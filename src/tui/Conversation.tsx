@@ -91,6 +91,8 @@ interface ConversationProps {
   onConfirm?: () => void
   onCancel?: () => void
   children?: ReactNode
+  /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar 各 ≤3 行——allocateDynamic 显式扣减） */
+  conditions?: { tasksBar?: boolean; subagentBar?: boolean }
 }
 
 export function Conversation({
@@ -100,6 +102,7 @@ export function Conversation({
   onConfirm,
   onCancel,
   children,
+  conditions,
 }: ConversationProps): ReactElement {
   const toolExpanded = active.tools.some(
     (t) => t.use && active.expandedTools.has(t.use.id),
@@ -107,7 +110,7 @@ export function Conversation({
   // M14-V5（§3.4）总守卫：动态区顶层一次分配（各段独立截断不保证总和 < rows——病态组合
   // 8 组工具×4 行+灰字+输入仍超 24 行终端）；退化态 markdown/工具区不渲染
   const { budget } = useViewport()
-  const alloc = allocateDynamic(budget)
+  const alloc = allocateDynamic(budget, conditions)
   return (
     <Box flexDirection="column">
       <Static items={committed}>
@@ -121,7 +124,13 @@ export function Conversation({
         (alloc.degraded ? (
           <Text dimColor>{TOO_SMALL_HINT}</Text>
         ) : (
-          <ToolGroupView tools={active.tools} expanded={toolExpanded} done={!active.streaming} onToggle={onToggleTool} maxTools={alloc.toolGroupCap} />
+          <ToolGroupView
+            tools={active.tools}
+            expanded={toolExpanded}
+            done={!active.streaming}
+            onToggle={onToggleTool}
+            maxTools={toolExpanded ? Math.min(alloc.toolGroupCap, 1) : alloc.toolGroupCap} // 审阅 P1-3：展开态每组可占 expandCap+2 行，总高失控——收 1 组全文余折叠（全文走 /output）
+          />
         ))}
       {active.confirm ? (
         <ConfirmPrompt state={active.confirm} onConfirm={onConfirm} onCancel={onCancel} />
@@ -147,9 +156,8 @@ function CappedAssistantMessage({ text, maxLines }: { text: string; maxLines: nu
   const { total } = foldStreamText(text, undefined, columns)
   if (total > maxLines * 2) {
     return (
-      <Text dimColor>
-        ⋯ 本轮回复共 {total} 行，终端预算内不展示（/output 查看全文）
-      </Text>
+      // 审阅 P1-8：/output 列表不含 assistant 文本——改指历史区（下次提交后兜底 commit 进 Static 可滚回看）
+      <Text dimColor>⋯ 本轮回复共 {total} 行，终端预算内不展示（再次输入后进入历史区可回看全文）</Text>
     )
   }
   return <AssistantMessage text={text} />

@@ -205,12 +205,12 @@ describe('foldInputView 物理行感知（M14-V2）', () => {
     expect(r.rows[6]?.text).toMatch(/^z+$/)
   })
 
-  it('caret 物理列按显示宽度（CJK 2 列）', () => {
+  it('caret 物理列按字素索引（审阅 P1-9：与 CaretText/splitAtCaret 口径统一——原显示列口径行中位置错位）', () => {
     const text = '中中中中中'
-    // width 8：物理行 [中中中中, 中]；caret=4=第 4 字后→首物理行末（列 8，与下行首同点——
-    // 行末归上一行，与 caretLineCol 边界语义一致）；caret=5=第 5 字后→第二行末（列 2）
-    expect(foldInputView(text, 4, 5, 8)).toMatchObject({ caretRow: 0, caretCol: 8 })
-    expect(foldInputView(text, 5, 5, 8)).toMatchObject({ caretRow: 1, caretCol: 2 })
+    // width 8：物理行 [中中中中, 中]；caret=4=第 4 字后→首物理行末（字素 4，与下行首同点——
+    // 行末归上一行，与 caretLineCol 边界语义一致）；caret=5=第 5 字后→第二行末（字素 1）
+    expect(foldInputView(text, 4, 5, 8)).toMatchObject({ caretRow: 0, caretCol: 4 })
+    expect(foldInputView(text, 5, 5, 8)).toMatchObject({ caretRow: 1, caretCol: 1 })
   })
 
   it('无 width 保持逻辑行旧行为', () => {

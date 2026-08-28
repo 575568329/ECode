@@ -87,9 +87,10 @@ describe('Conversation', () => {
     }
     const { lastFrame } = render(React.createElement(Conversation, { committed: [], active }))
     const f = lastFrame() ?? ''
-    expect(f).toContain('2 个工具')
+    // 审阅批4：allocateDynamic 输入区实占 8 行后 24 行窗 toolGroupCap=1——第 2 组折叠为提示行
+    expect(f).toContain('1 个工具')
     expect(f).toContain('read_file')
-    expect(f).toContain('bash')
+    expect(f).toContain('还有 1 个工具因终端预算折叠')
   })
 
   it('active.userInput → 显示用户消息', () => {

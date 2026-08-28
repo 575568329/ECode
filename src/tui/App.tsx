@@ -37,6 +37,8 @@ interface AppProps {
   sandboxDanger?: boolean
   /** 运行时告警（重试/限流/压缩等）——底部独立第二行渲染并截断（防长消息挤碎状态行） */
   warning?: string
+  /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar——Conversation 总分配显式扣减） */
+  conditions?: { tasksBar?: boolean; subagentBar?: boolean }
   /** 告警分级着色（M8②：error 红 / warn 黄 / info 蓝；缺省 warn） */
   warningLevel?: 'error' | 'warn' | 'info'
   /** 配置无效/不完整提示（顶部醒目，启动态；区别于 warning 进 StatusBar） */
@@ -65,6 +67,7 @@ export function App({
   sandboxDanger,
   warning,
   warningLevel,
+  conditions,
   banner,
   running,
   children,
@@ -89,6 +92,7 @@ export function App({
         onToggleTool={onToggleTool}
         onConfirm={onConfirm}
         onCancel={onCancel}
+        conditions={conditions}
       >
         <ActivityBar state={activity} text={activityText} />
         {children}

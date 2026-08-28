@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import wrapAnsi from 'wrap-ansi'
 import { theme } from './theme.js'
 import { PanelShell, type PanelRow } from './PanelShell.js'
-import { sectionBudget, useViewport } from './viewport.js'
+import { clipWidth, sectionBudget, useViewport } from './viewport.js'
 import { taskRegistry } from '../services/tasks.js'
 
 // —— LineSource：查看器的数据面（§3.5）——
@@ -39,23 +39,43 @@ function wrapAll(text: string, width: number): string[] {
   return text.split('\n').flatMap((l) => (l === '' ? [''] : wrapAnsi(l, width, { hard: true, trim: false }).split('\n')))
 }
 
+/** 审阅 P1-6：wrap 结果模块级缓存（键=源标识；校验=length+width——内容变化自然 miss）。
+ *  三源共用：10 万行日志每次按键全量读盘+wrap 是帧级卡顿（性能红线自违反）；
+ *  LRU 16 条防无界（条目=一次 wrap 的物理行数组）。 */
+const wrapCache = new Map<string, { len: number; width: number; lines: string[] }>()
+function cachedWrap(key: string, text: string, width: number): string[] {
+  const hit = wrapCache.get(key)
+  if (hit !== undefined && hit.len === text.length && hit.width === width) return hit.lines
+  const lines = wrapAll(text, width)
+  if (wrapCache.size >= 16) {
+    const oldest = wrapCache.keys().next().value
+    if (oldest !== undefined) wrapCache.delete(oldest)
+  }
+  wrapCache.set(key, { len: text.length, width, lines })
+  return lines
+}
+
 /** ① 工具执行内容：来自 TuiApp 的 item/completed 帧环形缓冲。
  *  边界（v1.2 审阅）：前台 bash 有工具层 30KB 截断天花板——超限部分 transcript 也不存在，
- *  全文只有 run_in_background 任务日志有。 */
+ *  全文只有 run_in_background 任务日志有。
+ *  审阅 P1-4：getTool getter 化（不闭包快照对象——item/read 异步补全后新对象即时可见，
+ *  旧实现已打开的查看器持旧引用+cache 永不刷新，用户一直看 4KB 截断版）。 */
 export interface RecentTool {
   itemId: string
   name: string
   content: string
   isError: boolean
   at: number
+  /** 审阅 P1-5：帧内 content 被 4KB 截断（item/read 补全后清除） */
+  truncated?: boolean
 }
 
-export function toolResultSource(tool: RecentTool, width: number): LineSource {
-  let cache: string[] | null = null
+export function toolResultSource(getTool: () => RecentTool | undefined, width: number): LineSource {
   return {
     lines: () => {
-      if (cache === null) cache = wrapAll(tool.content, width)
-      return cache
+      const t = getTool()
+      if (t === undefined) return []
+      return cachedWrap(`tool:${t.itemId}`, t.content, width)
     },
     isGrowing: () => false,
   }
@@ -70,7 +90,8 @@ export function taskFileSource(taskId: string, width: number): LineSource {
   const readLines = (): string[] => {
     if (file === '') return []
     try {
-      return wrapAll(readFileSync(file, 'utf8'), width)
+      // 审阅 P1-6：cachedWrap（内容长度校验——日志追加自然 miss 重建）
+      return cachedWrap(`task:${taskId}`, readFileSync(file, 'utf8'), width)
     } catch {
       return []
     }
@@ -102,7 +123,7 @@ export function subagentSource(agentId: string, width: number): LineSource {
   const file = join(homedir(), '.ecode', 'agents', `${agentId}.jsonl`)
   const readLines = (): string[] => {
     try {
-      return wrapAll(readFileSync(file, 'utf8'), width)
+      return cachedWrap(`agent:${agentId}`, readFileSync(file, 'utf8'), width)
     } catch {
       return []
     }
@@ -303,8 +324,12 @@ export function OutputListPage({ recentTools, onOpen, onExit }: OutputListPagePr
     timer.unref?.()
     return () => clearInterval(timer)
   }, [])
+  const { columns } = useViewport()
 
   const rows = useMemo<Array<PanelRow<OutputEntry>>>(() => {
+    // 审阅 P1-7：label 一律按显示宽度截断（columns−4 留边框缩进）——slice 按字符且 80 列
+    // 终端普遍超宽，Ink wrap 成 2 物理行使 PanelShell 窗口化预算翻倍失效
+    const max = Math.max(20, columns - 4)
     const out: Array<PanelRow<OutputEntry>> = []
     if (tasks.length > 0) {
       out.push({ type: 'header', label: '后台任务（运行中可实时跟随）' })
@@ -313,7 +338,7 @@ export function OutputListPage({ recentTools, onOpen, onExit }: OutputListPagePr
         out.push({
           type: 'item',
           value: { kind: 'task', id: t.id },
-          label: `${mark} ${t.id} ${t.command.slice(0, 60)}（${t.status}${t.exitCode !== null ? ` exit ${t.exitCode}` : ''}）`,
+          label: clipWidth(`${mark} ${t.id} ${t.command}（${t.status}${t.exitCode !== null ? ` exit ${t.exitCode}` : ''}）`, max),
         })
       }
     }
@@ -324,18 +349,18 @@ export function OutputListPage({ recentTools, onOpen, onExit }: OutputListPagePr
         out.push({
           type: 'item',
           value: { kind: 'tool', tool },
-          label: `${tool.isError ? '✗' : '·'} ${tool.name} ${preview}`,
+          label: clipWidth(`${tool.isError ? '✗' : '·'} ${tool.name} ${preview}${tool.truncated === true ? ' 〔已截断〕' : ''}`, max),
         })
       }
     }
     if (agents.length > 0) {
       out.push({ type: 'header', label: '子代理 transcript' })
       for (const a of agents.slice(0, 10)) {
-        out.push({ type: 'item', value: { kind: 'agent', id: a.id }, label: `§ ${a.id}` })
+        out.push({ type: 'item', value: { kind: 'agent', id: a.id }, label: clipWidth(`§ ${a.id}`, max) })
       }
     }
     return out
-  }, [tasks, recentTools, agents])
+  }, [tasks, recentTools, agents, columns])
 
   return (
     <PanelShell

@@ -12,6 +12,7 @@
  */
 import { useWindowSize } from 'ink'
 import wrapAnsi from 'wrap-ansi'
+import stringWidth from 'string-width'
 
 /** 帧高必须留出的余量（Windows 恰满屏也触发全清，ink #969） */
 export const SAFETY_MARGIN = 2
@@ -70,11 +71,16 @@ export interface DynamicAllocation {
  * 预留 = 输入区 3（粘贴折叠钳制后）+ ActivityBar 1 + StatusBar 1 + 子代理/任务条 ~5
  * （App 骨架实际占用对齐）；confirm/overlay 打开时 ConfirmPrompt 自管公式（不变）。
  */
-export function allocateDynamic(budget: number): DynamicAllocation {
-  const USER_INPUT_LINES = 3
-  const CHROME_RESERVE = 5 // 恒在骨架：ActivityBar 1 + StatusBar 1 + 输入区空隙 ~3（子代理/任务条是条件段，活跃时挤占 stream 余量）
+export function allocateDynamic(budget: number, conditions: { tasksBar?: boolean; subagentBar?: boolean } = {}): DynamicAllocation {
+  // 审阅 P1-1/P1-2：输入区折叠态实占最多 7-8 行（INPUT_FOLD_MAX_LINES=5+上下折叠指示+caret 行），
+  // 原 3 行预算低估；条件段（TasksBar/SubagentBar 各 ≤3 行）活跃时显式扣减——原"挤占余量"
+  // 只有注释无机制，24 行终端最坏叠加 32 行 >> budget
+  const USER_INPUT_LINES = 8
+  const CHROME_RESERVE = 5 + (conditions.tasksBar === true ? 3 : 0) + (conditions.subagentBar === true ? 3 : 0)
   const STREAM_MIN = 4 // 流式区保底（tail 折叠天然弹性，是余量的缓冲垫）
-  if (budget < 12) return { degraded: true, streamMaxLines: 0, toolGroupCap: 0 }
+  const condLines = (conditions.tasksBar === true ? 3 : 0) + (conditions.subagentBar === true ? 3 : 0)
+  // 退化线：保住最小可用内容（1 组 4 行 + stream 4 行）= CHROME 5 + 输入 8 + 8
+  if (budget < 21 + condLines) return { degraded: true, streamMaxLines: 0, toolGroupCap: 0 }
   const content = Math.max(4, budget - CHROME_RESERVE - USER_INPUT_LINES)
   const toolGroupCap = Math.max(1, Math.min(6, Math.floor((content - STREAM_MIN) / 4)))
   const streamMaxLines = Math.max(STREAM_MIN, content - toolGroupCap * 4)
@@ -138,4 +144,16 @@ export function foldLines(
     foldedCount: total - windowMax,
     totalPhysical: total,
   }
+}
+
+/** 审阅 P1-7：按显示宽度截断列表/状态行（string-width 感知 CJK；超宽 wrap 会使
+ *  PanelShell/TasksBar 的"每 item 1 行"窗口化预算翻倍失效——OutputViewer/TasksBar 共用） */
+export function clipWidth(text: string, max: number, ellipsis = '…'): string {
+  if (stringWidth(text) <= max) return text
+  let out = ''
+  for (const ch of text) {
+    if (stringWidth(out + ch) > max - stringWidth(ellipsis)) break
+    out += ch
+  }
+  return out + ellipsis
 }

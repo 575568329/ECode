@@ -24,8 +24,50 @@ const server = http.createServer((req, res) => {
     console.log(`# [mock] 收到请求 #${roundNo + 1}（body ${body.length}B）`)
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     sse(res, 'message_start', { type: 'message_start', message: { id: 'msg_x', type: 'message', role: 'assistant', content: [], model: 'mock-model', stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } })
-    sse(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
+    let last = body
+    try {
+      const j = JSON.parse(body)
+      const msgs = j.messages ?? []
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'user') {
+          const c = msgs[i].content
+          last = typeof c === 'string' ? c : Array.isArray(c) ? c.map((b) => b.text ?? '').join('') : ''
+          break
+        }
+      }
+    } catch {}
     roundNo++
+    // 工具轮（审阅批4 探针补场景：工具帧 + /output 查看器打开——P0-2 曾藏在此未测组合）。
+    // 工具选 glob（readonly 真跑扫 src——输出大页触发 4KB 截断+viewer 打开）
+    // 工具轮第二轮（tool_result 回喂后的收尾文本——判定依据同 wedge-probe：最后一条 user 消息含 tool_result 时收尾）
+    const msgs2 = (() => { try { return JSON.parse(body).messages ?? [] } catch { return [] } })()
+    const lastMsg = msgs2[msgs2.length - 1]
+    const isToolResultTurn = lastMsg !== undefined && lastMsg.role === 'user' && Array.isArray(lastMsg.content) && lastMsg.content.some((b) => b.type === 'tool_result')
+    console.log('# [mock] branch=toolResult=' + isToolResultTurn + ' lastRole=' + (lastMsg?.role ?? ''))
+    if (isToolResultTurn) {
+      sse(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
+      sse(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `TOOLDONE-R${roundNo}` } })
+      sse(res, 'content_block_stop', { type: 'content_block_stop' })
+      sse(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 8 } })
+      sse(res, 'message_stop', { type: 'message_stop' })
+      res.end()
+      return
+    }
+
+    console.log('# [mock] branch=toolround')
+    if (last.includes('toolround')) {
+      sse(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
+      sse(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `toolround-${roundNo} starting` } })
+      sse(res, 'content_block_stop', { type: 'content_block_stop' })
+      sse(res, 'content_block_start', { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: `toolu_${roundNo}`, name: 'glob', input: {} } })
+      sse(res, 'content_block_delta', { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"pattern":"*.ts","path":"src"}' } })
+      sse(res, 'content_block_stop', { type: 'content_block_stop' })
+      sse(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 8 } })
+      sse(res, 'message_stop', { type: 'message_stop' })
+      res.end()
+      return
+    }
+    sse(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
     // 每轮唯一长文（loop-guard 复读指纹安全网 + 超屏量级：80 段 ≈ 32+ 物理行 > 18 行窗）
     const reply = `overscreen-pressure-paragraph-${roundNo} `.repeat(140) + `END-OF-R${roundNo}`
     const chunks = 80
@@ -113,10 +155,37 @@ const run = async () => {
     }
   }
 
+  // O4（审阅批4）：工具轮 + /output 查看器打开——P0-2 曾藏在此未测组合
+  // O4（审阅批4）：/output 面板开合——P0-2 曾藏在此未测组合（工具轮 mock 的 SSE 翻译
+  // 未通——loop 报「要求工具调用但未给出工具」；真工具帧场景归真机门 G1/楔死四场景，此处
+  // 先覆盖面板高度路径：列表页+空态+Esc 关闭全程无 3J）
+  const toolPhase = async () => {
+    proc.write('\x7f') // 清 O1 回显探针残留的 z（wedge-probe 同款）
+    await new Promise((r) => setTimeout(r, 200))
+    const m = markNow()
+    proc.write('/output')
+    await new Promise((r) => setTimeout(r, 250))
+    proc.write('\r')
+    const listed = await waitFor(m, /最近工具调用|后台任务|暂无可查看/, 5000)
+    console.log(listed ? 'OK  O4 /output 面板打开' : 'FAIL O4 /output 面板未开')
+    if (!listed) { ok = false; console.log(dumpTail()); return }
+    await new Promise((r) => setTimeout(r, 500))
+    proc.write('\x1b')
+    await new Promise((r) => setTimeout(r, 500))
+    const mEcho = markNow()
+    proc.write('z')
+    const echoed = await waitFor(mEcho, /z/, 4000)
+    console.log(echoed ? 'OK  O4 面板关闭后调度活' : 'FAIL O4 面板关闭后调度死')
+    if (!echoed) ok = false
+    if (out.includes('[3J')) { console.log('FAIL O4 出现 ESC[3J'); ok = false }
+    else console.log('OK  O4 面板开合全程无 ESC[3J')
+    proc.write('\x7f') // 清本段 z 回显残留（O3 输入前置干净）
+  }
   await phase('O1 小窗 rows=18', 3)
   proc.resize(100, 40)
   await new Promise((r) => setTimeout(r, 800))
   await phase('O3 正常 rows=40', 3)
+  await toolPhase()
   if (exited) { console.log('FAIL 子进程意外退出'); ok = false }
 
   proc.kill()

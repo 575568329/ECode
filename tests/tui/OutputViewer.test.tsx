@@ -104,11 +104,15 @@ describe('OutputViewer 文本滚动窗（M14-V3）', () => {
 })
 
 describe('LineSource 适配器（M14-V3）', () => {
-  it('toolResultSource：wrap 物理行 + 非增长', () => {
-    const tool: RecentTool = { itemId: 'i1', name: 'bash', content: 'x'.repeat(100), isError: false, at: 0 }
-    const src = toolResultSource(tool, 30)
+  it('toolResultSource：getter 化（审阅 P1-4——补全后新对象即时可见）+ wrap 物理行 + 非增长', () => {
+    let tool: RecentTool | undefined = { itemId: 'i1', name: 'bash', content: 'x'.repeat(100), isError: false, at: 0 }
+    const src = toolResultSource(() => tool, 30)
     expect(src.lines()).toHaveLength(4) // ceil(100/30)
     expect(src.isGrowing()).toBe(false)
+    // 补全：换新对象（content 变长）——同 source 即时看到新内容（缓存以内容长度校验失效）
+    tool = { ...tool, content: 'y'.repeat(150) }
+    expect(src.lines()).toHaveLength(5) // ceil(150/30)
+    expect(toolResultSource(() => undefined, 30).lines()).toEqual([]) // 条目被挤出环形缓冲
   })
 
   it('taskFileSource：文件不存在返回空行（活任务边界）', () => {

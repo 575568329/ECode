@@ -154,6 +154,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   }
   // M11-P4：运行中子代理快照（进度事件驱动）
   const [subagents, setSubagents] = useState<SubagentStatus[]>([])
+  // 审阅 P1-1：TasksBar 活跃态（allocateDynamic 条件段扣减用——与 TasksBar 同源 1s 轮询）
+  const [tasksActive, setTasksActive] = useState(false)
+  useEffect(() => {
+    const timer = setInterval(() => setTasksActive(taskRegistry.snapshot().length > 0), 1000)
+    timer.unref?.()
+    return () => clearInterval(timer)
+  }, [])
 
   /** usage 记录（submit 与子代理桥共用——成本归并；「本轮」语义被并发稀释为最后到达者，文档化） */
   const recordUsage = (inp: number, out: number, cache?: { read?: number; creation?: number }) => {
@@ -267,6 +274,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   >(null)
   // M14-V3：最近工具调用环形缓冲（/output 列表数据源——item/completed 帧记录，50 封顶）
   const [recentTools, setRecentTools] = useState<RecentTool[]>([])
+  // 审阅 P1-4：ref 镜像——toolResultSource 的 getter 经它取当前对象（补全 setRecentTools
+  // 产生的新对象即时可见，不闭包打开时刻的快照）
+  const recentToolsRef = useRef(recentTools)
+  recentToolsRef.current = recentTools
   // 面板回填通道（S-P6 D32：SkillPanel Enter → `/name ` 写入输入框，不直接执行）
   const [insert, setInsert] = useState<{ text: string; seq: number } | undefined>(undefined)
   // /history 打开时载入的会话列表（loadAll 只在打开时调一次，避免 render 热路径同步 IO）
@@ -318,15 +329,22 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         case 'item/completed': {
           // M14-V3：环形缓冲记录（/output 查看器数据源；前台 bash 有工具层 30KB 截断边界）
           setRecentTools((prev) => {
-            const next = [{ itemId: ev.itemId, name: ev.name, content: ev.content, isError: ev.isError, at: Date.now() }, ...prev]
+            const next = [{ itemId: ev.itemId, name: ev.name, content: ev.content, isError: ev.isError, at: Date.now(), ...(ev.truncated === true ? { truncated: true } : {}) }, ...prev]
             return next.length > 50 ? next.slice(0, 50) : next
           })
-          // M14-C1⑤：帧 content 已截断 4KB——异步 item/read 补全全文（打开 /output 前通常已就绪）
+          // M14-C1⑤：帧 content 已截断 4KB——异步 item/read 补全全文（打开 /output 前通常已就绪）。
+          // 审阅 P1-5：补全失败（压缩后 tool_result 已被摘要 ITEM_NOT_FOUND/未落盘窗口）与
+          // 二次截断（>1MB）不再静默——告警中心提示 + truncated 标记保留（查看器标"截断"）
           if (ev.truncated === true) {
             void host.send({ op: 'item/read', itemId: ev.itemId }).then((r) => {
-              if (r.ok && r.value !== undefined && typeof (r.value as { content?: unknown }).content === 'string') {
-                const full = (r.value as { content: string }).content
-                setRecentTools((prev) => prev.map((t) => (t.itemId === ev.itemId ? { ...t, content: full } : t)))
+              const value = (r as { value?: { content?: unknown; truncated?: unknown } }).value
+              if (r.ok && value !== undefined && typeof value.content === 'string') {
+                setRecentTools((prev) => prev.map((t) => (t.itemId === ev.itemId ? { ...t, content: value.content as string, ...(value.truncated === true ? { truncated: true } : { truncated: false }) } : t)))
+                if (value.truncated === true) {
+                  pushNoticeFn('warn', `工具 ${ev.name} 全文超 1MB 上限，查看器仍为截断版（全文走后台任务日志）`)
+                }
+              } else {
+                pushNoticeFn('warn', `工具 ${ev.name} 全文拉取失败（可能已被压缩摘要），查看器仅 4KB 截断版`)
               }
             })
           }
@@ -923,6 +941,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   return (
     <App
       key={clearKey}
+      conditions={{ tasksBar: tasksActive, subagentBar: subagents.length > 0 }}
       model={config.current.model}
       banner={banner}
       committed={fullCommitted}
@@ -1080,7 +1099,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             const cols = process.stdout.columns ?? 80
             const width = Math.max(10, cols - 4)
             if (entry.kind === 'tool') {
-              setOverlay({ kind: 'output-view', title: `${entry.tool.name}（${entry.tool.itemId}）`, source: toolResultSource(entry.tool, width) })
+              setOverlay({
+                kind: 'output-view',
+                title: `${entry.tool.name}（${entry.tool.itemId}）${entry.tool.truncated === true ? ' 〔截断，补全中〕' : ''}`,
+                source: toolResultSource(() => recentToolsRef.current.find((t) => t.itemId === entry.tool.itemId), width),
+              })
             } else if (entry.kind === 'task') {
               const snap = taskRegistry.snapshot().find((t) => t.id === entry.id)
               setOverlay({

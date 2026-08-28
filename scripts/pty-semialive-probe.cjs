@@ -63,8 +63,11 @@ const server = http.createServer((req, res) => {
       sse(res, 'content_block_stop', { type: 'content_block_stop', index: 0 })
       toolPhase = false
     } else if (toolPhase) {
-      // 工具轮：发 tool_use（输入故意小；工具由客户端真实执行）
+      // 工具轮：发 tool_use（工具由客户端真实执行；ls 是 readonly 免审批工具）
+      // 协议保真（角色D）：input 走 input_json_delta 传输（空对象），stop_reason 用 tool_use——
+      // 消除对 loop stop-lying 防御与 __parse_error 容错的隐性依赖
       sse(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_semialive', name: 'ls', input: {} } })
+      sse(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{}' } })
       sse(res, 'content_block_stop', { type: 'content_block_stop', index: 0 })
     } else {
       // 普通文本轮（每轮唯一回复——loop-guard 复读指纹安全网别被触发）
@@ -77,7 +80,9 @@ const server = http.createServer((req, res) => {
       }
       sse(res, 'content_block_stop', { type: 'content_block_stop', index: 0 })
     }
-    sse(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 8 } })
+    // 工具轮首段的 stop_reason 必须是 tool_use（协议语义；文本收尾轮与普通轮 end_turn）
+    const stopReason = toolPhase && !sawToolResult ? 'tool_use' : 'end_turn'
+    sse(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 8 } })
     sse(res, 'message_stop', { type: 'message_stop' })
     res.end()
   })
@@ -89,6 +94,7 @@ const strip = (s) =>
 
 let out = ''
 let proc = null
+let alive = false // respawn 判定权威源（onExit 置 false；exitCode/pid 均不可靠）
 const waitFor = (mark, re, timeoutMs) =>
   new Promise((resolve) => {
     const t0 = Date.now()
@@ -175,7 +181,14 @@ const ctrlCProbe = async (label) => {
     setTimeout(() => { if (!done) resolve(false) }, 9000)
   })
   console.log(`${exited ? 'OK  Ctrl+C 优雅退出' : 'FAIL Ctrl+C 键消费死（半活实锤）'} ${label}`)
-  if (!exited) { await evidence(label); proc.kill(); failed = true }
+  if (!exited) {
+    await evidence(label)
+    proc.kill()
+    failed = true
+    // kill 触发的 onExit 是异步事件——此处不复位 expectExit（否则兜底把探针自杀，矩阵中断），
+    // 由下一次 spawnTui 开头统一复位
+    return exited
+  }
   expectExit = false
   return exited
 }
@@ -202,6 +215,11 @@ let expectExit = false // 批2a 六修 #3：ctrlCProbe 预期退出窗口——s
 
 const spawnTui = () =>
   new Promise((resolve, reject) => {
+    // 相位与预期退出标志随新进程复位（角色C/D：mock 侧 toolPhase 若不复位，
+    // respawn 后新 TUI 的首个请求会错收 tool_use——相位串台）
+    expectExit = false
+    toolPhase = false
+    roundNo = 0
     // Windows node-pty 直接 spawn 'node' 报 File not found——与 wedge 探针一致统一走 cmd.exe 壳
     proc = pty.spawn('cmd.exe', ['/c', ...TARGET], {
       cwd: REPO,
@@ -214,9 +232,11 @@ const spawnTui = () =>
       cols: 110,
       rows: 32,
     })
+    alive = true
     out = ''
     proc.onData((d) => (out += d))
     proc.onExit(({ exitCode }) => {
+      alive = false
       if (settling || expectExit) return
       console.error(`子进程意外退出 code=${exitCode}\n末尾帧:\n${lastFrame(15)}`)
       process.exit(1)
@@ -235,8 +255,11 @@ const runScenario = async (label, fn) => {
     failed = true
     try { proc.kill() } catch {}
   }
-  // ctrlCProbe 已杀/已退 → 下场景前确保干净重生
-  if (proc == null || proc.exitCode !== undefined || proc.pid === undefined) {
+  // ctrlCProbe 已杀/已退 → 下场景前确保干净重生。
+  // 判定用 alive 布尔（onExit 置 false）——旧版查 proc.exitCode/pid：node-pty 的 IPty
+  // 没有 exitCode 属性且 pid 退出后仍保留，三条件恒 false → respawn 永不触发 →
+  // S2/S3 对死进程 write 必假 FAIL（角色C P1-2/角色D P0-1——此前"S2/S3 场景级问题"的真凶）
+  if (proc == null || !alive) {
     try { proc.kill() } catch {}
     await spawnTui()
     const ok = await waitFor(0, /输入消息|Ctrl\+J 换行/, 90_000)

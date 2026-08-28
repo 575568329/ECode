@@ -132,14 +132,16 @@ export function makeProjectParts(
     // session_id 空值兜底动态化（显式传 id 的 dispatch 路径本就不受影响）
     getSessionId: () => sessionRef.id,
     warn: (m) => logger.warn('hooks', 'exec', { message: m }),
-    checkHookPermission: async (owner, event) => {
+    checkHookPermission: async (owner, event, sessionId) => {
       const key = `${owner}:${event}`
       if (permSessionAllowed.has(key)) return true
       const resource = `Hook(${owner})`
       const behavior = evalPermission(resource, loadPermissionLayers(dir))
       if (behavior === 'allow') return true
       if (behavior === 'deny') return false
-      const answer = await askPermissionInteractive(sessionRef.id, owner, event)
+      // 审阅 P1-4：发起会话真实 id 优先（asker 键随会话路由）；空串（argv/无端口）走项目级兜底
+      const askKey = sessionId !== '' ? sessionId : sessionRef.id
+      const answer = await askPermissionInteractive(askKey, owner, event)
       if (answer === null) {
         logger.warn('hooks', 'permission', { message: `无交互界面，ask 默认拒绝：${resource} → ${event}` })
         return false

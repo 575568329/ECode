@@ -76,7 +76,8 @@ function wrapTool(
           'PreToolUse',
           {
             event: 'PreToolUse',
-            session_id: '',
+            // 审阅 P1-4：发起会话真实 id（权限 asker 键随会话路由）；空串时 runner 走项目级兜底
+            session_id: ctx.session?.getSessionId?.() ?? '',
             tool_name: tool.name,
             tool_input: args,
           },
@@ -119,7 +120,7 @@ function wrapTool(
           'PostToolUse',
           {
             event: 'PostToolUse',
-            session_id: '',
+            session_id: ctx.session?.getSessionId?.() ?? '',
             tool_name: tool.name,
             tool_input: args,
             tool_result: { content: result.content.slice(0, ATTACH_LIMIT), is_error: result.is_error },

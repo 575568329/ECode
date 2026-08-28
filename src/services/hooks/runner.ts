@@ -26,7 +26,8 @@ export interface HookRunnerDeps {
    * M9-P5：扩展源 hook 权限门（spec.owner 存在才查——用户源不问）。false=deny 跳过（warn 告知）。
    * 装配方负责三态求值与 ask 交互（ConfirmPrompt 桥）；不配则全放行（测试/argv 简化路径）。
    */
-  checkHookPermission?: (owner: string, event: HookEvent) => Promise<boolean>
+  /** 审阅 P1-4：sessionId=发起会话真实 id（asker 键随会话路由；空串时实现方走项目级兜底） */
+  checkHookPermission?: (owner: string, event: HookEvent, sessionId: string) => Promise<boolean>
 }
 
 const NO_OP_VERDICT: HookVerdict = { block: false, additionalContext: [], systemMessages: [] }
@@ -75,7 +76,7 @@ export class HookRunner {
     for (const spec of specs) {
       // M9-P5：扩展源 hook 首次执行前权限门（owner 由 registry 注入；用户源无 owner 不问）
       if (spec.owner !== undefined && this.deps.checkHookPermission !== undefined) {
-        const allowed = await this.deps.checkHookPermission(spec.owner, event)
+        const allowed = await this.deps.checkHookPermission(spec.owner, event, filled.session_id)
         if (!allowed) {
           this.deps.warn?.(`hook 被权限规则拒绝，跳过：${spec.owner} → ${event}`)
           continue

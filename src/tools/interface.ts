@@ -58,6 +58,9 @@ export interface ToolContext {
     getProvider?(): import('../providers/interface.js').LLMProvider
     getModel?(): string
     getSummaryRole?(): Promise<import('../services/compaction/hook.js').SummaryRole | null>
+    /** 审阅 P1-4：发起会话 id（hook 事件 session_id 与权限 asker 键的路由依据——项目级
+     *  sessionRef 是"最后 ensure 者胜"，多会话下会错向别会话的 broker） */
+    getSessionId?(): string
     /** M13-B1：skill 激活判定（扫投影后 messages——/rewind·压缩后标记被投影自动回未激活） */
     isSkillActive?(name: string): boolean
     /** M13-B1：重复读守卫（mtime 比对；write/edit 后 mtime 变自然放行——bash cat 是逃生口 D6） */

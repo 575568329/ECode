@@ -718,6 +718,8 @@ export class HostSession {
             getProvider: () => this.deps.providerRegistry.getByType(this.cfg().providers[this.cfg().current.name].type),
             getModel: () => this.cfg().current.model,
             getSummaryRole: () => this.resolveSummaryRole(),
+            // 审阅 P1-4：发起会话 id（hook 权限 asker 键随会话路由，不再走项目级 sessionRef）
+            getSessionId: () => this.deps.history.currentSessionId(),
           },
           tasks: this.tasks,
           signal: this.abort.signal,

@@ -245,3 +245,25 @@ describe('HookedToolRegistry（装饰接入，loop 零改动）', () => {
     }
   })
 })
+
+describe('审阅修复批2 P1-4：权限门携带发起会话 id', () => {
+  it('checkHookPermission 第三参收 dispatch 的真实 session_id（空串时走 getSessionId 兜底填充）', async () => {
+    const seen: Array<string | undefined> = []
+    const execute = vi.fn(async () => null)
+    const ext = new ExtensionHooksRegistry()
+    ext.register('skill:sess', [{ event: 'Stop', handler: { kind: 'command', command: 's' } }])
+    const runner = new HookRunner({
+      extensions: ext,
+      execute,
+      checkHookPermission: async (_owner, _event, sessionId) => {
+        seen.push(sessionId)
+        return true
+      },
+      getSessionId: () => 'fallback-session',
+    })
+    await runner.dispatch('Stop', { event: 'Stop', session_id: '2026-08-27Treal-sess' })
+    expect(seen[0]).toBe('2026-08-27Treal-sess') // 真实 id 直传（asker 键随发起会话路由）
+    await runner.dispatch('Stop', { event: 'Stop', session_id: '' })
+    expect(seen[1]).toBe('fallback-session') // 空串被项目级 getSessionId 填充（兜底链不破）
+  })
+})

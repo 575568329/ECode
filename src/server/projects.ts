@@ -10,7 +10,7 @@
  * - 项目互斥标记：`~/.ecode/sessions/` 同目录 lock 文件（open 'wx' 原子占坑 + 0600——TOCTOU/预置 symlink 双防）
  */
 
-import { openSync, closeSync, writeSync, readFileSync, existsSync, realpathSync, statSync, unlinkSync, mkdirSync } from 'node:fs'
+import { openSync, closeSync, writeSync, readFileSync, existsSync, statSync, unlinkSync, mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -29,6 +29,9 @@ export interface AcquireResult {
   errorMessage?: string
   host?: ProjectHost
 }
+
+import { normalizeProjectPath } from '../services/pathnorm.js'
+export { normalizeProjectPath }
 
 export interface ProjectHostOptions {
   /** 项目宿主工厂（cli 传入：makeDeps(cwd)+ProjectHost 装配——M13-W2 起每项目一个容器）。
@@ -75,13 +78,7 @@ export class ProjectRegistry {
   }
 
   private normalize(path: string): string {
-    // 统一正斜杠（HTTP 项目路径约定；Windows realpath 返回反斜杠——两端一致才可 Set 命中）
-    const fwd = (p: string): string => p.split(String.fromCharCode(92)).join('/')
-    try {
-      return fwd(realpathSync(path))
-    } catch {
-      return fwd(path)
-    }
+    return normalizeProjectPath(path)
   }
 
   private lockPath(cwd: string): string {

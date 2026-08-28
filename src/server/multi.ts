@@ -25,6 +25,7 @@ import { createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, join, normalize, sep } from 'node:path'
 import type { ServeResult } from './http.js'
 import type { ProjectRegistry } from './projects.js'
+import { normalizeProjectPath } from '../services/pathnorm.js'
 
 export interface MultiServeDeps {
   registry: ProjectRegistry
@@ -122,9 +123,10 @@ export function serveMulti(
     return { conv, sessionId: sid }
   }
 
-  /** URL 项目段 → 正斜杠 cwd（协议约定：路径一律正斜杠——Windows 反斜杠 %5C 被 WHATWG 规范化为 / 碎段） */
+  /** URL 项目段 → 规范 cwd（审阅 P1-2：normalizeProjectPath 同 registry 形态——realpath+正斜杠。
+   *  原仅反斜杠替换，与 listActive() 的 realpath 形态永不相等 → 默认项目恒误判冷项目，running 注入失效） */
   const cwdOf = (project: string | null): string =>
-    project !== null ? decodeURIComponent(project).split(String.fromCharCode(92)).join('/') : deps.defaultCwd
+    project !== null ? normalizeProjectPath(decodeURIComponent(project)) : normalizeProjectPath(deps.defaultCwd)
 
   const resolveHost = async (
     project: string | null,

@@ -16,6 +16,7 @@
  */
 
 import * as fs from 'node:fs'
+import { normalizeProjectPath } from './pathnorm.js'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import { isMessageLine, isBoundary, isRewind, type BoundaryLine, type HistoryLine, type Message, type RewindLine, type ImageBlock, type DocumentBlock, type ImageRefBlock } from '../core/types.js'
@@ -254,7 +255,10 @@ export class FileHistoryStore implements HistoryStore {
     }
     // 按 createdAt 倒序（最新在前）；传 cwd 时只列该项目（存储用户级全局，TUI /history 按项目过滤——
     // 无 cwd 的老会话归属不可判定，一并不显示；web 端 collectProjectCwds 自有聚合不受影响）
-    const visible = cwd !== undefined ? metas.filter((m) => m.cwd === cwd) : metas
+    // 审阅 P1-3：cwd 比较两侧统一规范形态（realpath+正斜杠）——REPL/argv 建档落盘的是
+    // process.cwd() 原始形态（反斜杠/8.3 短名），serve 侧匹配的是 normalize 后形态，
+    // 三态混杂下同机同目录的会话在 web 列表消失
+    const visible = cwd !== undefined ? metas.filter((m) => normalizeProjectPath(m.cwd ?? '') === normalizeProjectPath(cwd)) : metas
     return visible.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   }
 

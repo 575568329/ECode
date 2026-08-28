@@ -143,3 +143,16 @@ describe('M13-W4 /api/projects 三源并集 + session/list 冷热合并', () => 
     await srv.close()
   })
 })
+
+describe('审阅修复批2 P1-3：meta.cwd 跨形态匹配（REPL 原始形态 ↔ serve normalize 形态）', () => {
+  it('反斜杠/原始形态落盘的 meta.cwd 在 normalize 形态查询下可见（listMetas 两侧统一 normalize）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ecode-p1-3-'))
+    // 模拟 REPL 建档：cwd 落盘原始反斜杠形态
+    const raw = dir.split('/').join('\\')
+    const store = new FileHistoryStore({ sessionId: '2026-08-27Tp13', model: 'm', cwd: raw, dir })
+    store.append({ role: 'user', content: [{ type: 'text', text: '跨形态' }] })
+    const metas = FileHistoryStore.listMetas(dir, dir) // serve 侧查询用 normalize 形态（正斜杠）
+    expect(metas.some((m) => m.sessionId === '2026-08-27Tp13')).toBe(true)
+    rmSync(dir, { recursive: true, force: true })
+  })
+})

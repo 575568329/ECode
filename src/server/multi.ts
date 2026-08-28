@@ -189,7 +189,9 @@ export function serveMulti(
       if (credClass === null) return json(401, { error: '未授权' })
 
       // 项目列表（M13-W4 三源并集：显式注册 ∪ 活项目 ∪ 历史反推 meta.cwd——Web 打开即见本机所有有历史的项目）
+      // 审阅 P1-1：读侧全局信息（本机全部项目路径）与写侧同级栅栏——device 凭据不可枚举
       if (req.method === 'GET' && url.pathname === '/api/projects') {
+        if (credClass === 'device') return json(403, { error: '设备凭据不可枚举项目列表（需用户级凭据）' })
         return json(200, {
           registered: registry.listKnown(),
           active: registry.listActive(),
@@ -199,11 +201,25 @@ export function serveMulti(
 
       // 用量统计（M14-C4④：宿主数据就绪 web 零消费——daemon 与 sessions 同机，聚合直读；
       // ?days=N 过滤 byDay 尾部窗口，缺省 7；缓存写 ~/.ecode/stats-cache.json 与 TUI /stats 同源）
+      // 审阅 P1-1：topSessions 含 cwd/firstUser（用户 prompt 原文）——web 面板零消费，不外发；
+      // device 凭据同栅栏（聚合含全部项目的用量分布）
       if (req.method === 'GET' && url.pathname === '/api/stats') {
+        if (credClass === 'device') return json(403, { error: '设备凭据不可查看用量统计（需用户级凭据）' })
         const days = Math.max(1, Math.min(90, Number(url.searchParams.get('days') ?? 7) || 7))
         try {
           const agg = aggregateStats(opts.sessionsDir ?? join(homedir(), '.ecode', 'sessions'), opts.statsCachePath)
-          return json(200, { ok: true, days, ...agg, byDay: agg.byDay.slice(-days) })
+          return json(200, {
+            ok: true,
+            days,
+            totals: agg.totals,
+            mcpCalls: agg.mcpCalls,
+            sessions: agg.sessions,
+            costUnknownSessions: agg.costUnknownSessions,
+            cacheHitRate: agg.cacheHitRate,
+            byDay: agg.byDay.slice(-days),
+            byModel: agg.byModel,
+            byProject: agg.byProject,
+          })
         } catch (e) {
           return json(500, { ok: false, error: e instanceof Error ? e.message : String(e) })
         }

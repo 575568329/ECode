@@ -14,13 +14,16 @@ export interface SessionBrief {
   updatedAt: number
 }
 
-/** 工具卡（item/started→running；item/completed→终态带摘要与可展开内容） */
+/** 工具卡（item/started→running；item/completed→终态带摘要与可展开内容）。
+ *  truncated=帧内 content 已被宿主 4KB 截断（C1⑤）；fullLoaded=item/read 补全完成 */
 export interface ToolItem {
   id: string
   name: string
   status: 'running' | 'done' | 'error'
   summary?: string
   content?: string
+  truncated?: boolean
+  fullLoaded?: boolean
 }
 
 /** 内联图片（data URI 直渲——session/read 恢复形态里 image_ref 已被宿主转回 base64 ImageBlock） */
@@ -110,6 +113,8 @@ interface AppState {
   retryLoad: (sessionId: string) => void
   /** 发送成功即时上屏 user 消息（当前轮 user 不经任何帧回推——G3 实测缺口） */
   appendUser: (sessionId: string, text: string) => void
+  /** C1⑤ 补漏：item/read 全文补全落卡（截断帧展开时拉取——避免每次渲染重复拉） */
+  completeTool: (sessionId: string, itemId: string, content: string) => void
 }
 
 const patchView = (state: AppState, sessionId: string, patch: (v: SessionView) => SessionView): Partial<AppState> => ({
@@ -196,6 +201,13 @@ export const useApp = create<AppState>((set) => ({
         entries: [...v.entries, { kind: 'user' as const, text }],
       })),
     ),
+  completeTool: (sessionId, itemId, content) =>
+    set((st) =>
+      patchView(st, sessionId, (v) => ({
+        ...v,
+        items: v.items.map((it) => (it.id === itemId ? { ...it, content, truncated: false, fullLoaded: true } : it)),
+      })),
+    ),
   applyHost: (h) =>
     set((st) => {
       switch (h.type) {
@@ -250,7 +262,7 @@ export const useApp = create<AppState>((set) => ({
           const id = String(f.ev.itemId ?? '')
           return patchView(st, f.sessionId, (v) => ({
             ...v,
-            items: v.items.map((it) => (it.id === id ? { ...it, status: f.ev.isError === true ? 'error' : 'done', summary: String(f.ev.summary ?? ''), content: String(f.ev.content ?? '') } : it)),
+            items: v.items.map((it) => (it.id === id ? { ...it, status: f.ev.isError === true ? 'error' : 'done', summary: String(f.ev.summary ?? ''), content: String(f.ev.content ?? ''), truncated: f.ev.truncated === true } : it)),
           }))
         }
         case 'turn/completed':

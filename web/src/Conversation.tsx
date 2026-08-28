@@ -31,8 +31,21 @@ function Images({ images }: { images: ChatImage[] }): React.JSX.Element {
     </div>
   )
 }
-function ToolCard({ item }: { item: ToolItem }): React.JSX.Element {
+function ToolCard({ project, sessionId, item }: { project: string; sessionId: string; item: ToolItem }): React.JSX.Element {
   const [open, setOpen] = useState(false)
+  const completeTool = useApp((s) => s.completeTool)
+  // C1⑤ 补漏：截断帧（4KB）首次展开时拉 item/read 全文（1MB 上限；宿主 tool_use 配对）
+  useEffect(() => {
+    if (open && item.truncated === true && item.fullLoaded !== true) {
+      sendCommand('', project, sessionId, { op: 'item/read', itemId: item.id })
+        .then((r) => {
+          if (r.ok && typeof (r.value as { content?: unknown }).content === 'string') {
+            completeTool(sessionId, item.id, (r.value as { content: string }).content)
+          }
+        })
+        .catch(() => {})
+    }
+  }, [open, item.truncated, item.fullLoaded, item.id, project, sessionId, completeTool])
   const color = item.status === 'running' ? 'text-amber-400' : item.status === 'error' ? 'text-red-400' : 'text-emerald-400'
   const mark = item.status === 'running' ? '…' : item.status === 'error' ? '✗' : '✓'
   return (
@@ -43,6 +56,7 @@ function ToolCard({ item }: { item: ToolItem }): React.JSX.Element {
         <span className="text-xs text-neutral-300">{item.name}</span>
         <span className={`text-xs ${color}`}>{mark}</span>
         {item.summary !== undefined && item.summary !== '' && <span className="truncate text-xs text-neutral-600">{item.summary}</span>}
+        {item.truncated === true && item.fullLoaded !== true && <span className="shrink-0 text-[10px] text-amber-600">已截断</span>}
       </button>
       {open && item.content !== undefined && (
         <pre className="max-h-72 overflow-auto border-t border-neutral-800 px-3 py-2 text-xs leading-relaxed text-neutral-400">{item.content}</pre>
@@ -138,7 +152,7 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
         {view.items.length > 0 && (
           <div className="space-y-1.5">
             {view.items.map((it) => (
-              <ToolCard key={it.id} item={it} />
+              <ToolCard key={it.id} project={project} sessionId={sessionId} item={it} />
             ))}
           </div>
         )}

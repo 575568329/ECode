@@ -153,6 +153,24 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     rmSync(dirC, { recursive: true, force: true })
   })
 
+  it('审阅批3 P1-1：device 凭据 GET /api/projects 与 /api/stats 均 403；stats 响应不含 topSessions（cwd/firstUser 不外发）', async () => {
+    const hDev = { authorization: `Bearer ${deviceToken}` }
+    const p1 = await fetch(`${base2}/api/projects`, { headers: hDev })
+    expect(p1.status).toBe(403)
+    const p2 = await fetch(`${base2}/api/stats?days=7`, { headers: hDev })
+    expect(p2.status).toBe(403)
+    // primary 可用且不含 topSessions（审阅 P1-1：SessionAgg 含 cwd/firstUser 用户原文——web 面板零消费）
+    const stats = await serveMulti({ registry: new ProjectRegistry(mk), defaultCwd: dirA }, { statsCachePath: join(tmpdir(), `ecode-stats-cache-${Date.now()}.json`) })
+    try {
+      const r = await (await fetch(`http://127.0.0.1:${stats.port}/api/stats`, { headers: { authorization: `Bearer ${stats.token}` } })).json()
+      expect(r.ok).toBe(true)
+      expect(r.topSessions).toBeUndefined()
+      expect(r.byModel).toBeDefined()
+    } finally {
+      await stats.close()
+    }
+  })
+
   it('M14-C2① device 凭据不可注册项目（一等凭据动作）；M14-C2④ health 回显实例 id', async () => {
     const dirD = mkdtempSync(join(tmpdir(), 'ecode-projD-'))
     const r1 = await (

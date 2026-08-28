@@ -28,18 +28,22 @@ import { makeDeps } from './assembly.js'
  */
 async function killServeByReg(reg: { pid: number; port: number; id?: string }, label: string): Promise<boolean> {
   process.kill(reg.pid, 0) // 探活：已死则 ESRCH 抛给调用方 catch
-  if (reg.id !== undefined) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${reg.port}/api/health`, { signal: AbortSignal.timeout(1500) })
-      const info = (await res.json()) as { id?: string | null }
-      if (info.id !== reg.id) {
-        process.stdout.write(`${label}：pid ${reg.pid} 身份不符（health id 不匹配——疑似 PID 回收复用），拒绝误杀\n`)
-        return false
-      }
-    } catch {
-      process.stdout.write(`${label}：pid ${reg.pid} 无法核验身份（health 不可达），拒绝盲杀（如确认无误可手动 kill）\n`)
+  // 审阅 P1-3：id 缺失（M14 前旧格式注册文件）同样不可核验——一律拒绝（原仅 id 存在时核验，
+  // 陈旧文件+PID 被系统回收给无关进程时盲杀无辜）
+  if (reg.id === undefined) {
+    process.stdout.write(`${label}：pid ${reg.pid} 注册文件无 id（旧格式），无法核验身份，拒绝盲杀（如确认无误可手动 kill）\n`)
+    return false
+  }
+  try {
+    const res = await fetch(`http://127.0.0.1:${reg.port}/api/health`, { signal: AbortSignal.timeout(1500) })
+    const info = (await res.json()) as { id?: string | null }
+    if (info.id !== reg.id) {
+      process.stdout.write(`${label}：pid ${reg.pid} 身份不符（health id 不匹配——疑似 PID 回收复用），拒绝误杀\n`)
       return false
     }
+  } catch {
+    process.stdout.write(`${label}：pid ${reg.pid} 无法核验身份（health 不可达），拒绝盲杀（如确认无误可手动 kill）\n`)
+    return false
   }
   process.kill(reg.pid, 'SIGTERM')
   return true
@@ -178,14 +182,17 @@ export async function serveMode(): Promise<void> {
         void registry.acquire(projectRoot, { confirm: true }).then((r) => {
           if (!r.ok || r.host === undefined) return
           const attach = (): void => {
+            // 审阅 P1-2：gateway 全量订阅但只转发绑定命中的会话（onFrame 未绑定直接 return）——
+            // 观察型连接必须声明 canAnswer:false，否则 sensitive 审批的"零可应答者 fail-closed"
+            // 被 phantom subscriber 撑破（审批挂 15min 超时自动拒——C2⑧ 同病此处曾回归）
             for (const [sid, conv] of r.host!.conversationsSnapshot()) {
-              unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: sid, ev })))
+              unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: sid, ev }), { canAnswer: false }))
             }
             unsubs.push(
               r.host!.onSessionEvent((kind, info) => {
                 if (kind === 'created') {
                   const conv = r.host!.conversation(info.sessionId)
-                  if (conv !== undefined) unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: info.sessionId, ev })))
+                  if (conv !== undefined) unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: info.sessionId, ev }), { canAnswer: false }))
                 }
               }),
             )

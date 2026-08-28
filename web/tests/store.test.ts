@@ -30,10 +30,19 @@ describe('流式轮演进', () => {
     frame('s1', { type: 'turn/completed' })
     expect(useApp.getState().views.s1?.entries).toEqual([])
   })
-  it('tool 卡：started→running，completed→终态带摘要', () => {
+  it('tool 卡：started→running，completed→终态带摘要；truncated 标志随帧（C1⑤）', () => {
     frame('s1', { type: 'item/started', itemId: 'i1', name: 'bash' })
     frame('s1', { type: 'item/completed', itemId: 'i1', summary: 'ls 完成', content: 'a.txt' })
-    expect(useApp.getState().views.s1?.items).toEqual([{ id: 'i1', name: 'bash', status: 'done', summary: 'ls 完成', content: 'a.txt' }])
+    expect(useApp.getState().views.s1?.items).toEqual([{ id: 'i1', name: 'bash', status: 'done', summary: 'ls 完成', content: 'a.txt', truncated: false }])
+    frame('s1', { type: 'item/started', itemId: 'i2', name: 'read_file' })
+    frame('s1', { type: 'item/completed', itemId: 'i2', summary: '大文件', content: 'x'.repeat(100), truncated: true })
+    expect(useApp.getState().views.s1?.items[1]?.truncated).toBe(true)
+    // completeTool 补全落卡：截断标志清、fullLoaded 置位（展开拉 item/read 的落点）
+    useApp.getState().completeTool('s1', 'i2', 'x'.repeat(200))
+    const t = useApp.getState().views.s1?.items[1]
+    expect(t?.truncated).toBe(false)
+    expect(t?.fullLoaded).toBe(true)
+    expect(t?.content?.length).toBe(200)
   })
   it('queue/snapshot 更新队列；session/clear 全清', () => {
     frame('s1', { type: 'queue/snapshot', items: ['q1', 'q2'] })

@@ -202,7 +202,10 @@ export class FeishuGateway {
         header: { title: { tag: 'plain_text', content: sensitive ? '⚠ 敏感操作确认（不可记住）' : '需要审批' }, template: 'orange' },
         elements: [
           { tag: 'div', text: { tag: 'lark_md', content: `**工具**：\`${tool}\`` } },
-          { tag: 'div', text: { tag: 'lark_md', content: `\`\`\`${preview}\`\`\`` } },
+          // 审阅 P1-4：preview 内嵌 ``` 会提前闭合围栏，后续内容按 lark_md 渲染（粗体/链接）——
+          // 审批闸上的视觉伪装可诱导点"允许"。preview 源头（bash 命令/diff/MCP JSON）全可被
+          // 恶意仓库影响，入卡前剥围栏序列（换零宽不占格的替代——内容保真、渲染形态破碎化）
+          { tag: 'div', text: { tag: 'lark_md', content: `\`\`\`${preview.replace(/```/g, '｀｀｀')}\`\`\`` } },
           { tag: 'action', actions: buttons },
         ],
       }

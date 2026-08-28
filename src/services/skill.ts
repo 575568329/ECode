@@ -261,7 +261,18 @@ export class SkillRegistry {
       return // 目录不存在/不可读：静默（无 skill 源是常态）
     }
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue
+      // F-24（功能测试批实证）：junction/symlink 的 Dirent 报 isSymbolicLink 而 isDirectory=false
+      // ——不跟随判定会静默跳过链接目录（Windows junction 共享/POSIX symlink 均中招，零警告）。
+      // stat 跟随给真目录形态；断链/非目录链接跳过
+      let isDir = entry.isDirectory()
+      if (!isDir && entry.isSymbolicLink()) {
+        try {
+          isDir = (await fs.promises.stat(path.join(dir, entry.name))).isDirectory()
+        } catch {
+          continue // 断链
+        }
+      }
+      if (!isDir) continue
       const baseDir = path.join(dir, entry.name)
       const file = path.join(baseDir, SKILL_FILE)
       let text: string

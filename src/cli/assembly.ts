@@ -24,6 +24,7 @@ import { evalPermission, loadPermissionLayers, saveLocalPermission, askPermissio
 import { resolveContextWindow } from '../services/contextWindow.js'
 import { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import { makeTaskTool } from '../services/subagent.js'
+import { makeSkillTool } from '../tools/builtin/skill.js'
 import { SummarizeStrategy } from '../services/compaction/summarize.js'
 import { skillRegistry, createSkillRegistry } from '../services/skill.js'
 import { makeSkillHooksPort, globalExtensionHooks, type SkillHooksPort } from '../services/hooks/global.js'
@@ -106,7 +107,14 @@ export function makeProjectParts(
   providerReg.register(new AnthropicProvider())
   providerReg.register(new OpenaiProvider())
   const toolReg = new ToolRegistryImpl()
-  for (const t of BUILTIN_TOOLS) toolReg.register(t) // 单一事实源（tools/builtin/index.ts）——防漂移测试同源断言
+  for (const t of BUILTIN_TOOLS) {
+    // F-28：Skill 工具走 makeSkillTool 工厂（注入项目级 registry——serve freshRegistries
+    // 每项目新实例，静态 skillTool 闭包读空单例）；BUILTIN_TOOLS 里的静态版跳过，
+    // 装配期在下方注册注入版。防漂移测试仍从 BUILTIN_TOOLS 断言（工具名/描述同源）。
+    if (t.name === 'Skill') continue
+    toolReg.register(t) // 单一事实源（tools/builtin/index.ts）——防漂移测试同源断言
+  }
+  toolReg.register(makeSkillTool(registries.skills))
   const orchestrator = new CompactionOrchestrator()
   orchestrator.register(new SummarizeStrategy())
 

@@ -90,4 +90,28 @@ describe('M14-C3⑤ serve 路径资源加载', () => {
     await d.skillRegistry.load({ builtinCommandNames: [] })
     expect(d.skillRegistry.get('demo-skill')).toBeDefined() // serve 补加载后用户技能可见
   })
+
+  it('F-28：fresh registry load 后 makeSkillTool(fresh) 能 get 到（旧劈叉形态——静态单例闭包读空报「可用：（无）」）', async () => {
+    const { makeSkillTool } = await import('../../src/tools/builtin/skill.js')
+    const d = makeDeps(testConfig(), noopLogger, 'asm-f28', process.cwd(), { freshRegistries: true })
+    await d.skillRegistry.load({ builtinCommandNames: [] })
+    // 全局单例保持空——serve fresh 路径绝不依赖它
+    const { skillRegistry: globalReg } = await import('../../src/services/skill.js')
+    globalReg.clear()
+    const tool = makeSkillTool(d.skillRegistry)
+    const r = await tool.execute(
+      { skill: d.skillRegistry.list()[0].name },
+      { cwd: process.cwd(), signal: new AbortController().signal },
+    )
+    expect(r.is_error).toBeFalsy()
+    expect(r.content).toContain('<skill_content')
+    // 装配进 ToolRegistry 的 Skill 也是注入版：经注册表取到并成功执行（非空单例报错形态）
+    const viaReg = d.tools.get('Skill')
+    expect(viaReg).toBeDefined()
+    const r2 = await viaReg!.execute(
+      { skill: d.skillRegistry.list()[0].name },
+      { cwd: process.cwd(), signal: new AbortController().signal },
+    )
+    expect(r2.is_error).toBeFalsy()
+  })
 })

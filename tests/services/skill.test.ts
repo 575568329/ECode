@@ -406,3 +406,27 @@ describe('内置 skill（builtin 源，M6.5）', () => {
     expect(reg.get('ecode-config')?.description).toBe('插件版手册')
   })
 })
+
+describe('F-24（功能测试批实证）：junction/symlink 的 skill 目录不再被静默跳过', () => {
+  it('Windows junction 目录指向真 skill dir → load 后可见', async () => {
+    const { reg, userDir } = makeRegistry()
+    const realDir = path.join(tmpRoot, 'real-skills')
+    writeSkill(realDir, 'linked-skill', VALID('linked-skill', '链接目录里的技能'))
+    fs.mkdirSync(userDir, { recursive: true })
+    // Windows junction 免管理员；POSIX 用 dir symlink——两种 Dirent 都报 isSymbolicLink
+    const linkPath = path.join(userDir, 'linked-skill')
+    fs.symlinkSync(path.join(realDir, 'linked-skill'), linkPath, process.platform === 'win32' ? 'junction' : 'dir')
+    await reg.load()
+    expect(reg.get('linked-skill')?.source).toBe('user')
+    expect(reg.get('linked-skill')?.description).toBe('链接目录里的技能')
+  })
+
+  it('断链（指向不存在路径）不炸 load、静默跳过', async () => {
+    const { reg, userDir } = makeRegistry()
+    fs.mkdirSync(userDir, { recursive: true })
+    fs.symlinkSync(path.join(tmpRoot, 'no-such-target'), path.join(userDir, 'dangling'), process.platform === 'win32' ? 'junction' : 'dir')
+    await reg.load()
+    expect(reg.get('dangling')).toBeUndefined()
+    expect(reg.loadWarnings).toEqual([])
+  })
+})

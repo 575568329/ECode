@@ -134,7 +134,8 @@ function generalConfigItems(config: import('../services/config.js').Config): Con
     { key: 'maxIterations', label: 'maxIterations（每轮最大迭代）', value: String(config.maxIterations), options: ['20', '50', '100', '200'], kind: 'enum' },
     { key: 'autoCommit', label: 'autoCommit（编辑轮末自动 git 提交）', value: String(config.autoCommit === true), options: ['false', 'true'], kind: 'toggle' },
     { key: 'webSearch.provider', label: 'webSearch.provider（搜索引擎）', value: config.webSearch?.provider ?? 'bing', options: ['bing', 'zhipu'], kind: 'enum' },
-    { key: 'lintCommand', label: 'lintCommand（空=自动探测）', value: config.lintCommand ?? '', kind: 'readonly' },
+    // F-25（功能测试批）：文案对齐 M9 实际语义——空/缺省=关闭（不自动探测，防 npm-scripts RCE 链），改值走原始 config
+    { key: 'lintCommand', label: 'lintCommand（空=关闭，改值开原始 config）', value: config.lintCommand ?? '', kind: 'readonly' },
   ]
 }
 

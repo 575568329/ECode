@@ -56,6 +56,13 @@ const ITEM_FRAME_CAP = 4096
 /** M14-C1⑤：item/read 单响应上限（read_file 等可产出大内容——上限内才允许出宿主） */
 const ITEM_READ_CAP = 1024 * 1024
 
+/** 会话 id 合法形态（审阅 P0-1）：本项目 id 恒为 ISO 时间戳形态（`2026-08-27T22-31-05-123Z`，
+ *  飞书 session/new 带 8 位随机后缀）。白名单而非黑名单——sessionId 会一路拼进文件路径
+ *  （`join(dir, sessionId + '.jsonl')`），`..`/分隔符/绝对路径 = 任意 .jsonl 读写原语。 */
+export function isValidSessionId(sid: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T[\w-]{1,64}$/.test(sid)
+}
+
 export interface HostDeps {
   providerRegistry: LLMProviderRegistry
   tools: ToolRegistry
@@ -482,6 +489,7 @@ export class HostSession {
         return { ok: true }
       case 'session/restore':
         // M13-W2：restore=ensure（活复用/冷载入 restoreFrom/并发幂等单飞——落点 ProjectHost）
+        if (!isValidSessionId(cmd.sessionId)) return { ok: false, error: `会话 id 非法：${cmd.sessionId}`, code: 'BAD_SESSION_ID' }
         if (this.deps.ensureConversation === undefined) {
           return { ok: false, error: '命令 session/restore 尚未接线（无 ProjectHost）', code: 'NOT_IMPLEMENTED' }
         }
@@ -500,6 +508,8 @@ export class HostSession {
         // 事件 seq，但 transcript 行与事件 seq 是两个 ID 空间，改名澄清）。缺省全量（web 断线
         // 全量补拉维持 M13-Q10 非目标不变）；带参返回 { lines, total, fromLine } 形态
         {
+          // 审阅 P0-1：sessionId 进文件路径，白名单校验（黑名单必漏形态）
+          if (!isValidSessionId(cmd.sessionId)) return { ok: false, error: `会话 id 非法：${cmd.sessionId}`, code: 'BAD_SESSION_ID' }
           const all = this.deps.history.restoreFull(cmd.sessionId)
           if (cmd.fromLine === undefined && cmd.limit === undefined) return { ok: true, value: all }
           const from = Math.max(0, Math.floor(cmd.fromLine ?? 0))
@@ -702,6 +712,12 @@ export class HostSession {
             },
             getSandbox: () =>
               makeSandbox(this.sandboxMode, this.deps.cwd ?? process.cwd(), this.cfg().sandbox?.blockedCommands ?? []),
+            // 审阅 P0-3：运行态四 getter 会话化（模块桥单槽进程级会被多项目覆盖——此处随
+            // 发起会话携带正确宿主的 config/providerRegistry/摘要角色）
+            getProviderReq: () => buildProviderReq(this.cfg()),
+            getProvider: () => this.deps.providerRegistry.getByType(this.cfg().providers[this.cfg().current.name].type),
+            getModel: () => this.cfg().current.model,
+            getSummaryRole: () => this.resolveSummaryRole(),
           },
           tasks: this.tasks,
           signal: this.abort.signal,

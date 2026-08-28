@@ -293,3 +293,29 @@ describe('M14-C1④ mux per-client 过滤管线', () => {
     void reader.cancel()
   }, 15_000)
 })
+
+describe('审阅修复批1 P0-1：sessionId 路径遍历防护', () => {
+  it('冷路径 restore 的 traversal 形态被 400 拒（.. 绝对路径 分隔符）；活会话短 id 放行', async () => {
+    const attacks = ['..\\..\\..\\Users\\x\\victim', '../../etc/passwd', '/abs/path', 'a/b', 'a\\b']
+    for (const sid of attacks) {
+      const r = await (
+        await fetch(`${base}/api/p/${encodeURIComponent(fwd(dirA))}/cmd`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${srv.token}` },
+          body: JSON.stringify({ sessionId: sid, op: { op: 'session/restore' } }),
+        })
+      ).json()
+      expect(r).toMatchObject({ ok: false })
+      expect(String(r.error)).toContain('非法')
+    }
+    // 活会话（工厂 ensure 的短 id）信封路由放行——Map 命中无文件面
+    const ok = await (
+      await fetch(`${base}/api/p/${encodeURIComponent(fwd(dirA))}/cmd`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${srv.token}` },
+        body: JSON.stringify({ sessionId: 'sess-mux-A', op: { op: 'session/list' } }),
+      })
+    ).json()
+    expect(ok.ok).toBe(true)
+  })
+})

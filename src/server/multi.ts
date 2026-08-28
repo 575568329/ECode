@@ -11,6 +11,7 @@
 import http from 'node:http'
 import { randomBytes } from 'node:crypto'
 import type { HostSession } from '../host/session.js'
+import { isValidSessionId } from '../host/session.js'
 import type { ProjectHost } from '../host/project.js'
 import { randomUUID } from 'node:crypto'
 import { LOOPBACK_ADDRS } from './loopback.js'
@@ -97,6 +98,7 @@ export function serveMulti(
     if (sessionId !== undefined && sessionId !== '') {
       const live = host.conversation(sessionId)
       if (live !== undefined) {
+        // 活会话：Map 路由无文件面——任意形态 id 放行（测试/内部短 id 合法形态）
         host.touch(sessionId)
         return { conv: live, sessionId }
       }
@@ -104,6 +106,9 @@ export function serveMulti(
       // 当"载体会话"承载 restore 命令——冷项目凭空多出一个幻影空默认会话进列表广播；
       // restore 命令再发到自身 dispatch 时 ensureRestore 活复用幂等）
       if (op.op === 'session/restore') {
+        // 审阅 P0-1：冷路径 sessionId 会拼进 `join(dir, id+'.jsonl')` 文件路径——白名单校验
+        // （`..`/分隔符/绝对路径 = 任意 .jsonl 读写原语，LAN/R 线边界击穿）
+        if (!isValidSessionId(sessionId)) return { error: `会话 id 非法：${sessionId}`, code: 400 }
         const conv = await host.ensureRestore(sessionId)
         host.touch(sessionId)
         return { conv, sessionId }

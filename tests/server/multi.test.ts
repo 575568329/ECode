@@ -178,9 +178,9 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     // ①冷会话非 restore → 404
     const r2 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ sessionId: '不存在的会话', op: { op: 'session/list' } }) })).json()
     expect(r2).toMatchObject({ ok: false })
-    // ①冷会话 restore 可拉起（NoopHistory 空载入 → ok）
-    const r3 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ sessionId: 'cold-x', op: { op: 'session/restore', sessionId: 'cold-x' } }) })).json()
-    expect(r3).toMatchObject({ ok: true, sessionId: 'cold-x' })
+    // ①冷会话 restore 可拉起（NoopHistory 空载入 → ok）；id 须 ISO 白名单形态（审阅 P0-1）
+    const r3 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ sessionId: '2026-08-27Tcold-x', op: { op: 'session/restore', sessionId: '2026-08-27Tcold-x' } }) })).json()
+    expect(r3).toMatchObject({ ok: true, sessionId: '2026-08-27Tcold-x' })
     // ②缺省 → 默认会话（sess-A）回执
     const r4 = await (await fetch(`${base}/api/p/${pA}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/list' } }) })).json()
     expect(r4).toMatchObject({ ok: true, sessionId: 'sess-A' })

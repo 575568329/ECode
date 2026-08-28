@@ -393,7 +393,7 @@ describe('B5：session 命令面', () => {
     // list/read 走 deps.history（fake noopHistory：loadAll 返回 []——真实 FileHistoryStore 行为由既有 history 测试锁定）
     const l = await host.send({ op: 'session/list' })
     expect(l).toMatchObject({ ok: true })
-    const r = await host.send({ op: 'session/read', sessionId: 'x' })
+    const r = await host.send({ op: 'session/read', sessionId: '2026-08-27Tx' }) // 审阅 P0-1：白名单形态
     expect(r).toMatchObject({ ok: true })
     host.dispose()
   })
@@ -490,7 +490,7 @@ describe('M14-C1b 工具全文 summary+read 与 transcript 分页', () => {
   it('①a session/read 分页：缺省全量数组；fromLine/limit 返回 { lines, total, fromLine }', async () => {
     // NoopHistoryStore.restoreFull 恒空——换真 FileHistoryStore（tmpdir）让 transcript 有行
     const deps = makeDeps(new MockProvider([[{ type: 'text', text: 'ok' }, { type: 'done', stop_reason: 'end' }]]))
-    const sid = `c1b-${Date.now()}`
+    const sid = `2026-08-27Tc1b-${Date.now()}` // 审阅 P0-1：ISO 白名单形态（session/read 进文件路径）
     ;(deps as { history: HistoryStore }).history = new FileHistoryStore({ sessionId: sid, model: 'm', cwd: '/tmp', dir: mkdtempSync(join(tmpdir(), 'ecode-c1b-')) })
     const host = new HostSession(deps)
     await host.send({ op: 'prompt', text: '跑', mode: 'StartOrSteer' })

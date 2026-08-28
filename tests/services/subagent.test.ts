@@ -250,3 +250,31 @@ describe('M11 审阅修复批：桥优先与 SubRegistry 视图', () => {
     }
   })
 })
+
+describe('审阅修复批1 P0-3：运行态四 getter 会话端口优先（模块桥单槽不串台）', () => {
+  it('sessPort 提供四 getter 时优先于模块桥（桥被别项目覆盖也不影响本会话）', async () => {
+    setSubagentBridge({
+      confirm: async () => true,
+      // 模拟 B 项目覆盖桥：值与本项目（deps）都不同
+      getProviderReq: () => ({ name: 'WRONG', baseURL: 'http://wrong', apiKey: 'k', model: 'wrong-model' }),
+      getModel: () => 'wrong-model',
+      getSummaryRole: async () => null,
+    })
+    try {
+      const deps = makeDeps()
+      const sessPort = {
+        getProviderReq: () => ({ name: 'right', baseURL: 'http://right', apiKey: 'k', model: 'right-model' }),
+        getModel: () => 'right-model',
+        getSummaryRole: async () => null,
+      }
+      const opts = makeSubagentOpts(deps, 'a-p0', '端口优先', 'general', ctx.signal, undefined, undefined, sessPort)
+      expect(opts.providerReq.model).toBe('right-model') // 端口胜出，不是桥的 wrong-model
+      expect(opts.toolCtx.model).toBe('right-model')
+      // 端口缺项时回退桥（兜底链仍通）
+      const opts2 = makeSubagentOpts(deps, 'a-p0b', '回退', 'general', ctx.signal, undefined, undefined, {})
+      expect(opts2.providerReq.model).toBe('wrong-model')
+    } finally {
+      setSubagentBridge(null)
+    }
+  })
+})

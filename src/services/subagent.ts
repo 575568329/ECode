@@ -47,12 +47,19 @@ interface SessionPort {
     confirmTool?(use: ToolUseBlock): Promise<boolean | string>
     /** 审阅 P1-4：子代理 usage 经会话窄端口归账（多宿主不串台；缺省走模块桥兜底） */
     recordUsage?(inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }): void
-    /** 审阅 P1-2：子代理发起的 mcp__ 调用计数（此前只计主循环——子代理是 MCP 搜索主力场景） */
+    /** 审阅 P1-2：子代理发起的 mcp__ 调用计数（此前只计主循环） */
     countMcpCall?(): void
     /** M13 审阅 R1：写前快照会话化（多会话 checkpoint 归属发起会话） */
     onBeforeWrite?(paths: string[], tool: string, toolUseId?: string): Promise<void>
     /** M13 审阅 R1：沙箱档随发起会话（sandbox/set 切档后子代理跟随） */
     getSandbox?(): import('./sandbox.js').Sandbox
+    /** 审阅 P0-3：运行态四 getter 会话化（模块桥单槽是进程级——serve 多项目下被后启动项目
+     *  覆盖，先挂项目的子代理会用错项目的 provider/model/摘要角色。宿主窄端口随身携带，
+     *  模块桥降 argv 单会话兜底） */
+    getProviderReq?(): ProviderReq
+    getProvider?(): LLMProvider
+    getModel?(): string
+    getSummaryRole?(): Promise<SummaryRole | null>
   }
 }
 
@@ -227,10 +234,11 @@ export function makeSubagentOpts(
   /** M14-C5②：宿主桥解析好的摘要角色（roles.summary 换笔——子代理独立压缩链与主链同源；null=回退主模型） */
   summaryRole?: SummaryRole | null,
 ): LoopRunOptions {
-  // 审阅 P1-1/P1-2：桥 getter 优先（TuiApp 运行态：/model 切换、Tab 切沙箱档后取新值）；
-  // 构造时取一次=子代理生命周期内配置快照（中途切换影响下一批，优于 cli 静态闭包的永远旧值）
-  const providerReq = bridge?.getProviderReq !== undefined ? bridge.getProviderReq() : deps.getProviderReq()
-  const provider = bridge?.getProvider !== undefined ? bridge.getProvider() : deps.getProvider()
+  // 审阅 P0-3：会话端口优先（宿主随身携带，多项目/多会话不串台）；模块桥单槽是进程级
+  // （serve 多项目被后启动者覆盖）降 argv 单会话兜底；构造时取一次=子代理生命周期内
+  // 配置快照（中途切换影响下一批，优于 cli 静态闭包的永远旧值）
+  const providerReq = sessPort?.getProviderReq?.() ?? (bridge?.getProviderReq !== undefined ? bridge.getProviderReq() : deps.getProviderReq())
+  const provider = sessPort?.getProvider?.() ?? (bridge?.getProvider !== undefined ? bridge.getProvider() : deps.getProvider())
   const system = subagentSystem(type, deps.projectInstructions)
   const tools = buildSubRegistry(deps.registry, type)
   // 独立压缩链：boundary 只进子内存 messages（NoopHistory 不落盘，onCompacted 不配——无 UI 可重建）
@@ -283,8 +291,8 @@ export function makeSubagentOpts(
       ...((sessPort?.getSandbox?.() ?? (bridge?.getSandbox !== undefined ? bridge.getSandbox() : deps.sandbox)) !== undefined
         ? { sandbox: sessPort?.getSandbox?.() ?? (bridge?.getSandbox !== undefined ? bridge.getSandbox() : deps.sandbox) }
         : {}),
-      ...((bridge?.getModel?.() ?? deps.getModel?.()) !== undefined
-        ? { model: bridge?.getModel?.() ?? deps.getModel?.() }
+      ...((sessPort?.getModel?.() ?? bridge?.getModel?.() ?? deps.getModel?.()) !== undefined
+        ? { model: sessPort?.getModel?.() ?? bridge?.getModel?.() ?? deps.getModel?.() }
         : {}),
     },
     confirm: sessionConfirm ?? bridgeConfirm,
@@ -426,9 +434,9 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
       // 硬超时与用户中断取或（Node 20+ AbortSignal.any）
       const timeout = AbortSignal.timeout(SUB_TIMEOUT_MS)
       const signal = AbortSignal.any([ctx.signal, timeout])
-      // M14-C5②：摘要角色经宿主桥异步解析（resolveSummaryRole 与主链同源——roles.summary
-      // 配了换笔；桥缺省/未挂（argv 单次/旧测试）=null 回退子代理主模型，行为不变）
-      const summaryRole = await (bridge?.getSummaryRole?.() ?? null)
+      // 审阅 P0-3/C5②：摘要角色经会话端口优先（与主链同源——resolveSummaryRole 含缓存/floor
+      // 告警，roles.summary 配了换笔）；模块桥降兜底；都无（argv 单次/旧测试）=null 回退子代理主模型
+      const summaryRole = await (sess?.getSummaryRole?.() ?? bridge?.getSummaryRole?.() ?? null)
       const opts = makeSubagentOpts(deps, agentId, description, type, signal, (name) => {
         if (sess?.updateSubagent !== undefined) {
           sess.updateSubagent({ id: agentId, description, activity: name })

@@ -140,8 +140,11 @@ interface OutputViewerProps {
 /** 搜索态：null=未搜索；string=已确认词（n/N 跳转） */
 export function OutputViewer({ title, source, onBack }: OutputViewerProps): ReactElement {
   const { budget } = useViewport()
-  // 内容窗高度：budget − 骨架（marginTop1+边框2+标题1+状态1+搜索行1）——帧高恒定
-  const height = Math.max(3, sectionBudget(budget, 6))
+  // 内容窗高度（审阅 P0-2 修正）：帧高账目 = 面板（height + 骨架实占 5：marginTop1+边框2+
+  // 标题1+状态1；搜索行出现时 +1）+ App 外部骨架 3（ActivityBar1+输入行1+StatusBar1）
+  // ≤ budget（= rows−2，SAFETY_MARGIN 已在其中）。即 height ≤ budget−8；搜索行常驻留量
+  // 取 reserve=10——原 6 漏算外部 3 行+吃掉安全余量，任何终端打开都恰满屏触发 3J
+  const height = Math.max(3, sectionBudget(budget, 10))
   const lines = source.lines()
   const total = lines.length
   const [offset, setOffset] = useState(() => Math.max(0, total - height))

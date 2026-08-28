@@ -61,6 +61,7 @@
 
 | 后续 Dogfood 实测修复方案 | [详设/2026-08-28_后续-Dogfood实测修复方案_待审核.md](./详设/2026-08-28_后续-Dogfood实测修复方案_待审核.md) | **v1.4 二次审阅修复完毕**：三轮 dogfood 实录驱动（M13 决策/批1/批2a）——版本基线发现（dist 差 1.5h 错过 9ad1a83）→批1 CLI 校验+diff 中文名+半活探针→四角色审阅翻案（探针假阳性三重叠加）→批2a F-18 密钥泄漏根修（dotenv 提升+子进程全量继承链实证）+探针六修+--history= 回归→外部复审拦截 env 优先级回归（审阅建议顺序本身有缺陷）→二次审阅（skill P0×2/--yes REPL 不生效/静默批准语义/S2S3 真凶=respawn 幻影属性判定）→**F-08 半活楔死正式销案**（矩阵 24 项全过，7e01439）；批2b F-14/F-15 交互批待拍板+批2c F-18 尾巴留账；效率基线（监看+手动审批 3-5×/full-access 免卡待实测）+skill 沉淀 ~/.agents/skills/agent-dogfood-monitor/ |
 | CC 与 ECode 对话界面对比 | [解析/2026-08-28_CC与ECode对话界面对比_已完成.md](./解析/2026-08-28_CC与ECode对话界面对比_已完成.md) | **已完成（Claude Code 真机产出）**：逐维度对比（输入区/消息流/工具展示/权限档位/状态栏/滚动历史/其他）——高价值借鉴四项（@文件补全/输入历史持久化+Ctrl+R/单工具级展开/transcript 入 scrollback）+中价值六项（!shell 直通/审批附注释/acceptEdits 档/档位可视化/会话头 box/双击 Esc rewind）；ECode 反超点五项（视口预算体系/投影分离标记/告警中心/多端审批/组级聚合）——界面批直接输入 |
+| CC 与 ECode Headless 事件流对比 | [解析/2026-08-28_CC与ECode-Headless事件流对比_已完成.md](./解析/2026-08-28_CC与ECode-Headless事件流对比_已完成.md) | **已完成（ECode serve 会话产出，锚点抽查 4/4）**：CC `-p` stream-json（24 帧 SDKMessageSchema/result 终帧富化/三路审批通路含 hook 竞速）vs ECode mux（30 帧/seq 单调/pending 重放）——**ECode 接入成本反超**（重连/游标/鉴权/多项目聚合内置）；可借鉴六条（result 终帧富化/system-init 自描述帧/hook 竞速/审批 suggestions/streamlined 低带宽帧/stdout 守卫）——serve 产品化线输入 |
 
 > 其余文档按需在各目录补充，命名见下方约定。
 

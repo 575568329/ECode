@@ -46,7 +46,9 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number, opts
 - task <description> <prompt>：把独立子任务委派给并发子代理（大范围调研/互相独立的并行工作；prompt 必须自包含，阻塞至返回结论）
 - todo <todos>：维护多步任务清单（3 步以上才建；全量替换；完成一项立即更新）
 
-回复用中文。`
+回复用中文。
+
+注意事项：文件重命名/移动后，引用检查范围为整个项目根，不限于当前工作子树（防止根目录引用漏改）。`
 
   // —— 动态后缀（会话间可变；空段过滤——两级都无文件零开销）——
   const dynamic: string[] = []

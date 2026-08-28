@@ -29,6 +29,8 @@ import React from 'react'
 import { TuiApp } from '../tui/TuiApp.js'
 import { makeDeps, type Deps } from './assembly.js'
 import { serveStop, serveMode } from './serveMain.js'
+import { parseArgv } from './args.js'
+import { readFileSync } from 'node:fs'
 import { hideTerminalCursor, stopCursorGuard, showTerminalCursor } from './cursor.js'
 import type { HistoryStore } from '../services/history.js'
 import type { HookRunner } from '../services/hooks/runner.js'
@@ -106,9 +108,26 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
 }
 
 async function main(): Promise<void> {
+  // F-01：参数解析层（-v/-h/未知 flag 提前分流，零 LLM；serve/--yes/--history/位置参数语义不变）
+  const argvRest0 = process.argv.slice(2)
+  const parsed = parseArgv(argvRest0)
+  if (parsed.mode === 'version') {
+    const v = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version as string
+    process.stdout.write(`${v}\n`)
+    return
+  }
+  if (parsed.mode === 'help') {
+    process.stdout.write(`${parsed.usage}\n`)
+    return
+  }
+  if (parsed.mode === 'error') {
+    process.stderr.write(`${parsed.message}\n`)
+    process.exitCode = 1
+    return
+  }
   // M12：`ecode serve` 分流（常驻宿主 HTTP——不初始化 Ink）
-  if (process.argv[2] === 'serve') {
-    if (process.argv[3] === 'stop') {
+  if (parsed.mode === 'serve') {
+    if (parsed.serveArgs[0] === 'stop') {
       await serveStop()
       return
     }
@@ -196,7 +215,7 @@ async function main(): Promise<void> {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     logger.error('system', 'config_load_failed', { message: msg })
-    if (process.argv.slice(2).join(' ').trim()) throw e // argv 非交互：报错退出（exit handler 同步 flush 日志）
+    if ((parsed as { input: string }).input !== '') throw e // argv 非交互：报错退出（exit handler 同步 flush 日志）
     config = emptyShellConfig() // 空壳 P0-4：TuiApp 仍能渲染（banner + /setup 可用）
     banner = msg
   }
@@ -211,7 +230,8 @@ async function main(): Promise<void> {
   })
 
   // M13-W1：--yes 前移（approvalPolicy 经 makeDeps opts 进会话 broker——原 runOnce 构造参数前移到装配点）
-  const autoYes = process.argv.includes('--yes')
+  // F-01：--history/互斥/缺参校验已前移 parseArgv（此处直接消费结果）
+  const autoYes = parsed.mode === 'repl' && parsed.autoYes
   const deps = makeDeps(config, logger, sessionId, process.cwd(), { approvalPolicy: autoYes ? 'auto-approve' : 'ask' })
   historyRef = deps.history
   // M10-P3 终审 P1-6：后台任务完成钩子——走近修改集快照兜底（bash 同款语义；无 git 时 warn 跳过）
@@ -241,22 +261,8 @@ async function main(): Promise<void> {
   // D1（B2）：--yes 显式放行 tool-confirm 类审批（sensitive/mcp-permission 不豁免）；缺省 fail-closed
   // `--history <sessionId>`：REPL 启动即恢复指定会话（同 /history 语义——起新 sessionId 续写，D2），
   // 与位置参数（单次模式）互斥
-  const argvRest = process.argv.slice(2)
-  const historyFlagIdx = argvRest.indexOf('--history')
-  const initialHistorySessionId = historyFlagIdx >= 0 ? argvRest[historyFlagIdx + 1] : undefined
-  if (historyFlagIdx >= 0 && (initialHistorySessionId === undefined || initialHistorySessionId.startsWith('--'))) {
-    process.stderr.write('用法：ecode --history <sessionId>（应用内 /history 可查会话列表）\n')
-    process.exit(1)
-  }
-  const initialInput = process.argv
-    .slice(2)
-    .filter((a, i, arr) => a !== '--yes' && a !== '--history' && arr[i - 1] !== '--history')
-    .join(' ')
-    .trim()
-  if (initialInput !== '' && initialHistorySessionId !== undefined) {
-    process.stderr.write('✗ --history 与位置参数（单次执行模式）互斥，二选一\n')
-    process.exit(1)
-  }
+  const initialHistorySessionId = parsed.mode === 'repl' ? parsed.historySessionId : undefined
+  const initialInput = parsed.mode === 'repl' ? parsed.input : ''
   if (initialInput) {
     for (const w of deps.instructionWarnings) process.stderr.write(`⚠ ${w}
 `)

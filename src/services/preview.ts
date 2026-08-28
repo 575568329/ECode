@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { createTwoFilesPatch } from 'diff'
+import { fixPatchHeaders } from '../tools/builtin/patchHeader.js'
 import type { ToolUseBlock } from '../core/types.js'
 
 /** write_file 预览截断（详设 §4.4） */
@@ -103,7 +104,9 @@ async function buildEditPreview(use: ToolUseBlock, cwd: string): Promise<string>
   const newN = input.newString.replace(/\r?\n/g, nl)
   const newContent = oldContent.replace(oldN, newN)
 
-  return createTwoFilesPatch(input.path, input.path, oldContent, newContent, '', '', {
-    context: 2,
-  })
+  return fixPatchHeaders(
+    createTwoFilesPatch(input.path, input.path, oldContent, newContent, '', '', {
+      context: 2,
+    }),
+  )
 }

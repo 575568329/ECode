@@ -11,6 +11,7 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { createTwoFilesPatch } from 'diff'
+import { fixPatchHeaders } from '../builtin/patchHeader.js'
 import type { Tool } from '../interface.js'
 
 /** 统计 needle 在 haystack 中出现次数（非重叠） */
@@ -101,7 +102,9 @@ export const editFileTool: Tool = {
       await fs.writeFile(tmp, newContent, 'utf8')
       await fs.rename(tmp, abs)
       // result 含 diff（执行时原文件还在，能算完整 unified diff；详设 §7.5：Static 事后可回顾）
-      const diff = createTwoFilesPatch(rel, rel, oldContent, newContent, '', '', { context: 2 })
+      const diff = fixPatchHeaders(
+        createTwoFilesPatch(rel, rel, oldContent, newContent, '', '', { context: 2 }),
+      )
       return {
         content: `已更新 ${rel}（${count === 1 ? '1 处' : `${count} 处`}）\n\n${diff}`,
       }

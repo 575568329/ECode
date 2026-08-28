@@ -46,6 +46,9 @@ interface AppProps {
   /** 运行态镜像（thread/status 驱动）——ShortcutHint 上下文权威判据；
    *  缺省回退旧启发式（active.streamingText/activity——测试/旧用法兼容） */
   running?: boolean
+  /** 批2b ①②：审批卡字符转发主输入框 + 草稿镜像（Conversation→ConfirmPrompt 透传） */
+  onDraftKey?: (input: string, key: { return?: boolean; backspace?: boolean; delete?: boolean; home?: boolean; end?: boolean }) => void
+  draft?: string
   children?: ReactNode
 }
 
@@ -56,6 +59,8 @@ export function App({
   onToggleTool,
   onConfirm,
   onCancel,
+  onDraftKey,
+  draft,
   activity,
   activityText,
   iter,
@@ -92,6 +97,8 @@ export function App({
         onToggleTool={onToggleTool}
         onConfirm={onConfirm}
         onCancel={onCancel}
+        onDraftKey={onDraftKey}
+        draft={draft}
         conditions={conditions}
       >
         <ActivityBar state={activity} text={activityText} />

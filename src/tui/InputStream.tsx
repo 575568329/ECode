@@ -68,7 +68,7 @@ export function SlashSuggest({
         )
       })}
       {hidden > 0 && <Text dimColor> ↓ 还有 {hidden} 条（共 {matches.length} 项 · ↑↓ 浏览）</Text>}
-      <Text dimColor> ↑↓ 选择 · 回车 填入（再回车执行）</Text>
+      <Text dimColor> ↑↓ 选择 · 回车 填入 · Esc 取消（填入后：再回车执行 / Esc 清空）</Text>
     </Box>
   )
 }
@@ -145,9 +145,9 @@ export function InputStream({
     if (trimmed.startsWith('/')) {
       // M11 审阅 P0-1：忙碌态斜杠在分流点拦截（/clear 等若立即执行会与 runLoop 竞态——
       // messagesRef 被清而 loop 持旧数组引用继续跑 = 僵尸循环）
+      // 批2b 配套：只提示不吞——命令文本保留在输入框（用户空闲后补发，不须重打）
       if (busy) {
         onSlashBusy?.()
-        setCur(createCursor(''))
         return
       }
       const sp = trimmed.indexOf(' ')
@@ -218,6 +218,11 @@ export function InputStream({
     }
     if (slashMode) {
       const matches = matchSlashEntries(cur.text.slice(1))
+      // 批2b 配套：回填态（`/name ` 尾随空格无参数）Esc 取消——两段式残留吞消息的出口
+      if (key.escape && /\s$/.test(cur.text)) {
+        setCur(createCursor(''))
+        return
+      }
       // 补全统一走回车两段式（↑↓ 选 + 回车回填）；Tab 不参与——已专职沙箱模式切换（M9-D13）
       if (key.upArrow && matches.length > 0) {
         setSlashIdx((i) => (i <= 0 ? matches.length - 1 : i - 1))

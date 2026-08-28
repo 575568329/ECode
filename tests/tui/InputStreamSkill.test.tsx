@@ -271,3 +271,50 @@ describe('SlashSuggest 窗口滚动计数边界（审阅 P1-1 修复的锁定）
     expect(frame).toContain('共 ') // 总数恒可见
   })
 })
+
+describe('批2b 配套：两段式回填态与 busy 拦截', () => {
+  it('回填态（/name+空格）Esc 清空输入框（两段式残留吞消息的出口）', async () => {
+    const { stdin, lastFrame } = render(React.createElement(InputStream, { onSubmit: () => {} }))
+    await flush()
+    stdin.write('/he')
+    await flush()
+    stdin.write('\r') // 回填 `/help `（两段式；尾随空格停匹配→建议列表消失）
+    await flush()
+    const f1 = lastFrame() ?? ''
+    expect(f1).toContain('/help') // 回填可见
+    expect(f1).not.toContain('回车 填入') // 建议列表已隐（带空格停匹配）
+    stdin.write('\x1b') // Esc 取消
+    await flush()
+    const f2 = lastFrame() ?? ''
+    expect(f2).not.toContain('/help') // 清空
+  })
+
+  it('busy 拦截斜杠命令：提示但保留命令文本（不吞）', async () => {
+    const onSlashBusy = vi.fn()
+    const { stdin, lastFrame } = render(
+      React.createElement(InputStream, { onSubmit: () => {}, busy: true, onSlashBusy }),
+    )
+    await flush()
+    stdin.write('/不存在的命令xyz')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    expect(onSlashBusy).toHaveBeenCalledTimes(1)
+    const f = lastFrame() ?? ''
+    expect(f).toContain('/不存在的命令xyz') // 文本仍在输入框（批2b：只提示不吞）
+  })
+
+  it('空闲态提交命令后清空（对照：busy 保留是特例）', async () => {
+    const onCommand = vi.fn()
+    const { stdin, lastFrame } = render(
+      React.createElement(InputStream, { onSubmit: () => {}, onCommand }),
+    )
+    await flush()
+    stdin.write('/不存在的命令xyz')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    expect(onCommand).toHaveBeenCalled()
+    expect(lastFrame() ?? '').not.toContain('/不存在的命令xyz')
+  })
+})

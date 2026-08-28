@@ -134,6 +134,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const runningRef = useRef(false)
   // 同步 confirm 状态给 useInterrupt isActive（避免 stale closure；P0#1）
   const confirmRef = useRef(false)
+  // 批2b ①②：审批期草稿（权威 ref，state 镜像渲染；审批出现/应答复位——「应答后字还在」
+  // 与「连弹期间草稿跨卡持续」是同一状态机的两面）
+  const confirmDraftRef = useRef('')
+  const [confirmDraft, setConfirmDraft] = useState('')
   // M12-B3：插话预览由宿主 queue/snapshot 事件镜像（队列权威在宿主，D2）
   const [interjectPreview, setInterjectPreview] = useState<string | null>(null)
   const enqueueInterject = async (text: string, images?: { path: string; mime: string; label?: string }[]): Promise<void> => {
@@ -425,6 +429,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           break
         case 'approval/requested': {
           confirmRef.current = true
+          // 批2b ④：审批出现即未选择态（draft 状态机重置；Enter 不静默批准）
           // 批2d（§13.1 拍板-1 附）：审批卡首次出现响一次 BEL 终端铃（同一审批不重复——
           // resolved 后弹窗清空，响过的 requestId 留痕即可防重放/连续 requested 重响）
           if (configRef.current.bellOnApproval !== false && !bellRungRef.current.has(ev.requestId)) {
@@ -445,12 +450,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
                         : '本会话记住此 MCP server 的工具',
                   }
                 : {}),
-              resolve: (ok: boolean, always?: boolean) => {
+              resolve: (ok: boolean, always?: boolean, reason?: string) => {
                 confirmRef.current = false
                 void host.send({
                   op: 'approval/respond',
                   requestId: ev.requestId,
                   decision: ok ? (always === true ? 'always' : 'once') : 'reject',
+                  ...(ok !== true && reason !== undefined && reason !== '' ? { message: reason } : {}),
                 })
               },
             },
@@ -573,6 +579,33 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const clearConfirm = () => {
     confirmRef.current = false
     setActive((a) => ({ ...a, confirm: null }))
+  }
+
+  // 批2b ①：审批卡按键转发——进草稿 buffer 并经 insert 通道实时写入输入框（可见渲染；
+  // TextInput 在审批期 inactive 只不接键，渲染不受影响），Enter 提交走插话通道（审批期
+  // loop 挂起即 running=true，submit 自然入队）；应答后 cur 保留 = 字还在可继续编辑
+  const handleConfirmDraftKey = (inputChar: string, key: { return?: boolean; backspace?: boolean; delete?: boolean }): void => {
+    if (key.return) {
+      const text = confirmDraftRef.current
+      if (text.trim() === '') return
+      confirmDraftRef.current = ''
+      setConfirmDraft('')
+      setInsert({ text: '', seq: Date.now() })
+      void submit(text) // 审批期 running=true → enqueueInterject（排队「后面的都拒绝」等指令）
+      return
+    }
+    if (key.backspace) {
+      const next = confirmDraftRef.current.slice(0, -1)
+      confirmDraftRef.current = next
+      setConfirmDraft(next)
+      setInsert({ text: next, seq: Date.now() })
+      return
+    }
+    if (key.delete || inputChar === '') return
+    const next = confirmDraftRef.current + inputChar.replace(/\r\n?/g, '\n')
+    confirmDraftRef.current = next
+    setConfirmDraft(next)
+    setInsert({ text: next, seq: Date.now() })
   }
 
   // 清动态/瞬态状态（onClear 和 restoreSession 共用；committed 由调用方设，§9.2 P2-6 别重写一套）
@@ -960,6 +993,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       onToggleTool={hasDoneTool ? toggleExpand : undefined}
       onConfirm={clearConfirm}
       onCancel={clearConfirm}
+      onDraftKey={handleConfirmDraftKey}
+      draft={confirmDraft}
       activity={activity.state}
       activityText={activity.text}
       running={running}
@@ -1391,9 +1426,17 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           resetTransient()
         }}
         // M11-P7：忙碌态保持激活（插话 Enter 入队；overlay/confirm 仍独占）
+        // 批2b ①：confirm 期仍 inactive（字符由 ConfirmPrompt→onDraftKey 通道兑现——
+        // 避免 TextInput 与审批卡双吃按键）；确认/取消语义在 ConfirmPrompt 内
         inactive={overlay !== null || active.confirm !== null}
         insert={insert}
-        placeholder={busy ? '（处理中，Ctrl+C 中断）...' : '输入消息，/help 查看命令...'}
+        placeholder={
+          active.confirm !== null
+            ? '（审批中…打字进草稿，y/n/Esc 应答）'
+            : busy
+              ? '（处理中，Ctrl+C 中断）...'
+              : '输入消息，/help 查看命令...'
+        }
       />
     </App>
   )

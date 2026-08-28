@@ -44,6 +44,28 @@ export function truncateOutput(s: string): string {
   return `${head}\n…（中间 ${omitted} 字节已截断，需要完整用 read_file/grep，不要编造）\n${tail}`
 }
 
+/**
+ * F-22（批2b）：Node 内部警告折叠——MaxListenersExceededWarning 等进程级警告对 LLM 是
+ * 噪声（还可能很长）且用户无需行动。折叠为一行提示不直打全文（原文走 stderr 语义丢弃——
+ * 这类警告来自 ECode 自身或子进程的 listener 管理，不是命令的输出内容）。
+ */
+// eslint-disable-next-line no-control-regex
+const NODE_INTERNAL_WARNING = /^\(node:\d+\)\s+([\w]+Warning|[A-Za-z]*Warning):.*$/gm
+
+export function foldNodeWarnings(s: string): string {
+  if (!s.includes('(node:')) return s
+  const warnings = new Set<string>()
+  let folded = s.replace(NODE_INTERNAL_WARNING, (_m, name: string) => {
+    warnings.add(name)
+    return '' // 先移除，行清理在后
+  })
+  if (warnings.size === 0) return s
+  // 清掉移除后留下的空行残迹（连续空行收敛为一行）
+  folded = folded.replace(/^[ \t]*\n(?:[ \t]*\n)+/gm, '').replace(/^\n+/, '')
+  const tag = `〔Node 内部警告已折叠：${[...warnings].join('、')}——非命令输出，可忽略〕`
+  return folded === '' || folded.trim() === '' ? tag : `${tag}\n${folded}`
+}
+
 export const bashTool: Tool = {
   name: 'bash',
   description: '执行 shell 命令（Git Bash / sh）。命令在当前工作目录执行。退出码非 0 时输出含 stderr 和退出码。',
@@ -129,7 +151,7 @@ export const bashTool: Tool = {
         if (stdout) parts.push(stdout)
         if (stderr) parts.push(`[stderr]\n${stderr}`)
         if (code !== 0) parts.push(`[退出码 ${code}]`)
-        done({ content: truncateOutput(parts.join('\n') || '(无输出)') })
+        done({ content: foldNodeWarnings(truncateOutput(parts.join('\n') || '(无输出)')) })
       })
 
       ctx.signal.addEventListener('abort', onAbort, { once: true })

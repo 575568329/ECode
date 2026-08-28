@@ -133,6 +133,8 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
   }
 
   let retryCount = 0
+  // F-21：耗尽检测标志——循环走完（无 break）即迭代上限耗尽（对照 length 截断 onWarn 先例）
+  let exhausted = false
   for (let iter = 1; iter <= opts.maxIterations; iter++) {
     // M11-P7：插话步间注入——迭代顶部拉取（模型消化完上轮工具结果才见插话，非打断流中；
     // 顺序天然在 tool_result→afterTools 回喂之后）
@@ -375,6 +377,13 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         opts.history.append(fbMsg)
       }
     }
+    if (iter === opts.maxIterations) exhausted = true // 最后一轮完整执行且未 break=耗尽
+  }
+  // F-21（§10.5 拍板-2）：迭代上限耗尽不再静默 return——systemMsg 提示 + 告警
+  // （对照 length 截断 onWarn 先例；用户可输入「继续」开新轮续跑）
+  if (exhausted) {
+    opts.callbacks.onWarn?.(`已达到迭代上限（maxIterations=${opts.maxIterations}），本轮提前终止——输入「继续」可接着跑`)
+    opts.logger.warn('loop', 'max_iterations_exhausted', { maxIterations: opts.maxIterations })
   }
 
   return messages

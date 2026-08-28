@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
-import { bashTool, isDangerous, truncateOutput } from '../../../src/tools/builtin/bash.js'
+import { bashTool, isDangerous, truncateOutput, foldNodeWarnings } from '../../../src/tools/builtin/bash.js'
 import type { Tool, ToolContext } from '../../../src/tools/interface.js'
 
 const ctx: ToolContext = { cwd: process.cwd(), signal: new AbortController().signal }
@@ -48,6 +48,32 @@ describe('truncateOutput（30KB 头尾中截）', () => {
     expect(r).toContain('不要编造')
     expect(r.startsWith('AAAA')).toBe(true) // 头
     expect(r.length).toBeLessThan(50_000) // 截断后远小于原
+  })
+})
+
+describe('foldNodeWarnings（F-22 Node 内部警告折叠）', () => {
+  it('MaxListenersExceededWarning 折叠为一行提示，不直打全文', () => {
+    const out = [
+      '(node:1234) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 message listeners added to [EventEmitter]. Use emitter.setMaxListeners() to increase limit',
+      'normal output line',
+    ].join('\n')
+    const r = foldNodeWarnings(out)
+    expect(r).toContain('已折叠')
+    expect(r).toContain('MaxListenersExceededWarning')
+    expect(r).not.toContain('Possible EventEmitter memory leak') // 全文不出现
+    expect(r).toContain('normal output line') // 正常输出保留
+  })
+  it('纯警告输出 → 只剩折叠提示一行', () => {
+    const r = foldNodeWarnings('(node:1) DeprecationWarning: x is deprecated')
+    expect(r.trim()).toBe('〔Node 内部警告已折叠：DeprecationWarning——非命令输出，可忽略〕')
+  })
+  it('无警告输出原样返回', () => {
+    expect(foldNodeWarnings('hello\nworld')).toBe('hello\nworld')
+  })
+  it('多条同类警告去重', () => {
+    const out = '(node:1) MaxListenersExceededWarning: a\nout\n(node:2) MaxListenersExceededWarning: b'
+    const r = foldNodeWarnings(out)
+    expect(r.match(/MaxListenersExceededWarning/g)).toHaveLength(1)
   })
 })
 

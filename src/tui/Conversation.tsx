@@ -90,6 +90,9 @@ interface ConversationProps {
   onToggleTool?: () => void
   onConfirm?: () => void
   onCancel?: () => void
+  /** 批2b ①：审批卡字符转发主输入框；②：草稿镜像（非空时单字母快捷失效） */
+  onDraftKey?: (input: string, key: { return?: boolean; backspace?: boolean; delete?: boolean; home?: boolean; end?: boolean }) => void
+  draft?: string
   children?: ReactNode
   /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar 各 ≤3 行——allocateDynamic 显式扣减） */
   conditions?: { tasksBar?: boolean; subagentBar?: boolean }
@@ -101,6 +104,8 @@ export function Conversation({
   onToggleTool,
   onConfirm,
   onCancel,
+  onDraftKey,
+  draft,
   children,
   conditions,
 }: ConversationProps): ReactElement {
@@ -133,7 +138,13 @@ export function Conversation({
           />
         ))}
       {active.confirm ? (
-        <ConfirmPrompt state={active.confirm} onConfirm={onConfirm} onCancel={onCancel} />
+        <ConfirmPrompt
+          state={active.confirm}
+          onConfirm={onConfirm}
+          onCancel={onCancel}
+          onDraftKey={onDraftKey}
+          draft={draft}
+        />
       ) : (
         active.streamingText !== '' &&
         (alloc.degraded ? (

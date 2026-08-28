@@ -133,6 +133,33 @@ describe('runLoop：afterTools（M9-P3 轮末质量回喂）', () => {
 })
 
 describe('runLoop', () => {
+  it('F-21 迭代上限耗尽：onWarn 提示（不再静默 return）', async () => {
+    // 每轮都要求工具调用 → 走满 maxIterations=2（脚本耗尽后 MockProvider 回退 done/end，
+    // 但这里显式给两轮 tool_use 保证耗尽路径）
+    const toolRound = [
+      { type: 'tool_use_start' as const, id: 't', name: 'echo' },
+      { type: 'tool_use_delta' as const, id: 't', partial_json: '{"msg":"x"}' },
+      { type: 'tool_use_end' as const, id: 't' },
+      { type: 'done' as const, stop_reason: 'tool_use' as const },
+    ]
+    const p = new MockProvider([toolRound, structuredClone(toolRound)])
+    const onWarn = vi.fn()
+    const messages = await runLoop([], '问', {
+      ...makeOpts(p, [echoTool]),
+      maxIterations: 2,
+      callbacks: { onText: vi.fn(), onWarn },
+    })
+    expect(messages.length).toBeGreaterThan(0)
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('迭代上限'))
+  })
+
+  it('F-21 正常结束（stop=end break）不触发耗尽告警', async () => {
+    const p = new MockProvider([[{ type: 'text', text: 'hi' }, { type: 'done', stop_reason: 'end' }]])
+    const onWarn = vi.fn()
+    await runLoop([], '问', { ...makeOpts(p, []), callbacks: { onText: vi.fn(), onWarn } })
+    expect(onWarn).not.toHaveBeenCalledWith(expect.stringContaining('迭代上限'))
+  })
+
   it('纯文本回复 → user + assistant，onText 收到增量', async () => {
     const onText = vi.fn()
     const p = new MockProvider([[{ type: 'text', text: 'hi' }, { type: 'done', stop_reason: 'end' }]])

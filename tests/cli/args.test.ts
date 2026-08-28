@@ -55,14 +55,55 @@ describe('F-01 parseArgv', () => {
   })
 
   it('--history <id> 解析不变', () => {
-    const r = parseArgv(['--history', 'abc'])
+    const r = parseArgv(['--history', '2026-08-27T22-31-05-123Z'])
     expect(r.mode).toBe('repl')
-    if (r.mode === 'repl') expect(r.historySessionId).toBe('abc')
+    if (r.mode === 'repl') expect(r.historySessionId).toBe('2026-08-27T22-31-05-123Z')
   })
 
   it('--history 缺参 / 与位置参数互斥 → error', () => {
     expect(parseArgv(['--history']).mode).toBe('error')
-    expect(parseArgv(['--history', 'a', '问题']).mode).toBe('error')
+    expect(parseArgv(['--history', '2026-08-27T22-31-05-123Z', '问题']).mode).toBe('error')
+  })
+
+  // ---- 批2a §10.3（P0 回归修复）：--history= 前缀与值校验 ----
+
+  it('--history=<id> 等价拆解（修复前整串被当 prompt 发 LLM——F-01 同型复发）', () => {
+    const r = parseArgv(['--history=2026-08-27T22-31-05-123Z'])
+    expect(r.mode).toBe('repl') // 修复前：input='--history=...' 整串走单次模式
+    if (r.mode === 'repl') {
+      expect(r.historySessionId).toBe('2026-08-27T22-31-05-123Z')
+      expect(r.input).toBe('')
+    }
+  })
+
+  it('--history= 与位置参数互斥 → error（拆解后走同一条互斥校验）', () => {
+    expect(parseArgv(['--history=2026-08-27T22-31-05-123Z', '问题']).mode).toBe('error')
+  })
+
+  it('--history= 空值 → error（不是静默当 prompt）', () => {
+    expect(parseArgv(['--history=']).mode).toBe('error')
+  })
+
+  it('--history 值形状校验（sessionId 裸拼 sessions 路径，防路径穿越原语）→ 非法 error', () => {
+    // 路径穿越 / 分隔符 / 非时间戳形态一律拒绝（isValidSessionId 白名单）
+    expect(parseArgv(['--history', 'abc']).mode).toBe('error') // 旧用例行为变化：裸词 id 不再放行
+    expect(parseArgv(['--history', '../config']).mode).toBe('error')
+    expect(parseArgv(['--history', '2026-08-27/../../etc/x']).mode).toBe('error')
+    expect(parseArgv(['--history=../../etc/passwd']).mode).toBe('error')
+    // 合法形态（ISO 时间戳；飞书带 8 位随机后缀）仍放行
+    expect(parseArgv(['--history', '2026-08-27T22-31-05-123Z-abcd1234']).mode).toBe('repl')
+  })
+
+  it('重复 --history token 不再错位（旧 indexOf 判定把第一个的值挂到最后一个索引上）', () => {
+    // `--history <合法id> --history`：第二个 --history 缺值按未知/缺参 error，不得静默放行为 repl
+    const r = parseArgv(['--history', '2026-08-27T22-31-05-123Z', '--history'])
+    expect(r.mode).toBe('error')
+  })
+
+  it('serve --version 语义锁测：args 层不分流，serve 子命令族整段透传（serveMain 自行解析）', () => {
+    const r = parseArgv(['serve', '--version'])
+    expect(r.mode).toBe('serve')
+    if (r.mode === 'serve') expect(r.serveArgs).toEqual(['--version'])
   })
 
   it('已知的非 flag 语义不被误伤：负数等以 - 开头的单字符除外仍报错（只白名单 -v/-h）', () => {

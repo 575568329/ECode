@@ -206,13 +206,21 @@ function restrictFileMode(filePath: string): void {
 export function loadConfig(opts: LoadConfigOpts = {}): Config {
   const cwd = opts.cwd ?? process.cwd()
 
-  // .env 加载（dev 内部，不暴露给用户；不存在则静默）
+  // .env 加载（dev 内部，不暴露给用户；不存在则静默）。
+  // F-18 根修（dogfood 批2a §10.1a）：dotenv.parse 局部 map，绝不 mutate process.env——
+  // 旧实现 dotenv.config() 把项目 .env 的 apiKey 明文提升进宿主 env，再经 spawnShellCommand
+  // 全量继承透传给 bash/hooks/quality/后台任务子进程（`echo $ANTHROPIC_API_KEY` 即读走），
+  // 叠加 prompt injection 即 exfil 链（角色 C 三段实证）。用户 shell 自身 export 的变量
+  // 仍继承（用户信任域，与 claude-code 缺省一致），仅「文件密钥主动提升」这一多余环节移除。
+  let dotenvMap: Record<string, string> = {}
   if (opts.loadDotenv !== false) {
     try {
-      dotenv.config({ path: path.join(cwd, '.env') })
+      dotenvMap = dotenv.parse(fs.readFileSync(path.join(cwd, '.env'), 'utf8'))
     } catch (e) {
-      // P2-2：不静默吞异常（AGENTS 1.2），stderr 提示（.env 失败不阻断，配置仍从文件读）
-      process.stderr.write(`[CONFIG] .env 加载失败（忽略）：${e instanceof Error ? e.message : String(e)}\n`)
+      if (!(e instanceof Error && (e as NodeJS.ErrnoException).code === 'ENOENT')) {
+        // P2-2：不静默吞异常（AGENTS 1.2），stderr 提示（.env 失败不阻断，配置仍从文件读）
+        process.stderr.write(`[CONFIG] .env 加载失败（忽略）：${e instanceof Error ? e.message : String(e)}\n`)
+      }
     }
   }
 
@@ -246,10 +254,11 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
 
   // 优先级：环境变量（含 dev .env）> config > 默认
   // P1-12：统一 env 优先（与 baseURL/apiKey/model 一致），否则 ECODE_TYPE 切 protocol 无效
-  const type = (process.env.ECODE_TYPE ?? rawCfg.type ?? 'anthropic') as ProviderCfg['type']
-  const baseURL = process.env.ECODE_BASE_URL ?? rawCfg.baseURL
-  const apiKey = process.env.ANTHROPIC_API_KEY ?? rawCfg.apiKey
-  const model = process.env.ECODE_MODEL ?? file.default?.model ?? rawCfg.models?.[0]
+  // F-18：.env 值走 dotenvMap（不再进 process.env）；用户 shell export 的变量仍从 process.env 读
+  const type = (dotenvMap.ECODE_TYPE ?? process.env.ECODE_TYPE ?? rawCfg.type ?? 'anthropic') as ProviderCfg['type']
+  const baseURL = dotenvMap.ECODE_BASE_URL ?? process.env.ECODE_BASE_URL ?? rawCfg.baseURL
+  const apiKey = dotenvMap.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? rawCfg.apiKey
+  const model = dotenvMap.ECODE_MODEL ?? process.env.ECODE_MODEL ?? file.default?.model ?? rawCfg.models?.[0]
 
   // 首次生成模板 + env 补全 → 提示可编辑（继续跑）
   if (created && apiKey && baseURL && model) {

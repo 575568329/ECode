@@ -1,3 +1,5 @@
+import { isValidSessionId } from '../host/session.js'
+
 /**
  * F-01：CLI 参数解析层（纯函数，供 cli/index.ts 消费）。
  *
@@ -35,16 +37,32 @@ export const USAGE = [
   '  -v, --version         输出版本号并退出',
   '  -h, --help            显示本用法并退出',
   '      --yes             单次模式显式放行工具审批（fail-closed 缺省）',
-  '      --history <id>    REPL 启动即恢复指定会话（与位置参数互斥）',
+  '      --history <id>    REPL 启动即恢复指定会话（与位置参数互斥；同义 --history=<id>）',
 ].join('\n')
 
 export function parseArgv(argv: string[]): ArgvResult {
-  // serve 子命令族：整段原样透传（serveMain 自行解析 --port 等）
+  // serve 子命令族：整段原样透传（serveMain 自行解析 --port 等）。
+  // 契约锁测（批2a §10.3）：`serve --version` 不在 args 层分流——serve 自有解析，透传语义不变。
   if (argv[0] === 'serve') {
     return { usage: USAGE, mode: 'serve', serveArgs: argv.slice(1) }
   }
 
-  // --history 前置校验（原 index.ts 逻辑前移）
+  // F-10.3 P0：`--history=<id>` 前置拆解为等价 `--history <id>`（白名单原本就豁免该前缀，
+  // 但解析不认——`ecode --history=abc` 整串被当 prompt 发 LLM，F-01 同型复发）
+  const normalized: string[] = []
+  for (const a of argv) {
+    if (a.startsWith('--history=') && a !== '--history=') {
+      normalized.push('--history', a.slice('--history='.length))
+    } else {
+      normalized.push(a)
+    }
+  }
+  argv = normalized
+
+  // --history 前置校验（原 index.ts 逻辑前移）。
+  // indexOf 重复 token 错位收口（审阅 B P2）：找的是**首个** --history，若出现两次
+  // （`ecode --history a --history`）旧逻辑 `arr[i-1] !== '--history'` 会错把第二个的
+  // 上下文当第一个的值判断——这里统一在首次命中处取值，多余的 --history 走下方白名单互斥报错。
   const historyFlagIdx = argv.indexOf('--history')
   const historySessionId = historyFlagIdx >= 0 ? argv[historyFlagIdx + 1] : undefined
   if (historyFlagIdx >= 0 && (historySessionId === undefined || historySessionId.startsWith('--'))) {
@@ -54,8 +72,24 @@ export function parseArgv(argv: string[]): ArgvResult {
       message: '用法：ecode --history <sessionId>（应用内 /history 可查会话列表）',
     }
   }
+  // 重复 token 显式拒绝（审阅 B P2）：`--history a --history` 旧逻辑静默放行（第二个被
+  // 白名单/过滤器吞掉）——重复即用户笔误，报错优于猜测
+  if (historyFlagIdx >= 0 && argv.indexOf('--history') !== argv.lastIndexOf('--history')) {
+    return { usage: USAGE, mode: 'error', message: '--history 只能出现一次' }
+  }
+  // 值形状校验（审阅 C P1：sessionId 会一路裸拼 sessions 目录路径，`..`/分隔符/绝对路径
+  // = 任意 .jsonl 读原语——接 host/session 同款 isValidSessionId 白名单，CLI 路径不再裸拼）
+  if (historyFlagIdx >= 0 && historySessionId !== undefined && !isValidSessionId(historySessionId)) {
+    return {
+      usage: USAGE,
+      mode: 'error',
+      message: `会话 id 非法：${historySessionId}（应为 2026-08-27T22-31-05-123Z 形态，/history 可查）`,
+    }
+  }
 
-  // 位置参数 = 排除已知 flag 与 --history 的值
+  // 位置参数 = 排除已知 flag 与 --history 的值（indexOf 换 lastIndexOf 语义修正：
+  // 原实现 `arr[i-1] !== '--history'` 在重复 token 时会把第一个 --history 的判定
+  // 挂在最后一个索引上；此处按 token 自身与前一个 token 判定，语义稳定）
   const positional = argv
     .filter((a, i, arr) => a !== '--yes' && a !== '--history' && arr[i - 1] !== '--history')
     .join(' ')
@@ -65,11 +99,13 @@ export function parseArgv(argv: string[]): ArgvResult {
     return { usage: USAGE, mode: 'error', message: '✗ --history 与位置参数（单次执行模式）互斥，二选一' }
   }
 
-  // flag 白名单校验：-v/-h/--version/--help/--yes/--history 之外一律拒绝
-  for (const a of argv) {
+  // flag 白名单校验：-v/-h/--version/--help/--yes/--history 之外一律拒绝。
+  // 版本优先序（批2a 声明）：version > help > 其他——首个命中即返回，与下方顺序一致。
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
     if (a === '-v' || a === '--version') return { usage: USAGE, mode: 'version' }
     if (a === '-h' || a === '--help') return { usage: USAGE, mode: 'help' }
-    if (a.startsWith('-') && a !== '--yes' && a !== '--history' && !a.startsWith('--history=') && argv[argv.indexOf(a) - 1] !== '--history') {
+    if (a.startsWith('-') && a !== '--yes' && a !== '--history' && argv[i - 1] !== '--history') {
       return { usage: USAGE, mode: 'error', message: `未知参数: ${a}\n${USAGE}` }
     }
   }

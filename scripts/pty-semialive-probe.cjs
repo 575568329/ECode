@@ -115,31 +115,59 @@ const evidence = async (label) => {
 
 let failed = false
 
-/** 探针1：Enter 提交（/stats 本地聚合零 token）。判定统计输出或忙碌拦截任一出现。 */
-const enterProbe = async (label) => {
+/** 探针1 前置：回显层探针（批2a 六修 #6）——`zz` 写入后断言回显出现。
+ *  区分「调度死」（连回显都没有，wedge 探针的领域）vs「半活」（回显活但功能键死）。
+ *  回显失败时 Enter 探针的 FAIL 不可归因于键路由，须单独记录。 */
+const echoProbe = async (label) => {
   const m = markNow()
+  proc.write('zz')
+  const ok = await waitFor(m, /zz/, 3000)
+  if (!ok) console.log(`FAIL 回显死（调度层楔死，非半活） ${label}`)
+  else console.log(`OK  回显活 ${label}`)
+  return ok
+}
+
+/** 探针1：Enter 提交（/stats 本地聚合零 token）。
+ *  批2a 六修：
+ *   #1 两段式协议——ECode 斜杠命令首 Enter 只回填（InputStream.tsx:185-195 两段式），
+ *      发两次 \r（首按回填、次按执行）；
+ *   #2 判定指纹收紧到命令输出独有行（含「暂无数据」空库形态——新机器必假阴），
+ *      并 mark 移到 \r 之后（打字阶段渲染的 SlashSuggest 补全列表不再被计入——
+ *      旧指纹「跨会话|token|模型」恰是补全描述文案，打字即命中=假阳性三重 bug 之一）。 */
+const STATS_FINGERPRINT = /总计：输入|个会话|暂无数据|统计不可用：|运行中暂不能执行命令/
+const enterProbe = async (label) => {
+  const echoOk = await echoProbe(`${label}·回显`)
   proc.write('/stats')
   await new Promise((r) => setTimeout(r, 500))
   proc.write('\r')
-  const ok = await waitFor(m, /跨会话|token|模型|会话数|运行中暂不能执行命令|忙碌/, 8000)
+  await new Promise((r) => setTimeout(r, 350)) // 首按回填后补全列表清场
+  const m = markNow() // mark 在最后一次 \r 之后：只看 Enter 之后的新帧
+  proc.write('\r')
+  const ok = await waitFor(m, STATS_FINGERPRINT, 8000)
   // 探针命令的残留输出清不干净没关系（下轮 WaitFor 用唯一指纹）；/stats 不入 LLM 历史
-  console.log(`${ok ? 'OK  Enter 生效' : 'FAIL Enter 走死队列（半活实锤）'} ${label}`)
+  console.log(`${ok ? 'OK  Enter 生效' : `FAIL Enter 走死队列（${echoOk ? '半活实锤' : '回显亦死，调度层问题'}）`} ${label}`)
   if (!ok) { await evidence(label); failed = true }
   await new Promise((r) => setTimeout(r, 800))
 }
 
-/** 探针2：Ctrl+C 双击优雅退出（空闲态）。判定进程 6s 内退出。 */
+/** 探针2：Ctrl+C 双击优雅退出（空闲态）。
+ *  批2a 六修：
+ *   #3 expectExit 标志——本探针进入即置位，spawnTui 的「意外退出」兜底跳过
+ *      （旧版 Ctrl+C 探针成功退出反而触发 spawnTui 的 process.exit(1) 自杀，「全过」不可达）；
+ *   #5 判定窗 6s→9s（graceful 预算 5.5s 余量过窄）。 */
 const ctrlCProbe = async (label) => {
+  expectExit = true // 六修 #3：进入预期退出窗口，spawnTui 兜底静默
   const exited = await new Promise((resolve) => {
     let done = false
     const onExit = () => { done = true; resolve(true) }
     proc.onExit(onExit)
     proc.write('\x03')
     setTimeout(() => proc.write('\x03'), 350)
-    setTimeout(() => { if (!done) resolve(false) }, 6000)
+    setTimeout(() => { if (!done) resolve(false) }, 9000)
   })
   console.log(`${exited ? 'OK  Ctrl+C 优雅退出' : 'FAIL Ctrl+C 键消费死（半活实锤）'} ${label}`)
   if (!exited) { await evidence(label); proc.kill(); failed = true }
+  expectExit = false
   return exited
 }
 
@@ -159,6 +187,10 @@ const probeGroup = async (label) => {
 }
 
 /** 起 TUI 子进程 */
+let baseUrl = ''
+let settling = false
+let expectExit = false // 批2a 六修 #3：ctrlCProbe 预期退出窗口——spawnTui 的「意外退出」兜底须跳过
+
 const spawnTui = () =>
   new Promise((resolve, reject) => {
     // Windows node-pty 直接 spawn 'node' 报 File not found——与 wedge 探针一致统一走 cmd.exe 壳
@@ -176,15 +208,33 @@ const spawnTui = () =>
     out = ''
     proc.onData((d) => (out += d))
     proc.onExit(({ exitCode }) => {
-      if (settling) return
+      if (settling || expectExit) return
       console.error(`子进程意外退出 code=${exitCode}\n末尾帧:\n${lastFrame(15)}`)
       process.exit(1)
     })
     resolve()
   })
 
-let baseUrl = ''
-let settling = false
+/** 场景执行包装（六修 #4：FAIL 不再 fail-fast 丢矩阵——记 failed+证据+respawn 续跑，
+ *  结尾统一 exit 汇总；旧版任一 FAIL 即 process.exit(1)，「触发因素=本地命令轮」成倒推推断） */
+const runScenario = async (label, fn) => {
+  try {
+    await fn()
+  } catch (e) {
+    console.log(`FAIL ${label} 异常：${e && e.message ? e.message : e}`)
+    await evidence(label)
+    failed = true
+    try { proc.kill() } catch {}
+  }
+  // ctrlCProbe 已杀/已退 → 下场景前确保干净重生
+  if (proc == null || proc.exitCode !== undefined || proc.pid === undefined) {
+    try { proc.kill() } catch {}
+    await spawnTui()
+    const ok = await waitFor(0, /输入消息|Ctrl\+J 换行/, 90_000)
+    console.log(`${ok ? 'OK ' : 'FAIL'} respawn（${label} 后）`)
+    if (!ok) { console.log(lastFrame()); failed = true }
+  }
+}
 
 const run = async () => {
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
@@ -201,57 +251,54 @@ const run = async () => {
     if (!ok) { console.log(lastFrame()); process.exit(1) }
   }
 
-  // ---- S1 纯文本轮 ×3（每轮末 Enter 探针；最后一轮后 Ctrl+C 探针）----
-  for (let i = 1; i <= 3; i++) {
-    const ok = await round(`消息S1-${i}`, new RegExp(`半活探针第\\d+轮唯一回复`))
-    console.log(`${ok ? 'OK ' : 'FAIL'} S1 文本轮#${i} 渲染`)
-    if (!ok) { console.log(lastFrame(16)); process.exit(1) }
-    await new Promise((r) => setTimeout(r, 1200))
-    await enterProbe(`S1#${i}`)
-  }
-  await probeGroup('S1 完整组')
+  // ---- S1 纯文本轮 ×3（每轮末 Enter 探针；完整组含 Ctrl+C 探针）----
+  await runScenario('S1', async () => {
+    for (let i = 1; i <= 3; i++) {
+      const ok = await round(`消息S1-${i}`, new RegExp(`半活探针第\\d+轮唯一回复`))
+      console.log(`${ok ? 'OK ' : 'FAIL'} S1 文本轮#${i} 渲染`)
+      if (!ok) { console.log(lastFrame(16)); failed = true; return }
+      await new Promise((r) => setTimeout(r, 1200))
+      await enterProbe(`S1#${i}`)
+    }
+    await probeGroup('S1 完整组')
+  })
 
   // ---- S2 本地命令轮：/stats → 等输出 → 探针（dogfood 卡死场景）----
-  await spawnTui()
-  {
-    const ok = await waitFor(0, /输入消息|Ctrl\+J 换行/, 90_000)
-    if (!ok) { console.log('FAIL S2 启动'); process.exit(1) }
-    console.log('OK  S2 启动到输入框')
-  }
-  {
-    const m = markNow()
-    proc.write('/stats')
-    await new Promise((r) => setTimeout(r, 500))
-    proc.write('\r')
-    const ok = await waitFor(m, /跨会话|token|模型|会话数|统计不可用/, 10_000)
-    console.log(`${ok ? 'OK ' : 'FAIL'} S2 /stats 本地命令执行`)
-    if (!ok) { console.log(lastFrame(16)); process.exit(1) }
-    await new Promise((r) => setTimeout(r, 1200))
-  }
-  await probeGroup('S2 完整组')
+  await runScenario('S2', async () => {
+    {
+      const m = markNow()
+      proc.write('/stats')
+      await new Promise((r) => setTimeout(r, 500))
+      proc.write('\r')
+      await new Promise((r) => setTimeout(r, 350))
+      const m2 = markNow() // 第二段 \r 之后的帧才算执行证据（同 enterProbe #2 理由）
+      proc.write('\r')
+      const ok = await waitFor(m2, STATS_FINGERPRINT, 10_000)
+      console.log(`${ok ? 'OK ' : 'FAIL'} S2 /stats 本地命令执行`)
+      if (!ok) { console.log(lastFrame(16)); failed = true; return }
+      await new Promise((r) => setTimeout(r, 1200))
+    }
+    await probeGroup('S2 完整组')
+  })
 
   // ---- S3 工具轮：tool_use/tool_result 往返（mock 带 tools 定义由客户端真实装配）----
-  await spawnTui()
-  {
-    const ok = await waitFor(0, /输入消息|Ctrl\+J 换行/, 90_000)
-    if (!ok) { console.log('FAIL S3 启动'); process.exit(1) }
-    console.log('OK  S3 启动到输入框')
-  }
-  {
-    toolPhase = true
-    const ok = await round('工具往返', /工具往返完成/, 45_000)
-    console.log(`${ok ? 'OK ' : 'FAIL'} S3 tool_use/tool_result 往返`)
-    if (!ok) { console.log(lastFrame(16)); process.exit(1) }
-    await new Promise((r) => setTimeout(r, 1500))
-  }
-  await probeGroup('S3 完整组')
+  await runScenario('S3', async () => {
+    {
+      toolPhase = true
+      const ok = await round('工具往返', /工具往返完成/, 45_000)
+      console.log(`${ok ? 'OK ' : 'FAIL'} S3 tool_use/tool_result 往返`)
+      if (!ok) { console.log(lastFrame(16)); failed = true; return }
+      await new Promise((r) => setTimeout(r, 1500))
+    }
+    await probeGroup('S3 完整组')
+  })
 
-  // ---- 结论 ----
+  // ---- 结论（六修 #4：结尾统一 exit 汇总——0 全过 / 2 存在 FAIL）----
   settling = true
   try { proc.kill() } catch {}
   server.close()
   server.closeAllConnections()
-  console.log(failed ? '\n# 结论：存在 FAIL —— F-08 未治愈，按机理 A/B 定位实修' : '\n# 结论：S1-S3 全过 —— 半活楔死未复现，F-08 可销案（新版 dist）')
+  console.log(failed ? '\n# 结论：存在 FAIL —— F-08 未治愈（或探针仍有假信号，按末 20 帧甄别），按机理 A/B 定位实修' : '\n# 结论：S1-S3 全过 —— 半活楔死未复现，F-08 可销案（新版 dist）')
   process.exit(failed ? 2 : 0)
 }
 

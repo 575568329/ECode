@@ -8,6 +8,7 @@
 
 import { spawn, execSync, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { sanitizedProcessEnv } from './mcp/adapt.js'
 
 /** resolveGitBash 模块级缓存（含"未找到"负缓存——回退值也缓存，避免每次 spawn 重复探测） */
 let gitBashCache: string | undefined
@@ -62,13 +63,16 @@ export function resolveGitBash(): string {
 
 /** 跨平台 spawn 一条 shell 命令（win32=Git Bash -c；其余=sh -c）。
  *  Unix 侧 detached=true 起独立进程组（pid==pgid），killTree 才能 kill(-pid) 杀组；
- *  windowsHide 防闪控制台窗。 */
+ *  windowsHide 防闪控制台窗。
+ *  F-18 纵深（dogfood 批2a §10.1b）：统一接 sanitizedProcessEnv() 净化 env——bash/hooks/
+ *  quality/后台任务子进程不再整份继承宿主 env，密钥形态变量（KEY/TOKEN/SECRET...）一处收口剔除
+ *  （与 MCP stdio 同款；此前 hooks 裸继承是自相矛盾）。 */
 export function spawnShellCommand(command: string, cwd: string): ChildProcess {
   if (process.platform === 'win32') {
     const bash = resolveGitBash()
-    return spawn(bash, ['-c', command], { cwd, windowsHide: true })
+    return spawn(bash, ['-c', command], { cwd, windowsHide: true, env: sanitizedProcessEnv() })
   }
-  return spawn(command, { cwd, shell: 'sh', detached: true })
+  return spawn(command, { cwd, shell: 'sh', detached: true, env: sanitizedProcessEnv() })
 }
 
 /** SIGTERM→gracefulMs→SIGKILL 的宽限期（给编译器/测试进程收尾机会；CC 无梯度直接 SIGKILL 是反面教材） */

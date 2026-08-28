@@ -11,7 +11,14 @@ function writeConfig(text: string) {
   fs.writeFileSync(cfgPath, text)
 }
 
-const baseEnv = { ...process.env }
+// F-12（批2a §10.4）：baseEnv 剔除与 loadConfig 读取面（ECODE_* / ANTHROPIC_API_KEY）对齐的变量——
+// ECode 会话内跑测试时父进程注入这些 env，不剔除则 11 用例会内外结果不同（剔多会失真）。
+// 仅剔除读取面命中的键，保留其他 env 通道活（防退化：env 覆盖 config 的用例仍真实生效）。
+const baseEnv = Object.fromEntries(
+  Object.entries(process.env).filter(
+    ([k, v]) => v !== undefined && !k.toUpperCase().startsWith('ECODE_') && k !== 'ANTHROPIC_API_KEY',
+  ),
+) as NodeJS.ProcessEnv
 beforeEach(() => {
   process.env = { ...baseEnv }
 })

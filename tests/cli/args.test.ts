@@ -100,6 +100,22 @@ describe('F-01 parseArgv', () => {
     expect(r.mode).toBe('error')
   })
 
+  it('重复 --history 双值形态 → 显式「只能出现一次」message（批2c：锁死 message 不再静默放行）', () => {
+    // `--history <合法id> --history <合法id>`：两个都有合法值，旧逻辑第二个被过滤器吞掉静默放行
+    // ——现在必须 error 且 message 指向「只能出现一次」（用户笔误可自查，不靠猜）
+    const r = parseArgv(['--history', '2026-08-27T22-31-05-123Z', '--history', '2026-08-27T22-31-05-999Z'])
+    expect(r.mode).toBe('error')
+    if (r.mode === 'error') expect(r.message).toContain('只能出现一次')
+  })
+
+  it('version 优先序锁测（批2c）：-v 先于 -h/未知 flag 命中——`ecode -v -h`/`ecode --version --bogus` 输出版本而非 help/报错', () => {
+    // args.ts 白名单循环声明 version > help > 其他；此前无直接用例锁该顺序（防未来重排静默变行为）
+    expect(parseArgv(['-v', '-h']).mode).toBe('version')
+    expect(parseArgv(['--version', '--bogus']).mode).toBe('version')
+    expect(parseArgv(['-h', '--bogus']).mode).toBe('help') // help 同样先于未知 flag
+    // 未知 flag 在前则先报错（白名单循环自左向右首个命中——顺序即优先序，不跨位拦截）
+  })
+
   it('serve --version 语义锁测：args 层不分流，serve 子命令族整段透传（serveMain 自行解析）', () => {
     const r = parseArgv(['serve', '--version'])
     expect(r.mode).toBe('serve')

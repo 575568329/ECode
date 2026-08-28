@@ -9,7 +9,7 @@
  * 独立模块（非 cli/index 内函数）后可被测试 import——入口文件的 main() 副作用不再
  * 阻断装配层测试（M14-C3⑤ serve 补加载的加载效果断言依赖此拆分）。
  */
-import { buildProviderReq, type Config } from '../services/config.js'
+import { buildProviderReq, loadDotenvMap, type Config } from '../services/config.js'
 import { AnthropicProvider } from '../providers/anthropic.js'
 import { OpenaiProvider } from '../providers/openai.js'
 import { LLMProviderRegistryImpl } from '../providers/registry.js'
@@ -114,9 +114,10 @@ export function makeProjectParts(
   // 不预热会恰好卡在用户第一轮提问的压缩判定前——启动期提前拉，失败静默（走内置表兜底）
   void resolveContextWindow(config.current.model, config.providers[config.current.name]?.contextWindow).catch(() => {})
   // M6 M-P9：MCP 接线（cache 命中注册零连接；工具经 adaptTool 注册；项目级未批准走二段）
+  // F-18 尾巴（批2c）：${ENV_VAR} 占位符回退读项目 .env（dotenvMap 不提升进 process.env 后补链）
   const mcp = setupMcp(config, toolReg, {
     warn: (m) => logger.warn('mcp', 'setup', { message: m }),
-  })
+  }, { envFallback: loadDotenvMap(dir) })
   // M7 H-P1/H-P3：hooks 双源分发器 + 工具装饰（loop 拿代理零感知；runner 经 getter 可替换——H4 v3.1）
   // M13-W1：扩展源用项目级实例（serve 多项目不串台；REPL/argv 传模块单例同源兼容）
   const { hooks: userHooks, warnings: hookWarnings } = parseUserHooks(config.hooks)

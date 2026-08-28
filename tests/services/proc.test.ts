@@ -3,7 +3,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isDangerousCommand, resolveGitBash, __resetGitBashCacheForTest } from '../../src/services/proc.js'
+import { isDangerousCommand, resolveGitBash, spawnShellCommand, __resetGitBashCacheForTest } from '../../src/services/proc.js'
 
 describe('isDangerousCommand（黑名单扩展）', () => {
   it('管道进 shell 家族：sh/bash 与绝对路径、zsh/dash/ksh/fish/csh/tcsh', () => {
@@ -98,6 +98,42 @@ describe('resolveGitBash（模块级缓存）', () => {
     } finally {
       rmSync(a.dir, { recursive: true, force: true })
       rmSync(b.dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('spawnShellCommand env 净化（F-18 纵深 / 批2c 补测：proc 层直接断言子进程 env）', () => {
+  // 角色D P0-3/P1-4：净化此前只有 sanitizedProcessEnv 纯函数单测，spawnShellCommand 接线
+  // （proc.ts:73/75 env: sanitizedProcessEnv()）零覆盖——本组在真实子进程里断言落点。
+  // 打印 env 键值对（\0 分隔）避免 shell `env` 输出顺序/locale 干扰；waitFor 收敛退出。
+  const run = (cmd: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const child = spawnShellCommand(cmd, process.cwd())
+      let out = ''
+      child.stdout?.on('data', (d) => (out += d))
+      child.on('error', reject)
+      child.on('close', () => resolve(out))
+    })
+
+  it('密钥形态变量不透传（宿主注入 ANTHROPIC_API_KEY/ECODE_TOKEN → 子进程读不到）', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-leak-probe'
+    process.env.ECODE_FAKE_TOKEN = 'tok-leak-probe'
+    try {
+      const out = await run('echo "K=${ANTHROPIC_API_KEY:-unset}:${ECODE_FAKE_TOKEN:-unset}"')
+      expect(out).toContain('K=unset:unset')
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY
+      delete process.env.ECODE_FAKE_TOKEN
+    }
+  })
+
+  it('非密钥变量正常透传（PATH 系注入不被误伤）+ 普通键存活', async () => {
+    process.env.ECODE_PROC_NORMAL_VAR = 'survives'
+    try {
+      const out = await run('echo "N=${ECODE_PROC_NORMAL_VAR:-unset}"')
+      expect(out).toContain('N=survives')
+    } finally {
+      delete process.env.ECODE_PROC_NORMAL_VAR
     }
   })
 })

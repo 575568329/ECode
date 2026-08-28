@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { loadConfig, buildProviderReq, writeWizardConfig, emptyShellConfig } from '../../src/services/config.js'
+import { loadConfig, buildProviderReq, writeWizardConfig, emptyShellConfig, loadDotenvMap } from '../../src/services/config.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-cfg-'))
 const cfgPath = path.join(tmp, 'config.json')
@@ -213,6 +213,47 @@ describe('loadConfig', () => {
       delete process.env.ECODE_BASE_URL
       delete process.env.ECODE_MODEL
     }
+  })
+
+  it('F-18 根修回归锁（批2c）：loadConfig 读 .env 后绝不 mutate process.env（防 dotenv.config 复发）', () => {
+    // 旧实现 dotenv.config() 把 .env 的 apiKey 提升进宿主 env，再经 spawnShellCommand
+    // 全量继承透传给所有子进程（exfil 链，角色 C 三段实证）。快照对比锁死：读完 .env 后
+    // 宿主 env 必须逐字节不变（含 ANTHROPIC_API_KEY/ECODE_* 键不得出现）。
+    writeConfig(
+      JSON.stringify({
+        default: { provider: 'astron', model: 'old' },
+        providers: { astron: { type: 'anthropic', baseURL: 'http://x', apiKey: 'sk-c', models: ['old'] } },
+      }),
+    )
+    const dir = path.join(tmp, `nomutate-${Date.now()}`)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, '.env'), 'ANTHROPIC_API_KEY=sk-mutate-probe\nECODE_BASE_URL=http://mutate-probe\nECODE_MODEL=mutate-probe\n')
+    delete process.env.ANTHROPIC_API_KEY
+    delete process.env.ECODE_BASE_URL
+    delete process.env.ECODE_MODEL
+    const before = JSON.stringify(process.env)
+    try {
+      const cfg = loadConfig({ configPath: cfgPath, cwd: dir })
+      expect(JSON.stringify(process.env)).toBe(before) // 宿主 env 逐字节不变
+      // 同时 .env 值在 Config 生效（dotenvMap 主链不回退）
+      expect(cfg.providers.astron.apiKey).toBe('sk-mutate-probe')
+      expect(cfg.providers.astron.baseURL).toBe('http://mutate-probe')
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY
+      delete process.env.ECODE_BASE_URL
+      delete process.env.ECODE_MODEL
+    }
+  })
+
+  it('loadDotenvMap（批2c）：只读解析 .env，不 mutate process.env；无 .env → 空 map', () => {
+    const dir = path.join(tmp, `ldm-${Date.now()}`)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, '.env'), 'ECODE_MCP_X=1\n')
+    delete process.env['ECODE_MCP_X']
+    const before = JSON.stringify(process.env)
+    expect(loadDotenvMap(dir)).toEqual({ ECODE_MCP_X: '1' })
+    expect(loadDotenvMap(path.join(tmp, 'nope-empty'))).toEqual({})
+    expect(JSON.stringify(process.env)).toBe(before)
   })
 
   it('config 不存在 + 无 env → 自动新建模板 + 抛配置无效（D10，不再 CONFIG_INIT）', () => {

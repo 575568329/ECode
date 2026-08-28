@@ -39,7 +39,7 @@ export function setupMcp(
   config: Config,
   toolReg: ToolRegistry,
   logger?: { warn: (m: string) => void },
-  opts: { cwd?: string } = {},
+  opts: { cwd?: string; envFallback?: Record<string, string> } = {},
 ): McpSetupResult {
   const warnings: string[] = []
   const projectFile = findProjectMcpJson(opts.cwd ?? process.cwd())
@@ -54,7 +54,7 @@ export function setupMcp(
     warnings.push(`检测到项目级 ${projectFile}，需要批准后才会连接（防克隆恶意仓库静默 spawn）`)
   }
 
-  const { entries, warnings: mergeWarnings } = mergeMcpServers(config.mcpServers, effectiveProject)
+  const { entries, warnings: mergeWarnings } = mergeMcpServers(config.mcpServers, effectiveProject, opts.envFallback ?? {})
   warnings.push(...mergeWarnings)
 
   const cache = new McpCache()
@@ -97,7 +97,7 @@ export function setupMcp(
         approveMcpFile(projectFile)
         // 重读接入（不用启动时快照——approve 与读取间再变也以批准时内容为准）
         const fresh = loadProjectMcpJson(projectFile)
-        const { entries: full, warnings: w2 } = mergeMcpServers(config.mcpServers, fresh ?? undefined)
+        const { entries: full, warnings: w2 } = mergeMcpServers(config.mcpServers, fresh ?? undefined, opts.envFallback ?? {})
         warnings.push(...w2)
         await manager.start(full) // 二段：追加 entries（start 按 name diff，已有用户级连接不重建）
       },

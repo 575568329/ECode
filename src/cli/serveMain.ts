@@ -5,7 +5,7 @@
  * serveMode（多项目 ProjectRegistry + HTTP + 飞书 IM gateway + 生命周期：空闲回收 sweep、
  * 防脑裂 watchdog、信号收敛）。入口分流见 cli/index.ts 的 main()。
  */
-import { loadConfig } from '../services/config.js'
+import { loadConfig, loadDotenvMap } from '../services/config.js'
 import { JsonlLogger } from '../services/logger.js'
 import { LogStore } from '../services/logstore.js'
 import { join } from 'node:path'
@@ -116,9 +116,14 @@ export async function serveMode(): Promise<void> {
   registry.register(process.cwd())
   // 多项目 serve（B8.2）：默认项目=启动 cwd；/api/projects 列表 + /api/p/<path>/ 项目路由
   // M13-W3（绑定语义显式化 + 启动体验）：ECODE_SERVE_HOST 三态（loopback 默认/局域网 IP/LAN 全网卡）；
-  // 非 loopback 强制 ECODE_SERVER_PASSWORD（serveMulti 同款校验双保险）；启动打印完整访问 URL
-  const serveHost = process.env.ECODE_SERVE_HOST ?? '127.0.0.1'
-  const servePassword = process.env.ECODE_SERVER_PASSWORD ?? ''
+  // 非 loopback 强制 ECODE_SERVER_PASSWORD（serveMulti 同款校验双保险）；启动打印完整访问 URL。
+  // F-18 尾巴（批2c）：ECODE_SERVE_* 与主链同款 dotenvMap 回退——.env 里写 ECODE_SERVE_HOST
+  // 因 F-18 根修不再提升进 process.env，此前会静默失效（永远 127.0.0.1）。优先级不变：
+  // 外部注入（shell export/spawn env）> .env 文件
+  const dotenvMap = loadDotenvMap(process.cwd())
+  const envOr = (k: string): string | undefined => process.env[k] ?? dotenvMap[k]
+  const serveHost = envOr('ECODE_SERVE_HOST') ?? '127.0.0.1'
+  const servePassword = envOr('ECODE_SERVER_PASSWORD') ?? ''
   const isLoopbackServe = serveHost === '127.0.0.1' || serveHost === '::1' || serveHost === 'localhost'
   if (!isLoopbackServe && servePassword === '') {
     process.stderr.write('✗ 非 loopback 绑定（ECODE_SERVE_HOST=' + serveHost + '）必须设置 ECODE_SERVER_PASSWORD——拒绝启动（防裸奔局域网）\n')
@@ -128,13 +133,13 @@ export async function serveMode(): Promise<void> {
   // 解析序：ECODE_WEB_DIR 显式覆盖 > 包内相对（import.meta.url——tsx 源码跑=仓库根/web/dist，
   // npm 发布跑=包根/web/dist；files 字段带 web/dist）> 不托管。不再看 cwd（其他项目目录起 serve
   // 时 cwd/web/dist 是错误形态——审阅修正）
-  const webDirFromEnv = process.env.ECODE_WEB_DIR
+  const webDirFromEnv = envOr('ECODE_WEB_DIR')
   const webDirFromPkg = fileURLToPath(new URL('../../web/dist', import.meta.url))
   const webDirCandidate = webDirFromEnv !== undefined && webDirFromEnv !== '' ? webDirFromEnv : webDirFromPkg
   const webDir = existsSync(webDirCandidate) ? webDirCandidate : undefined
   const srv = await serveMulti(
     { registry, defaultCwd: process.cwd() },
-    { port: Number(process.env.ECODE_SERVE_PORT ?? 0), host: serveHost, password: servePassword, id: sessionId, ...(webDir !== undefined ? { webDir } : {}) },
+    { port: Number(envOr('ECODE_SERVE_PORT') ?? 0), host: serveHost, password: servePassword, id: sessionId, ...(webDir !== undefined ? { webDir } : {}) },
   )
   // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读
   const regPath = join(os.homedir(), '.ecode', 'server.json')

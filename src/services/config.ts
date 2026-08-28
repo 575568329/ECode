@@ -203,6 +203,18 @@ function restrictFileMode(filePath: string): void {
   fs.chmodSync(filePath, 0o600)
 }
 
+/** 只读解析 cwd 的 .env（F-18 尾巴/批2c）：loadConfig 用局部 dotenvMap，此函数把同一份
+ *  暴露给 MCP/serve 等旁路消费方——${ENV_VAR} 占位符与 ECODE_SERVE_* 在 .env 写值时
+ *  不再静默失效；绝不 mutate process.env（F-18 根修语义）。读失败返回空 map（与 loadConfig
+ *  同为静默降级，那里的 stderr 提示留给持完整 opts 的调用方，避免双打）。 */
+export function loadDotenvMap(cwd: string): Record<string, string> {
+  try {
+    return dotenv.parse(fs.readFileSync(path.join(cwd, '.env'), 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
 export function loadConfig(opts: LoadConfigOpts = {}): Config {
   const cwd = opts.cwd ?? process.cwd()
 

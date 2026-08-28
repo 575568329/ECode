@@ -43,12 +43,15 @@ interface ProjectMcpFile {
   mcpServers?: Record<string, McpServerConfig>
 }
 
-/** 展开配置里的 ${ENV_VAR} 占位符（缺失 → 返回缺失变量名列表；AGENTS §5.2 secret 从环境读）。 */
-export function expandEnvVars(cfg: McpServerConfig): { cfg: McpServerConfig; missing: string[] } {
+/** 展开配置里的 ${ENV_VAR} 占位符（缺失 → 返回缺失变量名列表；AGENTS §5.2 secret 从环境读）。
+ *  F-18 尾巴（批2c）：F-18 根修后 .env 值不再提升进 process.env，${ENV_VAR} 只读 process.env
+ *  会与 .env 静默解耦（server 因 missing 被静默跳过）。fallback 注入 loadConfig 的 dotenvMap，
+ *  优先级 process.env > .env（外部注入压过文件，与 config.ts 主链同语义）。 */
+export function expandEnvVars(cfg: McpServerConfig, fallback: Record<string, string> = {}): { cfg: McpServerConfig; missing: string[] } {
   const missing: string[] = []
   const expandStr = (s: string): string =>
     s.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, v: string) => {
-      const val = process.env[v]
+      const val = process.env[v] ?? fallback[v]
       if (val === undefined) {
         missing.push(v)
         return ''
@@ -173,6 +176,7 @@ export function approveMcpFile(file: string): void {
 export function mergeMcpServers(
   userServers: Record<string, McpServerConfig> | undefined,
   projectServers: Record<string, McpServerConfig> | undefined,
+  envFallback: Record<string, string> = {},
 ): { entries: McpServerEntry[]; warnings: string[] } {
   const warnings: string[] = []
   const merged = new Map<string, McpServerEntry>()
@@ -190,7 +194,7 @@ export function mergeMcpServers(
       warnings.push(invalid + '，已跳过')
       continue
     }
-    const { cfg, missing } = expandEnvVars(e.cfg)
+    const { cfg, missing } = expandEnvVars(e.cfg, envFallback)
     if (missing.length > 0) {
       warnings.push(`MCP server「${name}」环境变量缺失：${missing.join(', ')}，已跳过`)
       continue

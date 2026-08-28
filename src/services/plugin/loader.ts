@@ -24,7 +24,7 @@ import { expandEnvVars, validateServerConfig } from '../mcp/config.js'
 import { sanitizeToolName } from '../mcp/adapt.js'
 import { commandRegistry, type CommandRegistry } from '../../commands/registry.js'
 import type { ToolRegistry } from '../../tools/interface.js'
-import { defaultConfigPath } from '../config.js'
+import { defaultConfigPath, loadDotenvMap } from '../config.js'
 import { globalExtensionHooks } from '../hooks/global.js'
 import {
   discoverComponents,
@@ -552,7 +552,8 @@ export class PluginLoader {
       const entries: McpServerEntry[] = []
       for (const [server, rawCfg] of Object.entries(comps.mcpServers)) {
         const name = `plugin:${p.name}/${server}`
-        const expanded = expandEnvVars(expandPluginRoot(rawCfg, p.path) as McpServerConfig)
+        // F-18 尾巴（批2c）：${ENV_VAR} 同款 dotenvMap 回退（与用户级/项目级 MCP 一致语义）
+        const expanded = expandEnvVars(expandPluginRoot(rawCfg, p.path) as McpServerConfig, loadDotenvMap(process.cwd()))
         for (const miss of expanded.missing) {
           warnings.push(`MCP server「${name}」缺环境变量 ${miss}，已跳过`)
         }

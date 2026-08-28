@@ -37,6 +37,29 @@ describe('expandEnvVars', () => {
     const { missing } = expandEnvVars({ type: 'http', url: '${ECODE_NOPE_XYZ}' })
     expect(missing).toEqual(['ECODE_NOPE_XYZ'])
   })
+
+  it('F-18 尾巴（批2c）：fallback（dotenvMap）兜底——process.env 缺但 .env 有的变量可展开', () => {
+    // F-18 根修后 .env 值不再提升进 process.env，${ENV_VAR} 若只读 process.env 会与 .env
+    // 静默解耦（server 因 missing 被跳过）——fallback 注入 loadConfig 的 dotenvMap 补链
+    delete process.env['ECODE_MCP_DOTENV_K']
+    const { cfg, missing } = expandEnvVars(
+      { type: 'http', url: 'https://h/${ECODE_MCP_DOTENV_K}', headers: { auth: 'Bearer ${ECODE_MCP_DOTENV_K}' } },
+      { ECODE_MCP_DOTENV_K: 'from-dotenv' },
+    )
+    expect(missing).toEqual([])
+    expect(cfg.url).toBe('https://h/from-dotenv')
+    expect(cfg.headers?.['auth']).toBe('Bearer from-dotenv')
+  })
+
+  it('外部注入压过 fallback（process.env > .env，与 config.ts 主链同语义）', () => {
+    process.env['ECODE_MCP_DOTENV_K2'] = 'injected'
+    try {
+      const { cfg } = expandEnvVars({ type: 'http', url: 'https://h/${ECODE_MCP_DOTENV_K2}' }, { ECODE_MCP_DOTENV_K2: 'from-dotenv' })
+      expect(cfg.url).toBe('https://h/injected')
+    } finally {
+      delete process.env['ECODE_MCP_DOTENV_K2']
+    }
+  })
 })
 
 describe('validateServerConfig', () => {
@@ -111,5 +134,24 @@ describe('mergeMcpServers', () => {
     expect(warnings.some((w) => w.includes('bad'))).toBe(true)
     expect(warnings.some((w) => w.includes('ECODE_MCP_MISSING_XYZ'))).toBe(true)
     delete process.env['ECODE_MCP_OK']
+  })
+})
+
+describe('mergeMcpServers envFallback（F-18 尾巴/批2c：${ENV_VAR} 与 .env 静默解耦补链）', () => {
+  it('变量只在 .env（dotenvMap）→ server 正常展开接入，不再因 missing 跳过', () => {
+    const { entries, warnings } = mergeMcpServers(
+      { dotenved: { type: 'http', url: 'https://h/${ECODE_MCP_FALLBACK_K}' } },
+      undefined,
+      { ECODE_MCP_FALLBACK_K: 'dotenv-val' },
+    )
+    expect(entries.map((e) => e.name)).toContain('dotenved')
+    expect(entries[0]?.cfg.url).toBe('https://h/dotenv-val')
+    expect(warnings.some((w) => w.includes('ECODE_MCP_FALLBACK_K'))).toBe(false)
+  })
+
+  it('不传 fallback（旧调用方语义不变）：变量两处皆无 → 仍 missing 跳过 + warn', () => {
+    const { entries, warnings } = mergeMcpServers({ gone: { type: 'http', url: 'https://h/${ECODE_MCP_GONE_K}' } }, undefined)
+    expect(entries.map((e) => e.name)).not.toContain('gone')
+    expect(warnings.some((w) => w.includes('ECODE_MCP_GONE_K'))).toBe(true)
   })
 })

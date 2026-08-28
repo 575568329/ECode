@@ -191,8 +191,10 @@ export class ApprovalBroker {
         entry.timer.unref?.()
       }
       // 批2d（§13.1 拍板-1）：挂起 N 秒未应答通知一次（fire 时刻 entry 已被收走则自然 no-op）；
-      // unref 同上——通知是旁路观测，绝不拖住进程退出
-      if (this.pendingNotifier !== null && this.notifyDelayMs > 0) {
+      // unref 同上——通知是旁路观测，绝不拖住进程退出。
+      // 批2d-fix（审阅 P1-1 自续环防御）：mcp-permission 不挂通知表——扩展源 Notification hook 若
+      // 处于 ask 态，通知 dispatch 会挂起新权限卡，新卡再触发 approval-pending，形成通知→权限→通知环。
+      if (this.pendingNotifier !== null && this.notifyDelayMs > 0 && entry.kind !== 'mcp-permission') {
         const notifier = this.pendingNotifier // 闭包快照（TS 收窄——构造后不变）
         entry.notifyTimer = setTimeout(() => {
           const cur = this.pending.get(requestId)
@@ -229,6 +231,8 @@ export class ApprovalBroker {
     const entry = this.pending.get(requestId)
     if (entry === undefined) return
     this.pending.delete(requestId)
+    // 批2d-fix（审阅 P2）：timeout 先收敛时显式清通知表（原靠 fire 前 no-op 兜底——防御重复触发口径统一）
+    if (entry.notifyTimer !== undefined) clearTimeout(entry.notifyTimer)
     if (entry.kind === 'mcp-permission') entry.resolve({ allow: false, remember: false })
     else if (entry.kind === 'ask-select') entry.resolve(null)
     else if (entry.kind === 'ask-user') entry.resolve(null)

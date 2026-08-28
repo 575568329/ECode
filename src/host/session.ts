@@ -19,7 +19,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
 import type { HistoryLine, ImageBlock, Message } from '../core/types.js'
-import { buildProviderReq, buildProviderReqFor, type Config } from '../services/config.js'
+import { buildProviderReq, buildProviderReqFor, DEFAULT_NOTIFICATION_IDLE_SECONDS, type Config } from '../services/config.js'
 import { makeOnBeforeRequest, type SummaryRole } from '../services/compaction/hook.js'
 import { SUMMARY_WINDOW_FLOOR } from '../services/compaction/summarize.js'
 import type { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
@@ -136,7 +136,7 @@ export class HostSession {
     this.channel.bind((cmd) => this.dispatch(cmd))
     // M14-C2⑥ 审批审计：asked/decided 落 LogStore（asked 含 kind/tool；decided 含 outcome——产品化线设备审批留痕前置）
     // 批2d（§13.1 拍板-1）：审批挂起 N 秒未应答 → Notification hook（第七事件）触发一次
-    const notifySeconds = deps.getConfig().notificationIdleSeconds ?? 60
+    const notifySeconds = deps.getConfig().notificationIdleSeconds ?? DEFAULT_NOTIFICATION_IDLE_SECONDS
     this.broker = new ApprovalBroker(this.channel, deps.approvalPolicy ?? 'ask', deps.getConfig().approvalTimeoutMs ?? 900_000, (event, info) => {
       deps.logger.info('approval', event, info)
     },
@@ -820,13 +820,14 @@ export class HostSession {
   // —— 批2d（§13.1 拍板-1）：Notification hook（第七事件）——
   // 触发条件（拍板 b：挂起 N 秒后触发，防高频）：审批挂起 N 秒未应答（broker 定时器回调）+
   // 空闲等待用户输入 N 秒（轮末 finishTurn 起表、新 prompt 取消）。N=config.notificationIdleSeconds
-  // （默认 60，0=关）。无 handler 零开销跳过（对齐其余六事件的 hasHandlers 快速路径）。
+  // （默认 60，0=关）。低开销跳过（对齐其余六事件的 hasHandlers 快速路径）：idle 在起表时查、
+  // approval-pending 在挂起触发时刻查——无 handler 不起表/不 dispatch。
   private idleNotifyTimer: ReturnType<typeof setTimeout> | null = null
 
-  /** 轮末空闲起表：N 秒后仍无新 prompt → Notification(idle) 触发一次（表在 submit/startTurn 清） */
+  /** 轮末空闲起表：N 秒后仍无新 prompt → Notification(idle) 触发一次（表在 startTurn 清——新轮=不再空闲） */
   private scheduleIdleNotification(): void {
     this.cancelIdleNotification()
-    const seconds = this.deps.getConfig().notificationIdleSeconds ?? 60
+    const seconds = this.deps.getConfig().notificationIdleSeconds ?? DEFAULT_NOTIFICATION_IDLE_SECONDS
     const runner = this.deps.hookRunner
     if (seconds <= 0 || runner == null || !runner.hasHandlers('Notification')) return
     this.idleNotifyTimer = setTimeout(() => {

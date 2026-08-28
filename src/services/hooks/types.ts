@@ -59,8 +59,8 @@ export interface HookInput {
   tool_result?: { content: string; is_error?: boolean }
   /** Stop：结束原因 */
   stop_reason?: string
-  /** Notification（批2d §13.1 拍板-1）：触发原因 idle（空闲等输入 N 秒）| approval-pending（审批挂起 N 秒未应答） */
-  reason?: string
+  /** Notification 触发原因（批2d-fix 审阅 P2：字面量联合类型收窄——不再宽化为 string） */
+  reason?: 'idle' | 'approval-pending'
 }
 
 /** hook 的 stdout JSON 协议（H3；全部字段可选，无输出=纯通知）。 */

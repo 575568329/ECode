@@ -124,6 +124,15 @@ const echoProbe = async (label) => {
   const ok = await waitFor(m, /zz/, 3000)
   if (!ok) console.log(`FAIL 回显死（调度层楔死，非半活） ${label}`)
   else console.log(`OK  回显活 ${label}`)
+  // 清掉 zz——残留会让后续 /stats 变 zz/stats 走普通消息提交，Enter 探针全数假 FAIL
+  // （批2a 首版实证的探针自伤；wedge 探针 echoProbe 同款退格清理）
+  if (ok) {
+    // 逐个退格+间隔：连续两发 \x7f 第二个会被吞（实测只删一个 z）——z/stats 假 FAIL 同源
+    proc.write('\x7f')
+    await new Promise((r) => setTimeout(r, 400))
+    proc.write('\x7f')
+    await new Promise((r) => setTimeout(r, 400))
+  }
   return ok
 }
 

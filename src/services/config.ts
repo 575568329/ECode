@@ -252,13 +252,15 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
   const providerName = file.default?.provider ?? Object.keys(providersIn)[0] ?? 'astron'
   const rawCfg = providersIn[providerName] ?? {}
 
-  // 优先级：环境变量（含 dev .env）> config > 默认
+  // 优先级：外部注入 env > .env 文件 > config > 默认
   // P1-12：统一 env 优先（与 baseURL/apiKey/model 一致），否则 ECODE_TYPE 切 protocol 无效
-  // F-18：.env 值走 dotenvMap（不再进 process.env）；用户 shell export 的变量仍从 process.env 读
-  const type = (dotenvMap.ECODE_TYPE ?? process.env.ECODE_TYPE ?? rawCfg.type ?? 'anthropic') as ProviderCfg['type']
-  const baseURL = dotenvMap.ECODE_BASE_URL ?? process.env.ECODE_BASE_URL ?? rawCfg.baseURL
-  const apiKey = dotenvMap.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? rawCfg.apiKey
-  const model = dotenvMap.ECODE_MODEL ?? process.env.ECODE_MODEL ?? file.default?.model ?? rawCfg.models?.[0]
+  // F-18：.env 值走 dotenvMap（不再进 process.env）；外部注入（shell export/spawn env，探针·CI·多环境）
+  // 必须压过 .env 文件——dotenv 原生语义即"不覆盖已存在变量"，批2a 首版把 dotenvMap 放最前致探针
+  // 注入 mock 端点失效走了真 LLM（2026-08-28 外部验收实证），此处对齐原生语义
+  const type = (process.env.ECODE_TYPE ?? dotenvMap.ECODE_TYPE ?? rawCfg.type ?? 'anthropic') as ProviderCfg['type']
+  const baseURL = process.env.ECODE_BASE_URL ?? dotenvMap.ECODE_BASE_URL ?? rawCfg.baseURL
+  const apiKey = process.env.ANTHROPIC_API_KEY ?? dotenvMap.ANTHROPIC_API_KEY ?? rawCfg.apiKey
+  const model = process.env.ECODE_MODEL ?? dotenvMap.ECODE_MODEL ?? file.default?.model ?? rawCfg.models?.[0]
 
   // 首次生成模板 + env 补全 → 提示可编辑（继续跑）
   if (created && apiKey && baseURL && model) {

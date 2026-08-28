@@ -180,7 +180,7 @@ describe('loadConfig', () => {
     expect(cfg.current.model).toBe('glm-env')
   })
 
-  it('maxIterations 缺省 → 50', () => {
+  it('maxInstructions 缺省 → 50', () => {
     writeConfig(
       JSON.stringify({
         default: { provider: 'a' },
@@ -189,6 +189,30 @@ describe('loadConfig', () => {
     )
     const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
     expect(cfg.maxIterations).toBe(50)
+  })
+
+  it('外部注入 env 压过 .env 文件（dotenv 原生"不覆盖"语义——批2a 首版回归锁）', () => {
+    // 场景：cwd 有 .env 写着端点 A，spawn/shell 注入端点 B（探针 mock/CI/多环境）——B 必须赢。
+    // 批2a 首版 dotenvMap 优先致探针注入 mock 失效走了真 LLM（2026-08-28 外部验收实证）。
+    writeConfig(
+      JSON.stringify({
+        default: { provider: 'astron', model: 'old' },
+        providers: { astron: { type: 'anthropic', baseURL: 'http://file-env-cfg', apiKey: 'sk-c', models: ['old'] } },
+      }),
+    )
+    const dir = path.join(tmp, `dotenv-${Date.now()}`)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, '.env'), 'ECODE_BASE_URL=http://file-env\nECODE_MODEL=file-model\n')
+    process.env.ECODE_BASE_URL = 'http://injected-env'
+    process.env.ECODE_MODEL = 'injected-model'
+    try {
+      const cfg = loadConfig({ configPath: cfgPath, cwd: dir })
+      expect(cfg.providers.astron.baseURL).toBe('http://injected-env')
+      expect(cfg.current.model).toBe('injected-model')
+    } finally {
+      delete process.env.ECODE_BASE_URL
+      delete process.env.ECODE_MODEL
+    }
   })
 
   it('config 不存在 + 无 env → 自动新建模板 + 抛配置无效（D10，不再 CONFIG_INIT）', () => {

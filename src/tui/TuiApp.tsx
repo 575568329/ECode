@@ -70,6 +70,9 @@ import type { SessionMeta } from '../services/history.js'
 /** 清屏（可见区 + scrollback + 光标归位）；/clear 用，清可见区残留 */
 const CLEAR_TERMINAL = '\x1b[2J\x1b[3J\x1b[H'
 
+/** 批2d（§13.1 拍板-1 附）：BEL 终端铃字符（审批卡首次出现时写一次，终端自行决定响/闪标题栏） */
+const BEL_CHAR = '\x07'
+
 export interface TuiAppDeps {
   providerRegistry: LLMProviderRegistry
   tools: ToolRegistry
@@ -181,6 +184,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   }
   // 同步 picker 覆盖状态给 useInterrupt（同 confirm：覆盖期间 Ctrl+C 由 picker 处理，不中断 loop）
   const pickerRef = useRef(false)
+  // 批2d（§13.1 拍板-1 附）：已响铃的审批 requestId 留痕（同一审批不重复响——Set 随会话生命周期，无需清理）
+  const bellRungRef = useRef(new Set<string>())
   // ctxWindow 缓存（S-P4：submit 热路径同步用，启动解析一次 + 切模型刷新；默认 200k 兜底）
   const ctxWindowRef = useRef(200_000)
   // SessionStart 的 additionalContext 暂存（M9-P0）：注入启动/恢复后首轮 user 消息，一次性消费
@@ -420,6 +425,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           break
         case 'approval/requested': {
           confirmRef.current = true
+          // 批2d（§13.1 拍板-1 附）：审批卡首次出现响一次 BEL 终端铃（同一审批不重复——
+          // resolved 后弹窗清空，响过的 requestId 留痕即可防重放/连续 requested 重响）
+          if (configRef.current.bellOnApproval !== false && !bellRungRef.current.has(ev.requestId)) {
+            bellRungRef.current.add(ev.requestId)
+            process.stdout.write(BEL_CHAR)
+          }
           const remember = ev.decisions.includes('always')
           setActive((a) => ({
             ...a,

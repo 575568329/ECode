@@ -180,6 +180,32 @@ describe('loadConfig', () => {
     expect(cfg.current.model).toBe('glm-env')
   })
 
+  it('批2d 两新键缺省 → notificationIdleSeconds=60 / bellOnApproval=true', () => {
+    writeConfig(
+      JSON.stringify({
+        default: { provider: 'a' },
+        providers: { a: { type: 'anthropic', baseURL: 'http://x', apiKey: 'sk', models: ['m'] } },
+      }),
+    )
+    const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
+    expect(cfg.notificationIdleSeconds).toBe(60)
+    expect(cfg.bellOnApproval).toBe(true)
+  })
+
+  it('批2d 两新键显式配置 → 覆盖默认（0=关闭 idle/approval 通知；false=关响铃）', () => {
+    writeConfig(
+      JSON.stringify({
+        default: { provider: 'a' },
+        providers: { a: { type: 'anthropic', baseURL: 'http://x', apiKey: 'sk', models: ['m'] } },
+        notificationIdleSeconds: 120,
+        bellOnApproval: false,
+      }),
+    )
+    const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
+    expect(cfg.notificationIdleSeconds).toBe(120)
+    expect(cfg.bellOnApproval).toBe(false)
+  })
+
   it('maxInstructions 缺省 → 50', () => {
     writeConfig(
       JSON.stringify({

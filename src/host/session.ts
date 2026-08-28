@@ -135,9 +135,13 @@ export class HostSession {
   constructor(private readonly deps: HostDeps) {
     this.channel.bind((cmd) => this.dispatch(cmd))
     // M14-C2⑥ 审批审计：asked/decided 落 LogStore（asked 含 kind/tool；decided 含 outcome——产品化线设备审批留痕前置）
+    // 批2d（§13.1 拍板-1）：审批挂起 N 秒未应答 → Notification hook（第七事件）触发一次
+    const notifySeconds = deps.getConfig().notificationIdleSeconds ?? 60
     this.broker = new ApprovalBroker(this.channel, deps.approvalPolicy ?? 'ask', deps.getConfig().approvalTimeoutMs ?? 900_000, (event, info) => {
       deps.logger.info('approval', event, info)
-    })
+    },
+    (info) => { void this.dispatchNotification('approval-pending', info.kind, info.tool) },
+    notifySeconds > 0 ? notifySeconds * 1000 : 0)
     this.sandboxMode =
       (this.cfg().sandbox?.defaultMode as 'default' | 'read-only' | 'workspace-write' | 'full-access') ?? 'default'
   }
@@ -152,6 +156,7 @@ export class HostSession {
 
   /** 会话销毁：pending 审批 fail-closed 收敛 + 桥卸载 + 通道关闭 */
   dispose(): void {
+    this.cancelIdleNotification() // 批2d：会话关闭清理（定时器不越界触发）
     this.tasks.dispose()
     this.broker.dispose()
     this.abort.abort()
@@ -586,6 +591,7 @@ export class HostSession {
 
   private async startTurn(input: string, blocks?: ImageBlock[]): Promise<void> {
     this.starting = false // M14-C3③：dispatch 已同步置位；startTurn 到首个 await 前同步清（配置不完整早退也不泄漏占位）
+    this.cancelIdleNotification() // 批2d：用户开新轮=不再空闲，idle 通知表作废
     const deps = this.deps
     if (this.cfg().providers[this.cfg().current.name] === undefined) {
       this.publish('systemMsg', { text: '配置不完整（/setup）' })
@@ -807,7 +813,51 @@ export class HostSession {
       })
       return
     }
+    this.scheduleIdleNotification()
     this.notifyIdle()
+  }
+
+  // —— 批2d（§13.1 拍板-1）：Notification hook（第七事件）——
+  // 触发条件（拍板 b：挂起 N 秒后触发，防高频）：审批挂起 N 秒未应答（broker 定时器回调）+
+  // 空闲等待用户输入 N 秒（轮末 finishTurn 起表、新 prompt 取消）。N=config.notificationIdleSeconds
+  // （默认 60，0=关）。无 handler 零开销跳过（对齐其余六事件的 hasHandlers 快速路径）。
+  private idleNotifyTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** 轮末空闲起表：N 秒后仍无新 prompt → Notification(idle) 触发一次（表在 submit/startTurn 清） */
+  private scheduleIdleNotification(): void {
+    this.cancelIdleNotification()
+    const seconds = this.deps.getConfig().notificationIdleSeconds ?? 60
+    const runner = this.deps.hookRunner
+    if (seconds <= 0 || runner == null || !runner.hasHandlers('Notification')) return
+    this.idleNotifyTimer = setTimeout(() => {
+      this.idleNotifyTimer = null
+      void this.dispatchNotification('idle')
+    }, seconds * 1000)
+    this.idleNotifyTimer.unref?.()
+  }
+
+  private cancelIdleNotification(): void {
+    if (this.idleNotifyTimer !== null) {
+      clearTimeout(this.idleNotifyTimer)
+      this.idleNotifyTimer = null
+    }
+  }
+
+  /** Notification 统一出口（fail-open：hook 失败只告警——与 Stop 同款旁路观测语义） */
+  private async dispatchNotification(reason: 'idle' | 'approval-pending', kind?: string, tool?: string): Promise<void> {
+    const runner = this.deps.hookRunner
+    if (runner == null || !runner.hasHandlers('Notification')) return
+    try {
+      await runner.dispatch('Notification', {
+        event: 'Notification',
+        session_id: this.deps.history.currentSessionId(),
+        reason,
+        ...(reason === 'approval-pending' && tool !== undefined ? { tool_name: tool } : {}),
+        ...(reason === 'approval-pending' && kind !== undefined ? { tool_input: { kind } } : {}),
+      })
+    } catch (e) {
+      this.deps.logger.warn('hooks', 'notification_failed', { reason, message: e instanceof Error ? e.message : String(e) })
+    }
   }
 
   /** afterTools（TuiApp makeAfterTools 的宿主版：loopGuard 检测 + quality 回喂 + autoCommit + 后台通知） */

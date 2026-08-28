@@ -27,6 +27,8 @@ interface PendingEntry {
   resolve: (value: unknown) => void
   /** M13-B2 审批超时定时器（respond/dispose 清；触发=自动 reject + resolved('timeout')） */
   timer?: ReturnType<typeof setTimeout>
+  /** 批2d：挂起通知定时器（应答/超时/级联/dispose 清——同一挂起只通知一次） */
+  notifyTimer?: ReturnType<typeof setTimeout>
   /** M14-C2⑤ 审批 claim（D12 advisory）：认领方与租约到期时刻——不改先答先得权威语义，纯可视 */
   claim?: { claimant: string; expiresAt: number }
 }
@@ -36,6 +38,9 @@ type AnswerableFrame = PublishableEvent & { requestId: string; kind?: ApprovalKi
 
 /** 审批审计落盘（M14-C2⑥）：asked（挂起登记后）/decided（respond/timeout/dispose 收敛） */
 export type ApprovalAuditSink = (event: 'asked' | 'decided', info: Record<string, unknown>) => void
+
+/** 批2d（§13.1 拍板-1）：审批挂起 N 秒未应答的通知回调（宿主接线 → Notification hook dispatch） */
+export type ApprovalPendingNotifier = (info: { requestId: string; kind: string; tool: string }) => void
 
 /** claim 租约时长（D12：CC 300s 租约先例取半——认领端崩溃后最多 2 分钟可被重新认领/他人应答提示恢复） */
 const CLAIM_TTL_MS = 120_000
@@ -56,6 +61,10 @@ export class ApprovalBroker {
     private readonly timeoutMs = 0,
     /** M14-C2⑥：审计落盘钩子（宿主接 LogStore——设备审批留痕是产品化线前置） */
     private readonly audit: ApprovalAuditSink | null = null,
+    /** 批2d（§13.1 拍板-1）：挂起通知——审批挂起 N 秒未应答触发一次（应答/超时/级联/dispose 取消定时器） */
+    private readonly pendingNotifier: ApprovalPendingNotifier | null = null,
+    /** 批2d：挂起通知阈值毫秒（0=关；<0 视为关——防御非法配置） */
+    private readonly notifyDelayMs = 0,
   ) {}
 
   get pendingCount(): number {
@@ -181,6 +190,21 @@ export class ApprovalBroker {
         entry.timer = setTimeout(() => this.timeoutResolve(requestId), this.timeoutMs)
         entry.timer.unref?.()
       }
+      // 批2d（§13.1 拍板-1）：挂起 N 秒未应答通知一次（fire 时刻 entry 已被收走则自然 no-op）；
+      // unref 同上——通知是旁路观测，绝不拖住进程退出
+      if (this.pendingNotifier !== null && this.notifyDelayMs > 0) {
+        const notifier = this.pendingNotifier // 闭包快照（TS 收窄——构造后不变）
+        entry.notifyTimer = setTimeout(() => {
+          const cur = this.pending.get(requestId)
+          if (cur !== entry) return // 已应答/超时/级联收敛——不再打扰
+          notifier({
+            requestId,
+            kind: entry.kind,
+            tool: (frame as { tool?: string }).tool ?? '',
+          })
+        }, this.notifyDelayMs)
+        entry.notifyTimer.unref?.()
+      }
     })
   }
 
@@ -227,6 +251,7 @@ export class ApprovalBroker {
     const tool = (entry.frame as { tool: string }).tool
     const mcpPrefix = tool.startsWith('mcp__') ? tool.split('__').slice(0, 2).join('__') : null
     if (entry.timer !== undefined) clearTimeout(entry.timer)
+    if (entry.notifyTimer !== undefined) clearTimeout(entry.notifyTimer)
     this.pending.delete(requestId)
     if (decision === 'always') {
       if (mcpPrefix !== null) this.confirmAlways.add(mcpPrefix)
@@ -237,6 +262,7 @@ export class ApprovalBroker {
           const f = p.frame as { tool: string }
           if (p.kind === 'tool-confirm' && f.tool.startsWith(`${mcpPrefix}__`)) {
             if (p.timer !== undefined) clearTimeout(p.timer)
+            if (p.notifyTimer !== undefined) clearTimeout(p.notifyTimer)
             this.pending.delete(id)
             p.resolve(true)
             this.publish({ type: 'approval/resolved', requestId: id, outcome: 'once' })
@@ -250,6 +276,7 @@ export class ApprovalBroker {
       for (const [id, p] of [...this.pending]) {
         if (p.kind === 'tool-confirm') {
           if (p.timer !== undefined) clearTimeout(p.timer)
+          if (p.notifyTimer !== undefined) clearTimeout(p.notifyTimer)
           this.pending.delete(id)
           p.resolve(false)
           this.publish({ type: 'approval/resolved', requestId: id, outcome: 'reject' })
@@ -267,6 +294,7 @@ export class ApprovalBroker {
     const entry = this.pending.get(requestId)
     if (entry === undefined) return { accepted: false, reason: 'not-pending' }
     if (entry.timer !== undefined) clearTimeout(entry.timer)
+    if (entry.notifyTimer !== undefined) clearTimeout(entry.notifyTimer)
     this.pending.delete(requestId)
     entry.resolve(answers)
     this.publish({ type: 'askUser/resolved', requestId, answers })
@@ -277,6 +305,7 @@ export class ApprovalBroker {
     const entry = this.pending.get(requestId)
     if (entry === undefined) return { accepted: false, reason: 'not-pending' }
     if (entry.timer !== undefined) clearTimeout(entry.timer)
+    if (entry.notifyTimer !== undefined) clearTimeout(entry.notifyTimer)
     this.pending.delete(requestId)
     entry.resolve(choice)
     this.publish({ type: 'askSelect/resolved', requestId, choice })
@@ -297,6 +326,7 @@ export class ApprovalBroker {
   dispose(): void {
     for (const [id, p] of [...this.pending]) {
       if (p.timer !== undefined) clearTimeout(p.timer)
+      if (p.notifyTimer !== undefined) clearTimeout(p.notifyTimer)
       this.pending.delete(id)
       if (p.kind === 'mcp-permission') p.resolve({ allow: false, remember: false })
       else if (p.kind === 'ask-select') p.resolve(null)

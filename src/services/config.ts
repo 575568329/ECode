@@ -49,6 +49,11 @@ export interface Config {
   sessionIdleMinutes?: number
   /** M13-B2：审批挂起超时毫秒（默认 15 分钟；0=不限——超时自动 reject + resolved('timeout') 轨迹） */
   approvalTimeoutMs?: number
+  /** 批2d（§13.1 拍板-1）：Notification hook 触发阈值秒——审批挂起/空闲等待用户输入持续 N 秒触发；
+   *  0=关闭（对齐 CC idle 通知语义，默认 60） */
+  notificationIdleSeconds?: number
+  /** 批2d（§13.1 拍板-1 附）：TUI 审批卡首次出现时响一次 BEL 终端铃（默认 true，可关） */
+  bellOnApproval?: boolean
   /**
    * M13-B3 角色分流：summary=压缩摘要专用（便宜 flash 模型干力气活）。
    * 不配 = 会话主模型（现状零行为变化）；窗口下限校验从批预算常量反算（装配层执行）。
@@ -76,6 +81,9 @@ export interface Config {
 const DEFAULT_MAX_ITERATIONS = 50
 const DEFAULT_BASH_MAX_BYTES = 30720
 const DEFAULT_LOG_LEVEL: Config['logLevel'] = 'info'
+/** 批2d（§13.1 拍板-1）：Notification 触发阈值默认 60s（对齐 CC idle 通知默认）；BEL 响铃默认开 */
+export const DEFAULT_NOTIFICATION_IDLE_SECONDS = 60
+export const DEFAULT_BELL_ON_APPROVAL = true
 
 /** 磁盘格式（jsonc-parser 解析，允许注释） */
 interface ConfigFile {
@@ -96,6 +104,10 @@ interface ConfigFile {
   mcpServers?: Record<string, import('./mcp/config.js').McpServerConfig>
   /** hooks 原始数组（jsonc 透传；过滤在 hooks/validate.ts） */
   hooks?: unknown
+  /** 批2d：Notification 触发阈值秒（缺省 60；0=关） */
+  notificationIdleSeconds?: number
+  /** 批2d：审批卡首次出现响 BEL（缺省 true） */
+  bellOnApproval?: boolean
   /** M13-B3：角色分流（summary=压缩摘要专用便宜模型；校验 provider 名存在） */
   roles?: { summary?: { provider: string; model: string } }
   /** M13-W8：飞书凭据（jsonc 透传） */
@@ -342,6 +354,8 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     ...(file.maxInstructionsKB !== undefined ? { maxInstructionsKB: file.maxInstructionsKB } : {}),
     ...(file.webFetchMaxKB !== undefined ? { webFetchMaxKB: file.webFetchMaxKB } : {}),
     logLevel: (file.logLevel as Config['logLevel']) ?? DEFAULT_LOG_LEVEL,
+    notificationIdleSeconds: file.notificationIdleSeconds ?? DEFAULT_NOTIFICATION_IDLE_SECONDS,
+    bellOnApproval: file.bellOnApproval ?? DEFAULT_BELL_ON_APPROVAL,
     ...(file.mcpServers !== undefined ? { mcpServers: file.mcpServers } : {}),
   ...(file.hooks !== undefined ? { hooks: file.hooks } : {}),
   }

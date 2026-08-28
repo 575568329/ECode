@@ -60,19 +60,22 @@ const server = http.createServer((req, res) => {
       // 工具结果回程：文本收尾（S3 第二段）
       sse(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
       sse(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `工具往返完成（第${roundNo}轮）` } })
-      sse(res, 'content_block_stop', { type: 'content_block_stop' })
+      sse(res, 'content_block_stop', { type: 'content_block_stop', index: 0 })
       toolPhase = false
     } else if (toolPhase) {
       // 工具轮：发 tool_use（输入故意小；工具由客户端真实执行）
       sse(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_semialive', name: 'ls', input: {} } })
-      sse(res, 'content_block_stop', { type: 'content_block_stop' })
+      sse(res, 'content_block_stop', { type: 'content_block_stop', index: 0 })
     } else {
       // 普通文本轮（每轮唯一回复——loop-guard 复读指纹安全网别被触发）
+      // content_block_start 不能省：provider 按 index 建 block，缺 start 时 delta 落在未建 block 上
+      // （实测报 Cannot read properties of undefined (reading 'type')，重试 3 次熔断）
       const reply = `半活探针第${roundNo}轮唯一回复`
+      sse(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
       for (let i = 0; i < 3; i++) {
         sse(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: reply.slice(Math.floor((reply.length * i) / 3), Math.floor((reply.length * (i + 1)) / 3)) } })
       }
-      sse(res, 'content_block_stop', { type: 'content_block_stop' })
+      sse(res, 'content_block_stop', { type: 'content_block_stop', index: 0 })
     }
     sse(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 8 } })
     sse(res, 'message_stop', { type: 'message_stop' })
@@ -158,7 +161,8 @@ const probeGroup = async (label) => {
 /** 起 TUI 子进程 */
 const spawnTui = () =>
   new Promise((resolve, reject) => {
-    proc = pty.spawn(TARGET[0] === 'node' ? TARGET[0] : 'cmd.exe', TARGET[0] === 'node' ? TARGET.slice(1) : ['/c', ...TARGET], {
+    // Windows node-pty 直接 spawn 'node' 报 File not found——与 wedge 探针一致统一走 cmd.exe 壳
+    proc = pty.spawn('cmd.exe', ['/c', ...TARGET], {
       cwd: REPO,
       env: {
         ...process.env,

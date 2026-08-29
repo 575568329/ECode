@@ -15,6 +15,7 @@ describe('ShortcutHint', () => {
   it('busy 上下文显示中断', () => {
     const { lastFrame } = render(React.createElement(ShortcutHint, { context: 'busy' }))
     expect(lastFrame()).toContain('中断')
+    expect(lastFrame()).toContain('Ctrl+T')
   })
 
   it('未知 context 回退 default（同样为空）', () => {

@@ -6,7 +6,7 @@ import { Text } from 'ink'
  *  busy 态保留 Ctrl+C 中断（运行中怎么打断是关键信息）。 */
 const HINTS: Record<string, string> = {
   default: '',
-  busy: 'Ctrl+C 中断',
+  busy: 'Ctrl+C 中断 · Ctrl+T 输出',
 }
 
 interface ShortcutHintProps {

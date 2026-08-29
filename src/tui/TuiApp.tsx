@@ -1034,8 +1034,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     (input, key) => {
       if (key.ctrl && input === 'o') toggleExpand()
       if (key.ctrl && input === 'e') expandNextTool()
+      // F-46：Ctrl+T 直达输出面板（子代理/后台任务/工具全文 transcript）——运行期看子代理
+      // 在干什么的快捷入口（busy 可用；此前唯一入口 /output 被 busy 斜杠拦截堵死）
+      if (key.ctrl && input === 't') {
+        pickerRef.current = true
+        setOverlay({ kind: 'output-panel' })
+      }
     },
-    // P2-4：overlay/confirm 期间不抢 Ctrl+O/Ctrl+E（picker/confirm 独占输入）
+    // P2-4：overlay/confirm 期间不抢 Ctrl+O/Ctrl+E/Ctrl+T（picker/confirm 独占输入）
     { isActive: overlay === null && active.confirm === null },
   )
 

@@ -196,6 +196,17 @@ describe('副作用 diff 可见性（2026-08-29 翻案：Static 不再黑盒—�
     expect(f).toContain('▸')
     expect(f).not.toContain('▾ 输出')
   })
+
+  it('Static 形态：超长 diff 全量渲染不折叠（2026-08-29 再拍板「diff 必须显示全」；只读工具仍 head-tail 封顶）', () => {
+    const bigDiff = Array.from({ length: 40 }, (_, i) => `+added-${i}`).join('\n')
+    const f = view([
+      makeTool({ name: 'edit_file', status: 'done', id: 't1', input: { path: 'a.ts' }, content: bigDiff }),
+    ])
+    expect(f).toContain('added-0') // 首行
+    expect(f).toContain('added-20') // 中段（不再折叠）
+    expect(f).toContain('added-39') // 尾行
+    expect(f).not.toContain('行已折叠')
+  })
 })
 
 describe('ToolGroupView 展开输出上限（M14-V2）', () => {

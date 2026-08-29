@@ -25,8 +25,9 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)}MB`
 }
 
-/** 展开输出行数上限（M14-V2 §3.2：Ctrl+O 展开的工具输出 head-tail 上限——
- *  min(12, budget/2)；V3 OutputViewer 落地后此为"就地瞥"，全文回看走 /output） */
+/** 展开输出行数上限（M14-V2 §3.2：只读工具展开的 head-tail 上限——min(12, budget/2)）。
+ *  副作用工具（edit_file/write_file）的 diff 不适用——2026-08-29 用户拍板「diff 必须显示全」，
+ *  传 Infinity 全量渲染（见展开分支注）；全文超 50KB 由 F-39 工具层截断落盘兜底。 */
 const EXPAND_CAP = 12
 
 /**
@@ -42,7 +43,8 @@ const EXPAND_CAP = 12
  *
  * 动态区（当前轮）：expanded 受控 + onToggle 可交互。
  * Static（历史 tool-group）：不传 expanded/onToggle——只读工具收起固化（▸ preview）；
- * 副作用工具（edit_file/write_file）固化后仍展开 diff（2026-08-29 翻案：不显示 diff=黑盒）。
+ * 副作用工具（edit_file/write_file）固化后仍展开且 diff 全量渲染（2026-08-29 翻案：不显示
+ * diff=黑盒，折半显示也不接受——「diff 必须显示全」）。
  */
 interface ToolGroupViewProps {
   tools: ActiveTool[]
@@ -116,8 +118,7 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
         // 副作用工具（edit_file/write_file）进行中（done=false）折叠省空间（本轮可能多 edit 连发）；
         // 轮末（done=true）与 Static 固化（done=undefined）都展开 diff——2026-08-29 用户翻案
         // 「改动了文件但不显示 diff 纯纯黑盒」：旧拍板「历史全收起」让 acceptEdits 下的编辑过程
-        // 完全不可见（V4 轮末即 commit，done=true 展开实际活不过一帧就被 Static 吞掉）；diff 是
-        // edit 的交付物，且 foldLines head-tail 已把展开行数封顶（≤ expandCap），scrollback 成本有界。
+        // 完全不可见（V4 轮末即 commit，done=true 展开实际活不过一帧就被 Static 吞掉）。
         // 界面批 B1：expandedIds 命中的工具单选展开（Ctrl+E 循环，独立于组级 expanded）
         const showFull = expanded || (isSideEffect && done !== false) || (expandedIds !== undefined && t.use !== undefined && expandedIds.has(t.use.id))
         const preview = previewLine(content)
@@ -172,8 +173,16 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
                       </Text>
                     </Box>
                     {(() => {
-                      // M14-V2：展开全文不再无界——物理行 head-tail（头 3 定位 + 尾最新），中段折叠提示
-                      const fold = foldLines(content, expandCap, expandWidth, 'head-tail')
+                      // M14-V2：展开全文 head-tail 物理行折叠（头 3 定位 + 尾最新）——只读工具适用。
+                      // 2026-08-29 用户再拍板「diff 必须显示全」：副作用工具传 Infinity 不限行数
+                      // （同一条 wrapAnsi 硬折行路径保 ⎿ 悬挂缩进对齐；极端体积由上游 50KB 工具
+                      // 结果截断兜底，F-39 超限落盘 /output 可回看），只读工具输出仍封顶。
+                      const fold = foldLines(
+                        content,
+                        isSideEffect ? Number.POSITIVE_INFINITY : expandCap,
+                        expandWidth,
+                        'head-tail',
+                      )
                       const head = fold.visible.slice(0, fold.markerAt)
                       const tail = fold.visible.slice(fold.markerAt)
                       const marker =

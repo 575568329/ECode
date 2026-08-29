@@ -124,6 +124,11 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
         return (
           <Box key={id} flexDirection="column">
             <Box>
+              {/* 排版批补：组内工具行行首图标列（用户对照 CC 指出「图标都在最前面」——
+                  组头聚合不能代替每行的图标锚点；名称起于第 2 列=⎿ 悬挂列，视觉对齐 CC） */}
+              <Box minWidth={INDENT.icon}>
+                <Text dimColor>{symbols.tool}</Text>
+              </Box>
               <Text bold>{t.name}</Text>
               {isTodo ? (
                 <Text dimColor> {todoDone}/{todoItems.length} 完成</Text>

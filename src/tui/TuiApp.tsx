@@ -167,7 +167,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   }
   const readMainDraft = (): string => draftPortRef.current?.read() ?? ''
   // M12-B3：插话预览由宿主 queue/snapshot 事件镜像（队列权威在宿主，D2）
-  const [interjectPreview, setInterjectPreview] = useState<string | null>(null)
+  // 插话排队列表（queue/snapshot 全量同步 + injected 即时摘除）——对话区动态渲染留痕
+  const [queuedInterjects, setQueuedInterjects] = useState<string[]>([])
   const enqueueInterject = async (text: string, images?: { path: string; mime: string; label?: string }[]): Promise<void> => {
     // 斜杠拦截不在此（InputStream 分流点已拦）；F2：入队时过 UserPromptSubmit hook
     // （宿主仅新轮 dispatch——插话注入不走宿主 hook，此处保留客户端 dispatch 维持旧行为）
@@ -563,10 +564,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           setSubagents(ev.agents as SubagentStatus[])
           break
         case 'queue/snapshot':
-          setInterjectPreview(ev.items.length > 0 ? ev.items.join(' / ') : null)
+          setQueuedInterjects(ev.items)
           break
         case 'interjection/injected':
-          setInterjectPreview(null)
+          // 宿主注入后紧随 queue/snapshot 全量同步；此处先摘除本条防一帧延迟
+          setQueuedInterjects((prev) => prev.filter((t) => t !== ev.text))
           break
         default:
           break // 其余事件 B5 消费或无需 UI
@@ -1117,6 +1119,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       activity={activity.state}
       activityText={activity.text}
       running={running}
+      queuedInterjects={queuedInterjects}
       mcp={mcpSegment}
       sandbox={sandboxMode === 'default' ? undefined : sandboxMode}
       sandboxDanger={sandboxMode === 'full-access'}
@@ -1138,13 +1141,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     >
       <SubagentBar agents={subagents} />
       <TasksBar />
-      {interjectPreview !== null && (
-        <Box paddingLeft={1}>
-          <Text dimColor>
-            已排队：{interjectPreview.slice(0, 40)}（Ctrl+U 清空）
-          </Text>
-        </Box>
-      )}
       {error ? <ErrorBanner error={error} /> : null}
       {overlay?.kind === 'model-picker' && (
         <ModelPicker

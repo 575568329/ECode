@@ -101,6 +101,27 @@ describe('Conversation', () => {
     expect(lastFrame()).toContain('帮我写代码')
   })
 
+  it('插话排队留痕（2026-08-29 用户点名）：queuedInterjects 渲染为排队用户行（❯ 图标 + 已排队标记）', () => {
+    const { lastFrame } = render(
+      React.createElement(Conversation, {
+        committed: [],
+        active: createActive(),
+        queuedInterjects: ['补充一下：用方案 A'],
+      }),
+    )
+    const f = lastFrame() ?? ''
+    expect(f).toContain('❯')
+    expect(f).toContain('补充一下：用方案 A')
+    expect(f).toContain('已排队')
+  })
+
+  it('排队列表为空时不渲染排队行（Ctrl+U 清空/注入后即消失）', () => {
+    const { lastFrame } = render(
+      React.createElement(Conversation, { committed: [], active: createActive(), queuedInterjects: [] }),
+    )
+    expect(lastFrame() ?? '').not.toContain('已排队')
+  })
+
   it('committed 进 Static 渲染（历史消息）', () => {
     const committed: CommittedItem[] = [
       { kind: 'user', id: 'u1', text: '历史用户' },

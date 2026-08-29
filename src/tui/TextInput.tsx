@@ -16,6 +16,7 @@ import {
 } from './cursor.js'
 import { symbols } from './symbols.js'
 import { theme } from './theme.js'
+import { INDENT } from './layout.js'
 import { useViewport } from './viewport.js'
 
 interface InputRenderProps {
@@ -133,22 +134,27 @@ export function foldInputView(
   return { rows, caretRow: rows.length - (below > 0 ? 2 : 1), caretCol, totalPhysical }
 }
 
-/** 输入渲染：❯ + 反色 caret 字素（设计理念 §7.2：反色不塞 ▋，跨字素不错位） */
+/** 输入渲染：F-36 栅格同款（2026-08-29 用户拍板：第一列 ❯ 图标槽、内容列从第 2 列起、
+ *  折行/折叠行不占第 1 列——与对话区用户消息/助手消息同一栅格语言）+ 反色 caret 字素
+ *  （设计理念 §7.2：反色不塞 ▋，跨字素不错位） */
 export function InputRender({ text, caret, placeholder }: InputRenderProps): ReactElement {
   const { columns } = useViewport()
-  const width = columns - 2 // ❯ 前缀占 2 列
+  const width = columns - 2 // ❯ 前缀槽占 2 列
   const folded = physicalLineCount(text, width) > INPUT_FOLD_MAX_LINES
   return (
-    <Box>
-      <Text color={theme.user}>{symbols.prompt}</Text>
-      <Text> </Text>
-      {text === '' && placeholder !== undefined ? (
-        <Text dimColor>{placeholder}</Text>
-      ) : folded ? (
-        <FoldedCaretText text={text} caret={caret} width={width} />
-      ) : (
-        <CaretText text={text} caret={caret} />
-      )}
+    <Box flexDirection="row">
+      <Box minWidth={INDENT.icon} flexShrink={0}>
+        <Text color={theme.user}>{symbols.prompt}</Text>
+      </Box>
+      <Box flexShrink={1} flexGrow={1}>
+        {text === '' && placeholder !== undefined ? (
+          <Text dimColor>{placeholder}</Text>
+        ) : folded ? (
+          <FoldedCaretText text={text} caret={caret} width={width} />
+        ) : (
+          <CaretText text={text} caret={caret} />
+        )}
+      </Box>
     </Box>
   )
 }

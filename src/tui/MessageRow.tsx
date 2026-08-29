@@ -7,7 +7,8 @@
  * 魔法数字（三处注释互证），ECode 收口在 layout.ts INDENT。
  *
  * icon='' → 空 2 列槽（系统级提示行占位对齐，CC BriefTool 空 minWidth=2 同款）。
- * 用户消息不进本栅格（CC 例外：整块背景 + 行内 ❯）。
+ * 用户消息 2026-08-29 起同栅格（用户拍板撤「整块背景+行内 ❯」CC 例外）——UserMessage
+ * 在背景块内内联同构栅格（MessageRow 自带 marginTop 不能嵌背景块），图标槽宽同 INDENT.icon。
  */
 import type { ReactElement, ReactNode } from 'react'
 import { Box, Text } from 'ink'

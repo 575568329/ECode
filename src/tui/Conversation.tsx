@@ -12,6 +12,7 @@ import { foldStreamText } from './stream.js'
 import { allocateDynamic, useViewport } from './viewport.js'
 import { WIDTH } from './layout.js'
 import { MessageRow } from './MessageRow.js'
+import { symbols } from './symbols.js'
 import { UserMessage } from './UserMessage.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import type { CommittedItem, ActiveState, ActiveTool, CommittedToolCall } from './types.js'
@@ -106,6 +107,8 @@ interface ConversationProps {
   readDraft?: () => string
   /** F-31：卡上 Ctrl+C=拒卡+中断整轮（透传 ConfirmPrompt） */
   onInterruptTurn?: () => void
+  /** 插话排队留痕（2026-08-29 用户点名）：queue/snapshot 驱动，动态区渲染排队用户行 */
+  queuedInterjects?: string[]
   children?: ReactNode
   /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar 各 ≤3 行——allocateDynamic 显式扣减） */
   conditions?: { tasksBar?: boolean; subagentBar?: boolean }
@@ -121,6 +124,7 @@ export function Conversation({
   draft,
   readDraft,
   onInterruptTurn,
+  queuedInterjects = [],
   children,
   conditions,
 }: ConversationProps): ReactElement {
@@ -187,6 +191,16 @@ export function Conversation({
           <CappedAssistantMessage text={active.streamingText} maxLines={alloc.streamMaxLines} />
         ))
       )}
+      {/* 插话排队留痕（2026-08-29 用户点名）：轮内即时可见；注入后文本随轮末 commit 以
+          user 消息落转写（F-35 包装原文），此处排队行随即被 queue/snapshot 摘除——不重不漏 */}
+      {queuedInterjects.map((q, i) => (
+        <MessageRow key={`qi-${i}`} icon={symbols.prompt} dim>
+          <Text dimColor>
+            {q.length > 46 ? `${q.slice(0, 46)}…` : q}
+            （已排队 · Ctrl+U 清空）
+          </Text>
+        </MessageRow>
+      ))}
       {children}
     </Box>
   )

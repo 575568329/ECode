@@ -56,6 +56,8 @@ interface AppProps {
   readDraft?: () => string
   /** F-31：卡上 Ctrl+C=拒卡+中断整轮（透传 ConfirmPrompt） */
   onInterruptTurn?: () => void
+  /** 插话排队留痕（2026-08-29 用户点名）：queue/snapshot 驱动，对话区动态渲染为排队用户行 */
+  queuedInterjects?: string[]
   children?: ReactNode
 }
 
@@ -86,6 +88,7 @@ export function App({
   conditions,
   banner,
   running,
+  queuedInterjects,
   children,
 }: AppProps): ReactElement {
   const busy =
@@ -105,6 +108,7 @@ export function App({
       <Conversation
         committed={committed}
         active={active}
+        queuedInterjects={queuedInterjects}
         onToggleTool={onToggleTool}
         onConfirm={onConfirm}
         onCancel={onCancel}

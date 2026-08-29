@@ -20,6 +20,16 @@ describe('UserMessage', () => {
     expect(f).toContain('第一行')
     expect(f).toContain('第二行')
   })
+
+  it('F-36 栅格（2026-08-29 用户拍板）：续行对齐内容列（padding 1 + 图标槽 2 → 第 3 列起），不顶格', () => {
+    const { lastFrame } = render(React.createElement(UserMessage, { text: '第一行\n第二行' }))
+    const f = lastFrame() ?? ''
+    const lines = f.split('\n')
+    const first = lines.find((l) => l.includes('第一行')) ?? ''
+    const second = lines.find((l) => l.includes('第二行')) ?? ''
+    expect(first).toContain('❯') // 首行：图标槽内 ❯
+    expect(second.startsWith('   ')).toBe(true) // 续行：对齐内容列第 3 列，不回第 0 列
+  })
 })
 
 describe('AssistantMessage', () => {

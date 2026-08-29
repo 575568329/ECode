@@ -36,6 +36,26 @@ const MAX_RETRIES = 3
 const BASE_RETRY_MS = 500
 const MAX_RETRY_CAP_MS = 8000
 
+/**
+ * 会话消息中是否含图片载荷（user 直贴 ImageBlock 或 tool_result 附着 blocks）。
+ * 用途：非重试错误终止时的图片毒化出路指引触发条件（2026-08-29 调研拍板）——
+ * 图片随消息固化进 history 后，严格端点会每轮拒绝；错误只到用户不到模型，
+ * 需给人话逃生口。内容级判定、协议无关，不违反心脏铁律。
+ */
+function hasImagePayload(messages: Message[]): boolean {
+  return messages.some((m) =>
+    m.content.some((b) => {
+      if (b.type === 'image') return true
+      if (b.type === 'tool_result') return b.blocks?.some((blk) => blk.type === 'image') === true
+      return false
+    }),
+  )
+}
+
+/** 图片毒化出路指引文案（CC "/compact to remove old images" + codex "remove it and try again" 同思路） */
+const IMAGE_POISON_HINT =
+  '；会话已含图片输入，若此报错与图片相关，可 /rewind 撤回读图、/compact 压缩清图或 /model 切换模型'
+
 /** 可被 AbortSignal 中断的 sleep（退避期间用户 Ctrl+C 立即响应，不傻等） */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -301,7 +321,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         // 直接终止本轮（保留已固化内容，onWarn 告知；与 MAX_RETRIES 耗尽同款温和终止）
         if (streamError.retryable === false) {
           opts.callbacks.onActivity?.('idle')
-          opts.callbacks.onWarn?.(streamError.message)
+          opts.callbacks.onWarn?.(`${streamError.message}${hasImagePayload(messages.filter(isMessageLine)) ? IMAGE_POISON_HINT : ''}`)
           opts.logger.warn(
             'provider',
             'no_retry',

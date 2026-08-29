@@ -697,3 +697,55 @@ describe('runLoop：真实 SDK abort 静默收尾（pty 实测形态——abort 
     expect(toolExec).not.toHaveBeenCalled()
   })
 })
+
+describe('runLoop：图片毒化出路指引（2026-08-29 P1 处置，CC/codex 同思路）', () => {
+  /** 返回带图 blocks 的只读工具（模拟 read_file 读图） */
+  const imgTool: Tool = {
+    name: 'read_img',
+    description: 'read image',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    readonly: true,
+    async execute() {
+      return {
+        content: '已读取图片',
+        blocks: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } }],
+      }
+    },
+  }
+  const p400 = (): LLMProvider => ({
+    type: 'mock',
+    async *run() {
+      yield { type: 'error', error: { code: 'HTTP_ERROR', message: '400 Bad Request', recoverable: true, retryable: false } }
+    },
+  })
+
+  it('会话含图（tool_result.blocks）→ 非重试终止 warn 追加 /rewind·/compact·/model 出路指引', async () => {
+    // 第一轮工具调用产出带图 tool_result，第二轮 provider 直接抛 retryable:false
+    let call = 0
+    const p2: LLMProvider = {
+      type: 'mock',
+      async *run() {
+        call += 1
+        if (call === 1) {
+          yield { type: 'tool_use_start', id: 't1', name: 'read_img' } as Delta
+          yield { type: 'tool_use_end', id: 't1' } as Delta
+          yield { type: 'done', stop_reason: 'tool_use' } as Delta
+          return
+        }
+        yield { type: 'error', error: { code: 'HTTP_ERROR', message: '400 Bad Request', recoverable: true, retryable: false } }
+      },
+    }
+    const onWarn = vi.fn()
+    await runLoop([], '问', { ...makeOpts(p2, [imgTool]), callbacks: { onText: vi.fn(), onWarn } })
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('400 Bad Request'))
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('/rewind'))
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('/compact'))
+  })
+
+  it('会话无图 → 同样错误 warn 不带指引（不噪音化）', async () => {
+    const onWarn = vi.fn()
+    await runLoop([], '问', { ...makeOpts(p400(), []), callbacks: { onText: vi.fn(), onWarn } })
+    expect(onWarn).toHaveBeenCalledWith('400 Bad Request')
+    expect(onWarn).not.toHaveBeenCalledWith(expect.stringContaining('/rewind'))
+  })
+})

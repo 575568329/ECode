@@ -113,7 +113,7 @@ describe('F-07 档A：ApprovalBroker 会话级 remember 集合', () => {
     broker.dispose()
   })
 
-  it('always 应答 → 入集合，后续同集合工具直放（edit↔write 互通）', async () => {
+  it('always 应答 → 入集合；bash 卡不受影响（直放判定在宿主——broker 层不越权）', async () => {
     const { broker, events } = setup()
     const p = broker.confirm(use('edit_file'), 'x', true)
     const req = events.find((e) => e.type === 'approval/requested')
@@ -121,14 +121,20 @@ describe('F-07 档A：ApprovalBroker 会话级 remember 集合', () => {
     broker.respondApproval(req.requestId, 'always')
     expect(await p).toBe(true)
     expect(broker.rememberedTools.has('edit_file')).toBe(true)
-    // 后续 edit/write 免审批（不发 requested 帧直放）
-    const before = events.length
-    expect(await broker.confirm(use('write_file'), 'y')).toBe(true)
-    expect(await broker.confirm(use('edit_file'), 'z')).toBe(true)
-    expect(events.length).toBe(before)
-    // bash 不受影响（仍挂卡）
-    void broker.confirm(use('bash'), 'b')
-    expect(events.some((e) => e.type === 'approval/requested' && (e as { tool: string }).tool === 'bash')).toBe(true)
+    // broker 不做 remember 直放（不知 path 敏感性）：后续 confirm 仍挂卡（宿主 hostConfirm 负责直放）
+    const p2 = broker.confirm(use('write_file'), 'y')
+    expect(events.some((e) => e.type === 'approval/requested' && (e as { tool: string }).tool === 'write_file')).toBe(true)
+    const pendingInner = broker as unknown as { pending: Map<string, { frame: ProtocolEvent }> }
+    const id2 = [...pendingInner.pending.keys()][0]
+    broker.respondApproval(id2 as string, 'once')
+    expect(await p2).toBe(true)
+    // bash 卡无 always 键（档A 范围外）
+    const p3 = broker.confirm(use('bash'), 'b')
+    const bashReq = events.filter((e) => e.type === 'approval/requested' && (e as { tool: string }).tool === 'bash')[0]
+    expect((bashReq as { decisions: string[] }).decisions).toEqual(['once', 'reject'])
+    const id3 = [...pendingInner.pending.keys()][0]
+    broker.respondApproval(id3 as string, 'reject')
+    expect(await p3).toBe(false)
     broker.dispose()
   })
 
@@ -159,6 +165,7 @@ describe('F-07 档A：ApprovalBroker 会话级 remember 集合', () => {
     broker.respondApproval(req.requestId, 'always')
     expect(await p1).toBe(true)
     expect(await p2).toBe(true) // edit↔write 同集合级联
+    broker.dispose()
   })
 
   it('新 broker 实例（新会话）不残留', async () => {
@@ -167,8 +174,10 @@ describe('F-07 档A：ApprovalBroker 会话级 remember 集合', () => {
     const req = a.events.find((e) => e.type === 'approval/requested')
     a.broker.respondApproval(req!.requestId as string, 'always')
     await p
+    a.broker.dispose()
     const b = setup()
     expect(b.broker.rememberedTools.size).toBe(0)
+    b.broker.dispose()
   })
 
   it('REMEMBER_TOOLS 白名单恰为 edit_file/write_file', () => {

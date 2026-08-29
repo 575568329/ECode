@@ -107,7 +107,8 @@ export class ApprovalBroker {
   confirm(use: ToolUseBlock, preview: string, canAlways = false): Promise<boolean | string> {
     const mcpPrefix = use.name.startsWith('mcp__') ? use.name.split('__').slice(0, 2).join('__') : null
     if (mcpPrefix !== null && this.confirmAlways.has(mcpPrefix)) return Promise.resolve(true)
-    if (this.rememberTools.has(use.name)) return Promise.resolve(true)
+    // F-07 档A：remember 集合的**直放判定不在 broker**（此处不知 path 敏感性）——宿主
+    // hostConfirm 判 sensitive 后自行直放；broker 只负责存集合 + always 级联
     if (!this.hasSubscriber && this.policy === 'auto-approve') return Promise.resolve(true)
     const requestId = randomUUID()
     const decisions: ApprovalDecision[] =
@@ -281,12 +282,14 @@ export class ApprovalBroker {
       if (mcpPrefix !== null) this.confirmAlways.add(mcpPrefix)
       else if (REMEMBER_TOOLS.has(tool)) this.rememberTools.add(tool) // F-07 档A：会话级工具白名单
       entry.resolve(true)
-      // 级联：同前缀的其余 pending 自动放行；rememberTools 命中的其余 pending（edit↔write 同集合互通）
-      if (mcpPrefix !== null || this.rememberTools.has(tool)) {
+      // 级联：同前缀的其余 pending 自动放行；rememberTools 命中时其余 pending 中
+      // **卡面本身带 always**（宿主已判非敏感路径）的 edit/write 一并放行——敏感卡无
+      // always 键，天然不会被级联波及（M14-D6 sensitive 永远交互不破）
+      if (mcpPrefix !== null || this.rememberTools.size > 0) {
         for (const [id, p] of [...this.pending]) {
-          const f = p.frame as { tool: string }
+          const f = p.frame as { tool: string; decisions?: string[] }
           const pMcp = f.tool.startsWith('mcp__') ? f.tool.split('__').slice(0, 2).join('__') : null
-          const hit = mcpPrefix !== null ? pMcp === mcpPrefix : this.rememberTools.has(f.tool)
+          const hit = mcpPrefix !== null ? pMcp === mcpPrefix : this.rememberTools.size > 0 && REMEMBER_TOOLS.has(f.tool) && (f.decisions?.includes('always') ?? false)
           if (p.kind === 'tool-confirm' && hit) {
             if (p.timer !== undefined) clearTimeout(p.timer)
             if (p.notifyTimer !== undefined) clearTimeout(p.notifyTimer)

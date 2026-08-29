@@ -898,10 +898,10 @@ export class HostSession {
    *  sensitivePath 硬门例外：编辑 .ecode/settings* 等敏感路径仍照卡（安全敏感操作不随档位降级） */
   private async hostConfirm(use: import('../core/types.js').ToolUseBlock): Promise<boolean | string> {
     if (this.sandboxMode === 'full-access') return true
-    // F-07 档A：会话级 remember 白名单命中直放（a 键放行过 edit/write——敏感路径卡当时
-    // 无第三键不可能入集合，硬门前置判 sensitive 再比对，双保险）
+    // F-07 档A：会话级 remember 白名单命中直放（a 键放行过 edit/write）。sensitive 硬门
+    // 前置再比对（双保险：敏感卡当时无第三键不可能入集合，此处再挡一次路径判定）
     const target = typeof (use.input as { path?: unknown }).path === 'string' ? (use.input as { path: string }).path : ''
-    if (REMEMBER_TOOLS.has(use.name) && this.broker.rememberedTools.has(use.name)) {
+    if (this.broker.rememberedTools.size > 0 && REMEMBER_TOOLS.has(use.name)) {
       const abs = target === '' ? null : resolve(this.deps.cwd ?? process.cwd(), target)
       if (abs !== null && !isSensitivePath(abs) && !isProjectEcodeSettings(abs)) return true
     }

@@ -41,7 +41,8 @@ const EXPAND_CAP = 12
  *   展开：▾ 输出 (NB) + 完整 content
  *
  * 动态区（当前轮）：expanded 受控 + onToggle 可交互。
- * Static（历史 tool-group）：不传 expanded/onToggle，收起固化（含 ▸ preview）。
+ * Static（历史 tool-group）：不传 expanded/onToggle——只读工具收起固化（▸ preview）；
+ * 副作用工具（edit_file/write_file）固化后仍展开 diff（2026-08-29 翻案：不显示 diff=黑盒）。
  */
 interface ToolGroupViewProps {
   tools: ActiveTool[]
@@ -49,7 +50,8 @@ interface ToolGroupViewProps {
   expanded?: boolean
   /** 界面批 B1：单工具级展开 id 集（Ctrl+E 循环）——命中的工具独立展开看全文，不整组展开 */
   expandedIds?: Set<string>
-  /** 本轮是否结束（runLoop 完成）。副作用工具仅在本轮结束时展开 diff，进行中折叠省空间（本轮可能多 edit） */
+  /** 本轮是否结束（runLoop 完成）。副作用工具进行中折叠省空间（本轮可能多 edit）；
+   *  done=undefined（Static 固化）同样展开 diff——见 showFull 处 2026-08-29 翻案注 */
   done?: boolean
   onToggle?: () => void
   /** M14-V5 总守卫：可见工具数上限（每组收起恒 ≤4 行不随数增长，但组内工具并行 8 个仍 32 行——
@@ -111,10 +113,13 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
         // 副作用工具（edit_file/write_file）默认展开输出（直接显示 diff/content），
         // 只读工具默认折叠（▸ preview）；Ctrl+O 全展开覆盖
         const isSideEffect = t.name === 'edit_file' || t.name === 'write_file'
-        // 副作用工具（edit_file/write_file）仅动态区轮末（done=true）展开 diff（看刚改了什么）；
-        // 进行中（done=false）与 Static 固化（done=undefined）都收起——历史默认全收起（用户拍板）。
+        // 副作用工具（edit_file/write_file）进行中（done=false）折叠省空间（本轮可能多 edit 连发）；
+        // 轮末（done=true）与 Static 固化（done=undefined）都展开 diff——2026-08-29 用户翻案
+        // 「改动了文件但不显示 diff 纯纯黑盒」：旧拍板「历史全收起」让 acceptEdits 下的编辑过程
+        // 完全不可见（V4 轮末即 commit，done=true 展开实际活不过一帧就被 Static 吞掉）；diff 是
+        // edit 的交付物，且 foldLines head-tail 已把展开行数封顶（≤ expandCap），scrollback 成本有界。
         // 界面批 B1：expandedIds 命中的工具单选展开（Ctrl+E 循环，独立于组级 expanded）
-        const showFull = expanded || (isSideEffect && done === true) || (expandedIds !== undefined && t.use !== undefined && expandedIds.has(t.use.id))
+        const showFull = expanded || (isSideEffect && done !== false) || (expandedIds !== undefined && t.use !== undefined && expandedIds.has(t.use.id))
         const preview = previewLine(content)
         // M11-P6 todo 特化：digest 显示完成度，展开态逐项 ASCII 状态符（[x]/[->]/[ ]——ambiguous 宽度教训只用 ASCII）
         const isTodo = t.name === 'todo'

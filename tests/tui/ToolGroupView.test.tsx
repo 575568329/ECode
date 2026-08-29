@@ -146,22 +146,34 @@ describe('ToolGroupView', () => {
   })
 })
 
-describe('历史默认全收起（用户拍板：发送新对话后 Static 工具组不展开）', () => {
-  it('Static 形态（不传 done）：副作用工具输出也收起（▸ preview，不显 diff 全文）', () => {
+describe('副作用 diff 可见性（2026-08-29 翻案：Static 不再黑盒——「改了文件不显示 diff」用户点名）', () => {
+  const editContent = '已更新 a.ts（1 处）\n\n--- a.ts\n+++ a.ts\n@@ -1,1 +1,1 @@\n-const y = 2\n+const x = 1'
+
+  it('Static 形态（不传 done）：edit_file 展开 diff（▾ 输出 + +/- 行可见，不再只给 ▸ preview）', () => {
     const f = view([
       makeTool({
         name: 'edit_file',
         status: 'done',
         id: 't1',
         input: { path: 'a.ts' },
-        content: '+ const x = 1\n- const y = 2',
+        content: editContent,
       }),
+    ])
+    expect(f).toContain('▾')
+    expect(f).toContain('+const x = 1')
+    expect(f).toContain('-const y = 2')
+    expect(f).not.toContain('▸')
+  })
+
+  it('Static 形态：只读工具仍收起固化（▸ preview，不显全文）', () => {
+    const f = view([
+      makeTool({ name: 'read_file', status: 'done', id: 't1', input: { path: 'p.json' }, content: 'a\nb\nc' }),
     ])
     expect(f).toContain('▸')
     expect(f).not.toContain('▾ 输出')
   })
 
-  it('动态区轮末（done=true）：副作用工具 diff 仍展开（看刚改了什么）', () => {
+  it('动态区轮末（done=true）：副作用工具 diff 展开（看刚改了什么）', () => {
     const f =
       render(
         React.createElement(ToolGroupView, {
@@ -173,15 +185,16 @@ describe('历史默认全收起（用户拍板：发送新对话后 Static 工�
     expect(f).toContain('+ 新行')
   })
 
-  it('动态区进行中（done=false）：副作用工具收起（省空间，本轮可能多 edit）', () => {
+  it('动态区进行中（done=false）：副作用工具已完成也先收起（省空间，本轮可能多 edit 连发）', () => {
     const f =
       render(
         React.createElement(ToolGroupView, {
-          tools: [makeTool({ name: 'edit_file', status: 'running', id: 't1', input: { path: 'a.ts' } })],
+          tools: [makeTool({ name: 'edit_file', status: 'done', id: 't1', input: { path: 'a.ts' }, content: editContent })],
           done: false,
         }),
       ).lastFrame() ?? ''
-    expect(f).toContain('edit_file')
+    expect(f).toContain('▸')
+    expect(f).not.toContain('▾ 输出')
   })
 })
 

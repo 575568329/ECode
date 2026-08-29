@@ -146,92 +146,80 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
               {tail && <Text color={tail.color}> {tail.sym}</Text>}
             </Box>
             {isTodo && showFull && todoItems.length > 0 && (
-              <Box flexDirection="column">
-                {todoItems.map((x, i) => (
-                  <Box key={i}>
-                    <Gutter />
+              // F-43：单 ⎿ + 内容列（CC MessageResponse 同构）——每行一个 Gutter 会满屏 ⎿
+              <Box>
+                <Gutter />
+                <Box flexDirection="column" flexShrink={1} flexGrow={1}>
+                  {todoItems.map((x, i) => (
                     <Text
+                      key={i}
                       color={x.status === 'in_progress' ? theme.info : undefined}
                       bold={x.status === 'in_progress'}
                     >
                       {x.status === 'completed' ? '[x] ' : x.status === 'in_progress' ? '[->] ' : '[ ] '}
                       {x.content}
                     </Text>
-                  </Box>
-                ))}
+                  ))}
+                </Box>
               </Box>
             )}
             {hasOutput && (
               <Box flexDirection="column">
                 {showFull ? (
-                  <>
-                    <Box>
-                      <Gutter />
+                  (() => {
+                    // M14-V2：展开全文 head-tail 物理行折叠（头 3 定位 + 尾最新）——只读工具适用。
+                    // 2026-08-29 用户再拍板「diff 必须显示全」：副作用工具传 Infinity 不限行数
+                    // （同一条 wrapAnsi 硬折行路径保 ⎿ 悬挂缩进对齐；极端体积由上游 50KB 工具
+                    // 结果截断兜底，F-39 超限落盘 /output 可回看），只读工具输出仍封顶。
+                    const fold = foldLines(
+                      content,
+                      isSideEffect ? Number.POSITIVE_INFINITY : expandCap,
+                      expandWidth,
+                      'head-tail',
+                    )
+                    const head = fold.visible.slice(0, fold.markerAt)
+                    const tail = fold.visible.slice(fold.markerAt)
+                    // F-43：标题+折叠提示+全文整体收进「单 ⎿ + 内容列」——CC MessageResponse
+                    // 同构（一个工具结果一个 ⎿，续行悬挂内容列），不再每行重复 Gutter 满屏 ⎿。
+                    // 内容列 flex 宽 = 展开宽度约束，diff ± 着色（DiffLine）不受影响。
+                    const marker = fold.foldedCount > 0 ? (
                       <Text dimColor>
-                        {symbols.foldExpanded} 输出 ({formatBytes(bytes)})
-                        {t.at !== undefined ? ` · ${new Date(t.at).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })}` : ''}
+                        {symbols.trunc} {fold.foldedCount} 行已折叠（共 {fold.totalPhysical} 行）
                       </Text>
-                    </Box>
-                    {(() => {
-                      // M14-V2：展开全文 head-tail 物理行折叠（头 3 定位 + 尾最新）——只读工具适用。
-                      // 2026-08-29 用户再拍板「diff 必须显示全」：副作用工具传 Infinity 不限行数
-                      // （同一条 wrapAnsi 硬折行路径保 ⎿ 悬挂缩进对齐；极端体积由上游 50KB 工具
-                      // 结果截断兜底，F-39 超限落盘 /output 可回看），只读工具输出仍封顶。
-                      const fold = foldLines(
-                        content,
-                        isSideEffect ? Number.POSITIVE_INFINITY : expandCap,
-                        expandWidth,
-                        'head-tail',
-                      )
-                      const head = fold.visible.slice(0, fold.markerAt)
-                      const tail = fold.visible.slice(fold.markerAt)
-                      const marker =
-                        fold.foldedCount > 0 ? (
-                          <Box>
-                            <Gutter />
-                            <Text dimColor>
-                              {symbols.trunc} {fold.foldedCount} 行已折叠（共 {fold.totalPhysical} 行）
-                            </Text>
-                          </Box>
-                        ) : null
-                      if (isSideEffect) {
-                        return (
-                          <>
-                            {head.map((line, i) => (
-                              <Box key={`h${i}`}>
-                                <Gutter />
-                                <DiffLine line={line} />
-                              </Box>
-                            ))}
-                            {marker}
-                            {tail.map((line, i) => (
-                              <Box key={`t${i}`}>
-                                <Gutter />
-                                <DiffLine line={line} />
-                              </Box>
-                            ))}
-                          </>
-                        )
-                      }
-                      return (
-                        <>
-                          {head.length > 0 && (
-                            <Box>
-                              <Gutter />
-                              <Text color={t.status === 'error' ? theme.error : undefined}>{head.join('\n')}</Text>
-                            </Box>
+                    ) : null
+                    return (
+                      <Box>
+                        <Gutter />
+                        <Box flexDirection="column" flexShrink={1} flexGrow={1}>
+                          <Text dimColor>
+                            {symbols.foldExpanded} 输出 ({formatBytes(bytes)})
+                            {t.at !== undefined ? ` · ${new Date(t.at).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })}` : ''}
+                          </Text>
+                          {isSideEffect ? (
+                            <>
+                              {head.map((line, i) => (
+                                <DiffLine key={`h${i}`} line={line} />
+                              ))}
+                              {marker}
+                              {tail.map((line, i) => (
+                                <DiffLine key={`t${i}`} line={line} />
+                              ))}
+                            </>
+                          ) : (
+                            <>
+                              {head.length > 0 && (
+                                <Text color={t.status === 'error' ? theme.error : undefined}>{head.join('\n')}</Text>
+                              )}
+                              {marker}
+                              {tail.length > 0 && (
+                                <Text color={t.status === 'error' ? theme.error : undefined}>{tail.join('\n')}</Text>
+                              )}
+                            </>
                           )}
-                          {marker}
-                          {tail.length > 0 && (
-                            <Box>
-                              <Gutter />
-                              <Text color={t.status === 'error' ? theme.error : undefined}>{tail.join('\n')}</Text>
-                            </Box>
-                          )}
-                        </>
-                      )
-                    })()}
-                  </>
+                        </Box>
+                      </Box>
+                    )
+                  })()
                 ) : (
                   <Box>
                     <Gutter />

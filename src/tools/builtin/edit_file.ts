@@ -101,9 +101,19 @@ export const editFileTool: Tool = {
       const tmp = abs + '.ecode-tmp'
       await fs.writeFile(tmp, newContent, 'utf8')
       await fs.rename(tmp, abs)
-      // result 含 diff（执行时原文件还在，能算完整 unified diff；详设 §7.5：Static 事后可回顾）
+      // result 含 diff（执行时原文件还在，能算完整 unified diff；详设 §7.5：Static 事后可回顾）。
+      // F-43：diff 头用相对 cwd 的正斜杠短路径——LLM 常传绝对路径，Windows 绝对路径
+      // 在 diff 头占满一行且反斜杠观感差；相对化失败回退原样
+      const displayRel = (() => {
+        try {
+          const r = path.relative(ctx.cwd, abs)
+          return r === '' ? rel : r.split(path.sep).join('/')
+        } catch {
+          return rel
+        }
+      })()
       const diff = fixPatchHeaders(
-        createTwoFilesPatch(rel, rel, oldContent, newContent, '', '', { context: 2 }),
+        createTwoFilesPatch(displayRel, displayRel, oldContent, newContent, '', '', { context: 2 }),
       )
       return {
         content: `已更新 ${rel}（${count === 1 ? '1 处' : `${count} 处`}）\n\n${diff}`,

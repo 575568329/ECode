@@ -45,6 +45,21 @@ console.log(stripAnsi(render(React.createElement(ToolGroupView, { tools: [tool] 
 console.log('\n===== ③ 工具组展开（输出全文在内容列）=====')
 console.log(stripAnsi(render(React.createElement(ToolGroupView, { tools: [tool], expanded: true })).lastFrame() ?? ''))
 
+// F-43：edit_file 副作用工具——diff 全展开（done=true）在单 ⎿ 内容列
+const editTool = {
+  name: 'edit_file',
+  use: { type: 'tool_use' as const, id: 't2', name: 'edit_file', input: { path: 'b.ts' } },
+  result: {
+    type: 'tool_result' as const,
+    tool_use_id: 't2',
+    content: '已更新 b.ts（1 处）\n\n--- b.ts\n+++ b.ts\n@@ -1,3 +1,4 @@\n const a = 1\n-const b = 2\n+const b = 3 // 改动行\n+const c = 4\n const d = 5',
+    is_error: false,
+  },
+  status: 'done' as const,
+}
+console.log('\n===== ③b edit_file diff 全展开（F-43 单 ⎿ 内容列）=====')
+console.log(stripAnsi(render(React.createElement(ToolGroupView, { tools: [editTool], done: true })).lastFrame() ?? ''))
+
 const committed: CommittedItem[] = [
   { kind: 'user', id: 'u1', text: '用户的问题' },
   { kind: 'assistant-text', id: 'a1', text: '助手回答段落一。\n\n段落二。' },

@@ -294,9 +294,15 @@ async function main(): Promise<void> {
 }
 
 /**
- * /restart（拍板 ②）：unmount 恢复终端态 → spawn 新实例（argv 原样重放，detached 新进程组
- * 不随旧进程死）→ 延迟 exit 给新旧进程交接终端（短暂闪屏可接受）。会话历史已由
- * HistoryStore 持久化，新实例 /history 可恢复。
+ * /restart（拍板 ②）：unmount 恢复终端态 → spawn 新实例（argv 原样重放）→ 新实例接管终端。
+ * 会话历史已由 HistoryStore 持久化，新实例 /history 可恢复。
+ *
+ * F-41：平台分流——POSIX 保持 detached（子进程组独立，父退出后子继续持有同一 tty，
+ * 「父退子接管」语义成立）；**Windows 的 detached = CREATE_NEW_CONSOLE**——子进程开
+ * 自己的新控制台窗口而非接管当前终端，父 exit 后用户回到 PS 提示符，观感即
+ * 「重启失败退出了」（dogfood 实证 rpp-web 现场）。Windows 改 attach 等待：
+ * 子进程继承当前控制台跑 TUI，父进程静默等其退出再退（Ctrl+C 是控制台广播，
+ * 新旧进程同收同退，无残留）。
  */
 function restartProcess(instance: { unmount(): void }, history: HistoryStore | null): void {
   try {
@@ -312,7 +318,24 @@ function restartProcess(instance: { unmount(): void }, history: HistoryStore | n
     history.flushPendingSeed()
     argv[historyFlagIdx + 1] = history.currentSessionId()
   }
-  const child = spawn(process.execPath, argv, {
+  if (process.platform === 'win32') {
+    // attach 等待：接管当前控制台；父进程保持存活但已 unmount 静默，等子退出后收场。
+    // 不再延迟 exit——立即退会让 PS 抢在子进程初始化前打印提示符，与 TUI 输出交错。
+    // execArgv 必须显式拼进 argv——spawn 既无 execArgv 选项也不继承（实测子进程
+    // execArgv=[]），tsx 形态下 loader（--import tsx/dist/loader.mjs）丢失 → node 裸跑
+    // .ts，'.js' 后缀 import 解析失败 ERR_MODULE_NOT_FOUND（F-41 探针实证）
+    const child = spawn(process.execPath, [...process.execArgv, ...argv], { cwd: process.cwd(), stdio: 'inherit' })
+    child.on('error', (e) => {
+      process.stderr.write(`✗ 重启失败：${e.message}（请手动重新运行）\n`)
+      process.exit(1)
+    })
+    child.on('exit', (code) => process.exit(code ?? 0))
+    // 释放 stdin 读取——conpty 输入投递给在读进程，父进程若占住 stdin，新实例键盘无响应
+    process.stdin.pause()
+    return
+  }
+  // 同 Windows 分支：execArgv 拼进 argv（tsx loader 继承）
+  const child = spawn(process.execPath, [...process.execArgv, ...argv], {
     cwd: process.cwd(),
     detached: true,
     stdio: 'inherit',

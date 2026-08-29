@@ -82,6 +82,41 @@ function makeDeps(overrides: Partial<{ config: Config }> = {}) {
 // （单测恒绿、随前置渲染数增多而飘——M10 修复批新增粘贴用例时暴露）。每测卸载全部实例根治。
 afterEach(() => cleanup())
 
+describe('TuiApp /restart（F-41）', () => {
+  beforeEach(() => {
+    commandRegistry.clear()
+    registerBuiltinCommands()
+  })
+
+  it('两段式回车后调用 onRestart 句柄（并提示正在重启）', async () => {
+    const onRestart = vi.fn()
+    const { stdin, lastFrame } = render(
+      React.createElement(TuiApp, { deps: makeDeps(), onRestart }),
+    )
+    await flush()
+    stdin.write('/restart')
+    await flush()
+    stdin.write('\r') // 补全填入
+    await flush()
+    stdin.write('\r') // 执行
+    await flush(100)
+    expect(lastFrame() ?? '').toContain('正在重启') // 提示渲染（400ms 前）
+    await vi.waitFor(() => expect(onRestart).toHaveBeenCalledTimes(1), { timeout: 3000, interval: 50 })
+  })
+
+  it('未注入 onRestart（serve/旧宿主）→ 提示不支持且不崩', async () => {
+    const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps() }))
+    await flush()
+    stdin.write('/restart')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    stdin.write('\r')
+    await flush()
+    expect(lastFrame() ?? '').toContain('不支持重启')
+  })
+})
+
 describe('TuiApp /model', () => {
   beforeEach(() => {
     commandRegistry.clear()

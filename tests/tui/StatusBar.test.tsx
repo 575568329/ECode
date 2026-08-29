@@ -38,6 +38,15 @@ describe('StatusBar', () => {
     expect(lastFrame()).toContain('1.2k tok')
   })
 
+  it('token 智能进位（2026-08-29 用户点名）：m 级 + 整值去 .0（1000.0k→1m 省宽）', () => {
+    const f1 = render(React.createElement(StatusBar, { model: 'M', tokens: 1_000_000 })).lastFrame() ?? ''
+    expect(f1).toContain('1m tok')
+    const f2 = render(React.createElement(StatusBar, { model: 'M', tokens: 1_230_000 })).lastFrame() ?? ''
+    expect(f2).toContain('1.2m tok')
+    const f3 = render(React.createElement(StatusBar, { model: 'M', tokens: 999_500 })).lastFrame() ?? ''
+    expect(f3).toContain('999.5k tok')
+  })
+
   it('显示成本', () => {
     const { lastFrame } = render(React.createElement(StatusBar, { model: 'M', cost: '¥0.003' }))
     expect(lastFrame()).toContain('¥0.003')
@@ -58,7 +67,7 @@ describe('StatusBar', () => {
     it('显示 ctx 占用/窗口（k 格式）', () => {
       const { lastFrame } = render(React.createElement(StatusBar, { model: 'M', ctxUsed: 45_000, ctxWindow: 200_000 }))
       const f = lastFrame() ?? ''
-      expect(f).toContain('ctx 45.0k/200.0k')
+      expect(f).toContain('ctx 45k/200k')
     })
 
     it('占比 ≥90% 转 warn 色加粗（压缩阈值临近提示）', () => {
@@ -66,7 +75,7 @@ describe('StatusBar', () => {
       // ink-testing 剥 ANSI 后帧无色——用行为差异锁：结构存在即着色路径已走（同帧文本一致，
       // 着色断言经 snapshot 等价校验不值——此处锁格式与阈值不崩即可，色值逻辑在纯函数段）
       const f = lastFrame() ?? ''
-      expect(f).toContain('ctx 190.0k/200.0k')
+      expect(f).toContain('ctx 190k/200k')
       expect((f.split('\n')).length).toBe(1)
     })
 

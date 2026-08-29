@@ -19,10 +19,21 @@ interface StatusBarProps {
   sandboxDanger?: boolean
 }
 
-/** token 数人类可读：< 1000 显示原值，否则 k */
+/** token 数人类可读（智能进位省宽，2026-08-29 用户点名「1000.0k 该用 1m」）：
+ *  <1000 原值；k/m/g 逐级进位，一位小数、整值去 .0——45k / 999.5k / 1m / 1.2m */
+const TOKEN_SCALES: Array<[number, string]> = [
+  [1e9, 'g'],
+  [1e6, 'm'],
+  [1e3, 'k'],
+]
 function formatTokens(n: number): string {
-  if (n < 1000) return `${n} tok`
-  return `${(n / 1000).toFixed(1)}k tok`
+  for (const [scale, unit] of TOKEN_SCALES) {
+    if (n >= scale) {
+      const v = (n / scale).toFixed(1)
+      return `${v.endsWith('.0') ? v.slice(0, -2) : v}${unit} tok`
+    }
+  }
+  return `${n} tok`
 }
 
 /** C2 档位可视化（CC ⏵⏵ 式）：default 无标记、accept-edits ⏵⏵ edits、其余各档箭头数递进 */

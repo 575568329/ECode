@@ -60,6 +60,20 @@ export function isSensitivePath(abs: string): boolean {
   return isSensitiveLexical(abs) || isSensitiveLexical(withRealPath(abs))
 }
 
+/**
+ * 清账批 III P0-1：项目级 `.ecode/settings*`（含 settings.local.json）敏感判定。
+ * isSensitivePath 的 `.ecode` 围栏只挂 homedir 下——cwd 内的 `.ecode/settings.local.json`
+ * 是权限规则文件（accept-edits 档写它 = hook 自授权链），accept-edits 直放分支单独引用
+ * 本判定照卡（不全局改 isSensitivePath，避免误伤项目内普通 .ecode 文件的既有放行口径）。
+ * 判定：任一级段为 `.ecode` 且 basename 以 `settings` 开头。
+ */
+export function isProjectEcodeSettings(abs: string): boolean {
+  const parts = abs.split(/[\\/]+/).filter((p) => p !== '')
+  const hasEcodeDir = parts.slice(0, -1).some((p) => p.toLowerCase() === '.ecode')
+  const base = parts[parts.length - 1] ?? ''
+  return hasEcodeDir && base.toLowerCase().startsWith('settings')
+}
+
 /** 统一敏感门：不敏感或用户已确认 → undefined（放行）；拒绝 → is_error 文案。 */
 export async function sensitiveGate(
   abs: string,

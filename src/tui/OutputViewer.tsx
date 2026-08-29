@@ -140,14 +140,17 @@ export function subagentSource(agentId: string, width: number): LineSource {
  *  （调用方截断）——避免跨项目历史条目刷屏。 */
 export function listSubagentTranscripts(maxShow = 30): Array<{ id: string; mtimeMs: number; summary: string }> {
   try {
+    // 清账 III P2-3（F-26 热路径 IO）：先 stat 排序截断，再对入选的 maxShow 条读首 2KB 摘要
+    // ——原实现对全部文件先读 2KB 再截断（百级历史文件 = 每次开面板全量读盘）
     return readdirSync(join(homedir(), '.ecode', 'agents'))
       .filter((f) => f.endsWith('.jsonl'))
       .map((f) => {
         const full = join(homedir(), '.ecode', 'agents', f)
-        return { id: f.slice(0, -'.jsonl'.length), mtimeMs: statSync(full).mtimeMs, summary: readFirstUserText(full) }
+        return { id: f.slice(0, -'.jsonl'.length), mtimeMs: statSync(full).mtimeMs, full }
       })
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
       .slice(0, maxShow)
+      .map(({ id, mtimeMs, full }) => ({ id, mtimeMs, summary: readFirstUserText(full) }))
   } catch {
     return []
   }

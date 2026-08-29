@@ -355,10 +355,16 @@ export function serveMulti(
             // 落到会话 dispatch 的 NOT_IMPLEMENTED 兜底）。auth 已过（primary/lan-password 一等凭据）。
             const stopPeek = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : {}) as { op?: string }
             if (stopPeek.op === 'stop') {
+              // F-27 清账 III P1-4：stop 是进程级停机（影响全部项目）——与 projects/stats 同口径，
+              // device 档凭据越权拒收
+              if (credClass === 'device') return json(403, { ok: false, error: '设备凭据不可停止服务（需用户级凭据）' })
               if (opts.onStop === undefined) return json(501, { ok: false, error: 'stop 未接线（无 onStop 回调）', code: 'NOT_IMPLEMENTED' })
               // 先回执再停（响应写出后再拉连接——客户端能收到 ok）
               json(200, { ok: true, stopping: true })
-              void Promise.resolve(opts.onStop()).catch(() => {})
+              // 清账 III P2-8：静默失败至少留痕（原 catch(()=>{}) 吞异常——停不掉无任何观测面）
+              void Promise.resolve(opts.onStop()).catch((e: unknown) => {
+                console.warn('[serve] onStop 回调失败：', e instanceof Error ? e.message : String(e))
+              })
               return
             }
             // M14-C1③ 浏览即装配收敛：session/list 是纯读浏览——冷项目走 history 静态读路径

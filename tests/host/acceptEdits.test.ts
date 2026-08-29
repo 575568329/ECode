@@ -155,4 +155,51 @@ describe('C1 accept-edits：hostConfirm 放行语义', () => {
     expect(evs.some((e) => e.type === 'approval/requested' && e.tool === 'write_file')).toBe(true)
     host.dispose()
   })
+
+  // —— 清账批 III P0-1：项目级 .ecode/settings*.json（权限自授权链）照卡 ——
+  const mkWriteTool = (): Tool => mkWriteEnvTool() // 同 schema（path+content）
+
+  const runAndWaitApproval = async (pathJson: string): Promise<{ evs: ProtocolEvent[]; host: HostSession }> => {
+    const script: Delta[][] = [
+      [
+        { type: 'tool_use_start', id: 'p1', name: 'write_file' },
+        { type: 'tool_use_delta', id: 'p1', partial_json: `{"path":${JSON.stringify(pathJson)},"content":"x"}` },
+        { type: 'tool_use_end', id: 'p1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+    ]
+    const host = makeHost(script, [mkWriteTool()], 'accept-edits')
+    const evs = collect(host)
+    await host.send({ op: 'prompt', text: 'go', mode: 'StartOrSteer' })
+    for (let i = 0; i < 40 && !evs.some((e) => e.type === 'approval/requested') && !evs.some((e) => e.type === 'turn/completed'); i++) {
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    return { evs, host }
+  }
+
+  it('P0-1：cwd 内 .ecode/settings.local.json 仍弹审批（hook 自授权链堵漏）', async () => {
+    const { evs, host } = await runAndWaitApproval('.ecode/settings.local.json')
+    expect(evs.some((e) => e.type === 'approval/requested' && e.tool === 'write_file')).toBe(true)
+    host.dispose()
+  })
+
+  it('P0-1：cwd 内 .ecode/settings.json 同样照卡', async () => {
+    const { evs, host } = await runAndWaitApproval('.ecode/settings.json')
+    expect(evs.some((e) => e.type === 'approval/requested' && e.tool === 'write_file')).toBe(true)
+    host.dispose()
+  })
+
+  it('P0-1 对照：myapp/settings.json（非 .ecode 目录）直放不弹审批', async () => {
+    const { evs, host } = await runAndWaitApproval('myapp/settings.json')
+    expect(evs.some((e) => e.type === 'approval/requested')).toBe(false)
+    expect(evs.some((e) => e.type === 'turn/completed')).toBe(true)
+    host.dispose()
+  })
+
+  it('P0-1 对照：src/x.ts 普通文件直放不弹审批', async () => {
+    const { evs, host } = await runAndWaitApproval('src/x.ts')
+    expect(evs.some((e) => e.type === 'approval/requested')).toBe(false)
+    expect(evs.some((e) => e.type === 'turn/completed')).toBe(true)
+    host.dispose()
+  })
 })

@@ -65,6 +65,7 @@ export type ProtocolEvent =
   | { type: 'interjection/enqueued'; seq: number; text: string }
   | { type: 'interjection/injected'; seq: number; text: string }
   | { type: 'queue/snapshot'; seq: number; items: string[] }
+  | { type: 'session/clear'; seq: number } // 清账 III P1-3：宿主权威清空广播（serve 端 /clear 分流时发——web 视图与 TUI 对齐）
   | { type: 'notice'; seq: number; level: 'info' | 'warn' | 'error'; text: string }
   | { type: 'systemMsg'; seq: number; text: string } // 输入框上方反馈（read-only 拒绝提示等），与 notice（告警中心）双通道
   | { type: 'subagent/progress'; seq: number; agents: SubagentStatusView[] }

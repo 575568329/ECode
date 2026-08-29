@@ -150,3 +150,42 @@ describe('InputStream 图片标签内嵌（M10 真机修复批 v2：标签即输
     expect(calls).toEqual(['hi'])
   })
 })
+
+// —— 清账批 III P1-1：Ctrl+R 搜索态按键不双写主输入框 ——
+describe('P1-1：搜索态按键屏蔽 TextInput（Ink useInput 事件广播）', () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
+
+  it('搜索态输入 vit 后 Esc：搜索词不残留主输入框', async () => {
+    const { stdin, lastFrame } = render(
+      React.createElement(InputStream, { onSubmit: () => {} }),
+    )
+    await flush()
+    stdin.write('\x12') // Ctrl+R 进入搜索态
+    await flush()
+    stdin.write('vit')
+    await flush()
+    expect(lastFrame() ?? '').toContain('vit')
+    stdin.write('\x1b') // Esc 退出
+    await flush()
+    const frame = lastFrame() ?? ''
+    expect(frame).not.toContain('搜索:')
+    expect(frame).not.toContain('vit')
+  })
+
+  it('搜索态退格进 query 而非主输入框', async () => {
+    const { stdin, lastFrame } = render(
+      React.createElement(InputStream, { onSubmit: () => {} }),
+    )
+    await flush()
+    stdin.write('\x12')
+    await flush()
+    stdin.write('ab')
+    await flush()
+    stdin.write('\x7f') // backspace → query 'a'
+    await flush()
+    expect(lastFrame() ?? '').toContain('搜索: a')
+    stdin.write('\x1b')
+    await flush()
+    expect(lastFrame() ?? '').not.toContain('搜索:')
+  })
+})

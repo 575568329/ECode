@@ -352,4 +352,16 @@ describe('F-27：POST /api/cmd {op:"stop"}', () => {
     const r = await fetch(`${base}/api/cmd`, { method: 'POST', body: JSON.stringify({ op: { op: 'stop' } }) })
     expect(r.status).toBe(401)
   })
+
+  it('清账 III P1-4：device 档凭据 stop 403（进程级停机与 projects/stats 同口径）', async () => {
+    const r = await fetch(`${base2}/api/cmd`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${deviceToken}` },
+      body: JSON.stringify({ op: { op: 'stop' } }),
+    })
+    expect(r.status).toBe(403)
+    const body = (await r.json()) as { ok: boolean; error: string }
+    expect(body.ok).toBe(false)
+    expect(body.error).toContain('设备凭据')
+  })
 })

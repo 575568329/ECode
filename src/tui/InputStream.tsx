@@ -123,6 +123,8 @@ interface InputStreamProps {
   onRegisterDraft?: (port: { read(): string } | null) => void
   /** 与 onRegisterDraft 配套：cur.text 变化通知（缺省忽略） */
   onDraftChange?: (text: string) => void
+  /** 清账 III P2-1：@ 下拉开着与否的同步读挂口（TuiApp 双击 Esc 守卫用；null=不支持） */
+  onRegisterAtOpen?: (port: { read(): boolean } | null) => void
   /** M9-P4/D13：Tab 专职沙箱模式循环（主输入空闲态；slash/@ 补全态不拦截） */
   onTabSandbox?: () => void
   /** M10-P2b：Alt+V 粘贴剪贴板图片（图片数据不走 stdin，须专用键位主动读系统剪贴板）。
@@ -156,6 +158,7 @@ export function InputStream({
   insert,
   onRegisterDraft,
   onDraftChange,
+  onRegisterAtOpen,
   onTabSandbox,
   onInterjectClear,
   onPasteImage,
@@ -193,6 +196,15 @@ export function InputStream({
     onDraftChange?.(cur.text)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- cur.text 变化即通知（onDraftChange 父侧稳定）
   }, [cur.text])
+
+  // 清账 III P2-1：@ 下拉开着端口（atEntries 非空即开——挂载注册/卸载注销，与 draft 端口同族）
+  const atOpenRef = useRef(false)
+  atOpenRef.current = atEntries.length > 0
+  useEffect(() => {
+    onRegisterAtOpen?.({ read: () => atOpenRef.current })
+    return () => onRegisterAtOpen?.(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（onRegisterAtOpen 由父保证稳定）
+  }, [])
 
   // cur.text 变化时重置 slashIdx：有匹配默认选中第一个（UI 高亮 + 回车执行第一个），
   // 无匹配 -1（不显示建议列表）
@@ -433,7 +445,7 @@ export function InputStream({
         placeholder={placeholder}
         onInput={setCur}
         onSubmit={handleTextSubmit}
-        inactive={inactive}
+        inactive={inactive || search !== null}
       />
       {search !== null ? (
         // A2：搜索提示行（1 行，替换补全下拉位——同预算族）

@@ -576,14 +576,15 @@ describe('M14-C3③（P1-12）：带图 prompt 并发双发不开双轮', () => 
 })
 
 // —— F-23：serve/web 端斜杠命令分流（绝不落入 LLM）——
-describe('F-23：斜杠命令分流（prompt 前置命令拦截）', () => {
-  const makeCmdDeps = (provider: LLMProvider): HostDeps => {
-    const deps = makeDeps(provider)
-    const reg = new CommandRegistry()
-    registerBuiltinCommands(reg)
-    return { ...deps, commands: reg }
-  }
+// 清账批 III：提到模块级（清账 III 新增 describe 也复用）
+const makeCmdDeps = (provider: LLMProvider): HostDeps => {
+  const deps = makeDeps(provider)
+  const reg = new CommandRegistry()
+  registerBuiltinCommands(reg)
+  return { ...deps, commands: reg }
+}
 
+describe('F-23：斜杠命令分流（prompt 前置命令拦截）', () => {
   it('host 命令（/help）：直接执行返回输出，不起 LLM 轮', async () => {
     const host = new HostSession(makeCmdDeps(new MockProvider([])))
     const events = collect(host)
@@ -634,6 +635,100 @@ describe('F-23：斜杠命令分流（prompt 前置命令拦截）', () => {
     const r = await host.send({ op: 'prompt', text: '/help', mode: 'StartOrSteer' })
     expect(r).toMatchObject({ ok: true, routed: 'Started' }) // 不分流=原行为（当作 prompt）
     await host.whenIdle()
+    host.dispose()
+  })
+})
+
+// —— 清账批 III ——
+describe('清账 III P1-2：sandbox/set 忙碌守卫', () => {
+  it('运行中 sandbox/set 被拒（BUSY）——防轮中切档的 per-turn 快照时滞', async () => {
+    // 轮挂起在审批上（bash 工具无订阅者可答 → fail-closed 等待）= running=true 的稳定窗口
+    const reg = new ToolRegistryImpl()
+    reg.register({
+      name: 'bash',
+      description: 'bash',
+      input_schema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+      readonly: false,
+      async execute() {
+        return { content: 'ok' }
+      },
+    })
+    const host = new HostSession({
+      ...makeCmdDeps(new MockProvider([
+        [
+          { type: 'tool_use_start', id: 'b1', name: 'bash' },
+          { type: 'tool_use_delta', id: 'b1', partial_json: '{"command":"ls"}' },
+          { type: 'tool_use_end', id: 'b1' },
+          { type: 'done', stop_reason: 'tool_use' },
+        ],
+      ])),
+      tools: reg,
+    } as HostDeps)
+    const events = collect(host)
+    await host.send({ op: 'prompt', text: 'go', mode: 'StartOrSteer' })
+    for (let i = 0; i < 40 && !events.some((e) => e.type === 'approval/requested'); i++) {
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    // 审批挂起中 = 轮运行中：切档必须被拒
+    const r = await host.send({ op: 'sandbox/set', mode: 'accept-edits' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.code).toBe('BUSY')
+    host.dispose()
+  })
+
+  it('空闲时 sandbox/set 照常生效（守卫不误伤）', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([])))
+    const r = await host.send({ op: 'sandbox/set', mode: 'read-only' })
+    expect(r.ok).toBe(true)
+    host.dispose()
+  })
+})
+
+describe('清账 III P1-3：/clear 分流发布 session/clear 事件', () => {
+  it('serve 端 /clear 除 notice 外还发 session/clear（web 视图同步）', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([])))
+    const events = collect(host)
+    const r = await host.send({ op: 'prompt', text: '/clear', mode: 'StartOrSteer' })
+    expect(r.ok).toBe(true)
+    await new Promise((res) => setTimeout(res, 20))
+    expect(events.some((e) => e.type === 'session/clear')).toBe(true)
+    host.dispose()
+  })
+})
+
+describe('清账 III P2-6/P2-7：裸 / 口径与 serve 端 /help 过滤', () => {
+  it('裸 "/"（整条输入）被拦为未知命令，不落 LLM', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([])))
+    const events = collect(host)
+    const r = await host.send({ op: 'prompt', text: '/', mode: 'StartOrSteer' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.code).toBe('SLASH_COMMAND_TUI_ONLY')
+    await new Promise((res) => setTimeout(res, 20))
+    expect(events.some((e) => e.type === 'turn/started')).toBe(false)
+    host.dispose()
+  })
+
+  it('普通文本含 /（如 "a/b 或 /path"）不受影响——仍走 prompt 路径', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([[{ type: 'text', text: 'ok' }, { type: 'done', stop_reason: 'end' }]])))
+    const r = await host.send({ op: 'prompt', text: '帮我看看 /api/cmd 路由', mode: 'StartOrSteer' })
+    expect(r).toMatchObject({ ok: true, routed: 'Started' })
+    await host.whenIdle()
+    host.dispose()
+  })
+
+  it('P2-7：serve 端 /help 只列 host 可执行五命令 + 客户端提示', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([])))
+    const r = await host.send({ op: 'prompt', text: '/help', mode: 'StartOrSteer' })
+    expect(r.ok).toBe(true)
+    const out = (r as { output?: string }).output ?? ''
+    expect(out).toContain('/stats')
+    expect(out).toContain('/cost')
+    expect(out).toContain('/clear')
+    expect(out).toContain('/compact')
+    expect(out).toContain('客户端')
+    // TUI 面板命令不列（serve 履约不了）
+    expect(out).not.toContain('/model')
+    expect(out).not.toContain('/skill')
     host.dispose()
   })
 })

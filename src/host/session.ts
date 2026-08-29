@@ -30,7 +30,7 @@ import type { HistoryStore } from '../services/history.js'
 import { isMessageLine } from '../core/types.js'
 import { ecodeCommit } from '../services/git.js'
 import { makeSandbox, type SandboxMode } from '../services/sandbox.js'
-import { isSensitivePath } from '../tools/sensitive.js'
+import { isSensitivePath, isProjectEcodeSettings } from '../tools/sensitive.js'
 import { buildMediaBlock } from '../services/media.js'
 import { tokensToCost } from '../services/pricing.js'
 import { TaskRegistry } from '../services/tasks.js'
@@ -393,6 +393,16 @@ export class HostSession {
     this.channel.publish({ type, ...data } as Parameters<InMemoryChannel['publish']>[0])
   }
 
+  /** 清账 III P2-7：serve 端 /help 输出——只列 host 可执行五命令，面板类命令不列（web 履约不了） */
+  private helpForServe(reg: import('../commands/registry.js').CommandRegistry): { output: string } {
+    const hostable = new Set(['help', 'stats', 'cost', 'clear', 'compact'])
+    const lines = reg
+      .list()
+      .filter((c) => hostable.has(c.name))
+      .map((c) => `  /${c.name}  ${c.description}`)
+    return { output: `${lines.join('\n')}\n（其余命令为 TUI 面板/本地命令，请在客户端使用）` }
+  }
+
   /** F-23：斜杠命令分流。返回 undefined=非命令（正常 prompt 路径）；
    *  {ok:true,output}=host 已执行；{ok:false,error}=TUI 专属面板或未知名（明确拒绝，不进 LLM）。
    *  host 可执行白名单：/help /stats /cost /clear /compact——其余命令名的 action 均为
@@ -401,7 +411,12 @@ export class HostSession {
     const reg = this.deps.commands
     if (reg === undefined || !text.startsWith('/')) return undefined
     const name = text.slice(1).split(/\s+/)[0] ?? ''
-    if (name === '') return undefined // 裸 "/" 交给 LLM（与 TUI 输入框行为一致）
+    // 清账 III P2-6：整条输入恰好是裸 "/"（无名字）也拦——对齐 TUI「未知命令」语义而非落 LLM
+    // （普通文本含 / 不受影响：只匹配整条 === '/'）
+    if (name === '' && text.trim() === '/') {
+      return { ok: false, error: '未知命令 /（输入 /help 查看可用命令）' }
+    }
+    if (name === '') return undefined // "/ 参数"形态：非命令文本，交 prompt 路径
     const cmd = reg.get(name)
     if (cmd === undefined) {
       return { ok: false, error: `未知命令 /${name}（输入 /help 查看可用命令）` }
@@ -409,7 +424,7 @@ export class HostSession {
     // host 可执行命令：纯输出或宿主已有权威操作
     if (name === 'help' || name === 'stats') {
       const args = text.slice(1 + name.length).trim()
-      const r = cmd.run(args === '' ? undefined : args)
+      const r = name === 'help' ? this.helpForServe(reg) : cmd.run(args === '' ? undefined : args)
       return { ok: true, output: r.output ?? '' }
     }
     if (name === 'cost') {
@@ -429,6 +444,7 @@ export class HostSession {
       this.editedFiles.clear()
       this.readMtime.clear()
       this.mcpCallCount = 0
+      this.publish('session/clear', {}) // 清账 III P1-3：web 端视图同步（store 原是死分支——无发布者）
       this.publish('notice', { level: 'info', text: '会话已清空' })
       return { ok: true, output: '会话已清空' }
     }
@@ -636,6 +652,11 @@ export class HostSession {
         // 脱敏视图（web 顶栏读 current/models；apiKey 永不出 serve 通道——5.2 铁律）
         return { ok: true, value: redact(this.cfg()) }
       case 'sandbox/set':
+        // 清账 III P1-2：忙碌守卫——运行中切档会造成 per-turn 沙箱快照时滞（hostConfirm 读
+        // 实时新档直放，而 checkWrite 仍持轮初旧档的围栏口径）→ 绝对路径任意写免确认窗口
+        if (this.running || this.starting) {
+          return { ok: false, error: '运行中不能切换沙箱档位（防轮中提/降档绕过审批口径）——空闲后再试', code: 'BUSY' }
+        }
         // 提权门槛（v1.2 P1-4）：提档 full-access 需经审批（有订阅者）；降档直接生效
         if (cmd.mode === 'full-access' && cmd.mode !== this.sandboxMode) {
           if (this.channel.subscriberCount === 0) {
@@ -865,8 +886,13 @@ export class HostSession {
     if (this.sandboxMode === 'full-access') return true
     if (this.sandboxMode === 'accept-edits' && (use.name === 'edit_file' || use.name === 'write_file')) {
       const target = typeof (use.input as { path?: unknown }).path === 'string' ? (use.input as { path: string }).path : ''
-      const abs = target === '' ? '' : resolve(this.deps.cwd ?? process.cwd(), target)
-      if (abs === '' || !isSensitivePath(abs)) return true
+      // 清账 III P2-2：非法输入不属可放行类——path 非法（缺/非字符串）照卡（fail-closed 反转）
+      const abs = target === '' ? null : resolve(this.deps.cwd ?? process.cwd(), target)
+      // 清账 III P0-1：项目级 .ecode/settings*（权限规则文件——hook 自授权链）照卡，
+      // isSensitivePath 的 .ecode 围栏只挂 homedir 下（session.ts 不全局改，避免误伤）
+      if (abs === null || (!isSensitivePath(abs) && !isProjectEcodeSettings(abs))) {
+        return abs !== null // 正常路径直放；path 非法 fallthrough 走 Broker 照卡
+      }
       // 敏感路径编辑照卡（走 Broker 弹窗——文案由 buildPreview 生成）
     }
     if (this.sandboxMode === 'read-only' && use.name.startsWith('mcp__')) {

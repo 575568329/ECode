@@ -1008,18 +1008,24 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // Esc 三态语义不破坏：面板开=关面板（overlay!==null 时不激活本 handler）、回填态=清空
   // （InputStream slash 回填 Esc 自处理——本 handler 只在空闲态激活）、审批卡=拒绝（confirm
   // 非 null 时不激活）。守卫：busy 不接管（运行中 rewind 有竞态）、checkpoint 未启用不响应
+  // 清账 III P2-1：@ 下拉开着与否的同步读（主输入框 atEntries 状态在 InputStream 内——
+  // 经 draft 端口同族的轻量探测：无端口代理时退化为 false）
+  const atEntriesOpenRef = useRef(false)
   const lastEscRef = useRef(0)
+  // 清账 III P2-1：双击计时排除「输入框非空或 @ 下拉开着」态——用户关下拉/清回填的连击
+  // 不应误开 rewind（第一次 Esc 已被消费，第二次是另一意图）
+  const escGuarded = readMainDraft() !== '' || atEntriesOpenRef.current
   useInput(
     (_input, key) => {
       if (!key.escape) return
       const now = Date.now()
-      if (now - lastEscRef.current < 500 && deps.checkpoint != null) {
+      if (!escGuarded && now - lastEscRef.current < 500 && deps.checkpoint != null) {
         lastEscRef.current = 0
         pickerRef.current = true
         setOverlay({ kind: 'rewind-panel' })
         return
       }
-      lastEscRef.current = now
+      lastEscRef.current = escGuarded ? 0 : now
     },
     { isActive: overlay === null && active.confirm === null && !running },
   )
@@ -1331,6 +1337,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         busy={runningRef.current}
         onSlashBusy={() => setSystemMsgs(['运行中暂不能执行命令（空闲后再发；插话请直接输入文字）'])}
         onTabSandbox={() => {
+          // 清账 III P1-2 配套：忙碌守卫在宿主（sandbox/set BUSY 拒）——TUI 侧同样拦下并提示，
+          // 避免 full-access 提档弹审批帧后又被宿主拒绝的双跳
+          if (runningRef.current) {
+            setSystemMsgs(['运行中不能切换沙箱档位——空闲后再按 Tab'])
+            return
+          }
           // M12-B3（审阅 P0-2 修复）：档位权威在宿主（sandbox/set）；full-access 提档经宿主 Broker 审批帧确认
           const next = nextSandboxMode(sandboxModeRef.current)
           if (next === 'full-access') {
@@ -1502,6 +1514,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         insert={insert}
         onRegisterDraft={registerPort}
         onDraftChange={setMainDraft}
+        onRegisterAtOpen={(port) => {
+          atEntriesOpenRef.current = port !== null
+        }}
         placeholder={
           active.confirm !== null
             ? '（审批中…打字进草稿，y/n/Esc 应答）'

@@ -9,6 +9,7 @@ import { parseAnsi, type Span } from './ansi.js'
 import { smartWrapAnsi } from './wrap.js'
 import { hasMarkdownSyntax, inlineToAnsi, type InlineTok } from './mdparse.js'
 import { GAP, WIDTH } from './layout.js'
+import { theme } from './theme.js'
 
 /**
  * Markdown 渲染组件（M2 阶段一：静态 markdown，给已 commit 的助手消息用）。
@@ -102,8 +103,11 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }): ReactElemen
   }, [code, lang])
 
   const spans = ansi !== null ? parseAnsi(ansi) : [{ text: code }]
+  // F-42：代码块去边框——用户从终端复制代码时 ╭─│╰ 边框字符会混进剪贴板无法直接使用
+  // （dogfood 2026-08-29 用户点名）。区分靠背景色（剪贴板只带走文本）+ 缩进（合法空格）；
+  // 顺带每块省 2 行边框行（V 线预算减压）。CC 代码块同为无装饰字符形态。
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingLeft={1} paddingRight={1}>
+    <Box flexDirection="column" backgroundColor={theme.codeBg} paddingLeft={2} paddingRight={1}>
       <Text>
         {spans.map((s, i) => (
           <Text key={i} {...spanProps(s)}>

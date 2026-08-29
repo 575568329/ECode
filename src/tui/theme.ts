@@ -18,6 +18,7 @@ export const theme = {
   status: '#5C9CF5', // StatusBar（蓝）
   activity: '#F5A742', // ActivityBar spinner（accent）
   userBg: '#282828', // 用户消息背景块
+  codeBg: '#1E2126', // 代码块背景（F-42：无边框化后与正文的区分靠背景色——背景不进剪贴板）
   border: '#3C3C3C', // 分隔线/边框
   info: '#5C9CF5', // 链接/提示符
   errorBg: '#3a2020', // diff 删除行背景（暗红）

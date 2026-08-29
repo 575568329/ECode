@@ -58,6 +58,13 @@ type SkillPromptSource = Parameters<typeof buildSystemPrompt>[0]
 const ITEM_FRAME_CAP = 4096
 /** M14-C1⑤：item/read 单响应上限（read_file 等可产出大内容——上限内才允许出宿主） */
 const ITEM_READ_CAP = 1024 * 1024
+/** 2026-08-29：截断全文暂存环形缓冲。TUI 收到截断帧即回发 item/read 补全，而 tool_result 要等
+ *  同轮全部工具结束才追加进 messages（并行池被慢兄弟拖住即踩空——dogfood 实测 MCP 网页工具几乎
+ *  必中：输出恒超 4KB 帧）。宿主在 onToolResult 手里就有全文，暂存一份供 item/read 三源查询
+ *  （暂存 → messages → 盘），把补全通道从「赌落盘赢过回程」变成确定性命中。 */
+const RECENT_FULL_RING = 32
+/** 单条暂存上限（超大结果不进环形缓冲防吃内存；此类走盘上 restoreFull 源） */
+const RECENT_FULL_CAP = 512 * 1024
 
 /** 会话 id 合法形态（审阅 P0-1）：本项目 id 恒为 ISO 时间戳形态（`2026-08-27T22-31-05-123Z`，
  *  飞书 session/new 带 8 位随机后缀）。白名单而非黑名单——sessionId 会一路拼进文件路径
@@ -138,6 +145,8 @@ export class HostSession {
   private abort = new AbortController()
   private ctxWindowCache: number | null = null
   private itemSeq = 0
+  /** 截断全文暂存（tool_use_id → 全文，插入序淘汰；item/read 第二源，见 RECENT_FULL_RING 注） */
+  private recentFullResults = new Map<string, string>()
   private idleResolvers: Array<() => void> = []
   /** F-23：会话累计成本（/cost 宿主命令分流用；recordUsage 顺带累计） */
   private sessionCost = 0
@@ -638,11 +647,16 @@ export class HostSession {
           return { ok: true, value: { lines: all.slice(from, from + limit), total: all.length, fromLine: from } }
         }
       case 'item/read': {
-        // M14-C1⑤：工具全文按需读取（帧内 4KB 截断的补全通道）。F-34：内存 mirror miss 时
-        // fallback 到 HistoryStore 落盘原文——投影派压缩不删消息（boundary 只影响投影，
-        // restoreFull 保留 tool_result 全量原文），内存丢原文的场景盘上仍可得（含冷会话）。
-        const target = this.findToolResult(this.messages, cmd.itemId)
-          ?? this.findToolResult(this.deps.history.restoreFull(this.deps.history.currentSessionId()), cmd.itemId)
+        // M14-C1⑤：工具全文按需读取（帧内 4KB 截断的补全通道）。三源查询：
+        // ①截断全文暂存（确定性命中刚完成的截断工具——messages 追加前 TUI 的补全请求就到，
+        // 并行轮慢兄弟拖落盘的窗口 2026-08-29 dogfood 实测踩空）；②内存 mirror；③盘上原文
+        // （投影派压缩不删消息，restoreFull 保留 tool_result 全量——内存丢原文的场景盘上仍可得）
+        const ringHit = this.recentFullResults.get(cmd.itemId)
+        const target: { content: unknown } | null =
+          ringHit !== undefined
+            ? { content: ringHit }
+            : (this.findToolResult(this.messages, cmd.itemId)
+              ?? this.findToolResult(this.deps.history.restoreFull(this.deps.history.currentSessionId()), cmd.itemId))
         if (target === null) {
           return { ok: false, error: `工具结果 ${cmd.itemId} 不存在或未落盘`, code: 'ITEM_NOT_FOUND' }
         }
@@ -803,6 +817,15 @@ export class HostSession {
             // MB 级输出也拖累每连接带宽）；全文走 item/read 按需（transcript 权威源）
             const full = r.content as string
             const truncated = full.length > ITEM_FRAME_CAP
+            // 截断全文进暂存环形缓冲（插入序淘汰）——item/read 的确定性第二源，见 RECENT_FULL_RING 注
+            if (truncated && full.length <= RECENT_FULL_CAP) {
+              this.recentFullResults.set(id, full)
+              while (this.recentFullResults.size > RECENT_FULL_RING) {
+                const oldest = this.recentFullResults.keys().next().value
+                if (oldest === undefined) break
+                this.recentFullResults.delete(oldest)
+              }
+            }
             this.publish('item/completed', {
               itemId: id,
               name,

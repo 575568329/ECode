@@ -517,6 +517,29 @@ describe('M14-C1b 工具全文 summary+read 与 transcript 分页', () => {
     host.dispose()
   })
 
+  it('截断全文暂存环形缓冲：messages 与盘上都还没有时 item/read 仍命中（并行轮落盘竞态根治）', async () => {
+    // 2026-08-29 dogfood 实测竞态：TUI 收到截断帧即回发 item/read，而 tool_result 要等同轮全部
+    // 工具结束才追加进 messages——窗口内内存 mirror 与盘上 backup 双双踩空 → 「全文拉取失败」。
+    // 宿主 onToolResult 时已把全文存入暂存环形缓冲；此处用 restoreFrom([]) 清内存 + 默认 Noop
+    // 盘源（restoreFull 恒空），item/read 只能靠暂存命中——确定性验证第二源。
+    const p = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 'tRing', name: 'bigout' },
+        { type: 'tool_use_end', id: 'tRing' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: '完成' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const host = new HostSession(makeBigDeps(p)) // 默认 Noop store——盘源恒空
+    await host.send({ op: 'prompt', text: '跑', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    host.restoreFrom([]) // 内存 mirror 清空 = 模拟「结果尚未追加进会话记录」的窗口形态
+    const r = await host.send({ op: 'item/read', itemId: 'tRing' })
+    expect(r.ok).toBe(true)
+    expect((r.value as { content: string }).content.length).toBe(10_001)
+    host.dispose()
+  })
+
   it('①a session/read 分页：缺省全量数组；fromLine/limit 返回 { lines, total, fromLine }', async () => {
     // NoopHistoryStore.restoreFull 恒空——换真 FileHistoryStore（tmpdir）让 transcript 有行
     const deps = makeDeps(new MockProvider([[{ type: 'text', text: 'ok' }, { type: 'done', stop_reason: 'end' }]]))

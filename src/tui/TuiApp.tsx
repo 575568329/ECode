@@ -63,6 +63,8 @@ import { undoEcodeCommit } from '../services/git.js'
 import { readClipboardImage } from '../services/clipboard.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, NOTICE_TTL_MS, type NoticeItem, type NoticeLevel } from './notices.js'
 import { theme } from './theme.js'
+import { enterAltScreen, exitAltScreen, AltScreen } from './AltScreen.js'
+import type { ReactNode } from 'react'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
 import { Select } from './Select.js'
 import type { McpManager, McpServerSnapshot } from '../services/mcp/manager.js'
@@ -258,7 +260,29 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     setSandboxMode(mode)
   }
 
-  const [committed, setCommitted] = useState<CommittedItem[]>([])
+  const [committed, setCommittedState] = useState<CommittedItem[]>([])
+  // F-48 批 1：alt 面板期间的 committed 冻结——Static 组件「已渲染游标」存组件 state，
+  // 面板打开期间新 commit 若直进 Static 会写进 alt buffer（退出后主 scrollback 缺行）；
+  // 冻结暂存到 pending，退出面板（closeOutputPanel）后一次性补齐。altActiveRef 与
+  // enterAltScreen/exitAltScreen 的序列标志分立：前者管数据冻结，后者管转义序列。
+  const altActiveRef = useRef(false)
+  const pendingCommittedRef = useRef<CommittedItem[] | null>(null)
+  const setCommitted = (items: CommittedItem[]): void => {
+    if (altActiveRef.current) {
+      pendingCommittedRef.current = items
+      return
+    }
+    setCommittedState(items)
+  }
+  const closeOutputPanel = (): void => {
+    exitAltScreen()
+    altActiveRef.current = false
+    if (pendingCommittedRef.current !== null) {
+      setCommittedState(pendingCommittedRef.current)
+      pendingCommittedRef.current = null
+    }
+    setOverlay(null)
+  }
   const [active, setActive] = useState<ActiveState>(() => createActive())
   const [activity, setActivity] = useState<{ state: ActivityState; text?: string }>({
     state: 'idle',
@@ -1049,14 +1073,22 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     (input, key) => {
       if (key.ctrl && input === 'o') toggleExpand()
       if (key.ctrl && input === 'e') expandNextTool()
-      // F-46：Ctrl+T 直达输出面板（子代理/后台任务/工具全文 transcript）——运行期看子代理
-      // 在干什么的快捷入口（busy 可用；此前唯一入口 /output 被 busy 斜杠拦截堵死）
+      // F-46/F-48：Ctrl+T 双向 toggle——output 系面板开着时再按=退出（CC「进来的键就是
+      // 出去的键」）；否则进入全屏面板（enterAltScreen 同步先于 setOverlay 的 React 提交，
+      // 架构审阅 P0-3 时序铁律）
       if (key.ctrl && input === 't') {
-        setOverlay({ kind: 'output-panel' })
+        if (overlay?.kind === 'output-panel' || overlay?.kind === 'output-view') {
+          closeOutputPanel()
+        } else {
+          enterAltScreen()
+          altActiveRef.current = true
+          setOverlay({ kind: 'output-panel' })
+        }
       }
     },
-    // P2-4：overlay/confirm 期间不抢 Ctrl+O/Ctrl+E/Ctrl+T（picker/confirm 独占输入）
-    { isActive: overlay === null && active.confirm === null },
+    // P2-4：confirm 期间不抢 Ctrl+O/Ctrl+E/Ctrl+T（审批卡独占输入）；output 系 overlay
+    // 打开时本 handler 保持活跃——Ctrl+T toggle 退出全屏面板靠它（F-48）
+    { isActive: active.confirm === null && (overlay === null || overlay.kind === 'output-panel' || overlay.kind === 'output-view') },
   )
 
   // 界面批 C3：空闲态双击 Esc（间隔 <500ms）直达 /rewind 面板（CC 双击 Esc 零成本入口对位）。
@@ -1099,6 +1131,46 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
 
   const fullCommitted: CommittedItem[] = committed
 
+  // F-48 批 1：alt-screen 全屏面板——output 系 overlay 时动态区整体替换为面板树
+  // （Static/InputStream 常驻不卸载，架构审阅 P0-2/P1-5）
+  const altActive = overlay?.kind === 'output-panel' || overlay?.kind === 'output-view'
+  const altContent: ReactNode = altActive ? (
+    <>
+      <AltScreen />
+      {overlay?.kind === 'output-panel' && (
+        <OutputListPage
+          recentTools={recentTools}
+          onOpen={(entry: OutputEntry) => {
+            const cols = process.stdout.columns ?? 80
+            const width = Math.max(10, cols - 4)
+            if (entry.kind === 'tool') {
+              setOverlay({
+                kind: 'output-view',
+                title: `${entry.tool.name}（${entry.tool.itemId}）${entry.tool.truncated === true ? ' 〔截断，补全中〕' : ''}`,
+                source: toolResultSource(() => recentToolsRef.current.find((t) => t.itemId === entry.tool.itemId), width),
+              })
+            } else if (entry.kind === 'task') {
+              const snap = taskRegistry.snapshot().find((t) => t.id === entry.id)
+              setOverlay({
+                kind: 'output-view',
+                title: `task ${entry.id}：${snap?.command.slice(0, 50) ?? ''}（${snap?.status ?? '?'}）`,
+                source: taskFileSource(entry.id, width),
+              })
+            } else {
+              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, width) })
+            }
+          }}
+          onExit={() => closeOutputPanel()}
+          onInterrupt={() => void host.send({ op: 'interrupt' })}
+          altMode
+        />
+      )}
+      {overlay?.kind === 'output-view' && (
+        <OutputViewer title={overlay.title} source={overlay.source} onBack={() => setOverlay({ kind: 'output-panel' })} altMode />
+      )}
+    </>
+  ) : undefined
+
   const hasDoneTool = active.tools.some((t) => t.use)
 
   // /model 可选项：providers 笛卡尔积（name × models），方案 §8.2
@@ -1117,6 +1189,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       banner={banner}
       committed={fullCommitted}
       active={active}
+      altMode={altActive}
+      altContent={altContent}
       onToggleTool={hasDoneTool ? toggleExpand : undefined}
       onConfirm={clearConfirm}
       onCancel={clearConfirm}
@@ -1266,7 +1340,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           }}
         />
       )}
-      {overlay?.kind === 'output-panel' && (
+      {overlay?.kind === 'output-panel' && altContent === undefined && (
         <OutputListPage
           recentTools={recentTools}
           onOpen={(entry: OutputEntry) => {
@@ -1292,7 +1366,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           onExit={() => setOverlay(null)}
         />
       )}
-      {overlay?.kind === 'output-view' && (
+      {overlay?.kind === 'output-view' && altContent === undefined && (
         <OutputViewer title={overlay.title} source={overlay.source} onBack={() => setOverlay({ kind: 'output-panel' })} />
       )}
       {overlay?.kind === 'config-panel' && (
@@ -1380,6 +1454,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           ))}
         </Box>
       )}
+      {/* F-48：alt 全屏面板期间 InputStream 保持挂载（草稿/历史位不丢）但 height 0 折叠
+          + inactive 让出按键——面板独占键盘（架构审阅 P1-5） */}
+      <Box height={altActive ? 0 : undefined}>
       <InputStream
         onSubmit={submit}
         onPasteImage={() => pasteImageFromClipboard()}
@@ -1546,7 +1623,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         // M11-P7：忙碌态保持激活（插话 Enter 入队；overlay/confirm 仍独占）
         // 批2b ①：confirm 期仍 inactive（字符由 ConfirmPrompt→onDraftKey 通道兑现——
         // 避免 TextInput 与审批卡双吃按键）；确认/取消语义在 ConfirmPrompt 内
-        inactive={overlay !== null || active.confirm !== null}
+        inactive={overlay !== null || active.confirm !== null || altActive}
         insert={insert}
         onRegisterDraft={registerPort}
         onDraftChange={setMainDraft}
@@ -1561,6 +1638,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
               : '输入消息，/help 查看命令...'
         }
       />
+      </Box>
     </App>
   )
 }

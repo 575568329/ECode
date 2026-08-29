@@ -25,6 +25,7 @@ import { HostSession } from '../host/session.js'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { stripUntrustedAnsi } from '../tui/sanitize.js'
+import { installAltScreenExitHook } from '../tui/AltScreen.js'
 import { render } from 'ink'
 import React from 'react'
 import { TuiApp } from '../tui/TuiApp.js'
@@ -283,6 +284,7 @@ async function main(): Promise<void> {
   // REPL 模式：Ink TUI（exitOnCtrlC:false，由 TuiApp 的 useInterrupt 自处理双击退出——
   // 双击走 gracefulShutdown：恢复终端 → SessionEnd hooks → MCP stop → exit）
   hideTerminalCursor()
+  installAltScreenExitHook() // F-48：alt buffer 进程退出兜底（writeSync 1049l 防黑屏假死）
   const instance = render(
     React.createElement(TuiApp, {
       deps,

@@ -112,6 +112,10 @@ interface ConversationProps {
   children?: ReactNode
   /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar 各 ≤3 行——allocateDynamic 显式扣减） */
   conditions?: { tasksBar?: boolean; subagentBar?: boolean }
+  /** F-48 批 1：alt-screen 全屏内容——非 null 时动态区/children 整体替换为它（Static
+   *  骨架保持挂载：游标不归零即不会历史重放；数据由调用方冻结/补齐）。children 含
+   *  ActivityBar/InputStream 骨架等，alt 下全部让位 */
+  altContent?: ReactNode
 }
 
 export function Conversation({
@@ -127,6 +131,7 @@ export function Conversation({
   queuedInterjects = [],
   children,
   conditions,
+  altContent,
 }: ConversationProps): ReactElement {
   const toolExpanded = active.tools.some(
     (t) => t.use && active.expandedTools.has(t.use.id),
@@ -146,6 +151,13 @@ export function Conversation({
           <Box key={item.id}>{renderCommitted(item)}</Box>
         )}
       </Static>
+      {/* F-48：alt-screen 模式——动态区整体替换为全屏面板（Static 骨架保持挂载：游标
+          不归零即不会历史重放；children/InputStream 亦常驻由调用方折叠——草稿不丢）。
+          普通模式动态区照旧：当前轮 ①②③ + confirm */}
+      {altContent !== undefined ? (
+        altContent
+      ) : (
+        <>
       {/* 动态区：当前轮 ①②③ + confirm */}
       {active.userInput !== '' && <FoldedUserInput text={active.userInput} />}
       {active.tools.length > 0 &&
@@ -201,6 +213,8 @@ export function Conversation({
           </Text>
         </MessageRow>
       ))}
+        </>
+      )}
       {children}
     </Box>
   )

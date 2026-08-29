@@ -276,16 +276,25 @@ interface OutputViewerProps {
   source: LineSource
   /** 返回列表页（Esc 逐级回退） */
   onBack: () => void
+  /** F-48：alt-screen 全屏模式——总帧高恒 rows−2（满屏分支/win32 每帧全清的规避，架构审阅 P0-1），chrome 收起 */
+  altMode?: boolean
+  /** F-48：面板内 Ctrl+C=中断轮次（TuiApp 接线 host interrupt） */
+  onInterrupt?: () => void
 }
 
 /** 搜索态：null=未搜索；string=已确认词（n/N 跳转） */
-export function OutputViewer({ title, source, onBack }: OutputViewerProps): ReactElement {
-  const { budget } = useViewport()
+export function OutputViewer({ title, source, onBack, altMode, onInterrupt }: OutputViewerProps): ReactElement {
+  const { budget, rows } = useViewport()
   // 内容窗高度（审阅 P0-2 修正）：帧高账目 = 面板（height + 骨架实占 5：marginTop1+边框2+
   // 标题1+状态1；搜索行出现时 +1）+ App 外部骨架 3（ActivityBar1+输入行1+StatusBar1）
   // ≤ budget（= rows−2，SAFETY_MARGIN 已在其中）。即 height ≤ budget−8；搜索行常驻留量
   // 取 reserve=10——原 6 漏算外部 3 行+吃掉安全余量，任何终端打开都恰满屏触发 3J
-  const height = Math.max(3, sectionBudget(budget, 10))
+  // F-48：alt 全屏帧高总账恒 rows−2（marginTop1+边框2+标题1+状态1 = 5 行 chrome；
+  // 搜索行出现时 6）——绝不允许 =rows（win32 每帧全清 + 退出 3J 清主 scrollback，
+  // 架构审阅 P0-1）；嵌入式模式维持原 reserve=10
+  const height = altMode === true
+    ? Math.max(3, rows - 6)
+    : Math.max(3, sectionBudget(budget, 10))
   const lines = source.lines()
   const total = lines.length
   const [offset, setOffset] = useState(() => Math.max(0, total - height))
@@ -344,9 +353,31 @@ export function OutputViewer({ title, source, onBack }: OutputViewerProps): Reac
         setFollowed(false)
       } else if (key.backspace || key.delete) {
         setSearchInput((s) => (s === null ? s : s.slice(0, -1)))
-      } else if (input !== '') {
+      } else if (input !== '' && !/\[<\d+;\d+;\d+[Mm]$/.test(input ?? '')) {
+        // F-48：SGR 鼠标序列（Ink 透传形态 '[<64;x;yM'）排除在搜索输入外
         setSearchInput((s) => (s ?? '') + input)
       }
+      return
+    }
+    // F-48：滚轮（SGR 64=上滚 65=下滚；只认 M 按下帧）→ 行级滚动
+    const wheel = /^\[<(\d+);\d+;\d+M$/.exec(input ?? '')
+    if (wheel !== null) {
+      const btn = Number(wheel[1])
+      if (btn === 64) {
+        setFollowed(false)
+        setOffset((o) => Math.max(0, o - 3))
+      } else if (btn === 65) {
+        setOffset((o) => Math.min(Math.max(0, total - height), o + 3))
+      }
+      return
+    }
+    // F-48：面板内 Ctrl+C=中断轮次（交互拍板：与 Esc/q 退出分离，状态行标注）
+    if (key.ctrl && input === 'c' && onInterrupt !== undefined) {
+      onInterrupt()
+      return
+    }
+    if (input === 'q') {
+      onBack()
       return
     }
     if (key.escape) {
@@ -433,9 +464,13 @@ export interface OutputListPageProps {
   recentTools: RecentTool[]
   onOpen: (entry: OutputEntry) => void
   onExit: () => void
+  /** F-48：面板内 Ctrl+C=中断轮次（alt 全屏时仍可打断） */
+  onInterrupt?: () => void
+  /** F-48：alt-screen 全屏模式 */
+  altMode?: boolean
 }
 
-export function OutputListPage({ recentTools, onOpen, onExit }: OutputListPageProps): ReactElement {
+export function OutputListPage({ recentTools, onOpen, onExit, onInterrupt, altMode }: OutputListPageProps): ReactElement {
   // 任务快照 + 轮询（运行中状态实时；F-46：子代理列表同样每次打开面板刷新——
   // 原实现 useState 快照=TuiApp 挂载时一次，本会话新起的子代理永不在列）
   const [tasks, setTasks] = useState(() => taskRegistry.snapshot())
@@ -449,6 +484,14 @@ export function OutputListPage({ recentTools, onOpen, onExit }: OutputListPagePr
     return () => clearInterval(timer)
   }, [])
   const { columns } = useViewport()
+  // F-48：q 退出（pager 惯例，alt 全屏语义）+ 面板内 Ctrl+C=中断轮次（中断与退出分离）
+  useInput((input, key) => {
+    if (key.ctrl && input === 'c' && onInterrupt !== undefined) {
+      onInterrupt()
+      return
+    }
+    if (altMode === true && input === 'q') onExit()
+  })
 
   const rows = useMemo<Array<PanelRow<OutputEntry>>>(() => {
     // 审阅 P1-7：label 一律按显示宽度截断（columns−4 留边框缩进）——slice 按字符且 80 列
@@ -502,7 +545,7 @@ export function OutputListPage({ recentTools, onOpen, onExit }: OutputListPagePr
       onPick={onOpen}
       onCancel={onExit}
       emptyHint="暂无可查看的输出（工具调用/后台任务/子代理）"
-      keyHints="↑↓ 选择 · 回车 查看 · Esc 返回"
+      keyHints={altMode === true ? '↑↓ 选择 · 回车 查看 · q/Esc 退出 · Ctrl+C 中断' : '↑↓ 选择 · 回车 查看 · Esc 返回'}
     />
   )
 }

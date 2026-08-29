@@ -53,7 +53,7 @@ server.listen(0, '127.0.0.1', async () => {
   proc.write('\x14') // Ctrl+T
   // 判定用 PanelShell 底部提示（面板专有文本）——「输出」会误命中状态栏 Ctrl+T 提示
   ok = false
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('回车 查看 · Esc 返回') }
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('Ctrl+C 中断') }
   console.log(ok ? 'OK   busy 中 Ctrl+T 打开输出面板' : 'FAIL Ctrl+T 未打开面板')
   console.log(strip(out.slice(pos)).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-12).join('\n'))
   proc.kill()

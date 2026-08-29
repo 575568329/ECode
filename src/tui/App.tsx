@@ -31,6 +31,10 @@ interface AppProps {
   /** F-44：上下文占用/模型窗口（usage 帧透出）——StatusBar ctx 段 */
   ctxUsed?: number
   ctxWindow?: number
+  /** F-48 批 1：alt-screen 全屏模式——chrome（StatusBar/提示/warning）不渲染（无状态损失） */
+  altMode?: boolean
+  /** F-48 批 1：alt 全屏内容（面板树）——Conversation 动态区整体替换，Static/InputStream 常驻 */
+  altContent?: ReactNode
   cost?: string
   /** MCP 段（StatusBar 透传，M6） */
   mcp?: string
@@ -79,6 +83,8 @@ export function App({
   tokens,
   ctxUsed,
   ctxWindow,
+  altMode,
+  altContent,
   cost,
   mcp,
   sandbox,
@@ -109,6 +115,7 @@ export function App({
         committed={committed}
         active={active}
         queuedInterjects={queuedInterjects}
+        altContent={altContent}
         onToggleTool={onToggleTool}
         onConfirm={onConfirm}
         onCancel={onCancel}
@@ -118,9 +125,10 @@ export function App({
         onInterruptTurn={onInterruptTurn}
         conditions={conditions}
       >
-        <ActivityBar state={activity} text={activityText} />
+        {!altMode && <ActivityBar state={activity} text={activityText} />}
         {children}
         <Box flexDirection="column">
+          {!altMode && (
           <Box>
             <StatusBar
               model={model}
@@ -143,6 +151,7 @@ export function App({
               </>
             )}
           </Box>
+          )}
           {warning !== undefined && (
             <Text color={warningLevel === 'error' ? theme.error : warningLevel === 'info' ? theme.info : theme.warn}>
               {warning}

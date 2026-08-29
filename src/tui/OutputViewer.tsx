@@ -224,7 +224,9 @@ function readFirstUserText(file: string): string {
     for (const line of head.split('\n')) {
       if (line.trim() === '') continue
       try {
-        const m = JSON.parse(line) as { role?: string; content?: unknown }
+        const m = JSON.parse(line) as { role?: string; content?: unknown; kind?: string; description?: string }
+        // F-46：meta 事件行（运行期落盘首行）——摘要取 description
+        if (m.kind === 'meta' && m.description !== undefined) return firstLine(String(m.description))
         if (m.role !== 'user') continue
         if (typeof m.content === 'string') return firstLine(m.content)
         if (Array.isArray(m.content)) {
@@ -413,11 +415,15 @@ export interface OutputListPageProps {
 }
 
 export function OutputListPage({ recentTools, onOpen, onExit }: OutputListPageProps): ReactElement {
-  // 任务快照 + 轮询（运行中状态实时；子代理文件打开时快照）
+  // 任务快照 + 轮询（运行中状态实时；F-46：子代理列表同样每次打开面板刷新——
+  // 原实现 useState 快照=TuiApp 挂载时一次，本会话新起的子代理永不在列）
   const [tasks, setTasks] = useState(() => taskRegistry.snapshot())
-  const [agents] = useState(() => listSubagentTranscripts())
+  const [agents, setAgents] = useState(() => listSubagentTranscripts())
   useEffect(() => {
-    const timer = setInterval(() => setTasks(taskRegistry.snapshot()), 1000)
+    const timer = setInterval(() => {
+      setTasks(taskRegistry.snapshot())
+      setAgents(listSubagentTranscripts())
+    }, 1000)
     timer.unref?.()
     return () => clearInterval(timer)
   }, [])

@@ -190,26 +190,11 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
           }}
           rows={Math.min(6, Math.max(1, text.split('\n').length))}
           placeholder={noProject ? '先选择左侧项目，或点侧栏「+」添加…' : sessionId === null ? '输入即开新对话…（Shift+Enter 换行）' : running ? '运行中——输入将作为插话注入（Enter 排队）' : '输入你的问题…（Shift+Enter 换行）'}
-          className="flex-1 resize-none rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none placeholder:text-neutral-600 focus:border-neutral-500 disabled:opacity-50"
+          className="min-w-0 flex-1 resize-none rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none placeholder:text-neutral-600 focus:border-neutral-500 disabled:opacity-50"
         />
-        <div className="flex flex-col gap-1">
-          <button
-            onClick={() => void submit()}
-            disabled={text.trim() === '' || sending || noProject}
-            className="rounded-lg bg-neutral-200 px-3.5 py-2 text-sm font-medium text-neutral-900 disabled:opacity-30"
-          >
-            {sessionId !== null && running ? '插话' : '发送'}
-          </button>
-          {sessionId !== null && running && (
-            // C4-①：打断（手机可停——协议 interrupt 早有，web 零消费）
-            <button
-              onClick={() => void sendCommand('', project ?? '', sessionId, { op: 'interrupt' }).catch(() => {})}
-              className="flex items-center justify-center gap-1 rounded-lg border border-red-900/70 px-2 py-1 text-[11px] text-red-400 hover:border-red-700 hover:text-red-300"
-              title="打断当前轮"
-            >
-              <Square size={10} /> 停止
-            </button>
-          )}
+        {/* 按钮横向一排（主操作最右；次级停左）：此前纵向 flex-col——运行态「停止」把「插话」
+            顶到输入框上沿之外，列高随状态跳变（2026-08-29 用户实测点名布局怪异） */}
+        <div className="flex items-center gap-1.5">
           {sessionId !== null && view !== undefined && view.queue.length > 0 && (
             <button
               onClick={() => void sendCommand('', project ?? '', sessionId, { op: 'interjection/clear' }).catch(() => {})}
@@ -219,6 +204,23 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
               <Trash2 size={11} /> 清队列({view.queue.length})
             </button>
           )}
+          {sessionId !== null && running && (
+            // C4-①：打断（手机可停——协议 interrupt 早有，web 零消费）
+            <button
+              onClick={() => void sendCommand('', project ?? '', sessionId, { op: 'interrupt' }).catch(() => {})}
+              className="flex items-center gap-1 rounded-lg border border-red-900/70 px-2 py-1 text-[11px] text-red-400 hover:border-red-700 hover:text-red-300"
+              title="打断当前轮"
+            >
+              <Square size={10} /> 停止
+            </button>
+          )}
+          <button
+            onClick={() => void submit()}
+            disabled={text.trim() === '' || sending || noProject}
+            className="rounded-lg bg-neutral-200 px-3.5 py-2 text-sm font-medium text-neutral-900 disabled:opacity-30"
+          >
+            {sessionId !== null && running ? '插话' : '发送'}
+          </button>
         </div>
       </div>
     </div>

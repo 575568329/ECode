@@ -163,6 +163,38 @@ describe('makeTaskTool.execute（返回契约 + transcript）', () => {
     expect(r.content).toContain('子代理')
   })
 
+  it('用户中断快速返回（2026-08-29）：ctx.signal 已断 + 无临终遗言 → 即停即返，不再发起自总结 LLM 调用', async () => {
+    let calls = 0
+    const deps = makeDeps({
+      getProvider: () => {
+        calls++
+        return new MockProvider([[{ type: 'done', stop_reason: 'end' }]]) // 内层 loop 无文本即终
+      },
+    })
+    const ac = new AbortController()
+    ac.abort()
+    const tool = makeTaskTool(deps)
+    const r = await tool.execute({ description: '调研', prompt: 'p' }, { cwd: process.cwd(), signal: ac.signal })
+    expect(r.is_error).toBe(true)
+    expect(r.content).toContain('被用户中断')
+    expect(calls).toBe(1) // 只内层 loop 一次——resumeSummary 未再调 provider（Ctrl+C 不再假死 60s）
+  })
+
+  it('对照（B4 保留）：非中断的无产出（超时形态）仍走自总结抢救', async () => {
+    let calls = 0
+    const deps = makeDeps({
+      getProvider: () => {
+        calls++
+        return new MockProvider([[{ type: 'done', stop_reason: 'end' }]])
+      },
+    })
+    const tool = makeTaskTool(deps)
+    const r = await tool.execute({ description: '调研', prompt: 'p' }, ctx) // ctx.signal 未断
+    expect(r.is_error).toBe(true)
+    expect(r.content).toContain('未产出') // 自总结跑了但抢不出文本 → 未产出文案
+    expect(calls).toBe(2) // 内层 loop + 自总结各一次
+  })
+
   it('进度桥：setSubagentProgressHandler 收运行中快照（onToolStart 更新活动，结束移除）', async () => {
     const snaps: Array<Array<{ id: string; description: string; activity: string }>> = []
     setSubagentProgressHandler((list) => snaps.push(list.map((x) => ({ ...x }))))

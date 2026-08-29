@@ -13,7 +13,7 @@
  * confirm 走 deps.confirm——装配方必须传串行队列包装后的父回调（方案 §1.3）。
  */
 
-import { mkdir, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -154,6 +154,20 @@ function makeAgentId(): string {
   return `a-${t}${h}`
 }
 
+/** F-46：子代理 transcript 文件路径（~/.ecode/agents/<id>.jsonl——终态全量写与运行期事件行同文件）。 */
+export function agentTranscriptPath(agentId: string): string {
+  return join(homedir(), '.ecode', 'agents', `${agentId}.jsonl`)
+}
+
+/** F-46：运行期事件行追加（异步 fire-and-forget——同步 IO 会冻结主循环渲染，失败静默：
+ * transcript 是辅助通道，落盘失败不掩盖执行本身；终态全量重写保证最终一致性）。 */
+function appendAgentEvent(agentId: string, ev: Record<string, unknown>): Promise<void> {
+  const line = `${JSON.stringify({ kind: 'event', ...ev })}\n`
+  return mkdir(join(homedir(), '.ecode', 'agents'), { recursive: true, mode: 0o700 })
+    .then(() => appendFile(agentTranscriptPath(agentId), line, 'utf8'))
+    .catch(() => {})
+}
+
 /** 子代理 system 骨架（方案 §2 两型；type=explore 叠加只读宣言）。 */
 export function subagentSystem(type: SubagentType, projectInstructions: string): string {
   const base = `你是独立子任务代理，prompt 是你的全部背景，缺信息用工具自查不要猜。只做 prompt 说的事。
@@ -264,8 +278,13 @@ export function makeSubagentOpts(
     history: new NoopHistoryStore(),
     callbacks: {
       // 进度缓冲与 UI 转发——绝不 setActive（不与父抢渲染）；onActivity/onIter 不配
+      // F-46：运行期可见性——事件逐条追加进 agents/<id>.jsonl（meta/tool_start/tool_result/
+      // warn 事件行，异步 fire-and-forget），父端 /output 面板运行期打开即可看子代理在干什么；
+      // 结束仍全量重写 messages JSONL（权威可重放终态，事件行被覆盖）。同步 IO 会冻结
+      // 主循环渲染（P2 修复先例），故 void appendFile + catch 静默（落盘失败不影响执行）。
       onText: () => {},
       onToolStart: (name) => {
+        void appendAgentEvent(agentId, { kind: 'tool_start', name, ts: Date.now() })
         const st = activeAgents.get(agentId)
         if (st !== undefined) {
           st.activity = name
@@ -275,10 +294,14 @@ export function makeSubagentOpts(
       },
       onUsage: (i, o, c) => reportUsage(i, o, c),
       onToolResult: (_id, name) => {
+        void appendAgentEvent(agentId, { kind: 'tool_result', name, ts: Date.now() })
         // 审阅 P1-2：子代理的 mcp__ 调用计数（此前只计主循环）
         if (name.startsWith('mcp__')) sessPort?.countMcpCall?.()
       },
-      onWarn: (m) => bridge?.warn?.(`「${description}」${m}`),
+      onWarn: (m) => {
+        void appendAgentEvent(agentId, { kind: 'warn', text: m.slice(0, 200), ts: Date.now() })
+        bridge?.warn?.(`「${description}」${m}`)
+      },
     },
     providerReq,
     system,
@@ -431,6 +454,8 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
         }
       }
       up({ id: agentId, description, activity: '启动中' })
+      // F-46：meta 行先行落盘——父端 /output 列表（按 mtime）运行期即可见本子代理
+      void appendAgentEvent(agentId, { kind: 'meta', description, type, ts: Date.now() })
       // 硬超时与用户中断取或（Node 20+ AbortSignal.any）
       const timeout = AbortSignal.timeout(SUB_TIMEOUT_MS)
       const signal = AbortSignal.any([ctx.signal, timeout])
@@ -453,8 +478,19 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
         await runLoop(messages, prompt, opts)
         const text = lastAssistantText(messages)
         if (text === '') {
-          // M13-B4：无临终遗言（超时/中断后 loop 正常返回形态）→ 自总结抢救
-          const summary = await resumeSummary(deps, messages, signal.aborted ? '中断' : '超时或中止')
+          // 2026-08-29 界定：自总结抢救只服务超时（把已做工作带回下轮上下文）。用户中断不做——
+          // resumeSummary 是又一轮 LLM 调用（60s 超时护栏），dogfood 实测把 Ctrl+C 变成最长
+          // 一分钟的「假死」（中断链路本身是通的：ctx.signal → AbortSignal.any → 内层 loop 即刻
+          // 停，卡的就是这步）；且中断轮已终止，抢救文本无处消费（transcript 已落盘可查）。
+          if (ctx.signal.aborted) {
+            deps.logger.warn('tool', 'subagent_interrupt_fast_return', { agentId })
+            return {
+              content: `子代理被用户中断，已立即停止。完整过程：~/.ecode/agents/${agentId}.jsonl`,
+              is_error: true,
+            }
+          }
+          // M13-B4：无临终遗言（超时后 loop 正常返回形态）→ 自总结抢救
+          const summary = await resumeSummary(deps, messages, '超时或中止')
           if (summary !== null) {
             deps.logger.warn('tool', 'subagent_resume_summary', { agentId, bytes: summary.length })
             return { content: `${clampResult(summary)}
@@ -470,6 +506,15 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
       } catch (e) {
         // 双保险之一：子代理超窗/致命错误不上抛炸父循环（独立压缩链是第一道）
         const msg = e instanceof Error ? e.message : String(e)
+        // 用户中断的抛错形态（AbortError 等）同样快速返回——signal 已断即权威判中断
+        //（同 loop.ts 三源判据），不做自总结抢救
+        if (ctx.signal.aborted) {
+          deps.logger.warn('tool', 'subagent_interrupt_fast_return', { agentId, cause: msg })
+          return {
+            content: `子代理被用户中断，已立即停止。完整过程：~/.ecode/agents/${agentId}.jsonl`,
+            is_error: true,
+          }
+        }
         // M13-B4：失败但过程里已有足量产出（遗言过短=过程未被带回）→ 自总结抢救
         const dying = lastAssistantText(messages)
         if (dying.length < MIN_VIABLE_RESULT && messages.length >= 4) {

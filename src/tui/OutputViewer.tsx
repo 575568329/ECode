@@ -34,8 +34,8 @@ export interface LineSource {
   subscribe?(cb: () => void): () => void
 }
 
-/** wrap 单逻辑行序列（与 viewport.foldLines 同参：hard 断长 token、保留缩进） */
-function wrapAll(text: string, width: number): string[] {
+/** wrap 单逻辑行序列（与 viewport.foldLines 同参：hard 断长 token、保留缩进）。导出供单测。 */
+export function wrapAll(text: string, width: number): string[] {
   return text.split('\n').flatMap((l) => (l === '' ? [''] : wrapAnsi(l, width, { hard: true, trim: false }).split('\n')))
 }
 
@@ -130,7 +130,11 @@ export function subagentSource(agentId: string, width: number): LineSource {
       const out: string[] = []
       for (const line of raw.split('\n')) {
         if (line.trim() === '') continue
-        out.push(...formatAgentLine(line, width))
+        // F-46b：格式化后按宽度 hard wrap（LineSource 契约=source 负责物理行化）；
+        // 续行缩进 2 列与 ⚙/✓ 层级对齐
+        for (const logical of formatAgentLine(line, width)) {
+          out.push(...wrapAll(logical, Math.max(10, width - 2)).map((l, i) => (i === 0 ? l : '  ' + l)))
+        }
       }
       return out
     } catch {
@@ -158,8 +162,8 @@ export function subagentSource(agentId: string, width: number): LineSource {
   }
 }
 
-/** F-46：transcript 单行格式化（事件行/消息行 → 人读文本；parse 失败原样透出）。 */
-function formatAgentLine(line: string, width: number): string[] {
+/** F-46：transcript 单行格式化（事件行/消息行 → 人读文本；parse 失败原样透出）。导出供单测锁格式。 */
+export function formatAgentLine(line: string, width: number): string[] {
   let j: Record<string, unknown>
   try {
     j = JSON.parse(line) as Record<string, unknown>
@@ -180,8 +184,20 @@ function formatAgentLine(line: string, width: number): string[] {
   const role = j.role
   if (role === 'user') {
     const c = j.content
-    const text = typeof c === 'string' ? c : Array.isArray(c) ? c.map((b) => (b as { text?: string }).text ?? (b as { type?: string }).type ?? '').join(' ') : ''
-    return [`▶ user: ${preview(text, 300)}`]
+    if (typeof c === 'string') return [`▶ user: ${preview(c, 300)}`]
+    if (Array.isArray(c)) {
+      // F-46b：tool_result 块显示输出摘要（此前只落 'tool_result' 一词无信息）；text 块拼句
+      const parts: string[] = []
+      for (const b of c as Array<{ type?: string; text?: string; content?: unknown }>) {
+        if (b.type === 'tool_result') {
+          const inner = typeof b.content === 'string' ? b.content : JSON.stringify(b.content) ?? ''
+          parts.push(`└ 结果: ${preview(inner, 160)}`)
+        } else if (b.type === 'text') parts.push(preview(b.text, 160))
+        else if (b.type !== undefined) parts.push(`[${b.type}]`)
+      }
+      return parts.length > 0 ? [`▶ user: ${parts.join('  ')}`] : []
+    }
+    return []
   }
   if (role === 'assistant') {
     const c = j.content as Array<{ type?: string; text?: string; name?: string }> | undefined

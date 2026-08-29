@@ -92,7 +92,10 @@ server.listen(0, '127.0.0.1', async () => {
   const pos2 = out.length
   proc.write('\r')
   ok = false
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = /▶ 子任务|◆ |结论：子代理探针完成/.test(strip(out.slice(pos2))) }
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = /▶ user: 查甲|结论：子代理探针完成/.test(strip(out.slice(pos2))) }
+  // 实拍：查看器内容行（人工核对格式）
+  console.log('===== 查看器实拍（仅可读行）=====')
+  console.log(strip(out.slice(pos2)).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => /[A-Za-z0-9\u4e00-\u9fff]/.test(l)).join('\n'))
   console.log(ok ? 'OK   查看器渲染格式化 transcript' : 'FAIL 查看器无格式化内容')
   if (!ok) console.log(strip(out.slice(pos2)).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-12).join('\n'))
   proc.kill()

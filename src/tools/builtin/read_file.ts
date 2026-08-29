@@ -4,7 +4,7 @@
  * readonly:true（免确认、可并行）。文本 UTF-8；图片/PDF magic bytes 判定 → 守卫 →
  * ImageBlock/DocumentBlock 经 ToolResult.blocks 回喂（base64 不进 content 字符串主路径）。
  * 图片恒直传（2026-08-29 拆除 isVisionModel 视觉名门）：能力由端点自证，模型名名单必滞后
- * （glm-5.3-flash 有视觉却被误拦实证）；无视觉模型由端点报错自然回喂。
+ * （glm-5.3-flash 有视觉却被误拦实证）；无视觉模型时端点报错经 warn 回喂用户（不进模型上下文）。
  *
  * 敏感路径门（安全审阅 P0）：本工具免确认且无路径围栏，若可直读 .env / ~/.ecode/config.json
  * （apiKey）/ id_rsa，密钥即进上下文（配合 web_fetch GET 查询串可外传）——命中敏感集合
@@ -23,7 +23,7 @@ const MEDIA_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.pdf'])
 export const readFileTool: Tool = {
   name: 'read_file',
   description:
-    '读取文件内容（UTF-8 文本；也支持图片 png/jpeg/webp/gif 与 PDF——用户让你看图/截图/读 PDF 设计时直接读路径，需要视觉能力的模型才能看懂图片）。',
+    '读取文件内容（UTF-8 文本；也支持图片 png/jpeg/webp/gif 与 PDF——用户让你看图/截图/读 PDF 设计时直接读路径。图片/附件原样直传模型，能否理解由模型自身能力决定，读不懂时端点会报错）。',
   input_schema: {
     type: 'object',
     properties: {

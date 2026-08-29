@@ -80,7 +80,7 @@ export interface SubagentDeps {
   registry: ToolRegistry
   /** 子 system 的项目级 ECODE.md 段（装配方算好注入；子代理骨架另拼） */
   projectInstructions: string
-  /** 当前模型名（视觉守卫等 toolCtx.model；缺省不传） */
+  /** 当前模型名（toolCtx.model 预留入口——视觉名门已拆 78873ab，现无消费方；缺省不传） */
   getModel?: () => string
 }
 

@@ -43,6 +43,7 @@ import { buildContextMessages } from '../core/context.js'
 import { InMemoryChannel } from '../protocol/channel.js'
 import type { CommandResult, ImagePayload, ProtocolCommand, ProtocolEvent } from '../protocol/types.js'
 import { ApprovalBroker, type ApprovalPolicy } from './approval.js'
+import { REMEMBER_TOOLS } from './approval.js'
 import { buildPreview } from '../services/preview.js'
 import { setSubagentBridge, setSubagentProgressHandler, currentSubagentBridge, currentSubagentProgressHandler, type SubagentBridge } from '../services/subagent.js'
 import { setPermissionAsker, currentPermissionAsker } from '../services/permissions.js'
@@ -229,6 +230,16 @@ export class HostSession {
     return this.broker.approvalPendingCount
   }
 
+  /** F-07 档A：会话级 remember 集合只读视图（hostConfirm 直放判定用） */
+  get rememberedTools(): ReadonlySet<string> {
+    return this.broker.rememberedTools
+  }
+
+  /** F-07 档A：清空会话级 remember 集合（/clear、session/clear——换会话语义不残留） */
+  clearRememberedTools(): void {
+    this.broker.clearRememberedTools()
+  }
+
   /** M13-W2：运行态（loop 在跑或队列有货）——会话级 sweep 三闸之一（运行态永不收） */
   get isBusy(): boolean {
     return this.running || this.starting || this.queue.length > 0
@@ -284,6 +295,7 @@ export class HostSession {
     this.messages.push(...lines)
     this.mcpCallCount = 0 // 审阅 P1-1：会话切换计数归零（防旧累计值写进新会话文件致全局双计）
     this.readMtime.clear() // M13-B1：换会话已读表重置（旧会话的读取记录对新会话无意义）
+    this.clearRememberedTools() // F-07 档A：换会话 remember 白名单不残留
   }
 
   /** B3：手动强制压缩（/compact——客户端命令面中间态实现；B5 升格为宿主命令） */
@@ -444,6 +456,7 @@ export class HostSession {
       this.editedFiles.clear()
       this.readMtime.clear()
       this.mcpCallCount = 0
+      this.clearRememberedTools() // F-07 档A：会话级 remember 白名单随会话清空
       this.publish('session/clear', {}) // 清账 III P1-3：web 端视图同步（store 原是死分支——无发布者）
       this.publish('notice', { level: 'info', text: '会话已清空' })
       return { ok: true, output: '会话已清空' }
@@ -587,6 +600,7 @@ export class HostSession {
         this.queue.length = 0
         this.editedFiles.clear()
         this.readMtime.clear() // M13-B1：已读表随会话重置
+        this.clearRememberedTools() // F-07 档A：会话级 remember 白名单随会话清空
         this.mcpCallCount = 0 // 审阅 P1-1：与客户端 setSessionCost(0) 同语义
         return { ok: true }
       case 'session/restore':
@@ -884,8 +898,14 @@ export class HostSession {
    *  sensitivePath 硬门例外：编辑 .ecode/settings* 等敏感路径仍照卡（安全敏感操作不随档位降级） */
   private async hostConfirm(use: import('../core/types.js').ToolUseBlock): Promise<boolean | string> {
     if (this.sandboxMode === 'full-access') return true
+    // F-07 档A：会话级 remember 白名单命中直放（a 键放行过 edit/write——敏感路径卡当时
+    // 无第三键不可能入集合，硬门前置判 sensitive 再比对，双保险）
+    const target = typeof (use.input as { path?: unknown }).path === 'string' ? (use.input as { path: string }).path : ''
+    if (REMEMBER_TOOLS.has(use.name) && this.broker.rememberedTools.has(use.name)) {
+      const abs = target === '' ? null : resolve(this.deps.cwd ?? process.cwd(), target)
+      if (abs !== null && !isSensitivePath(abs) && !isProjectEcodeSettings(abs)) return true
+    }
     if (this.sandboxMode === 'accept-edits' && (use.name === 'edit_file' || use.name === 'write_file')) {
-      const target = typeof (use.input as { path?: unknown }).path === 'string' ? (use.input as { path: string }).path : ''
       // 清账 III P2-2：非法输入不属可放行类——path 非法（缺/非字符串）照卡（fail-closed 反转）
       const abs = target === '' ? null : resolve(this.deps.cwd ?? process.cwd(), target)
       // 清账 III P0-1：项目级 .ecode/settings*（权限规则文件——hook 自授权链）照卡，
@@ -902,7 +922,13 @@ export class HostSession {
     const preview = await buildPreview(use, this.deps.cwd ?? process.cwd()).catch(
       (e: unknown) => `⚠ 无法生成预览：${e instanceof Error ? e.message : String(e)}`,
     )
-    return this.broker.confirm(use, preview)
+    // F-07 档A：edit/write 且目标非敏感路径 → 卡带 always 第三键（「本会话记住此工具」）
+    let canAlways = false
+    if (REMEMBER_TOOLS.has(use.name)) {
+      const abs = target === '' ? null : resolve(this.deps.cwd ?? process.cwd(), target)
+      canAlways = abs !== null && !isSensitivePath(abs) && !isProjectEcodeSettings(abs)
+    }
+    return this.broker.confirm(use, preview, canAlways)
   }
 
   private finishTurn(turnId: string): void {

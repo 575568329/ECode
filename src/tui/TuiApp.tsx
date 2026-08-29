@@ -482,7 +482,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
                     rememberLabel:
                       ev.kind === 'mcp-permission'
                         ? '永久记住（写入 settings.local.json）'
-                        : '本会话记住此 MCP server 的工具',
+                        : // F-07 档A：内置 edit/write 的会话级工具放行（与 MCP server 级放行区分文案）
+                          ev.tool.startsWith('mcp__')
+                          ? '本会话记住此 MCP server 的工具'
+                          : '本会话记住此工具',
                   }
                 : {}),
               resolve: (ok: boolean, always?: boolean, reason?: string) => {

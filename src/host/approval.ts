@@ -50,9 +50,15 @@ export interface PermissionAnswer {
   remember: boolean
 }
 
+/** F-07 档A：可给「本会话记住此工具」第三键的内置工具（edit_file/write_file） */
+export const REMEMBER_TOOLS = new Set(['edit_file', 'write_file'])
+
 export class ApprovalBroker {
   private readonly pending = new Map<string, PendingEntry>()
   private readonly confirmAlways = new Set<string>()
+  /** F-07 档A：会话级内置工具白名单（edit_file/write_file 按 a 键放行——同集合互通，
+   *  once 前无差别；新会话即新 broker 实例，天然不残留） */
+  private readonly rememberTools = new Set<string>()
 
   constructor(
     private readonly channel: InMemoryChannel,
@@ -71,9 +77,19 @@ export class ApprovalBroker {
     return this.pending.size
   }
 
-  /** sweepIdle Q12 消费：审批悬置数（>0 不回收） */
+  /** sweepIdle 只读视图（Q12：审批悬置不回收——broker 私有，经此暴露计数） */
   get approvalPendingCount(): number {
     return this.pending.size
+  }
+
+  /** F-07 档A：会话级工具 remember 集合只读视图（宿主 hostConfirm 直放判定） */
+  get rememberedTools(): ReadonlySet<string> {
+    return this.rememberTools
+  }
+
+  /** F-07 档A：清空会话级 remember 集合（/clear、session/clear——换会话语义不残留） */
+  clearRememberedTools(): void {
+    this.rememberTools.clear()
   }
 
   private get hasSubscriber(): boolean {
@@ -85,13 +101,17 @@ export class ApprovalBroker {
   }
 
   /** 工具副作用确认（tool-confirm）。preview 由宿主生成（buildPreview；此处出口再消毒兜底）。
-   *  返回 false=无名拒绝；返回 string=拒绝反馈（喂回模型——对标 A1：模型不再瞎猜取消原因） */
-  confirm(use: ToolUseBlock, preview: string): Promise<boolean | string> {
+   *  返回 false=无名拒绝；返回 string=拒绝反馈（喂回模型——对标 A1：模型不再瞎猜取消原因）
+   *  F-07 档A：canAlways=true（宿主已判 edit/write 且非敏感路径）时卡带 always 第三键；
+   *  rememberTools 命中直放（会话级白名单——sensitive 硬门在宿主 canAlways 判定处，命中者不入此路径） */
+  confirm(use: ToolUseBlock, preview: string, canAlways = false): Promise<boolean | string> {
     const mcpPrefix = use.name.startsWith('mcp__') ? use.name.split('__').slice(0, 2).join('__') : null
     if (mcpPrefix !== null && this.confirmAlways.has(mcpPrefix)) return Promise.resolve(true)
+    if (this.rememberTools.has(use.name)) return Promise.resolve(true)
     if (!this.hasSubscriber && this.policy === 'auto-approve') return Promise.resolve(true)
     const requestId = randomUUID()
-    const decisions: ApprovalDecision[] = mcpPrefix !== null ? ['once', 'always', 'reject'] : ['once', 'reject']
+    const decisions: ApprovalDecision[] =
+      mcpPrefix !== null || (canAlways && REMEMBER_TOOLS.has(use.name)) ? ['once', 'always', 'reject'] : ['once', 'reject']
     const frame: AnswerableFrame = {
       type: 'approval/requested',
       requestId,
@@ -259,12 +279,15 @@ export class ApprovalBroker {
     this.pending.delete(requestId)
     if (decision === 'always') {
       if (mcpPrefix !== null) this.confirmAlways.add(mcpPrefix)
+      else if (REMEMBER_TOOLS.has(tool)) this.rememberTools.add(tool) // F-07 档A：会话级工具白名单
       entry.resolve(true)
-      // 级联：同前缀的其余 pending 自动放行
-      if (mcpPrefix !== null) {
+      // 级联：同前缀的其余 pending 自动放行；rememberTools 命中的其余 pending（edit↔write 同集合互通）
+      if (mcpPrefix !== null || this.rememberTools.has(tool)) {
         for (const [id, p] of [...this.pending]) {
           const f = p.frame as { tool: string }
-          if (p.kind === 'tool-confirm' && f.tool.startsWith(`${mcpPrefix}__`)) {
+          const pMcp = f.tool.startsWith('mcp__') ? f.tool.split('__').slice(0, 2).join('__') : null
+          const hit = mcpPrefix !== null ? pMcp === mcpPrefix : this.rememberTools.has(f.tool)
+          if (p.kind === 'tool-confirm' && hit) {
             if (p.timer !== undefined) clearTimeout(p.timer)
             if (p.notifyTimer !== undefined) clearTimeout(p.notifyTimer)
             this.pending.delete(id)

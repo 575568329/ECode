@@ -154,6 +154,32 @@ describe('Ctrl+C 中断（按键 → useInterrupt → 宿主 interrupt → loop 
     await flush(100)
     expect(onExit).toHaveBeenCalledTimes(1)
   })
+
+  it('F-47：用过 /output 面板并关闭后，Ctrl+C 双击退出仍可用（pickerRef 泄漏回归锁）', async () => {
+    const onExit = vi.fn()
+    const { stdin } = render(React.createElement(TuiApp, { deps: makeDeps(new OneShotProvider()), onExit }))
+    await flush()
+    // 打开 /output 面板再 Esc 关闭（修复前：pickerRef 置 true 后关闭路径不复位，
+    // useInterrupt.isActive 永真 → 此后 Ctrl+C 全部被吞）
+    stdin.write('/output')
+    await flush()
+    stdin.write('\r')
+    await flush(100)
+    stdin.write('\x1b[B') // ↓ 移到可选条目
+    await flush(100)
+    stdin.write('\r') // 进查看器
+    await flush(100)
+    stdin.write('\x1b') // Esc 回列表
+    await flush(100)
+    stdin.write('\x1b') // Esc 关面板
+    await flush(100)
+    // 关闭面板后：双击 Ctrl+C 退出可用
+    stdin.write('\x03')
+    await flush(100)
+    stdin.write('\x03')
+    await flush(100)
+    expect(onExit).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('M14-V4：轮末即 commit（§3.3 查因后方案一）', () => {

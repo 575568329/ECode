@@ -24,6 +24,7 @@ import { commandRegistry } from '../commands/registry.js'
 import { HostSession } from '../host/session.js'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
+import { stripUntrustedAnsi } from '../tui/sanitize.js'
 import { render } from 'ink'
 import React from 'react'
 import { TuiApp } from '../tui/TuiApp.js'
@@ -63,14 +64,16 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
   host.mountBridges()
   host.subscribe((ev) => {
     switch (ev.type) {
+      // F-47：print 模式直写 stdout 完全绕过 Ink 净化层——不可信内容（LLM 文本/工具
+      // 输出摘要）必须先 strip（--print "cat 恶意文件" 即可注入任意终端序列）
       case 'delta':
-        process.stdout.write(ev.text)
+        process.stdout.write(stripUntrustedAnsi(ev.text))
         break
       case 'item/started':
         process.stdout.write(`\n⏺ ${ev.name}\n`)
         break
       case 'item/completed':
-        process.stdout.write(`  ${ev.name} ${ev.isError ? '✗' : '✓'} ${ev.summary}\n`)
+        process.stdout.write(`  ${ev.name} ${ev.isError ? '✗' : '✓'} ${stripUntrustedAnsi(ev.summary)}\n`)
         break
       case 'usage':
         deps.lastUsage.input = ev.input
@@ -80,13 +83,13 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
         process.stdout.write(`\n[tokens: in ${ev.input} / out ${ev.output}]\n`)
         break
       case 'warn':
-        process.stdout.write(`\n⚠ ${ev.text}\n`)
+        process.stdout.write(`\n⚠ ${stripUntrustedAnsi(ev.text)}\n`)
         break
       case 'notice':
-        process.stdout.write(`\n${ev.level === 'error' ? '✗' : ev.level === 'warn' ? '⚠' : 'ℹ'} ${ev.text}\n`)
+        process.stdout.write(`\n${ev.level === 'error' ? '✗' : ev.level === 'warn' ? '⚠' : 'ℹ'} ${stripUntrustedAnsi(ev.text)}\n`)
         break
       case 'systemMsg':
-        process.stdout.write(`\n${ev.text}\n`)
+        process.stdout.write(`\n${stripUntrustedAnsi(ev.text)}\n`)
         break
       case 'compacted':
         process.stdout.write('\n[已压缩对话]\n')

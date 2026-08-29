@@ -316,7 +316,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     configRef.current = config
   }, [config])
   // 覆盖层（/model·/history·/setup 等）：非 null 时独占输入（picker 渲染 + InputStream inactive）
-  const [overlay, setOverlay] = useState<
+  // F-47：overlay 联合提取命名——setOverlay 包装函数（pickerRef 收口）参数类型引用
+  type OverlayState =
     | { kind: 'model-picker' }
     | { kind: 'pick-history' }
     | { kind: 'setup-wizard' }
@@ -332,8 +333,18 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     | { kind: 'select'; title: string; options: string[]; resolve: (v: string | undefined) => void }
     // M8 ask_user：工具发起的提问面板（Promise 桥——resolve 回工具 execute）
     | { kind: 'question-panel'; questions: AskUserQuestion[]; resolve: (r: AskUserResult) => void }
-    | null
-  >(null)
+  const [overlay, setOverlayState] = useState<OverlayState | null>(null)
+  // F-47 批 0：overlay 开关收口——pickerRef 随开随关。此前 output 系关闭路径（onExit/
+  // onBack）不复位 pickerRef，用过一次 /output 后 useInterrupt.isActive 永真 → Ctrl+C
+  // 中断/双击退出永久哑火（审阅 P0-6 实证）。setOverlay 包装后 20+ 调用点零改动；
+  // 残留的手动 pickerRef 赋值与包装幂等。
+  const overlayRef = useRef<OverlayState | null>(null)
+  const setOverlay = (o: OverlayState | null | ((cur: OverlayState | null) => OverlayState | null)): void => {
+    const next = typeof o === 'function' ? o(overlayRef.current) : o
+    overlayRef.current = next
+    pickerRef.current = next !== null
+    setOverlayState(next)
+  }
   // M14-V3：最近工具调用环形缓冲（/output 列表数据源——item/completed 帧记录，50 封顶）
   const [recentTools, setRecentTools] = useState<RecentTool[]>([])
   // 审阅 P1-4：ref 镜像——toolResultSource 的 getter 经它取当前对象（补全 setRecentTools
@@ -498,6 +509,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           break
         case 'approval/requested': {
           confirmRef.current = true
+          // F-47 批 0：审批是安全边界，优先级高于查看器——强制退出 overlay（含 output
+          // 面板）回主界面亮卡。否则审批卡在面板下不可见，15min 超时盲拒用户毫无感知
+          // （安全审阅 P1-3）。setOverlay 包装同时复位 pickerRef，useInterrupt 恢复可用
+          setOverlay((cur) => (cur === null || cur.kind === 'output-panel' || cur.kind === 'output-view' ? null : cur))
           // 批2b ④：审批出现即未选择态（draft 状态机重置；Enter 不静默批准）
           // 批2d（§13.1 拍板-1 附）：审批卡首次出现响一次 BEL 终端铃（同一审批不重复——
           // resolved 后弹窗清空，响过的 requestId 留痕即可防重放/连续 requested 重响）
@@ -549,7 +564,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           pushNoticeFn('info', `审批已由「${ev.claimant}」端认领处理中（仍可在本端作答）`)
           break
         case 'askUser/requested':
-          pickerRef.current = true
           setOverlay({
             kind: 'question-panel',
             questions: ev.questions as AskUserQuestion[],
@@ -716,7 +730,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   /** 通用单选 overlay（S-P7 冲突裁决等异步交互；Esc/ctrl+c → resolve undefined） */
   const askSelect = (title: string, options: string[]): Promise<string | undefined> => {
     return new Promise((resolve) => {
-      pickerRef.current = true
       setOverlay({ kind: 'select', title, options, resolve })
     })
   }
@@ -1039,7 +1052,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       // F-46：Ctrl+T 直达输出面板（子代理/后台任务/工具全文 transcript）——运行期看子代理
       // 在干什么的快捷入口（busy 可用；此前唯一入口 /output 被 busy 斜杠拦截堵死）
       if (key.ctrl && input === 't') {
-        pickerRef.current = true
         setOverlay({ kind: 'output-panel' })
       }
     },
@@ -1064,7 +1076,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       const now = Date.now()
       if (!escGuarded && now - lastEscRef.current < 500 && deps.checkpoint != null) {
         lastEscRef.current = 0
-        pickerRef.current = true
         setOverlay({ kind: 'rewind-panel' })
         return
       }
@@ -1383,7 +1394,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           // M12-B3（审阅 P0-2 修复）：档位权威在宿主（sandbox/set）；full-access 提档经宿主 Broker 审批帧确认
           const next = nextSandboxMode(sandboxModeRef.current)
           if (next === 'full-access') {
-            pickerRef.current = true
             void host.send({ op: 'sandbox/set', mode: 'full-access' }).then((r) => {
               pickerRef.current = false
               if (r.ok) {
@@ -1419,23 +1429,19 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             return
           }
           if (result.action === 'skill-panel') {
-            pickerRef.current = true
             setOverlay({ kind: 'skill-panel' })
             return
           }
           if (result.action === 'pick-model') {
-            pickerRef.current = true
             setOverlay({ kind: 'model-picker' })
             return
           }
           if (result.action === 'pick-history') {
             setHistoryMetas(deps.history.loadAll(process.cwd()))
-            pickerRef.current = true
             setOverlay({ kind: 'pick-history' })
             return
           }
           if (result.action === 'start-setup') {
-            pickerRef.current = true
             setOverlay({ kind: 'setup-wizard' })
             return
           }
@@ -1448,7 +1454,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             return
           }
           if (result.action === 'open-mcp-panel') {
-            pickerRef.current = true
             setOverlay({ kind: 'mcp-panel' })
             return
           }
@@ -1462,17 +1467,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             return
           }
           if (result.action === 'open-warnings-panel') {
-            pickerRef.current = true
             setOverlay({ kind: 'warnings-panel' })
             return
           }
           if (result.action === 'open-output-panel') {
-            pickerRef.current = true
             setOverlay({ kind: 'output-panel' })
             return
           }
           if (result.action === 'open-config-panel') {
-            pickerRef.current = true
             setOverlay({ kind: 'config-panel' })
             return
           }
@@ -1483,7 +1485,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             return
           }
           if (result.action === 'open-sandbox-panel') {
-            pickerRef.current = true
             setOverlay({ kind: 'sandbox-panel' })
             return
           }
@@ -1492,7 +1493,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
               setSystemMsgs(['快照系统未启用（argv 模式）'])
               return
             }
-            pickerRef.current = true
             setOverlay({ kind: 'rewind-panel' })
             return
           }
@@ -1501,7 +1501,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
               setSystemMsgs(['plugin 系统未启用'])
               return
             }
-            pickerRef.current = true
             setPluginPanelKey((k) => k + 1)
             setOverlay({ kind: 'plugin-panel' })
             return

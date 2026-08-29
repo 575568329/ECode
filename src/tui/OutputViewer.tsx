@@ -23,6 +23,7 @@ import { PanelShell, type PanelRow } from './PanelShell.js'
 import { clipWidth, sectionBudget, useViewport } from './viewport.js'
 import { taskRegistry } from '../services/tasks.js'
 import { isAgentActive } from '../services/subagent.js'
+import { stripUntrustedAnsi } from './sanitize.js'
 
 // —— LineSource：查看器的数据面（§3.5）——
 
@@ -76,7 +77,8 @@ export function toolResultSource(getTool: () => RecentTool | undefined, width: n
     lines: () => {
       const t = getTool()
       if (t === undefined) return []
-      return cachedWrap(`tool:${t.itemId}`, t.content, width)
+      // F-47：不可信内容净化在 cachedWrap 之前（strip 改变长度，事后剥破坏 len 校验）
+      return cachedWrap(`tool:${t.itemId}`, stripUntrustedAnsi(t.content), width)
     },
     isGrowing: () => false,
   }
@@ -92,7 +94,8 @@ export function taskFileSource(taskId: string, width: number): LineSource {
     if (file === '') return []
     try {
       // 审阅 P1-6：cachedWrap（内容长度校验——日志追加自然 miss 重建）
-      return cachedWrap(`task:${taskId}`, readFileSync(file, 'utf8'), width)
+      // F-47：净化在 wrap 之前（同上）
+      return cachedWrap(`task:${taskId}`, stripUntrustedAnsi(readFileSync(file, 'utf8')), width)
     } catch {
       return []
     }
@@ -134,7 +137,8 @@ export function subagentSource(agentId: string, width: number): LineSource {
         // F-46b：格式化后按宽度 hard wrap（LineSource 契约=source 负责物理行化）；
         // 续行缩进 2 列与 ⚙/✓ 层级对齐
         for (const logical of formatAgentLine(line, width)) {
-          out.push(...wrapAll(logical, Math.max(10, width - 2)).map((l, i) => (i === 0 ? l : '  ' + l)))
+          // F-47：先净化再 wrap（strip 改变内容长度）
+          out.push(...wrapAll(stripUntrustedAnsi(logical), Math.max(10, width - 2)).map((l, i) => (i === 0 ? l : '  ' + l)))
         }
       }
       return out
@@ -458,7 +462,7 @@ export function OutputListPage({ recentTools, onOpen, onExit }: OutputListPagePr
         out.push({
           type: 'item',
           value: { kind: 'task', id: t.id },
-          label: clipWidth(`${mark} ${t.id} ${t.command}（${t.status}${t.exitCode !== null ? ` exit ${t.exitCode}` : ''}）`, max),
+          label: clipWidth(`${mark} ${t.id} ${stripUntrustedAnsi(t.command)}（${t.status}${t.exitCode !== null ? ` exit ${t.exitCode}` : ''}）`, max),
         })
       }
     }
@@ -469,7 +473,7 @@ export function OutputListPage({ recentTools, onOpen, onExit }: OutputListPagePr
         out.push({
           type: 'item',
           value: { kind: 'tool', tool },
-          label: clipWidth(`${tool.isError ? '✗' : '·'} ${tool.name} ${preview}${tool.truncated === true ? ' 〔已截断〕' : ''}`, max),
+          label: clipWidth(`${tool.isError ? '✗' : '·'} ${tool.name} ${stripUntrustedAnsi(preview)}${tool.truncated === true ? ' 〔已截断〕' : ''}`, max),
         })
       }
     }

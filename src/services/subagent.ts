@@ -154,6 +154,11 @@ function makeAgentId(): string {
   return `a-${t}${h}`
 }
 
+/** F-46e：子代理运行态查询（面板列表条目区分 ◉ 运行中 / ○ 完成）。 */
+export function isAgentActive(agentId: string): boolean {
+  return activeAgents.has(agentId)
+}
+
 /** F-46：子代理 transcript 文件路径（~/.ecode/agents/<id>.jsonl——终态全量写与运行期事件行同文件）。 */
 export function agentTranscriptPath(agentId: string): string {
   return join(homedir(), '.ecode', 'agents', `${agentId}.jsonl`)

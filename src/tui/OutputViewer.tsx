@@ -22,6 +22,7 @@ import { theme } from './theme.js'
 import { PanelShell, type PanelRow } from './PanelShell.js'
 import { clipWidth, sectionBudget, useViewport } from './viewport.js'
 import { taskRegistry } from '../services/tasks.js'
+import { isAgentActive } from '../services/subagent.js'
 
 // —— LineSource：查看器的数据面（§3.5）——
 
@@ -393,7 +394,7 @@ export function OutputViewer({ title, source, onBack }: OutputViewerProps): Reac
   const statusParts = [`L${offset + 1}-L${Math.min(total, offset + height)} / ${total}`]
   if (source.isGrowing()) statusParts.push(followed ? '[F]跟随中' : '[F]跟随(off)')
   if (matches !== null) statusParts.push(`匹配 ${matches.length}${query !== '' ? ` "/${query}"` : ''}`)
-  statusParts.push('/搜索 · n/N 跳转 · Esc 返回')
+  statusParts.push('↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · Esc 返回')
 
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor={theme.border} paddingX={1}>
@@ -479,8 +480,11 @@ export function OutputListPage({ recentTools, onOpen, onExit }: OutputListPagePr
         const t = new Date(a.mtimeMs)
         const pad = (n: number): string => String(n).padStart(2, '0')
         const when = `${t.getMonth() + 1}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`
+        // F-46e：◉ 运行中 / ○ 已完成标记 + id 尾段——并发多个子代理时可区分哪个是哪个
+        const mark = isAgentActive(a.id) ? '◉' : '○'
+        const idTail = a.id.length > 4 ? a.id.slice(-4) : a.id
         const sum = a.summary === '' ? a.id : a.summary
-        out.push({ type: 'item', value: { kind: 'agent', id: a.id }, label: clipWidth(`§ ${when} ${sum}`, max) })
+        out.push({ type: 'item', value: { kind: 'agent', id: a.id }, label: clipWidth(`§${mark} ${when} ${sum} (${idTail})`, max) })
       }
     }
     return out

@@ -37,6 +37,11 @@ export const WIDTH = {
   /** 正文实际宽 = min(columns, contentMax) */
   content: (columns: number): number =>
     Math.min(columns > 0 ? columns : 80, WIDTH.contentMax),
+  /** 正文列宽（F-36）：markdown/灰字流住在 MessageRow 圆点槽右侧的内容列——
+   *  折行续行对齐第 icon 列的关键 = 预折宽恰等于内容列宽（CC render-node-to-output
+   *  同口径：wrap 宽 = 正文 Box yoga 内容宽，悬挂缩进是布局副产品） */
+  body: (columns: number): number =>
+    Math.max(10, WIDTH.content(columns) - INDENT.icon),
   /** 工具输出内容宽 = columns - gutter - 余量（CC terminalWidth-10 同思路：扣减=缩进占用） */
   toolOutputReserve: 10,
   toolOutput: (columns: number): number =>

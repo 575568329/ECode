@@ -75,7 +75,9 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
   const headerSuffix = overflow > 0 ? ` ${symbols.trunc} +${overflow} 个` : ''
 
   return (
-    <Box flexDirection="column" marginTop={GAP.block} marginBottom={GAP.block}>
+    // F-36：间距统一 marginTop 级联（去 marginBottom——后继 MessageRow/用户消息/composer
+    // 各自 marginTop=1，双 margin 会叠成 2 空行；CC addMargin?1:0 同节奏）
+    <Box flexDirection="column" marginTop={GAP.block}>
       <Box>
         <Box minWidth={INDENT.icon}>
           <Text color={theme.tool}>{symbols.tool}</Text>

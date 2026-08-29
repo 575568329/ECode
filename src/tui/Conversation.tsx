@@ -10,6 +10,8 @@ import { ToolGroupView } from './ToolGroupView.js'
 import { ConfirmPrompt } from './ConfirmPrompt.js'
 import { foldStreamText } from './stream.js'
 import { allocateDynamic, useViewport } from './viewport.js'
+import { WIDTH } from './layout.js'
+import { MessageRow } from './MessageRow.js'
 import { UserMessage } from './UserMessage.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import type { CommittedItem, ActiveState, ActiveTool, CommittedToolCall } from './types.js'
@@ -25,7 +27,8 @@ const TOO_SMALL_HINT = '[终端过小，本轮内容已折叠——/output 查�
  *  M14-V5：maxLines 来自 allocateDynamic 总分配（缺省 3=旧行为）。 */
 export function GrayStreaming({ text, maxLines }: { text: string; maxLines?: number }): ReactElement {
   const { columns } = useViewport()
-  const { lines, folded, total } = foldStreamText(text, maxLines, columns)
+  // F-36：折行宽 = 正文列宽（GrayStreaming 住在圆点槽右侧——续行对齐第 2 列）
+  const { lines, folded, total } = foldStreamText(text, maxLines, WIDTH.body(columns))
   return (
     <Box flexDirection="column">
       {folded > 0 && <Text dimColor>↑ {folded} 行已折叠（共 {total} 行）</Text>}
@@ -70,17 +73,22 @@ function renderCommitted(item: CommittedItem): ReactNode {
       return <ToolGroupView tools={callsToTools(item.calls)} />
     case 'compacted':
       // M5 压缩点标记：UI 显示全量原文（投影分离），此处告知模型上下文已被摘要
+      // F-36：空 2 列槽对齐正文栅格（CC BriefTool 空 minWidth=2 同款，不加视觉噪声）
       return (
-        <Text dimColor>
-          ⇕ 已压缩（上方 {item.removedCount} 条已摘要进上下文，原文仍显示）
-        </Text>
+        <MessageRow icon="" dim>
+          <Text dimColor>
+            ⇕ 已压缩（上方 {item.removedCount} 条已摘要进上下文，原文仍显示）
+          </Text>
+        </MessageRow>
       )
     case 'rewind':
       // M9-P2 回退点标记：下方消息不再进模型上下文（投影截断），原文仍显示
       return (
-        <Text dimColor>
-          ⇺ 已回退至快照点 {item.seq}（此处之后的对话不再进入上下文，原文仍显示）
-        </Text>
+        <MessageRow icon="" dim>
+          <Text dimColor>
+            ⇺ 已回退至快照点 {item.seq}（此处之后的对话不再进入上下文，原文仍显示）
+          </Text>
+        </MessageRow>
       )
   }
 }
@@ -138,7 +146,9 @@ export function Conversation({
       {active.userInput !== '' && <FoldedUserInput text={active.userInput} />}
       {active.tools.length > 0 &&
         (alloc.degraded ? (
-          <Text dimColor>{TOO_SMALL_HINT}</Text>
+          <MessageRow icon="" dim>
+            <Text dimColor>{TOO_SMALL_HINT}</Text>
+          </MessageRow>
         ) : (
           <ToolGroupView
             tools={active.tools}
@@ -166,9 +176,13 @@ export function Conversation({
       ) : (
         active.streamingText !== '' &&
         (alloc.degraded ? (
-          <Text dimColor>{TOO_SMALL_HINT}</Text>
+          <MessageRow icon="" dim>
+            <Text dimColor>{TOO_SMALL_HINT}</Text>
+          </MessageRow>
         ) : active.streaming ? (
-          <GrayStreaming text={active.streamingText} maxLines={alloc.streamMaxLines} />
+          <MessageRow>
+            <GrayStreaming text={active.streamingText} maxLines={alloc.streamMaxLines} />
+          </MessageRow>
         ) : (
           <CappedAssistantMessage text={active.streamingText} maxLines={alloc.streamMaxLines} />
         ))
@@ -186,7 +200,10 @@ function CappedAssistantMessage({ text, maxLines }: { text: string; maxLines: nu
   if (total > maxLines * 2) {
     return (
       // 审阅 P1-8：/output 列表不含 assistant 文本——改指历史区（下次提交后兜底 commit 进 Static 可滚回看）
-      <Text dimColor>⋯ 本轮回复共 {total} 行，终端预算内不展示（再次输入后进入历史区可回看全文）</Text>
+      // F-36：空槽对齐正文栅格
+      <MessageRow icon="" dim>
+        <Text dimColor>⋯ 本轮回复共 {total} 行，终端预算内不展示（再次输入后进入历史区可回看全文）</Text>
+      </MessageRow>
     )
   }
   return <AssistantMessage text={text} />

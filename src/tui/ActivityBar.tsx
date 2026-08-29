@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { Text, Box } from 'ink'
 import { useClock } from './clock.js'
 import { theme } from './theme.js'
+import { GAP } from './layout.js'
 import type { ActivityState } from '../core/loop.js'
 
 // braille 乒乓帧（设计理念 §7.6：正向 + 反向来回弹，比单向更柔和）
@@ -30,13 +31,26 @@ interface ActivityBarProps {
  * 把 useClock 下沉到 ActiveSpinner 子组件，idle/aborted 时不订阅（不空转）。
  */
 export function ActivityBar({ state, text }: ActivityBarProps): ReactElement {
+  // F-36：marginTop 级联补位（ToolGroupView 已去 marginBottom，此处自带与消息块间的 1 空行）
   if (state === 'idle') {
-    return <Text>{' '}</Text>
+    return (
+      <Box marginTop={GAP.block}>
+        <Text>{' '}</Text>
+      </Box>
+    )
   }
   if (state === 'aborted') {
-    return <Text color={theme.warn}>⚠ 已中断，内容已保留</Text>
+    return (
+      <Box marginTop={GAP.block}>
+        <Text color={theme.warn}>⚠ 已中断，内容已保留</Text>
+      </Box>
+    )
   }
-  return <ActiveSpinner state={state} text={text} />
+  return (
+    <Box marginTop={GAP.block}>
+      <ActiveSpinner state={state} text={text} />
+    </Box>
+  )
 }
 
 function ActiveSpinner({ state, text }: { state: ActivityState; text?: string }): ReactElement {

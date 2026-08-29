@@ -37,9 +37,10 @@ interface BlockTok {
   raw?: string
 }
 
-/** 渲染列宽：终端更窄取终端宽，上限 100 避免过宽难读（排版批②：公式归一 layout.ts WIDTH.content） */
+/** 渲染列宽：正文列宽（F-36——Markdown 住在 MessageRow 圆点槽右侧，预折宽=内容列宽，
+ *  续行对齐第 2 列；上限 100 避免过宽难读。排版批②：公式归一 layout.ts WIDTH） */
 function cols(): number {
-  return WIDTH.content(process.stdout.columns || 80)
+  return WIDTH.body(process.stdout.columns || 80)
 }
 
 /** 去掉 text 字段，剩余作为 Ink <Text> 的样式 props（rest 解构不算 unused） */

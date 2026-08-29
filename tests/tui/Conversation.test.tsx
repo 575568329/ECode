@@ -198,3 +198,52 @@ describe('Conversation', () => {
     expect(resolved).toBe(true) // 新卡默认 y，Enter=批准（selected 已随 key 重挂载归位）
   })
 })
+
+describe('F-36 消息行栅格（第一列只图标，文字含折行续行从第 2 列起）', () => {
+  it('assistant 文本：首行 ● 槽 + 折行续行全部对齐第 2 列', () => {
+    // ink-testing 缺省 80 列：正文列 78；超长中文段落必折行（1 字 2 列，40+ 字必超）
+    const long = '统一栅格验证文本'.repeat(20)
+    const { lastFrame } = render(
+      React.createElement(Conversation, {
+        committed: [{ kind: 'assistant-text', id: 'a1', text: long }],
+        active: createActive(),
+      }),
+    )
+    const lines = (lastFrame() ?? '').split('\n').filter((l) => l.trim() !== '')
+    expect(lines.length).toBeGreaterThan(1) // 确已折行
+    expect(lines[0].startsWith('● ')).toBe(true) // 首行圆点槽（2 列：●+空）
+    for (const l of lines) {
+      expect(l.startsWith('● ') || l.startsWith('  ')).toBe(true) // 续行 2 空格缩进=第 2 列
+    }
+  })
+
+  it('流式灰字同栅格：● 槽 + 灰字折行第 2 列起', () => {
+    const long = '流式灰字栅格验证'.repeat(20)
+    const { lastFrame } = render(
+      React.createElement(Conversation, {
+        committed: [],
+        active: { ...createActive(), streaming: true, streamingText: long },
+      }),
+    )
+    const lines = (lastFrame() ?? '').split('\n').filter((l) => l.trim() !== '' && !l.includes('折叠'))
+    expect(lines.length).toBeGreaterThan(1)
+    for (const l of lines) {
+      expect(l.startsWith('● ') || l.startsWith('  ')).toBe(true)
+    }
+  })
+
+  it('压缩/回退标记：空槽对齐第 2 列（无符号占位）', () => {
+    const { lastFrame } = render(
+      React.createElement(Conversation, {
+        committed: [
+          { kind: 'compacted', id: 'c1', removedCount: 3 },
+          { kind: 'rewind', id: 'r1', seq: 7 },
+        ],
+        active: createActive(),
+      }),
+    )
+    for (const l of (lastFrame() ?? '').split('\n')) {
+      if (l.includes('已压缩') || l.includes('已回退')) expect(l.startsWith('  ')).toBe(true)
+    }
+  })
+})

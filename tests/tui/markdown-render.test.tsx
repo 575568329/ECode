@@ -2,15 +2,15 @@ import {describe, it, expect, afterEach } from 'vitest'
 import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import stringWidth from 'string-width'
-import { Markdown, computeColWidths } from '../../src/tui/Markdown.js'
+import { Markdown, computeColWidths, resolveHighlightLang } from '../../src/tui/Markdown.js'
 
 afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 /** 剥 ANSI 后按显示宽度测一行（中文 1 字 2 列），用于断言表格不超屏 */
 const lineWidth = (line: string): number => stringWidth(line.replace(/\u001b\[[0-9;]*m/g, ''))
 
-/** 与组件内 cols() 同式：终端更窄取终端宽，上限 100 */
-const renderCols = (): number => Math.min(process.stdout.columns || 80, 100)
+/** 与组件内 cols() 同式：终端宽（2026-08-29 撤 100 封顶后正文恒跟随终端宽） */
+const renderCols = (): number => process.stdout.columns || 80
 
 describe('computeColWidths 表格列宽分配', () => {
   it('自然宽合计在预算内 → 原样返回不折行', () => {
@@ -78,6 +78,13 @@ describe('Markdown 组件渲染', () => {
   it('代码块（fallback 含 code 内容）', () => {
     const { lastFrame } = render(React.createElement(Markdown, { text: '```js\nconst x = 1\n```' }))
     expect(lastFrame()).toContain('const x = 1')
+  })
+
+  it('代码块 jsonc 围栏：内容照常渲染（经别名映射走 json 高亮，不再触发 stderr 警告）', () => {
+    const { lastFrame } = render(
+      React.createElement(Markdown, { text: '```jsonc\n"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000"\n```' }),
+    )
+    expect(lastFrame()).toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS')
   })
 
   it('表格渲染', () => {
@@ -214,5 +221,25 @@ describe('Markdown 组件渲染', () => {
     expect(frame).toContain('AgentLoop 心脏')
     expect(frame).toContain('const loop')
     expect(frame).toContain('简洁优先')
+  })
+})
+
+describe('resolveHighlightLang 围栏语言预检（jsonc stderr 泄漏修复 2026-08-29）', () => {
+  const supports = (l: string): boolean => l === 'json' || l === 'typescript'
+
+  it('jsonc/json5 别名映射到 json（照常高亮而非降级纯文本）', () => {
+    expect(resolveHighlightLang('jsonc', supports)).toBe('json')
+    expect(resolveHighlightLang('json5', supports)).toBe('json')
+  })
+
+  it('认识的语言原样返回；空围栏返回 null（无语言高亮）', () => {
+    expect(resolveHighlightLang('json', supports)).toBe('json')
+    expect(resolveHighlightLang('typescript', supports)).toBe('typescript')
+    expect(resolveHighlightLang(undefined, supports)).toBeNull()
+    expect(resolveHighlightLang('', supports)).toBeNull()
+  })
+
+  it('不认识的语言返回 null=纯文本降级（不碰高亮器，「Could not find the language」stderr 警告不再漏进终端）', () => {
+    expect(resolveHighlightLang('madeup-lang', supports)).toBeNull()
   })
 })

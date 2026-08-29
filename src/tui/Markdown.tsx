@@ -67,16 +67,34 @@ function AnsiText({ ansi, wrap }: { ansi: string; wrap: boolean }): ReactElement
 
 // cli-highlight 是 CJS，ESM 下动态 import + 模块级共享单例 Promise（懒加载，成本只付一次）
 type HighlightFn = (code: string, opts?: { language?: string }) => string
-let hlPromise: Promise<HighlightFn> | null = null
-function loadHighlight(): Promise<HighlightFn> {
+type SupportsLanguageFn = (language: string) => boolean
+let hlPromise: Promise<{ hl: HighlightFn; supports: SupportsLanguageFn }> | null = null
+function loadHighlight(): Promise<{ hl: HighlightFn; supports: SupportsLanguageFn }> {
   if (!hlPromise) {
     hlPromise = import('cli-highlight').then((m) => {
-      const fn = m.highlight ?? (m.default as { highlight?: HighlightFn } | undefined)?.highlight
-      if (typeof fn !== 'function') throw new Error('cli-highlight.highlight not found')
-      return fn
+      const d = m as typeof m & { default?: { highlight?: HighlightFn; supportsLanguage?: SupportsLanguageFn } }
+      const hl = m.highlight ?? d.default?.highlight
+      const supports = m.supportsLanguage ?? d.default?.supportsLanguage
+      if (typeof hl !== 'function' || typeof supports !== 'function') {
+        throw new Error('cli-highlight.highlight/supportsLanguage not found')
+      }
+      return { hl, supports }
     })
   }
   return hlPromise
+}
+
+/** 高频围栏别名 → highlight.js 注册名。jsonc/json5 是 highlight.js 未收录的语言（LLM 写
+ *  settings/配置类回复的高频围栏），映射到 json 照常高亮；其余不认识的走纯文本降级。 */
+const LANG_ALIASES: Record<string, string> = { jsonc: 'json', json5: 'json' }
+
+/** 围栏语言 → 高亮语言名（不认识返回 null=纯文本）。必须在调用高亮器前预检：cli-highlight
+ *  对未注册语言会先往 stderr 打「Could not find the language …」再 throw——throw 会被
+ *  CodeBlock 的 catch 降级，stderr 那行却已经漏进终端（2026-08-29 用户点名）。 */
+export function resolveHighlightLang(lang: string | undefined, supports: SupportsLanguageFn): string | null {
+  if (lang === undefined || lang === '') return null
+  const mapped = LANG_ALIASES[lang] ?? lang
+  return supports(mapped) ? mapped : null
 }
 
 /** 代码块：cli-highlight 高亮（动态加载）+ 圆角边框；加载中 / 未知语言 fallback 纯文本 */
@@ -89,9 +107,12 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }): ReactElemen
       if (!cancelled) setAnsi(v)
     }
     loadHighlight()
-      .then((hl) => {
+      .then(({ hl, supports }) => {
+        // 高亮前先验语言（resolveHighlightLang 注）——jsonc 等映射别名照常高亮，
+        // 不认识的语言直接纯文本，不碰高亮器（stderr 警告不再漏进终端）
+        const hlLang = resolveHighlightLang(lang, supports)
         try {
-          out(lang ? hl(code, { language: lang }) : hl(code))
+          out(hlLang !== null ? hl(code, { language: hlLang }) : hl(code))
         } catch {
           out(code)
         }

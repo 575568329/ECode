@@ -1,9 +1,11 @@
 /** SkillPanel（M6 T2）：分组/标记/Enter 回填文本/空态。 */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { SkillPanel } from '../../src/tui/SkillPanel.js'
 import { skillRegistry, type SkillInfo } from '../../src/services/skill.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
 

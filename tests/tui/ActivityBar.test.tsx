@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, beforeEach, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { ActivityBar } from '../../src/tui/ActivityBar.js'
 import { __resetClockForTest } from '../../src/tui/clock.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 beforeEach(() => {
   __resetClockForTest()

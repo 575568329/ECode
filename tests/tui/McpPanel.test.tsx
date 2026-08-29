@@ -1,9 +1,11 @@
 /** McpPanel（M6 T3）：三级导航/状态着色行/错误展开/操作菜单。 */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { McpPanel } from '../../src/tui/McpPanel.js'
 import type { McpServerSnapshot } from '../../src/services/mcp/manager.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
 

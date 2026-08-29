@@ -3,10 +3,12 @@
  * （TuiApp.submit 里的守卫不可达——InputStream 组件内就分流了斜杠，审阅 P0-1 的教训：
  * 该测试走真实键路，不走 submit() 直调的自欺路径）。
  */
-import { describe, it, expect, vi } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, vi, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { InputStream } from '../../src/tui/InputStream.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 

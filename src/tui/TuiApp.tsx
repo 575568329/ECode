@@ -367,7 +367,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           setActive((a) => ({ ...a, streamingText: a.streamingText + ev.text }))
           break
         case 'item/started':
-          setActive((a) => ({ ...a, tools: [...a.tools, { name: ev.name, status: 'running' }] }))
+          setActive((a) => ({ ...a, tools: [...a.tools, { name: ev.name, status: 'running', at: Date.now() }] }))
           setActivity({ state: 'tool', text: ev.name })
           break
         case 'item/completed': {

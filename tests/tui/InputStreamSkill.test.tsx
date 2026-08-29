@@ -2,12 +2,14 @@
  * InputStream 的 M6 S-P5 行为：skill 分流 / 补全合并 / insert 通道 / 空格停匹配。
  * skillRegistry 单例注入测试数据（clear 隔离；私有 map 直塞避免触盘）。
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { SlashSuggest, InputStream, matchSlashEntries } from '../../src/tui/InputStream.js'
 import { commandRegistry, registerBuiltinCommands } from '../../src/commands/registry.js'
 import { skillRegistry, type SkillInfo } from '../../src/services/skill.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
 

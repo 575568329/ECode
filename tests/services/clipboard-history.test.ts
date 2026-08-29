@@ -1,11 +1,13 @@
 /** 图片落盘双向转换测（M10-P2b）：ImageBlock↔ImageRef、恢复降级、Alt+V 键位。 */
-import { describe, expect, it, vi } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, expect, it, vi, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { FileHistoryStore } from '../../src/services/history.js'
 import { readFileTool } from '../../src/tools/builtin/read_file.js'
 import { isBoundary, type ImageBlock, type Message } from '../../src/core/types.js'
 import { InputStream } from '../../src/tui/InputStream.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 function makeImg(path: string, data = 'AAA'): ImageBlock {
   return { type: 'image', source: { type: 'base64', media_type: 'image/png', data }, _w: 10, _h: 10, _path: path }

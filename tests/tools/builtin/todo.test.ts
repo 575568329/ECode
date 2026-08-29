@@ -1,13 +1,15 @@
 /**
  * todo 工具测（M11-P6）：AJV 边界 + 全量替换语义返回 + ToolGroupView 渲染。
  */
-import { describe, it, expect } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { todoTool } from '../../../src/tools/builtin/todo.js'
 import { ToolRegistryImpl } from '../../../src/tools/registry.js'
 import { ToolGroupView } from '../../../src/tui/ToolGroupView.js'
 import type { ActiveTool } from '../../../src/tui/types.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const reg = new ToolRegistryImpl()
 reg.register(todoTool)

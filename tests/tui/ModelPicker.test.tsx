@@ -3,10 +3,12 @@
  * 交互逻辑（↑↓/回车/Esc/环绕）已下沉到 Select 层（见 Select.test.tsx），
  * 这里只验证适配：label 格式 + active 判定 + 选中回调传 ModelEntry。
  */
-import { describe, it, expect, vi } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, vi, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { ModelPicker, type ModelEntry } from '../../src/tui/ModelPicker.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const entries: ModelEntry[] = [
   { name: 'astron', model: 'glm-5.2' },

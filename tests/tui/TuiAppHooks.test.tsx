@@ -2,8 +2,8 @@
  * TuiApp hooks 事件接入测（H-P4）：mock HookRunner 断言事件时序与 UI 反馈。
  * 不驱动 runLoop（submit 的 UserPromptSubmit block 路径不进 runLoop，直接可断）。
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -21,6 +21,8 @@ import type { HookRunner } from '../../src/services/hooks/runner.js'
 import type { HookVerdict } from '../../src/services/hooks/types.js'
 import type { LLMProvider, LLMProviderRunRequest } from '../../src/providers/interface.js'
 import type { Delta } from '../../src/core/types.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const config = {
   providers: {

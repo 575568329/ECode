@@ -1,10 +1,12 @@
-import { describe, expect, it, vi } from 'vitest'
+import {describe, expect, it, vi, afterEach } from 'vitest'
 import { tmpdir } from 'node:os'
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { render } from 'ink-testing-library'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { OutputViewer, OutputListPage, toolResultSource, taskFileSource, type LineSource, type RecentTool } from '../../src/tui/OutputViewer.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 // 隔离真实 ~/.ecode（[[agent-replay-test-safety]]：测试不读真用户目录——子代理 transcript 段落到假 home）
 vi.mock('node:os', async (importOriginal) => {

@@ -17,6 +17,9 @@ export interface ActiveTool {
   use?: ToolUseBlock
   result?: ToolResultBlock
   status: 'running' | 'done' | 'error'
+  /** F-06：开始时间戳——展开态输出头部显示 HH:MM，历史快照不再误读为当前状态
+   *  （轮次号全链路成本大，任务书允许降级为纯时间戳；缺省不显示——Static 固化无此字段） */
+  at?: number
 }
 
 /** 动态区当前轮活跃状态（分区累积，直到 runLoop 结束才 commit） */

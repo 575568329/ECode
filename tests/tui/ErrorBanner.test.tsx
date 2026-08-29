@@ -1,8 +1,10 @@
-import { describe, it, expect } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { ErrorBanner } from '../../src/tui/ErrorBanner.js'
 import type { AppError } from '../../src/core/types.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 function makeError(over: Partial<AppError> = {}): AppError {
   return {

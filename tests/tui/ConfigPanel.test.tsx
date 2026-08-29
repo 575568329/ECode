@@ -1,12 +1,14 @@
 /** ConfigPanel + saveConfigKey 测（M10-P2）：三页签/保存非破坏/逃生口。 */
-import { describe, expect, it, vi } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, expect, it, vi, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ConfigPanel } from '../../src/tui/ConfigPanel.js'
 import { saveConfigKey } from '../../src/services/configFs.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 40))
 

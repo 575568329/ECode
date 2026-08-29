@@ -4,7 +4,7 @@ import { mergeToolGroup, inputDigest, previewLine } from './toolview.js'
 import { DiffLine } from './DiffLine.js'
 import { theme } from './theme.js'
 import { symbols } from './symbols.js'
-import { foldLines, useViewport } from './viewport.js'
+import { clipWidth, foldLines, useViewport } from './viewport.js'
 import type { ActiveTool } from './types.js'
 
 /** 字节数格式化（B/KB/MB）。与 ToolCallView 一致，复用同一展示约定。 */
@@ -58,7 +58,9 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
   const hiddenTools = capped ? tools.length - maxTools : 0
   const { count, visible, overflow } = mergeToolGroup(toolsShown)
   const shown = expanded ? toolsShown : visible
-  const namesPreview = visible.map((t) => t.name).join(', ')
+  // F-09：表头名字串压终端右边界时末字符被裁（"bash"→"bas"，ambiguous 宽度/边界取整误差）——
+  // clipWidth 提前收口：超宽以 … 明示截断，末名永不静默丢字（CC 工具行同思路：摘要列固定收口）
+  const namesPreview = clipWidth(visible.map((t) => t.name).join(', '), Math.max(12, columns - 14))
   const headerSuffix = overflow > 0 ? ` ${symbols.trunc} +${overflow} 个` : ''
 
   return (
@@ -142,6 +144,7 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
                     <Text dimColor>
                       {'  '}
                       {symbols.foldExpanded} 输出 ({formatBytes(bytes)})
+                      {t.at !== undefined ? ` · ${new Date(t.at).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })}` : ''}
                     </Text>
                     {(() => {
                       // M14-V2：展开全文不再无界——物理行 head-tail（头 3 定位 + 尾最新），中段折叠提示

@@ -326,6 +326,10 @@ export const useApp = create<AppState>((set) => ({
           return patchView(st, f.sessionId, (v) => ({ ...v, entries: [...v.entries, { kind: 'system', text: String(f.ev.message ?? ''), error: true }] }))
         case 'systemMsg':
           return patchView(st, f.sessionId, (v) => ({ ...v, entries: [...v.entries, { kind: 'system', text: String(f.ev.text ?? '') }] }))
+        // warn 帧（maxIter 耗尽/loop-guard 等 onWarn 通道）：TUI 有告警中心消费，web 此前落 default
+        // 被丢弃——用户拿假完成。与 notice 的 warn 分支同形态：⚠ 前缀 system 行
+        case 'warn':
+          return patchView(st, f.sessionId, (v) => ({ ...v, entries: [...v.entries, { kind: 'system', text: `⚠ ${String(f.ev.text ?? '')}` }] }))
         case 'notice':
           return patchView(st, f.sessionId, (v) => ({
             ...v,

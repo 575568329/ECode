@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { render } from 'ink-testing-library'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -7,6 +7,8 @@ import * as path from 'node:path'
 import { InputStream } from '../../src/tui/InputStream.js'
 import { extractAtQuery, applyAtCompletion } from '../../src/tui/atsuggest.js'
 import { loadInputHistory, appendInputHistory, INPUT_HISTORY_MAX } from '../../src/tui/inputHistory.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 80))
 

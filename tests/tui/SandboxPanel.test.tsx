@@ -1,8 +1,10 @@
 /** SandboxPanel 测（M9-P4）：四档列表/Tab 循环/full-access 二级确认/Enter 选定。 */
-import { describe, it, expect, vi } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, vi, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { SandboxPanel } from '../../src/tui/SandboxPanel.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 40))
 const TAB = '\t'

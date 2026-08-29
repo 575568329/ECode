@@ -1,7 +1,9 @@
-import { describe, it, expect, vi } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, vi, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { InputRender, TextInput, foldInputView } from '../../src/tui/TextInput.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 describe('InputRender', () => {
   it('空文本 + placeholder 显示占位', () => {

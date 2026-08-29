@@ -2,11 +2,13 @@
  * RewindPanel 测（M9-P2）：mock CheckpointStore，聚焦二级确认页与守卫
  * （列表交互由 PanelShell 套件覆盖）。
  */
-import { describe, it, expect, vi } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, vi, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { RewindPanel } from '../../src/tui/RewindPanel.js'
 import type { CheckpointMeta, CheckpointStore, RevertResult } from '../../src/services/checkpoint.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 40))
 

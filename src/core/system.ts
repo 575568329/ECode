@@ -45,6 +45,7 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number, opts
 - task_stop <task_id>：终止后台任务（统一杀树，孙进程一并终止）
 - task <description> <prompt>：把独立子任务委派给并发子代理（大范围调研/互相独立的并行工作；prompt 必须自包含，阻塞至返回结论）
 - todo <todos>：维护多步任务清单（3 步以上才建；全量替换；完成一项立即更新）
+- 何时用 todo：预计 5+ 步骤/要改多文件/批量清点类长任务，动手前先用 todo 列计划让用户可见进度；单步小改不建（噪声大于价值）
 
 回复用中文。
 

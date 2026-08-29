@@ -1,8 +1,10 @@
-import { describe, it, expect } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import stringWidth from 'string-width'
 import { Markdown, computeColWidths } from '../../src/tui/Markdown.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 /** 剥 ANSI 后按显示宽度测一行（中文 1 字 2 列），用于断言表格不超屏 */
 const lineWidth = (line: string): number => stringWidth(line.replace(/\u001b\[[0-9;]*m/g, ''))

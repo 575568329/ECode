@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { ConfirmPrompt, previewMaxLines, clampPreviewLines } from '../../src/tui/ConfirmPrompt.js'
 import type { ConfirmState } from '../../src/tui/types.js'
 import type { ToolUseBlock } from '../../src/core/types.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 /** ink 对 ESC/方向键输入有 ~20ms flush 延迟，testing 要 await 再断言 */
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 30))

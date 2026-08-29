@@ -197,6 +197,11 @@ describe('M14-C4②：error/systemMsg/notice 帧入对话流', () => {
     expect(entries?.[0]).toEqual({ kind: 'system', text: '⚠ lint 有失败' })
     expect(entries?.[1]).toEqual({ kind: 'system', text: '✖ 炸了', error: true })
   })
+  it('warn 帧（maxIter/loop-guard 等 onWarn 通道）→ ⚠ system 行，不再落 default 丢弃', () => {
+    frame('s1', { type: 'warn', text: '已达最大迭代数 50，提前收尾' })
+    const entries = useApp.getState().views.s1?.entries
+    expect(entries?.[0]).toEqual({ kind: 'system', text: '⚠ 已达最大迭代数 50，提前收尾' })
+  })
 })
 
 describe('M14-C4③：askUser 自由文本问答 takeover', () => {

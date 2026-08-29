@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { Text } from 'ink'
 import { Conversation, GrayStreaming } from '../../src/tui/Conversation.js'
 import { createActive, type CommittedItem, type ActiveTool } from '../../src/tui/types.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 describe('GrayStreaming', () => {
   it('灰字显示流式文本', () => {

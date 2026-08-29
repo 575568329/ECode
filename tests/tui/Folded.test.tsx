@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, expect, it, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import { Folded } from '../../src/tui/Folded.js'
 import { foldLines } from '../../src/tui/viewport.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 describe('Folded 折叠展示件', () => {
   it('未折叠时不渲染提示行', () => {

@@ -2,11 +2,13 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render } from 'ink-testing-library'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { PluginPanel } from '../../src/tui/PluginPanel.js'
 import { PluginLoader } from '../../src/services/plugin/loader.js'
 import { SkillRegistry } from '../../src/services/skill.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 let tmpRoot: string
 let loader: PluginLoader

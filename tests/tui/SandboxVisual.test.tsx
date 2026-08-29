@@ -4,10 +4,12 @@
  * - C3：双击 Esc 直达 rewind（TuiApp 层逻辑较重，此处验核心判定函数 + StatusBar 渲染；
  *        双击时序留给 pty 探针）
  */
-import { describe, it, expect } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { StatusBar, sandboxArrows } from '../../src/tui/StatusBar.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 describe('C2 sandboxArrows（档位箭头）', () => {
   it('default 无标记', () => {

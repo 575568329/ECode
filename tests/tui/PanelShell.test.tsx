@@ -2,10 +2,12 @@
  * PanelShell（M6 T1）：分组导航/即时搜索/Esc 逐级/窗口滚动/空态。
  * Esc 断言注意 ~20ms flush（ink-testing-library，见自测规范）。
  */
-import { describe, it, expect, vi } from 'vitest'
-import { render } from 'ink-testing-library'
+import {describe, it, expect, vi, afterEach } from 'vitest'
+import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
 import { PanelShell, type PanelRow } from '../../src/tui/PanelShell.js'
+
+afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
 

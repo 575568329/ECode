@@ -10,7 +10,8 @@
  * - 折叠是数据级（先按显示宽度 wrap 成物理行再切窗），不做渲染后测量——
  *   measureElement 需渲染后回读再重渲，形成闪跳反馈环（M14-D2）。
  */
-import { useWindowSize } from 'ink'
+import { useEffect, useState } from 'react'
+import { useStdout } from 'ink'
 import wrapAnsi from 'wrap-ansi'
 import stringWidth from 'string-width'
 
@@ -35,14 +36,44 @@ export function computeBudget(rows: number): number {
 }
 
 /**
- * 视口 hook（M14 §3.1）：统一经 ink useWindowSize（resize 触发重渲），
- * 替换各组件手读 stdout.rows。非 TTY 兜底 24 行。
+ * 视口 hook（M14 §3.1）：resize 触发重渲，非 TTY 兜底 24 行。
+ *
+ * F-40：共享单监听——ink 原生 useWindowSize 是「每组件实例各挂一个 stdout.on('resize')」，
+ * Static 历史区每个 ToolGroupView 都调用且长期挂载，恢复长会话累积 N 个监听
+ * （MaxListenersExceededWarning: 11 resize listeners added to [WriteStream]，dogfood
+ * 2026-08-29 实证）。本模块改为模块级共享 1 个 resize 监听 + 订阅者集合，
+ * N 个组件恒 1 个底层监听；组件卸载只退订集合（底层监听常驻，进程级单份）。
  */
+const resizeListeners = new Set<() => void>()
+let sharedAttached = false
+
+function ensureSharedResize(stdout: NodeJS.WriteStream): void {
+  if (sharedAttached) return
+  sharedAttached = true
+  stdout.on('resize', () => {
+    for (const l of resizeListeners) l()
+  })
+}
+
+function readSize(stdout: NodeJS.WriteStream | undefined): { rows: number; columns: number } {
+  const rows = typeof stdout?.rows === 'number' && stdout.rows > 0 ? stdout.rows : ROWS_FALLBACK
+  const columns = typeof stdout?.columns === 'number' && stdout.columns > 0 ? stdout.columns : COLUMNS_FALLBACK
+  return { rows, columns }
+}
+
 export function useViewport(): Viewport {
-  const size = useWindowSize()
-  const rows = typeof size.rows === 'number' && size.rows > 0 ? size.rows : ROWS_FALLBACK
-  const columns = typeof size.columns === 'number' && size.columns > 0 ? size.columns : COLUMNS_FALLBACK
-  return { rows, columns, budget: computeBudget(rows) }
+  const { stdout } = useStdout()
+  const [size, setSize] = useState(() => readSize(stdout))
+  useEffect(() => {
+    if (stdout === undefined) return
+    ensureSharedResize(stdout)
+    const onResize = (): void => setSize(readSize(stdout))
+    resizeListeners.add(onResize)
+    return () => {
+      resizeListeners.delete(onResize)
+    }
+  }, [stdout])
+  return { rows: size.rows, columns: size.columns, budget: computeBudget(size.rows) }
 }
 
 /**

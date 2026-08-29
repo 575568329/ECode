@@ -1154,10 +1154,12 @@ export class HostSession {
       .join('')
   }
 
-  /** 检测 abort：断信号 + systemMsg 可读原因 + 日志（loop 心脏零改动——signal 它本来就在听） */
+  /** 检测 abort：断信号 + systemMsg 可读原因 + 日志（loop 心脏零改动——signal 它本来就在听）。
+   *  F-38：文本不带 ⚠ 前缀——图标由各端渲染层统一加（TUI renderNoticeLine/web store warn case），
+   *  否则底部行「⚠ ⚠」双图标。 */
   private guardAbort(detector: string, reason: string): void {
     this.abort.abort()
     this.deps.logger.warn('loop-guard', 'abort', { detector, reason })
-    this.publish('systemMsg', { text: `⚠ [loop-guard] ${reason}，已终止本轮。` })
+    this.publish('systemMsg', { text: `[loop-guard] ${reason}，已终止本轮。` })
   }
 }

@@ -61,7 +61,8 @@ import { OutputListPage, OutputViewer, toolResultSource, taskFileSource, subagen
 import { taskRegistry } from '../services/tasks.js'
 import { undoEcodeCommit } from '../services/git.js'
 import { readClipboardImage } from '../services/clipboard.js'
-import { pushNotice, deriveNoticeLine, renderNoticeLine, type NoticeItem, type NoticeLevel } from './notices.js'
+import { pushNotice, deriveNoticeLine, renderNoticeLine, NOTICE_TTL_MS, type NoticeItem, type NoticeLevel } from './notices.js'
+import { theme } from './theme.js'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
 import { Select } from './Select.js'
 import type { McpManager, McpServerSnapshot } from '../services/mcp/manager.js'
@@ -184,7 +185,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       if (verdict.additionalContext.length > 0) finalText = `${finalText}\n\n[hook context]\n${verdict.additionalContext.join('\n')}`
     }
     const r = await host.send({ op: 'prompt', text: finalText, mode: 'StartOrSteer', ...(images !== undefined && images.length > 0 ? { images } : {}) })
-    if (!r.ok) setSystemMsgs([`插话失败：${r.error}`])
+    if (!r.ok) setSystemMsgs([`插话失败：${r.error}`], 'warn')
   }
   // M11-P4：运行中子代理快照（进度事件驱动）
   const [subagents, setSubagents] = useState<SubagentStatus[]>([])
@@ -237,7 +238,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const pasteImageFromClipboard = async (): Promise<string | null> => {
     const img = await readClipboardImage(deps.history.currentSessionId())
     if (img === null) {
-      setSystemMsgs(['剪贴板无图片（或读取失败）'])
+      setSystemMsgs(['剪贴板无图片（或读取失败）'], 'warn')
       return null
     }
     // 序号读 ref（state 渲染闭包在快速连击 Alt+V 未提交时取旧 length，产生重复 [图片#N]）
@@ -269,9 +270,29 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     noticeIdRef.current += 1
     setNotices((prev) => pushNotice(prev, noticeIdRef.current, level, text))
   }
+  // F-38：TTL 过期时钟——仅当存在可过期条目（info/warn）时每秒 tick 驱动重渲染，
+  // 到期条目从底部行退场（error 常驻不需要时钟；无过期条目时不挂 interval 不空转）
+  const [noticeTick, setNoticeTick] = useState(() => Date.now())
+  useEffect(() => {
+    if (!notices.some((n) => NOTICE_TTL_MS[n.level] !== undefined)) return
+    const timer = setInterval(() => setNoticeTick(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [notices])
   const [tokens, setTokens] = useState(0)
   const [sessionCost, setSessionCost] = useState(0)
-  const [systemMsgs, setSystemMsgs] = useState<string[]>([])
+  // F-38：即时系统提示（命令反馈/状态提示）——保留输入框上方多行渲染（/cost 等命令输出
+  // 需要完整多行，塞底部行会被截断），但加两点秩序：①TTL 5s 自动消失（不再常驻占屏）；
+  // ②分级着色（默认 dim，失败类调用点传 'warn' 黄色）——错误类型有秩序。
+  const [systemMsgs, setSystemMsgsState] = useState<Array<{ text: string; level: NoticeLevel }>>([])
+  const setSystemMsgs = (msgs: string[], level: NoticeLevel = 'info'): void => {
+    setSystemMsgsState(msgs.length === 0 ? [] : msgs.map((text) => ({ text, level })))
+  }
+  // TTL 时钟：新消息重置计时（依赖数组挂 systemMsgs 引用）；空队列不挂 timer 不空转
+  useEffect(() => {
+    if (systemMsgs.length === 0) return
+    const timer = setTimeout(() => setSystemMsgsState([]), 5000)
+    return () => clearTimeout(timer)
+  }, [systemMsgs])
   const [iter, setIter] = useState<number | undefined>(undefined)
   // 运行态镜像（thread/status 驱动）：placeholder/快捷键提示的权威判据。
   // 旧判据 active.streamingText !== '' 在轮末延迟 commit 下永不清空——
@@ -421,6 +442,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           if (ev.maxIter !== undefined) setMaxIter(ev.maxIter)
           break
         case 'activity':
+          // F-38：中断提示从内容区（ActivityBar 黄字）收敛到底部告警行——info 级 5s 自动消失
+          // （去重机制防同轮多帧重复入队）
+          if (ev.state === 'aborted') setSystemMsgs(['已中断，内容已保留'])
           setActivity({ state: ev.state as ActivityState, text: ev.text })
           break
         case 'turn/completed':
@@ -462,7 +486,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           setSystemMsgs(['正在压缩对话...'])
           break
         case 'compactFailed':
-          setSystemMsgs(['（压缩未完成——对话太短或摘要失败，稍后自动重试）'])
+          setSystemMsgs(['（压缩未完成——对话太短或摘要失败，稍后自动重试）'], 'warn')
           break
         case 'approval/requested': {
           confirmRef.current = true
@@ -601,7 +625,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     })
     if (!r.ok) {
       setActive((a) => ({ ...a, streaming: false }))
-      setSystemMsgs([`发送失败：${r.error}`])
+      setSystemMsgs([`发送失败：${r.error}`], 'warn')
       setActivity({ state: 'idle' })
     }
   }
@@ -620,7 +644,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       runningRef.current = false
       setActivity({ state: 'idle' })
       deps.logger.error('tui', 'submit_failed', { message: e instanceof Error ? e.message : String(e) })
-      setSystemMsgs(['提交失败：' + (e instanceof Error ? e.message : String(e))])
+      setSystemMsgs(['提交失败：' + (e instanceof Error ? e.message : String(e))], 'warn')
     }
   }
 
@@ -709,7 +733,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   /** M6 M-P6：/mcp reconnect 直达（面板外子命令） */
   const mcpReconnect = async (name?: string): Promise<void> => {
     if (deps.mcpManager === null) {
-      setSystemMsgs(['（MCP 未启用）'])
+      setSystemMsgs(['（MCP 未启用）'], 'warn')
       return
     }
     setSystemMsgs([`正在重连${name !== undefined && name !== '' ? ` ${name}` : '全部'} MCP server...`])
@@ -722,7 +746,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       ])
     } catch (e) {
       // 未知 server 名/内部错误透传（审阅 P2：吞错会渲染成「0 个成功」的假成功）
-      setSystemMsgs(['MCP 重连失败：' + (e instanceof Error ? e.message : String(e))])
+      setSystemMsgs(['MCP 重连失败：' + (e instanceof Error ? e.message : String(e))], 'warn')
     }
   }
 
@@ -947,14 +971,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
   }, [])
 
-  // M7 P4.5：skill 同名冲突底部汇总（非阻断——计数只认 skill 间遮蔽，命令遮蔽不算；引导自然语言消解）
+  // M7 P4.5：skill 同名冲突汇总（非阻断——计数只认 skill 间遮蔽，命令遮蔽不算；引导自然语言消解）。
+  // F-38：系统发现的问题走底部告警行（/warnings 可回看）——不随 systemMsgs 5s 消失
   useEffect(() => {
     const count = deps.skillRegistry.shadowedEntries.length
     if (count === 0) return
-    setSystemMsgs((prev) => [
-      ...prev,
-      `${count} 个 skill 同名冲突（/skill 查看详情；可直接让我改名或删除其一）`,
-    ])
+    pushNoticeFn('warn', `${count} 个 skill 同名冲突（/skill 查看详情；可直接让我改名或删除其一）`)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
   }, [])
 
@@ -1049,8 +1071,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // placeholder 判据改运行态镜像（streamingText 延迟 commit 常驻的旧病根治）
   const busy = running
 
-  // systemMsgs（命令反馈）不进 committed——是即时系统消息（非对话历史），
-  // 独立渲染在 InputStream 上方（见 return），避免压在当前轮对话之上
   const fullCommitted: CommittedItem[] = committed
 
   const hasDoneTool = active.tools.some((t) => t.use)
@@ -1091,12 +1111,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       iter={iter}
       maxIter={maxIter}
       warningLevel={(() => {
-        const l = deriveNoticeLine(notices)
+        const l = deriveNoticeLine(notices, noticeTick)
         return l === null || warning !== undefined ? undefined : l.level
       })()}
       warning={
         warning ?? (() => {
-          const line = deriveNoticeLine(notices)
+          const line = deriveNoticeLine(notices, noticeTick)
           return line === null ? undefined : renderNoticeLine(line, process.stdout.columns ?? 100)
         })()
       }
@@ -1332,8 +1352,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       {systemMsgs.length > 0 && (
         <Box flexDirection="column">
           {systemMsgs.map((m, i) => (
-            <Text key={`sys${clearKey}_${i}`} dimColor>
-              {m}
+            <Text key={`sys${clearKey}_${i}`} color={m.level === 'warn' ? theme.warn : undefined} dimColor={m.level !== 'warn'}>
+              {m.text}
             </Text>
           ))}
         </Box>
@@ -1345,7 +1365,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           void host.send({ op: 'interjection/clear' })
         }}
         busy={runningRef.current}
-        onSlashBusy={() => setSystemMsgs(['运行中暂不能执行命令（空闲后再发；插话请直接输入文字）'])}
+        onSlashBusy={() => setSystemMsgs(['运行中暂不能执行命令（空闲后再发；插话请直接输入文字）'], 'warn')}
         onTabSandbox={() => {
           // F-33（用户拍板）：沙箱随时可切——TUI 侧忙碌拦截废除（宿主 getter 化后无口径分裂；
           // full-access 提档弹审批帧语义照旧）
@@ -1359,7 +1379,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
                 applySandboxMode('full-access')
                 setSystemMsgs(['沙箱模式：full-access（本会话副作用免确认）'])
               } else {
-                setSystemMsgs([`提档未生效：${r.error}`])
+                setSystemMsgs([`提档未生效：${r.error}`], 'warn')
               }
             })
             return

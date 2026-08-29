@@ -36,11 +36,12 @@ describe('ActivityBar', () => {
     expect(lastFrame()).toContain('重试中')
   })
 
-  it('aborted：显示已中断提示', () => {
+  it('aborted：不显示黄字横幅（F-38——中断提示收敛到底部告警行，此处空占位防布局跳动）', () => {
     const { lastFrame } = render(React.createElement(ActivityBar, { state: 'aborted' }))
     const f = lastFrame() ?? ''
-    expect(f).toContain('已中断')
-    expect(f).toContain('内容已保留')
+    expect(f).not.toContain('已中断')
+    expect(f).not.toContain('内容已保留')
+    expect(f).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
   })
 
   it('idle：占位（无 spinner / 无文案）', () => {

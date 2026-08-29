@@ -31,18 +31,13 @@ interface ActivityBarProps {
  * 把 useClock 下沉到 ActiveSpinner 子组件，idle/aborted 时不订阅（不空转）。
  */
 export function ActivityBar({ state, text }: ActivityBarProps): ReactElement {
-  // F-36：marginTop 级联补位（ToolGroupView 已去 marginBottom，此处自带与消息块间的 1 空行）
-  if (state === 'idle') {
+  // F-38：marginTop 级联补位（ToolGroupView 已去 marginBottom，此处自带与消息块间的 1 空行）。
+  // aborted 不再显示黄字横幅——中断提示收敛到底部告警行（TuiApp activity case，5s 自动消失）；
+  // 此处保持 idle 同款空行占位（布局稳定不跳动）
+  if (state === 'idle' || state === 'aborted') {
     return (
       <Box marginTop={GAP.block}>
         <Text>{' '}</Text>
-      </Box>
-    )
-  }
-  if (state === 'aborted') {
-    return (
-      <Box marginTop={GAP.block}>
-        <Text color={theme.warn}>⚠ 已中断，内容已保留</Text>
       </Box>
     )
   }

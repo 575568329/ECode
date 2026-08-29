@@ -1,4 +1,4 @@
-/** 多模态媒介测（M10-P0）：格式判定/尺寸/守卫/页数/vision 判定（纯函数 + tmpdir 真文件）。 */
+/** 多模态媒介测（M10-P0）：格式判定/尺寸/守卫/页数 + read_file 多模态集成（纯函数 + tmpdir 真文件）。 */
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,8 +8,6 @@ import {
   imageDimensions,
   pdfPageCount,
   buildMediaBlock,
-  isVisionModel,
-  NO_VISION_MESSAGE,
 } from '../../src/services/media.js'
 import { readFileTool } from '../../src/tools/builtin/read_file.js'
 
@@ -99,23 +97,8 @@ describe('buildMediaBlock（守卫）', () => {
   })
 })
 
-describe('isVisionModel / 守卫文案', () => {
-  it('视觉模型名判定（glm-4.6v / -vl / vision / 4o；非视觉拒绝）', () => {
-    expect(isVisionModel('glm-4.6v')).toBe(true)
-    expect(isVisionModel('qwen2.5-vl-3b')).toBe(true)
-    expect(isVisionModel('some-vision-pro')).toBe(true)
-    expect(isVisionModel('glm-4.6')).toBe(false)
-    expect(isVisionModel('deepseek-v4-pro')).toBe(false)
-  })
-  it('文案唯一口径：不点名具体模型', () => {
-    expect(NO_VISION_MESSAGE).toContain('/model')
-    expect(NO_VISION_MESSAGE).toContain('MCP')
-    expect(NO_VISION_MESSAGE).not.toMatch(/glm-4\.6v-flash/)
-  })
-})
-
 describe('read_file 多模态集成', () => {
-  it('读 PNG（vision 模型）→ blocks 带图；非 vision → is_error 守卫文案', async () => {
+  it('读 PNG 恒直传（2026-08-29 拆视觉名门）——vision/非 vision 模型名都返回 ImageBlock，由端点自证能力', async () => {
     const p = join(dir, 'a.png')
     writeFileSync(p, minPng(10, 10))
     const ctxV = { cwd: dir, signal: new AbortController().signal, model: 'glm-4.6v' }
@@ -124,9 +107,8 @@ describe('read_file 多模态集成', () => {
     expect(r1.blocks?.[0]?.type).toBe('image')
     const ctxT = { cwd: dir, signal: new AbortController().signal, model: 'glm-4.6' }
     const r2 = await readFileTool.execute({ path: 'a.png' }, ctxT)
-    expect(r2.is_error).toBe(true)
-    expect(r2.content).toContain('不支持图片输入')
-    expect(r2.blocks).toBeUndefined()
+    expect(r2.is_error).toBeFalsy()
+    expect(r2.blocks?.[0]?.type).toBe('image')
   })
   it('读 PDF → document block；读 txt 不走多模态（无 blocks）', async () => {
     const pdf = join(dir, 'doc.pdf')

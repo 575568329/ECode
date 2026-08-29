@@ -146,3 +146,27 @@ describe('read_file 敏感路径门（密钥外传链封堵，fail-closed）', (
     expect(abs.content).toBe('sub content')
   })
 })
+
+describe('read_file 图片恒直传（2026-08-29 拆视觉名门）', () => {
+  /** 最小合法 PNG（8 字节签名 + IHDR：1×1，CRC 空占位——判定只看头段） */
+  const minPng = (): Buffer => {
+    const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const len = Buffer.from([0, 0, 0, 13])
+    const ihdr = Buffer.from('IHDR')
+    const data = Buffer.alloc(13)
+    data.writeUInt32BE(1, 0)
+    data.writeUInt32BE(1, 4)
+    data[8] = 8
+    data[9] = 2
+    return Buffer.concat([sig, len, ihdr, data, Buffer.alloc(4)])
+  }
+
+  it('非视觉系模型名（glm-5.3）读图仍返回 ImageBlock——能力由端点自证，不做名字前置拦截', async () => {
+    const img = path.join(cwd, 'pic.png')
+    fs.writeFileSync(img, minPng())
+    const res = await readFileTool.execute({ path: img }, { ...ctx(), model: 'glm-5.3' })
+    expect(res.is_error).toBeFalsy()
+    expect(res.content).toContain('已读取图片')
+    expect(res.blocks?.[0]?.type).toBe('image')
+  })
+})

@@ -3,6 +3,8 @@
  *
  * readonly:true（免确认、可并行）。文本 UTF-8；图片/PDF magic bytes 判定 → 守卫 →
  * ImageBlock/DocumentBlock 经 ToolResult.blocks 回喂（base64 不进 content 字符串主路径）。
+ * 图片恒直传（2026-08-29 拆除 isVisionModel 视觉名门）：能力由端点自证，模型名名单必滞后
+ * （glm-5.3-flash 有视觉却被误拦实证）；无视觉模型由端点报错自然回喂。
  *
  * 敏感路径门（安全审阅 P0）：本工具免确认且无路径围栏，若可直读 .env / ~/.ecode/config.json
  * （apiKey）/ id_rsa，密钥即进上下文（配合 web_fetch GET 查询串可外传）——命中敏感集合
@@ -13,7 +15,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type { Tool } from '../interface.js'
 import { sensitiveGate } from '../sensitive.js'
-import { buildMediaBlock, detectMedia, isVisionModel, NO_VISION_MESSAGE } from '../../services/media.js'
+import { buildMediaBlock } from '../../services/media.js'
 
 /** 多模态候选扩展名（先按扩展名分流避免给每个文本文件读字节判 magic） */
 const MEDIA_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.pdf'])
@@ -44,14 +46,12 @@ export const readFileTool: Tool = {
       return { content: '文件自上次读取后未变化（本会话已读，见上文 tool_result）。如需强制查看可用 bash cat。' }
     }
     try {
-      // 多模态分流：扩展名命中才读字节判 magic（文本主路径零额外开销）
+      // 多模态分流：扩展名命中才读字节判 magic（文本主路径零额外开销）。
+      // 图片恒直传（2026-08-29 拍板拆除视觉名门）：模型视觉能力由端点自证——名字名单必滞后
+      // （glm-5.3-flash 有视觉却被 isVisionModel 误拦实证）；无视觉模型由端点报错自然回喂。
       const ext = path.extname(abs).toLowerCase()
       if (MEDIA_EXTS.has(ext)) {
         const buf = await fs.readFile(abs)
-        const media = detectMedia(buf, ext)
-        if (media.kind === 'image' && !isVisionModel(ctx.model ?? '')) {
-          return { content: NO_VISION_MESSAGE, is_error: true }
-        }
         const guard = buildMediaBlock(buf, ext, rel)
         if (!guard.ok) return { content: guard.reason, is_error: true }
         // 终审 P1-1：带 _path——history 落盘转 image_ref（base64 不进会话文件，主路径同粘贴路径）

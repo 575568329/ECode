@@ -140,17 +140,3 @@ export function buildMediaBlock(buf: Buffer, ext: string, name: string): MediaGu
   }
   return { ok: true, block }
 }
-
-/** 无视觉能力守卫文案（M10 唯一口径——v1.8"解析不兜底"：只说事实与出路，不点名推荐）。 */
-export const NO_VISION_MESSAGE =
-  '当前模型不支持图片输入。可 /model 切换到有视觉能力的模型（自选），或安装图像理解类 MCP server。'
-
-/** 模型视觉能力判定（名称后缀启发 + 常见视觉系名单——终审 P2-10：gpt-4o/gemini 系名不含 v/vl 后缀会误拦；models.dev 视觉标记通道后置）。 */
-export function isVisionModel(model: string): boolean {
-  // 复审 P2-4：claude 现行命名（sonnet-4-5/opus-4-1）不含单 digit 后不匹配 \d——名单式收紧；gemini 排除 embedding
-  return (
-    /[-_.]v$|[-_.]\d+v$|[-_.](vl|vision)([-_.]|$)|\b4o\b|\bgpt-(4o|5|5\d)|glm-4v|qvq|internvl/i.test(model) ||
-    /claude-(3|opus|sonnet|haiku|\d)/i.test(model) ||
-    /gemini-(?!embedding)/i.test(model)
-  )
-}

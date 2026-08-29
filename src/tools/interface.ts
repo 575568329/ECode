@@ -78,8 +78,9 @@ export interface ToolContext {
    */
   sandbox?: import('../services/sandbox.js').Sandbox
   /**
-   * M10-P0：当前模型名（无视觉能力守卫——read_file 读图前查 isVisionModel）。
-   * 宿主装配注入；缺省空串 = 拦截（fail-closed——无模型信息时不放行图片，宁拦勿错）。
+   * M10-P0：当前模型名（宿主装配注入）。曾用于 read_file 读图前的 isVisionModel 名门，
+   * 2026-08-29 拍板拆除（名单必滞后，glm-5.3-flash 误拦实证）——图片恒直传由端点自证；
+   * 字段保留：工具侧按模型名做其他能力分支时的现成入口。
    */
   model?: string
   /**

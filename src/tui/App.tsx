@@ -28,6 +28,9 @@ interface AppProps {
   iter?: number
   maxIter?: number
   tokens?: number
+  /** F-44：上下文占用/模型窗口（usage 帧透出）——StatusBar ctx 段 */
+  ctxUsed?: number
+  ctxWindow?: number
   cost?: string
   /** MCP 段（StatusBar 透传，M6） */
   mcp?: string
@@ -72,6 +75,8 @@ export function App({
   iter,
   maxIter,
   tokens,
+  ctxUsed,
+  ctxWindow,
   cost,
   mcp,
   sandbox,
@@ -118,6 +123,8 @@ export function App({
               iter={iter}
               maxIter={maxIter}
               tokens={tokens}
+              ctxUsed={ctxUsed}
+              ctxWindow={ctxWindow}
               cost={cost}
               mcp={mcp}
               sandbox={sandbox}

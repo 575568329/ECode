@@ -496,6 +496,10 @@ export class HostSession {
       cacheRead: cache?.read,
       cacheCreation: cache?.creation,
       costCny: cost ?? undefined,
+      // F-44：上下文占用/窗口透出——占用=本轮 prompt 全量（input+cacheRead，API 真值，
+      // 比本地估算准）；窗口=runLoop 装配时解析缓存的 contextWindow。StatusBar ctx 段消费
+      contextUsed: inputTokens + (cache?.read ?? 0),
+      contextWindow: this.ctxWindowCache,
     })
     // M12-P0：stats 行落盘（逐帧增量；mcpCalls 为会话内累计快照——聚合取每会话最后一条）
     this.deps.history.appendUsageStats({

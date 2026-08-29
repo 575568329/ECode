@@ -7,6 +7,9 @@ interface StatusBarProps {
   iter?: number
   maxIter?: number
   tokens?: number
+  /** F-44：上下文占用/模型窗口（usage 帧透出）——ctx 段显示占用与余量，≥90%（压缩阈值）warn 色 */
+  ctxUsed?: number
+  ctxWindow?: number
   cost?: string
   /** MCP 段（M6：'MCP 2/3' / 'MCP 连接中…'；undefined 不显示） */
   mcp?: string
@@ -43,8 +46,12 @@ export function sandboxArrows(mode: string): string {
  * warning 不在此渲染——运行时告警由 App 层渲染为底部独立第二行（长消息截断，
  * 防止 429 等含 JSON body 的错误把本行与快捷键提示挤碎）。
  */
-export function StatusBar({ model, iter, maxIter, tokens, cost, mcp, sandbox, sandboxDanger }: StatusBarProps): ReactElement {
+export function StatusBar({ model, iter, maxIter, tokens, ctxUsed, ctxWindow, cost, mcp, sandbox, sandboxDanger }: StatusBarProps): ReactElement {
   const arrows = sandbox !== undefined ? sandboxArrows(sandbox) : ''
+  // F-44：ctx 段（占用/窗口，如 45k/200k）——占用取 usage 帧 API 真值（input+cacheRead）；
+  // ≥90% 窗口（压缩触发阈值 0.9，compaction/strategy.ts）转 warn 色：余量将尽、下轮即压
+  const ctxRatio = ctxUsed !== undefined && ctxWindow !== undefined && ctxWindow > 0 ? ctxUsed / ctxWindow : null
+  const ctxHot = ctxRatio !== null && ctxRatio >= 0.9
   return (
     <Box>
       <Text color={theme.status}>ECode · </Text>
@@ -57,6 +64,11 @@ export function StatusBar({ model, iter, maxIter, tokens, cost, mcp, sandbox, sa
         </Text>
       )}
       {tokens !== undefined && <Text dimColor> · {formatTokens(tokens)}</Text>}
+      {ctxUsed !== undefined && ctxWindow !== undefined && (
+        <Text dimColor={!ctxHot} color={ctxHot ? theme.warn : undefined} bold={ctxHot}>
+          {' · ctx '}{formatTokens(ctxUsed).replace(' tok', '')}/{formatTokens(ctxWindow).replace(' tok', '')}
+        </Text>
+      )}
       {mcp !== undefined && <Text dimColor> · {mcp}</Text>}
       {sandbox !== undefined && (
         sandboxDanger

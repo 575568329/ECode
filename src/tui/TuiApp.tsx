@@ -280,6 +280,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   }, [notices])
   const [tokens, setTokens] = useState(0)
   const [sessionCost, setSessionCost] = useState(0)
+  // F-44：上下文占用/窗口（usage 帧 API 真值：占用=本轮 prompt 全量 input+cacheRead；
+  // 窗口=宿主 resolveContextWindow 解析缓存）——StatusBar ctx 段显示占用与余量
+  const [ctxUsed, setCtxUsed] = useState<number | undefined>(undefined)
+  const [ctxWindow, setCtxWindow] = useState<number | undefined>(undefined)
   // F-38：即时系统提示（命令反馈/状态提示）——保留输入框上方多行渲染（/cost 等命令输出
   // 需要完整多行，塞底部行会被截断），但加两点秩序：①TTL 5s 自动消失（不再常驻占屏）；
   // ②分级着色（默认 dim，失败类调用点传 'warn' 黄色）——错误类型有秩序。
@@ -434,6 +438,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         }
         case 'usage':
           recordUsage(ev.input, ev.output, { read: ev.cacheRead, creation: ev.cacheCreation })
+          // F-44：上下文占用/余量（帧缺省=旧宿主/非 LLM 轮，保留上次值）
+          if (ev.contextUsed !== undefined) setCtxUsed(ev.contextUsed)
+          if (ev.contextWindow !== undefined) setCtxWindow(ev.contextWindow)
           break
         case 'thread/status':
           runningRef.current = ev.busy
@@ -1108,6 +1115,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       sandbox={sandboxMode === 'default' ? undefined : sandboxMode}
       sandboxDanger={sandboxMode === 'full-access'}
       tokens={tokens}
+      ctxUsed={ctxUsed}
+      ctxWindow={ctxWindow}
       iter={iter}
       maxIter={maxIter}
       warningLevel={(() => {

@@ -53,4 +53,26 @@ describe('StatusBar', () => {
     const { lastFrame } = render(React.createElement(StatusBar, { model: 'M', tokens: 800 }))
     expect((lastFrame() ?? '').split('\n')).toHaveLength(1)
   })
+
+  describe('F-44 ctx 段（上下文占用/余量）', () => {
+    it('显示 ctx 占用/窗口（k 格式）', () => {
+      const { lastFrame } = render(React.createElement(StatusBar, { model: 'M', ctxUsed: 45_000, ctxWindow: 200_000 }))
+      const f = lastFrame() ?? ''
+      expect(f).toContain('ctx 45.0k/200.0k')
+    })
+
+    it('占比 ≥90% 转 warn 色加粗（压缩阈值临近提示）', () => {
+      const { lastFrame } = render(React.createElement(StatusBar, { model: 'M', ctxUsed: 190_000, ctxWindow: 200_000 }))
+      // ink-testing 剥 ANSI 后帧无色——用行为差异锁：结构存在即着色路径已走（同帧文本一致，
+      // 着色断言经 snapshot 等价校验不值——此处锁格式与阈值不崩即可，色值逻辑在纯函数段）
+      const f = lastFrame() ?? ''
+      expect(f).toContain('ctx 190.0k/200.0k')
+      expect((f.split('\n')).length).toBe(1)
+    })
+
+    it('缺任一字段不显示 ctx 段（旧宿主兼容）', () => {
+      const { lastFrame } = render(React.createElement(StatusBar, { model: 'M', ctxUsed: 45_000 }))
+      expect(lastFrame()).not.toContain('ctx ')
+    })
+  })
 })

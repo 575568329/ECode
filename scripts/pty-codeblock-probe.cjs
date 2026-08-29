@@ -57,7 +57,7 @@ server.listen(0, '127.0.0.1', async () => {
       ANTHROPIC_API_KEY: 'dummy-key-for-pty-test',
       ECODE_MODEL: 'mock-model',
     },
-    cols: 60,
+    cols: 110,
     rows: 30,
   })
   let out = ''

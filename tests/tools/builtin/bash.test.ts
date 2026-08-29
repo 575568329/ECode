@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import os from 'node:os'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -36,18 +37,29 @@ describe('isDangerous（危险命令正则黑名单）', () => {
   })
 })
 
-describe('truncateOutput（30KB 头尾中截）', () => {
-  it('小于阈值不截断', () => {
+describe('truncateOutput（50KB 头尾中截；F-39 对标 CC 50K chars）', () => {
+  it('小于阈值不截断（缺省阈值=50KB）', () => {
     expect(truncateOutput('hello')).toBe('hello')
-    expect(truncateOutput('A'.repeat(30_720))).toBe('A'.repeat(30_720))
+    expect(truncateOutput('A'.repeat(50_000))).toBe('A'.repeat(50_000))
   })
   it('大于阈值：头尾各半 + 中间标记', () => {
-    const big = 'A'.repeat(50_000)
+    const big = 'A'.repeat(80_000)
     const r = truncateOutput(big)
     expect(r).toContain('截断')
     expect(r).toContain('不要编造')
     expect(r.startsWith('AAAA')).toBe(true) // 头
-    expect(r.length).toBeLessThan(50_000) // 截断后远小于原
+    expect(r.length).toBeLessThan(80_000) // 截断后远小于原
+  })
+  it('limit 显式传入接通 config（F-39：此前 30_720 硬编码悬空）', () => {
+    const r = truncateOutput('A'.repeat(100), 64)
+    expect(r).toContain('已截断')
+    expect(r.startsWith('AAAA')).toBe(true)
+    expect(r.length).toBeLessThan(200)
+  })
+  it('savedPath 落盘路径入中截标记（CC persist-to-disk：完整输出可 read_file 回看）', () => {
+    const r = truncateOutput('A'.repeat(80_000), 50_000, '/tmp/x/outputs/t1.log')
+    expect(r).toContain('完整输出已保存: /tmp/x/outputs/t1.log')
+    expect(r).toContain('read_file 查看')
   })
 })
 
@@ -120,6 +132,38 @@ describe('bashTool.execute 安全', () => {
     const r = await bashTool.execute({ command: 'echo ecode_test_ok' }, ctx)
     expect(r.is_error).toBeFalsy()
     expect(r.content).toContain('ecode_test_ok')
+  })
+
+  it('F-39 超限落盘：.outputs/<toolUseId>.log 存全文，中截标记带路径（CC persist-to-disk）', async () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), 'ecode-bash-out-'))
+    const spy = vi.spyOn(os, 'homedir').mockReturnValue(tmpHome)
+    try {
+      const sid = '2026-08-29T00-00-00-000Z-f39'
+      const r = await bashTool.execute({ command: 'yes X | head -c 300' }, {
+        ...ctx,
+        maxOutputBytes: 64,
+        toolUseId: 'toolu_f39',
+        session: { getSessionId: () => sid },
+      } as ToolContext)
+      expect(r.content).toContain('完整输出已保存')
+      expect(r.content).toContain('toolu_f39.log')
+      const m = /已保存: (.+?\.log)/.exec(r.content)
+      expect(m).not.toBeNull()
+      const saved = readFileSync(m![1]!, 'utf8')
+      expect(Buffer.byteLength(saved, 'utf8')).toBe(300) // 全文落盘（yes|head -c 300 恰 300 字节）
+    } finally {
+      spy.mockRestore()
+      rmSync(tmpHome, { recursive: true, force: true })
+    }
+  })
+
+  it('F-39 无会话信息（argv/测试兜底）不落盘：纯中截无路径标记', async () => {
+    const r = await bashTool.execute({ command: 'yes X | head -c 300' }, {
+      ...ctx,
+      maxOutputBytes: 64,
+    } as ToolContext)
+    expect(r.content).toContain('已截断')
+    expect(r.content).not.toContain('完整输出已保存')
   })
 })
 

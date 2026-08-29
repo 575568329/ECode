@@ -32,7 +32,7 @@ function config(servers: Record<string, unknown>): Config {
     providers: {},
     current: { name: 'x', model: 'm' },
     maxIterations: 50,
-    bashMaxOutputBytes: 30720,
+    bashMaxOutputBytes: 50000,
     logLevel: 'info',
     mcpServers: servers as Config['mcpServers'],
   }

@@ -40,7 +40,7 @@ ECode 自身的权威配置指南。修改配置前先读本手册；不确定�
 | providers | Record<名, ProviderCfg> | — | 供应商配置，key 为自定义名 |
 | mcpServers | Record<名, McpServerConfig> | — | MCP 外部工具（见下节） |
 | maxIterations | number | 50 | Agent 循环最大轮数 |
-| bashMaxOutputBytes | number | 30720 | bash 输出截断阈值（头尾中截） |
+| bashMaxOutputBytes | number | 50000 | bash 输出截断阈值（50KB 头尾中截；超限落盘 sessions/<sid>.outputs/ 可回看） |
 | logLevel | string | "info" | 日志级别：debug/info/warn/error |
 | hooks | HookSpec[] | — | 事件 hook（M7）：SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Stop/SessionEnd；command 子进程，stdin 喂事件 JSON，stdout 可回 {continue:false} 阻断 / updatedInput 改参 / additionalContext 附加；exit 2 = 阻断 |
 | maxInstructionsKB | number | 32 | 指令/记忆注入单级上限 KB（ECODE.md/CLAUDE.md/MEMORY.md 各级） |

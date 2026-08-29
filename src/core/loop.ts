@@ -511,6 +511,8 @@ async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<Tool
     // 敏感访问确认同层透传（数据非逻辑——何时算敏感由工具自判）
     const ctxForCall: ToolContext = {
       ...opts.toolCtx,
+      // F-39：本条调用 id 直挂 ctx（bash 超限落盘文件名等工具侧用途；此前只经 onBeforeWrite 闭包间接可及）
+      toolUseId: use.id,
       ...(opts.onSensitiveAccess !== undefined ? { confirmSensitive: opts.onSensitiveAccess } : {}),
       ...(opts.toolCtx.onBeforeWrite !== undefined
         ? {

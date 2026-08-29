@@ -139,7 +139,7 @@ describe('emptyShellConfig', () => {
     expect(cfg.providers).toEqual({})
     expect(cfg.current).toEqual({ name: '', model: '' })
     expect(cfg.maxIterations).toBe(50)
-    expect(cfg.bashMaxOutputBytes).toBe(30720)
+    expect(cfg.bashMaxOutputBytes).toBe(50000)
     expect(cfg.logLevel).toBe('info')
   })
 })
@@ -354,7 +354,7 @@ describe('loadConfig', () => {
       }),
     )
     const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
-    expect(cfg.bashMaxOutputBytes).toBe(30720)
+    expect(cfg.bashMaxOutputBytes).toBe(50000)
     expect(cfg.logLevel).toBe('info')
   })
 

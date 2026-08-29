@@ -79,7 +79,9 @@ export interface Config {
 
 /** 默认值（P2-1：集中常量，免多处裸魔法值散落；CONFIG_TEMPLATE/writeWizardConfig 是生成给用户的 config.json 字面量） */
 const DEFAULT_MAX_ITERATIONS = 50
-const DEFAULT_BASH_MAX_BYTES = 30720
+// F-39 对标 CC toolLimits.DEFAULT_MAX_RESULT_SIZE_CHARS（50K chars 落盘阈值）——
+// 单条工具输出给 LLM 的预算默认 50KB（原 30KB 对标的是 CC 旧值）
+const DEFAULT_BASH_MAX_BYTES = 50000
 const DEFAULT_LOG_LEVEL: Config['logLevel'] = 'info'
 /** 批2d（§13.1 拍板-1）：Notification 触发阈值默认 60s（对齐 CC idle 通知默认）；BEL 响铃默认开 */
 export const DEFAULT_NOTIFICATION_IDLE_SECONDS = 60
@@ -176,7 +178,7 @@ export const CONFIG_TEMPLATE = `{
   // },
 
   "maxIterations": 50,        // Agent 循环最大轮数
-  "bashMaxOutputBytes": 30720, // bash 输出截断阈值（30KB 头尾中截）
+  "bashMaxOutputBytes": 50000, // bash 输出截断阈值（50KB 头尾中截，超限落盘 .outputs/ 可回看——对标 CC 50K chars）
   // M9：编辑后自动 lint/test（仅认此处显式配置；空串/缺省=关闭，不自动探测 package.json——安全默认）
   "lintCommand": "",
   "testCommand": "",

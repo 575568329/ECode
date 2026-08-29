@@ -19,6 +19,11 @@ export interface ToolResult {
 export interface ToolContext {
   cwd: string
   signal: AbortSignal
+  /** F-39：本条调用的 tool_use id（loop 在 executeTool 包装注入——bash 超限落盘文件名/审计锚） */
+  toolUseId?: string
+  /** F-39：输出截断阈值（config `bashMaxOutputBytes` 经宿主装配填入——接线悬空修复；
+   *  缺省回落工具内置缺省值） */
+  maxOutputBytes?: number
   /**
    * M9-P1：写前快照回调（checkpoint 装配；心脏侧不认识 checkpoint 概念）。
    * 副作用工具 execute 开头调用（loop 层 readonly:false 确认已通过——execute 被调即已确认）。

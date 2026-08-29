@@ -13,6 +13,9 @@
  */
 
 import type { ChildProcess } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import type { Tool } from '../interface.js'
 import { isDangerousCommand, killTree, spawnShellCommand } from '../../services/proc.js'
 import { taskRegistry } from '../../services/tasks.js'
@@ -24,24 +27,32 @@ interface ExecResult {
   is_error?: boolean
 }
 
-/** 输出截断阈值（§5.1：30KB；config 可配扩展留 M4） */
-const BASH_MAX_OUTPUT_BYTES = 30_720
+/** 输出截断缺省阈值（config `bashMaxOutputBytes` 可配；缺省 50KB——F-39 对标 CC
+ *  toolLimits.DEFAULT_MAX_RESULT_SIZE_CHARS 50K chars 落盘阈值，原 30KB 对标的是 CC 旧值）。 */
+export const BASH_MAX_OUTPUT_BYTES = 50_000
 
 /** 危险命令拦截（黑名单收敛在 services/proc.ts，hook 执行体共用同一份——M7 H5）。 */
 export function isDangerous(command: string): boolean {
   return isDangerousCommand(command)
 }
 
-/** 输出超阈值时头尾各半中截（§5.1：防刷屏 + 防 LLM 编造截断内容）。 */
-export function truncateOutput(s: string): string {
+/** 输出超阈值时头尾各半中截（§5.1：防刷屏 + 防 LLM 编造截断内容）。
+ *  F-39：savedPath 非空时中截标记带落盘路径（CC persist-to-disk 同策略——完整输出
+ *  不丢，模型/用户可 read_file 回看），limit 显式传入接通 config `bashMaxOutputBytes`
+ *  （此前 30_720 硬编码、config 字段悬空零消费）。 */
+export function truncateOutput(s: string, limit = BASH_MAX_OUTPUT_BYTES, savedPath?: string): string {
   const bytes = Buffer.byteLength(s, 'utf8')
-  if (bytes <= BASH_MAX_OUTPUT_BYTES) return s
-  const half = Math.floor(BASH_MAX_OUTPUT_BYTES / 2)
+  if (bytes <= limit) return s
+  const half = Math.floor(limit / 2)
   const buf = Buffer.from(s, 'utf8')
   const head = buf.subarray(0, half).toString('utf8')
   const tail = buf.subarray(bytes - half).toString('utf8')
-  const omitted = bytes - BASH_MAX_OUTPUT_BYTES
-  return `${head}\n…（中间 ${omitted} 字节已截断，需要完整用 read_file/grep，不要编造）\n${tail}`
+  const omitted = bytes - limit
+  const marker =
+    savedPath !== undefined
+      ? `…（中间 ${omitted} 字节已截断。完整输出已保存: ${savedPath}——可用 read_file 查看，不要编造截断内容）`
+      : `…（中间 ${omitted} 字节已截断，需要完整用 read_file/grep，不要编造）`
+  return `${head}\n${marker}\n${tail}`
 }
 
 /**
@@ -155,7 +166,24 @@ export const bashTool: Tool = {
         if (stdout) parts.push(stdout)
         if (stderr) parts.push(`[stderr]\n${stderr}`)
         if (code !== 0) parts.push(`[退出码 ${code}]`)
-        done({ content: foldNodeWarnings(truncateOutput(parts.join('\n') || '(无输出)')) })
+        const raw = parts.join('\n') || '(无输出)'
+        const limit = ctx.maxOutputBytes ?? BASH_MAX_OUTPUT_BYTES
+        // F-39（CC persist-to-disk 同策略）：会话内超限输出落盘 ~/.ecode/sessions/<sid>.outputs/
+        // ——LLM/用户经 read_file 路径回看完整输出（中截的中间部分不再丢失）。
+        // 会话信息不可得（argv 单会话兜底/测试）或写失败 → 退化为纯中截，不阻断。
+        let savedPath: string | undefined
+        const sid = ctx.session?.getSessionId?.()
+        if (ctx.toolUseId !== undefined && sid !== undefined && Buffer.byteLength(raw, 'utf8') > limit) {
+          try {
+            const outDir = path.join(os.homedir(), '.ecode', 'sessions', `${sid}.outputs`)
+            fs.mkdirSync(outDir, { recursive: true })
+            savedPath = path.join(outDir, `${ctx.toolUseId}.log`)
+            fs.writeFileSync(savedPath, raw, 'utf8')
+          } catch {
+            savedPath = undefined
+          }
+        }
+        done({ content: foldNodeWarnings(truncateOutput(raw, limit, savedPath)) })
       })
 
       ctx.signal.addEventListener('abort', onAbort, { once: true })

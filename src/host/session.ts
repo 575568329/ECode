@@ -819,6 +819,8 @@ export class HostSession {
         maxIterations: this.cfg().maxIterations,
         toolCtx: {
           cwd,
+          // F-39：bash 输出截断阈值接通 config（此前 config 字段定义零消费悬空）
+          maxOutputBytes: this.cfg().bashMaxOutputBytes,
           session: {
             tasks: this.tasks,
             updateSubagent: (st) => this.updateSubagent(st),

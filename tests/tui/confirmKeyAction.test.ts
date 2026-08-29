@@ -106,13 +106,18 @@ describe('confirmKeyAction：单字母快捷与草稿让位（批2b①②）', (
   })
 })
 
-describe('confirmKeyAction：Enter 误批防护（批2b④）', () => {
-  it('未选择（null）Enter 不确认——draft 通道（留给输入框提交）', () => {
-    expect(confirmKeyAction('\r', { return: true }, baseCtx({ selected: null }))).toEqual({ action: 'draft' })
+describe('confirmKeyAction：Enter 直批+草稿防误批（F-32 翻案批2b④）', () => {
+  it('默认选中 y（null 理论路径同 y 口径）+空草稿 Enter=批准', () => {
+    expect(confirmKeyAction('\r', { return: true }, baseCtx({ selected: 'y' }))).toEqual({ action: 'confirm', ok: true })
+    expect(confirmKeyAction('\r', { return: true }, baseCtx({ selected: null }))).toEqual({ action: 'confirm', ok: true })
   })
 
-  it('已选 y Enter=确认；已选 n Enter=拒绝；已选 a Enter=always 确认', () => {
-    expect(confirmKeyAction('\r', { return: true }, baseCtx({ selected: 'y' }))).toEqual({ action: 'confirm', ok: true })
+  it('草稿非空时 Enter 仍走草稿提交（插话），不误批——即便已选 y', () => {
+    expect(confirmKeyAction('\r', { return: true }, baseCtx({ hasDraft: true, selected: 'y' }))).toEqual({ action: 'draft' })
+    expect(confirmKeyAction('\r', { return: true }, baseCtx({ hasDraft: true, selected: null }))).toEqual({ action: 'draft' })
+  })
+
+  it('已选 n Enter=拒绝；已选 a Enter=always 确认', () => {
     expect(confirmKeyAction('\r', { return: true }, baseCtx({ selected: 'n' }))).toEqual({ action: 'confirm', ok: false })
     expect(confirmKeyAction('\r', { return: true }, baseCtx({ selected: 'a' }))).toEqual({
       action: 'confirm',

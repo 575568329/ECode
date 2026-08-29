@@ -18,8 +18,8 @@ import { ROWS_FALLBACK, computeBudget, sectionBudget, useViewport } from './view
  *    其余字符经 onDraftInsert 转发主输入框；应答后草稿还在可继续编辑/插话）；
  * 2. **有草稿时单字母快捷失效**（打「yes」首字母不误触发——草稿非空时 y/n/a 走输入框）；
  * 3. **Esc=拒绝**（直觉出口；与 Ctrl+C 同语义）；
- * 4. **Enter 误批防护**——未显式选择（←→ 或单字母）时 Enter 不确认；默认 selected=null
- *    （旧版默认选中 y、CR=静默批准是双害，批2b 拍板废除）；
+ * 4. **Enter 直批+草稿防误批**（F-32 用户拍板，翻案批2b ④）——默认选中 y，空草稿 Enter=批准；
+ *    草稿非空时 Enter 仍走草稿提交（插话），不误批（防误批面收窄为「草稿非空」单场景）；
  * 5. **拒绝带理由**——拒绝前可按 r 进理由输入模式（RejectPrompt 式一行文本），
  *    Enter 提交拒绝，理由经 approval/respond message 随 tool_result is_error 回传（治 F-15）。
  *
@@ -69,7 +69,7 @@ export type ConfirmChoice = 'y' | 'n' | 'a'
 
 /** 审批卡按键语义（批2b 五条的键盘路由核心，纯函数便于 ink-testing 外单测）：
  * - draft：主输入框草稿是否非空（非空时 y/n/a 单字母失效——走输入框通道）
- * - selected：null=未显式选择（Enter 不确认，防误批）；←→/单字母后变为 y/n/a
+ * - selected：默认 'y'（F-32——空草稿 Enter=批准）；←→/单字母后变为 y/n/a
  * - reasonMode：拒绝理由输入模式（Enter=提交拒绝+理由，Esc=退出理由模式不拒绝）
  * - 返回 action：'select'（更新选中）/ 'confirm'（应答 ok/always/message）/ 'draft'（字符进草稿）
  *   / 'reason-edit'（理由编辑）/ 'toggle-expand'（F-10）/ 'none' */
@@ -137,10 +137,12 @@ export function confirmKeyAction(input: string, key: {
     return { action: 'select', choice: order[(cur + dir + order.length) % order.length] }
   }
   if (key.return) {
-    // ④ Enter 误批防护：未显式选择（null）不确认——需先 ←→/单字母显式选择
-    if (selected === null) return { action: 'draft' } // Enter 留给输入框提交（草稿通道）
+    // F-32（用户拍板，翻案批2b ④）：卡弹出即默认选中 y——空草稿 Enter 直接批准；
+    // ② 保护保留：草稿非空时 Enter 仍走草稿提交（插话），不误批。
+    if (hasDraft) return { action: 'draft' } // 草稿非空：Enter 留给输入框提交（插话通道）
+    // selected 为 null 只剩理论路径（默认 'y' 后），按默认 y 口径确认
     if (selected === 'a') return { action: 'confirm', ok: true, always: true }
-    return { action: 'confirm', ok: selected === 'y' }
+    return { action: 'confirm', ok: selected !== 'n' }
   }
   if (key.escape) {
     // ③ Esc=拒绝（直觉出口——拒绝后模型可换方法继续，与 n/r 同族精细控制）
@@ -182,8 +184,8 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
   const isDiff = state.use.name === 'edit_file'
   const rememberText = state.rememberLabel ?? (state.use.name.startsWith('mcp__') ? '本会话记住' : undefined)
   const isMcp = rememberText !== undefined
-  // 批2b ④：默认未选择（null）——Enter 不再静默批准；必须显式 ←→/单字母
-  const [selected, setSelected] = useState<ConfirmChoice | null>(null)
+  // F-32（用户拍板，翻案批2b ④）：默认选中 y——空草稿 Enter 直接批准（「直接回车」）
+  const [selected, setSelected] = useState<ConfirmChoice | null>('y')
   const [expanded, setExpanded] = useState(false)
   const [reasonMode, setReasonMode] = useState(false)
   const [reason, setReason] = useState<CursorState>(() => createCursor(''))

@@ -75,31 +75,42 @@ describe('ConfirmPrompt', () => {
     expect(cleared).toBe(true)
   })
 
-  it('批2b④ Enter 误批防护：未显式选择时回车不确认（旧默认 y+CR 静默批准已废除）', async () => {
+  it('F-32（翻案批2b④）：默认选中 y——空草稿 Enter 直接批准', async () => {
     let resolved: boolean | null = null
-    // 审阅 P1-缺口1（④正向断言）：Enter 必须以 ('\r', {return:true}) 形态进 onDraftKey——
-    // 只断言 resolved null 的话把 confirm 分支改成 none 也绿（Enter 被吞而非留给输入框）
+    const s = makeState('bash', { command: 'x' }, 'x')
+    s.resolve = (ok) => {
+      resolved = ok
+    }
+    const { stdin, lastFrame } = render(
+      React.createElement(ConfirmPrompt, { state: s, onConfirm: () => {} }),
+    )
+    await flush()
+    // 默认 y 反色高亮（卡弹出即选中）
+    expect(lastFrame() ?? '').toContain('[y] 执行')
+    stdin.write('\r')
+    await flush()
+    expect(resolved).toBe(true) // 空草稿 Enter=批准（用户要的「直接回车」）
+  })
+
+  it('F-32 草稿防误批保留：草稿非空时 Enter 走草稿提交（插话），不误批', async () => {
+    let resolved: boolean | null = null
+    // Enter 必须以 ('\r', {return:true}) 形态进 onDraftKey——只断言 resolved null 的话
+    // 把 confirm 分支改成 none 也绿（Enter 被吞而非留给输入框）
     const draftKeys: Array<{ input: string; key: Record<string, unknown> }> = []
     const s = makeState('bash', { command: 'x' }, 'x')
     s.resolve = (ok) => {
       resolved = ok
     }
     const { stdin } = render(
-      React.createElement(ConfirmPrompt, { state: s, onConfirm: () => {}, onDraftKey: (c, k) => draftKeys.push({ input: c, key: k }) }),
+      React.createElement(ConfirmPrompt, { state: s, onConfirm: () => {}, onDraftKey: (c, k) => draftKeys.push({ input: c, key: k }), draft: '插话内容' }),
     )
     stdin.write('\r')
     await flush()
-    expect(resolved).toBeNull() // 不确认；按键走草稿通道（Enter 语义留给输入）
+    expect(resolved).toBeNull() // 草稿非空不误批；按键走草稿通道（Enter 语义留给输入）
     // 正向：Enter 以 ('\r', return:true) 形态转发（ink 真实 key 对象字段全——只断言核心位）
     const enterKey = draftKeys.find((d) => d.input === '\r')
     expect(enterKey).toBeDefined()
     expect(enterKey?.key.return).toBe(true)
-    // 显式 ←→ 选择 y 后 Enter 才确认
-    stdin.write(LEFT) // ←（未选择时 ← 落到 y）
-    await flush()
-    stdin.write('\r')
-    await flush()
-    expect(resolved).toBe(true)
   })
 
   it('批2b② 有草稿时 y/n 单字母快捷失效（打 yes 首字母不误触发）', () => {

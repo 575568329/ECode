@@ -634,14 +634,12 @@ export class HostSession {
           return { ok: true, value: { lines: all.slice(from, from + limit), total: all.length, fromLine: from } }
         }
       case 'item/read': {
-        // M14-C1⑤：工具全文按需读取（帧内 4KB 截断的补全通道）。transcript 权威源——
-        // messages 里 tool_use.id 命中后取其配对 tool_result；未落盘（运行中/不存在）404 语义
-        const target = this.messages
-          .filter(isMessageLine)
-          .filter((l) => l.role === 'user')
-          .flatMap((l) => (typeof l.content === 'string' ? [] : l.content))
-          .find((b) => b.type === 'tool_result' && b.tool_use_id === cmd.itemId)
-        if (target === undefined || target.type !== 'tool_result') {
+        // M14-C1⑤：工具全文按需读取（帧内 4KB 截断的补全通道）。F-34：内存 mirror miss 时
+        // fallback 到 HistoryStore 落盘原文——投影派压缩不删消息（boundary 只影响投影，
+        // restoreFull 保留 tool_result 全量原文），内存丢原文的场景盘上仍可得（含冷会话）。
+        const target = this.findToolResult(this.messages, cmd.itemId)
+          ?? this.findToolResult(this.deps.history.restoreFull(this.deps.history.currentSessionId()), cmd.itemId)
+        if (target === null) {
           return { ok: false, error: `工具结果 ${cmd.itemId} 不存在或未落盘`, code: 'ITEM_NOT_FOUND' }
         }
         const content = typeof target.content === 'string' ? target.content : JSON.stringify(target.content)
@@ -667,11 +665,9 @@ export class HostSession {
         // 脱敏视图（web 顶栏读 current/models；apiKey 永不出 serve 通道——5.2 铁律）
         return { ok: true, value: redact(this.cfg()) }
       case 'sandbox/set':
-        // 清账 III P1-2：忙碌守卫——运行中切档会造成 per-turn 沙箱快照时滞（hostConfirm 读
-        // 实时新档直放，而 checkWrite 仍持轮初旧档的围栏口径）→ 绝对路径任意写免确认窗口
-        if (this.running || this.starting) {
-          return { ok: false, error: '运行中不能切换沙箱档位（防轮中提/降档绕过审批口径）——空闲后再试', code: 'BUSY' }
-        }
+        // F-33（用户拍板，翻案清账 III P1-2 的 BUSY 拒绝）：运行中 Tab 切档立即生效——
+        // 口径统一靠 getter 化（toolCtx.checkWrite 经 session.getSandbox 读实时档，
+        // hostConfirm 读实时 this.sandboxMode），轮初快照时滞不再存在，BUSY 守卫随之废除
         // 提权门槛（v1.2 P1-4）：提档 full-access 需经审批（有订阅者）；降档直接生效
         if (cmd.mode === 'full-access' && cmd.mode !== this.sandboxMode) {
           if (this.channel.subscriberCount === 0) {
@@ -689,6 +685,17 @@ export class HostSession {
         // B5（命令·会话·面板族）逐批接线
         return { ok: false, error: `命令 ${cmd.op} 尚未接线（B5 批次）`, code: 'NOT_IMPLEMENTED' }
     }
+  }
+
+  /** F-34：在 HistoryLine 集合里按 tool_use_id 找配对 tool_result（item/read 内存/盘双源共用） */
+  private findToolResult(lines: readonly HistoryLine[], itemId: string): { content: unknown } | null {
+    for (const l of lines) {
+      if (!isMessageLine(l) || l.role !== 'user' || typeof l.content === 'string') continue
+      for (const b of l.content) {
+        if (b.type === 'tool_result' && b.tool_use_id === itemId) return b
+      }
+    }
+    return null
   }
 
   private async buildBlocks(images: ImagePayload[]): Promise<ImageBlock[] | undefined> {
@@ -768,6 +775,7 @@ export class HostSession {
         ...((r) => (r !== null ? { summary: r } : {}))(await this.resolveSummaryRole()), // M13-B3：摘要换笔（三项变更之②provider 替换）
       })
       const cwd = deps.cwd ?? process.cwd()
+      const hostSelf = this
       await runLoop(this.messages, input, {
         provider,
         tools: deps.tools,
@@ -851,8 +859,12 @@ export class HostSession {
             await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
           },
           model: this.cfg().current.model,
-          // 运行态档位（sandbox/set 可切；config.defaultMode 仅初始值——审阅 P0-2：焊死 config 档致 Tab 切档失效）
-          sandbox: makeSandbox(this.sandboxMode, cwd, this.cfg().sandbox?.blockedCommands ?? []),
+          // F-33：轮初快照改访问器属性——运行中 Tab 切档立即生效（工具侧每次 ctx.sandbox
+          // 读取都实时 makeSandbox，与 hostConfirm 读 this.sandboxMode 同源无口径分裂；
+          // getter 内 this 指字面量自身，须外部捕获 hostSelf；argv 装配不受影响）
+          get sandbox() {
+            return makeSandbox(hostSelf.sandboxMode, cwd, hostSelf.cfg().sandbox?.blockedCommands ?? [])
+          },
         },
         onBeforeRequest,
         onCompacted: () => this.publish('compacted', {}),

@@ -388,7 +388,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
                   pushNoticeFn('warn', `工具 ${ev.name} 全文超 1MB 上限，查看器仍为截断版（全文走后台任务日志）`)
                 }
               } else {
-                pushNoticeFn('warn', `工具 ${ev.name} 全文拉取失败（可能已被压缩摘要），查看器仅 4KB 截断版`)
+                // F-34：item/read 已带 HistoryStore 落盘 fallback（投影派压缩不删消息）——
+                // miss 只剩「结果确实不存在/极早期未落盘」，不再臆测压缩
+                pushNoticeFn('warn', `工具 ${ev.name} 全文拉取失败（结果未在会话记录中找到），查看器仅 4KB 截断版`)
               }
             })
           }
@@ -1345,12 +1347,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         busy={runningRef.current}
         onSlashBusy={() => setSystemMsgs(['运行中暂不能执行命令（空闲后再发；插话请直接输入文字）'])}
         onTabSandbox={() => {
-          // 清账 III P1-2 配套：忙碌守卫在宿主（sandbox/set BUSY 拒）——TUI 侧同样拦下并提示，
-          // 避免 full-access 提档弹审批帧后又被宿主拒绝的双跳
-          if (runningRef.current) {
-            setSystemMsgs(['运行中不能切换沙箱档位——空闲后再按 Tab'])
-            return
-          }
+          // F-33（用户拍板）：沙箱随时可切——TUI 侧忙碌拦截废除（宿主 getter 化后无口径分裂；
+          // full-access 提档弹审批帧语义照旧）
           // M12-B3（审阅 P0-2 修复）：档位权威在宿主（sandbox/set）；full-access 提档经宿主 Broker 审批帧确认
           const next = nextSandboxMode(sandboxModeRef.current)
           if (next === 'full-access') {

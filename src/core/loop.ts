@@ -144,7 +144,15 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     if (iter >= 2) {
       const queued = opts.pollUserInput?.()
       if (queued !== undefined && queued !== null && queued !== '') {
-        const interjectMsg: Message = { role: 'user', content: [{ type: 'text', text: queued }] }
+        // F-35：插话带引导包装（CC wrapCommandText 同款格式）——裸插话会让模型只应插话
+        // 丢原任务；包装显式声明「任务执行中的补充」+「结合原任务继续」双指令
+        const interjectMsg: Message = {
+          role: 'user',
+          content: [{
+            type: 'text',
+            text: `用户在任务执行中发来新消息：\n${queued}\n\n请在完成当前任务的过程中处理上述补充（必要时按其调整做法），随后继续原任务直至完成，不要只回应本条而中断原任务。`,
+          }],
+        }
         messages.push(interjectMsg)
         opts.history.append(interjectMsg)
       }

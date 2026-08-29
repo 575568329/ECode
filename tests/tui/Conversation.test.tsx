@@ -158,8 +158,8 @@ describe('Conversation', () => {
   })
 
   it('审阅 P1-2：连续审批卡换 requestId → ConfirmPrompt 重挂载（selected 不跨卡泄漏）', () => {
-    // 批2b④红线：同位置同类型组件不卸载时 selected/expanded/reasonMode 跨卡继承——
-    // 上一张卡 ← 选过 y，新卡 Enter=静默批准。key=requestId 换卡即重挂载。
+    // F-32 翻案后默认选中 y——泄漏检测改用 n：第一张卡显式选 n，若 selected 泄漏到新卡，
+    // 新卡 Enter=拒绝；正确重挂载时新卡按默认 y，Enter=批准。
     const makeConfirm = (id: string) => ({
       use: { type: 'tool_use' as const, id, name: 'bash', input: { command: 'ls' } },
       preview: 'ls',
@@ -169,11 +169,11 @@ describe('Conversation', () => {
     const { stdin, lastFrame, rerender } = render(
       React.createElement(Conversation, { committed: [], active }),
     )
-    // 第一张卡：← 选择 y（帧上 y 反色高亮）
-    stdin.write('\x1b[D')
+    // 第一张卡：←（默认 y 起）← 落到 n（显式选择 n）
+    stdin.write('\x1b[D\x1b[D')
     const f1 = lastFrame() ?? ''
     expect(f1).toContain('ls')
-    // 第二张卡（不同 requestId）落同一渲染位置——若组件复用，selected 'y' 会带着走
+    // 第二张卡（不同 requestId）落同一渲染位置——若组件复用，selected 'n' 会带着走
     rerender(
       React.createElement(Conversation, {
         committed: [],
@@ -182,8 +182,7 @@ describe('Conversation', () => {
     )
     const f2 = lastFrame() ?? ''
     expect(f2).toContain('ls')
-    // 无法从帧上直接读 React 内部 state——通过 Enter 行为验证：新卡未选择时 Enter 走 draft
-    // 通道（不 resolve）。若 selected 泄漏为 'y'，Enter 会 resolve(true)=静默批准
+    // 通过 Enter 行为验证：新卡空草稿 Enter 按默认 y=批准（F-32）；若 selected 泄漏为 'n' 则拒绝
     let resolved: boolean | null = null
     const confirm2 = makeConfirm('req-2')
     confirm2.resolve = (ok: boolean) => {
@@ -196,6 +195,6 @@ describe('Conversation', () => {
       }),
     )
     stdin.write('\r')
-    expect(resolved).toBeNull() // 新卡 Enter 不确认（selected 已随 key 重挂载归零）
+    expect(resolved).toBe(true) // 新卡默认 y，Enter=批准（selected 已随 key 重挂载归位）
   })
 })

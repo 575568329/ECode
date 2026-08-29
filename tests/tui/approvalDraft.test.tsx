@@ -149,14 +149,20 @@ describe('P1-1③：TuiApp 审批草稿桥（handleConfirmDraftKey 三分支 + �
     stdin.write('\r')
     await flush(500)
     expect(lastFrame() ?? '').toContain('[y] 执行')
-    stdin.write('draft')
+    stdin.write('帮我写入')
     await flush()
-    expect(lastFrame() ?? '').toContain('draft')
-    // 放行路径：草稿非空时 y 已让位（②语义），走④显式选择——→ 选中 y + Enter 确认。
-    // （不用「清空草稿再 y」——退格逐发在负载下仍可能被吞残留草稿，显式选择无此依赖）
-    stdin.write('\x1b[C') // → 显式选中 y
-    await flush()
-    stdin.write('\r')
+    expect(lastFrame() ?? '').toContain('帮我写入')
+    // 放行路径：草稿非空时 y 已让位（②语义）。F-32 后 Enter 按草稿判定：草稿非空 Enter
+    // 仍走插话——须先清空草稿再 Enter（默认选中 y=直接批准）。
+    // 退格逐 write+逐 flush（同步连发被 Ink 合并成单事件只删 1 字——实证：残稿 3 字被
+    // Enter 提交成「已排队」插话）；不数固定次数，按输入框占位符「审批中」回归验证草稿
+    // 确已清空（全量并发负载下掉键会漏删，固定次数在此场景必 flake）
+    for (let i = 0; i < 12 && !(lastFrame() ?? '').includes('审批中'); i++) {
+      stdin.write('\x7f')
+      await flush(120)
+    }
+    expect(lastFrame() ?? '').toContain('审批中') // 草稿已清（占位符回归）
+    stdin.write('\r') // 空草稿 Enter=批准（F-32）
     await flush(800)
     const f = lastFrame() ?? ''
     expect(f).not.toContain('[y] 执行') // 卡消（放行）

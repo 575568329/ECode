@@ -466,9 +466,12 @@ describe('M11-P7：插话步间注入（pollUserInput）', () => {
     // 第二轮请求的 messages 含插话文本，且位于 tool_result 之后
     const second = requests[1]
     const texts = second.flatMap((m) => m.content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text))
-    expect(texts).toContain('改用方案B')
+    // F-35：插话带引导包装（CC wrapCommandText 同款）——防模型只答插话丢原任务
+    const wrapped = texts.find((t) => t.includes('改用方案B'))
+    expect(wrapped).toContain('用户在任务执行中发来新消息')
+    expect(wrapped).toContain('继续原任务')
     const resultIdx = second.findIndex((m) => m.content.some((b) => b.type === 'tool_result'))
-    const interjectIdx = second.findIndex((m) => m.content.some((b) => b.type === 'text' && (b as { text: string }).text === '改用方案B'))
+    const interjectIdx = second.findIndex((m) => m.content.some((b) => b.type === 'text' && (b as { text: string }).text === wrapped))
     expect(interjectIdx).toBeGreaterThan(resultIdx)
     // 最终回复存在（循环未被插话打断）
     expect(messages.some((m) => !('rewind' in m) && m.role === 'assistant' && m.content.some((b) => b.type === 'text' && (b as { text: string }).text === '收到插话'))).toBe(true)

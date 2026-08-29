@@ -488,6 +488,35 @@ describe('M14-C1b 工具全文 summary+read 与 transcript 分页', () => {
     host.dispose()
   })
 
+  it('F-34：内存 mirror 丢原文后 item/read fallback 到 HistoryStore 落盘行（含冷会话语义）', async () => {
+    // 场景：轮完成后内存 messages 被清（模拟压缩重建/换端读旧会话——盘上有全量原文）
+    const p = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 'tF34', name: 'bigout' },
+        { type: 'tool_use_end', id: 'tF34' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: '完成' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const deps = makeBigDeps(p)
+    const sid = `2026-08-27Tf34-${Date.now()}`
+    ;(deps as { history: HistoryStore }).history = new FileHistoryStore({ sessionId: sid, model: 'm', cwd: '/tmp', dir: mkdtempSync(join(tmpdir(), 'ecode-f34-')) })
+    const host = new HostSession(deps)
+    await host.send({ op: 'prompt', text: '跑', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    // 内存源 intact 时可读（基线）
+    const r1 = await host.send({ op: 'item/read', itemId: 'tF34' })
+    expect(r1.ok).toBe(true)
+    expect((r1.value as { content: string }).content.length).toBe(10_001)
+    // 清内存 mirror（restoreFrom([])）→ 只剩盘上原文；冷会话（serve 重启）同形态
+    host.restoreFrom([])
+    const r2 = await host.send({ op: 'item/read', itemId: 'tF34' })
+    expect(r2.ok).toBe(true)
+    expect((r2.value as { content: string }).content.length).toBe(10_001)
+    expect((r2.value as { content: string }).content.startsWith('B')).toBe(true)
+    host.dispose()
+  })
+
   it('①a session/read 分页：缺省全量数组；fromLine/limit 返回 { lines, total, fromLine }', async () => {
     // NoopHistoryStore.restoreFull 恒空——换真 FileHistoryStore（tmpdir）让 transcript 有行
     const deps = makeDeps(new MockProvider([[{ type: 'text', text: 'ok' }, { type: 'done', stop_reason: 'end' }]]))
@@ -639,17 +668,23 @@ describe('F-23：斜杠命令分流（prompt 前置命令拦截）', () => {
   })
 })
 
-// —— 清账批 III ——
-describe('清账 III P1-2：sandbox/set 忙碌守卫', () => {
-  it('运行中 sandbox/set 被拒（BUSY）——防轮中切档的 per-turn 快照时滞', async () => {
-    // 轮挂起在审批上（bash 工具无订阅者可答 → fail-closed 等待）= running=true 的稳定窗口
+// —— 清账批 III（P1-2 已被 F-33 翻案：沙箱随时可切）——
+describe('F-33：sandbox/set 运行中切档（翻案清账 III P1-2 的 BUSY 拒绝）', () => {
+  it('busy 中切档成功且后续工具的 checkWrite 与 hostConfirm 都按新档口径（无口径分裂）', async () => {
+    // 轮挂起在审批上（bash 工具无订阅者可答 → fail-closed 等待）= running=true 的稳定窗口；
+    // 切到 read-only 后应答审批 → bash 的 checkBash 按新档 deny（read-only 整体拒）。
+    // 工具侧 ctx.sandbox 是访问器属性（读时实时 makeSandbox）——这就是 getter 方案的核心保证。
     const reg = new ToolRegistryImpl()
+    let executed = false
     reg.register({
       name: 'bash',
       description: 'bash',
       input_schema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
       readonly: false,
-      async execute() {
+      async execute(args, ctx) {
+        executed = true
+        const gate = ctx.sandbox?.checkBash(String((args as { command: string }).command))
+        if (gate !== undefined && gate.action === 'deny') return { content: gate.reason, is_error: true }
         return { content: 'ok' }
       },
     })
@@ -661,6 +696,7 @@ describe('清账 III P1-2：sandbox/set 忙碌守卫', () => {
           { type: 'tool_use_end', id: 'b1' },
           { type: 'done', stop_reason: 'tool_use' },
         ],
+        [{ type: 'text', text: 'done' }, { type: 'done', stop_reason: 'end' }],
       ])),
       tools: reg,
     } as HostDeps)
@@ -669,10 +705,18 @@ describe('清账 III P1-2：sandbox/set 忙碌守卫', () => {
     for (let i = 0; i < 40 && !events.some((e) => e.type === 'approval/requested'); i++) {
       await new Promise((r) => setTimeout(r, 25))
     }
-    // 审批挂起中 = 轮运行中：切档必须被拒
-    const r = await host.send({ op: 'sandbox/set', mode: 'accept-edits' })
-    expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.code).toBe('BUSY')
+    // 审批挂起中 = 轮运行中：切档立即成功（不再 BUSY 拒）
+    const r = await host.send({ op: 'sandbox/set', mode: 'read-only' })
+    expect(r.ok).toBe(true)
+    // 应答审批（放行）→ 工具读 ctx.sandbox 应按新档 read-only：checkBash deny（口径一致）
+    const req = events.find((e) => e.type === 'approval/requested')
+    expect(req).toBeDefined()
+    await host.send({ op: 'approval/respond', requestId: (req as { requestId: string }).requestId, decision: 'allow' })
+    await host.whenIdle()
+    expect(executed).toBe(true)
+    const completed = events.find((e) => e.type === 'item/completed' && (e as { name?: string }).name === 'bash')
+    expect(completed).toBeDefined()
+    expect((completed as { content?: string }).content).toContain('read-only')
     host.dispose()
   })
 

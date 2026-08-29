@@ -3,7 +3,7 @@
  * 场景（mock SSE 轮 1 回 tool_use bash → default 档审批卡）：
  *   B1 字符不吞：卡开 → 写 hello → 输入框回显可见
  *   B2 Enter 防误批+草稿插话：有草稿 hello 时 CR → 卡仍在 + 「已排队」提示
- *   B2b 无选择 Enter：清空草稿后 CR → 卡仍在（未显式选择不确认）
+ *   B2b 空草稿 Enter=批准（F-32 翻案批2b④）：清空草稿后 CR → 卡消（默认选中 y 直批）
  *   B3 y 快捷：写 y → 卡消（放行，工具执行收尾）——随后清插话队列（Ctrl+U 在卡开时无效：
  *         InputStream inactive 不接键、ConfirmPrompt 吞 ctrl 组合，须移到卡应答之后）
  *   B4 Esc=拒绝（第二轮审批卡）：ESC → 卡消（拒绝终态与轮收尾是软判定——mock 收尾回复
@@ -141,17 +141,21 @@ const run = async () => {
     await new Promise((r) => setTimeout(r, 250))
   }
 
-  // B2b 无选择 Enter：卡仍开 → CR → 卡不确认
+  // B2b 空草稿 Enter=批准（F-32 翻案）：默认选中 y，CR → 卡消（放行收尾）
   const m4 = markNow()
   proc.write('\r')
-  await new Promise((r) => setTimeout(r, 1500))
-  if (!/\[y\] 执行/.test(strip(out.slice(m4)))) fail('B2b 无选择 Enter 不确认', '卡消失=误批')
-  console.log('OK  B2b 未显式选择时 Enter 不确认审批')
+  if (!(await waitFor(m4, /执行完毕收尾说明/, 30_000))) fail('B2b 空草稿 Enter 批准（默认 y 直批）', '未见收尾=未放行')
+  console.log('OK  B2b 空草稿 Enter=批准（F-32 默认 y，卡消放行）')
 
-  // B3 y 快捷：写 y → 放行 → 收尾
+  // B3 y 快捷：新一轮卡（B2b 已消费首卡）→ 写 y → 放行 → 收尾
   const m5 = markNow()
+  proc.write('继续帮我写入文件')
+  await new Promise((r) => setTimeout(r, 600))
+  proc.write('\r')
+  if (!(await waitFor(m5, /\[y\] 执行/, 30_000))) fail('B3 第二张审批卡弹出')
+  const m5b = markNow()
   proc.write('y')
-  if (!(await waitFor(m5, /执行完毕收尾说明/, 30_000))) fail('B3 y 快捷放行收尾')
+  if (!(await waitFor(m5b, /执行完毕收尾说明第3轮|执行完毕收尾说明第4轮/, 30_000))) fail('B3 y 快捷放行收尾')
   console.log('OK  B3 空草稿 y 快捷放行')
   // 卡应答后再清插话队列（B2 的 hello 已入队；Ctrl+U 在卡开时无效——P2-6）
   proc.write('\x15') // Ctrl+U 清插话队列（此刻输入框已恢复激活）
@@ -161,7 +165,7 @@ const run = async () => {
 
   // B4 Esc=拒绝：第二轮审批卡
   const m6 = markNow()
-  proc.write('再帮我写入文件')
+  proc.write('最后帮我写入文件')
   await new Promise((r) => setTimeout(r, 600))
   proc.write('\r')
   if (!(await waitFor(m6, /\[y\] 执行/, 30_000))) fail('B4 第二张审批卡弹出')
@@ -169,7 +173,13 @@ const run = async () => {
   proc.write('\x1b') // Esc
   await new Promise((r) => setTimeout(r, 2500))
   const frame7 = strip(out.slice(m7))
-  if (/\[y\] 执行/.test(frame7.slice(-2000))) fail('B4 Esc 拒绝后卡消', '卡仍在')
+  const tail7 = frame7.slice(-2000)
+  if (/\[y\] 执行/.test(tail7)) {
+    // 取证：打印命中点前后上下文（区分「首卡残影重绘」与「拒绝后重试弹了第二张卡」）
+    const i = tail7.lastIndexOf('[y] 执行')
+    console.log(`# B4 证据（命中偏移 ${i}/${tail7.length}）：\n` + tail7.slice(Math.max(0, i - 160), i + 160).replace(/\n/g, '⏎'))
+    fail('B4 Esc 拒绝后卡消', '卡仍在')
+  }
   console.log('OK  B4 Esc=拒绝（卡消）')
   // 拒绝后模型收 tool_result 会再请求 → mock 回文本收尾（tool_result 路径）
   if (!(await waitFor(m7, /问候回复|执行完毕/, 60_000))) console.log('# （拒绝后收尾回复未捕获——可能仍在跑，不算失败）')

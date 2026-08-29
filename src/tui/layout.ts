@@ -32,11 +32,10 @@ export const GAP = {
 
 /** 宽度公式归一（列数）——三套口径（min(cols,100) / columns-6 / columns-14）收敛于此 */
 export const WIDTH = {
-  /** 正文（markdown）内容宽上限：终端宽与 100 取小 */
-  contentMax: 100,
-  /** 正文实际宽 = min(columns, contentMax) */
-  content: (columns: number): number =>
-    Math.min(columns > 0 ? columns : 80, WIDTH.contentMax),
+  /** 正文实际宽 = 终端宽。2026-08-29 用户拍板撤掉排版批②的 100 列封顶——宽终端上
+   *  「没到窗口宽度就换行」被点名不正常（CC 同口径跟随终端宽；「过宽难读」是旧批次的
+   *  自作主张，阅读宽度由用户终端尺寸决定，不由常量替用户做主） */
+  content: (columns: number): number => (columns > 0 ? columns : 80),
   /** 正文列宽（F-36）：markdown/灰字流住在 MessageRow 圆点槽右侧的内容列——
    *  折行续行对齐第 icon 列的关键 = 预折宽恰等于内容列宽（CC render-node-to-output
    *  同口径：wrap 宽 = 正文 Box yoga 内容宽，悬挂缩进是布局副产品） */

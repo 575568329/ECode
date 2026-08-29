@@ -76,7 +76,7 @@ export type ConfirmChoice = 'y' | 'n' | 'a'
 export type ConfirmKeyAction =
   | { action: 'none' }
   | { action: 'select'; choice: ConfirmChoice }
-  | { action: 'confirm'; ok: boolean; always?: boolean; reason?: string }
+  | { action: 'confirm'; ok: boolean; always?: boolean; reason?: string; interrupt?: boolean }
   | { action: 'draft' }
   | { action: 'reason-edit'; next: CursorState }
   | { action: 'reason-enter' }
@@ -142,9 +142,14 @@ export function confirmKeyAction(input: string, key: {
     if (selected === 'a') return { action: 'confirm', ok: true, always: true }
     return { action: 'confirm', ok: selected === 'y' }
   }
-  if (key.escape || (key.ctrl && input === 'c')) {
-    // ③ Esc=拒绝（直觉出口；与 Ctrl+C 同语义）
+  if (key.escape) {
+    // ③ Esc=拒绝（直觉出口——拒绝后模型可换方法继续，与 n/r 同族精细控制）
     return { action: 'confirm', ok: false }
+  }
+  if (key.ctrl && input === 'c') {
+    // F-31（用户拍板「按一下直接退出 loop」）：Ctrl+C=拒卡+中断整轮——
+    // 旧语义与 Esc 同（只拒卡，loop 拿 is_error 继续下一迭代，观感「按了没停」）
+    return { action: 'confirm', ok: false, interrupt: true }
   }
   // F-10：v 切换看全文（草稿非空时同样让位——v 是常见单词字母）
   if (letterHotkeys && input === 'v' && ctx.canExpand) return { action: 'toggle-expand' }
@@ -164,12 +169,14 @@ interface ConfirmPromptProps {
   onDraftKey?: (input: string, key: { return?: boolean; backspace?: boolean; delete?: boolean; home?: boolean; end?: boolean }) => void
   /** 批2b ①/②：主输入框草稿只读镜像（渲染提示用；hasDraft 判定优先走 readDraft 事件时直读） */
   draft?: string
+  /** F-31：Ctrl+C=拒卡+中断整轮的中断回调（TuiApp 注入 host interrupt；测试可缺省） */
+  onInterruptTurn?: () => void
   /** 批2b-fix：按键时刻直读主输入框权威值（draftPort）——渲染镜像在重负载下可能滞后
    * （提交清框的 onDraftChange 传播慢于卡出现），事件时直读根除 hasDraft 陈旧 */
   readDraft?: () => string
 }
 
-export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = '', readDraft }: ConfirmPromptProps): ReactElement {
+export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = '', readDraft, onInterruptTurn }: ConfirmPromptProps): ReactElement {
   const input = state.use.input as Record<string, unknown>
   const target = String(input.path ?? input.command ?? '')
   const isDiff = state.use.name === 'edit_file'
@@ -196,8 +203,10 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
     [state.use.name, commandText],
   )
 
-  const decide = (ok: boolean, always = false, reasonText?: string) => {
+  const decide = (ok: boolean, always = false, reasonText?: string, interrupt = false) => {
     state.resolve(ok, always, reasonText)
+    // F-31：Ctrl+C 拒卡同时中断整轮（用户拍板「按一下直接退出 loop」）
+    if (interrupt) onInterruptTurn?.()
     if (ok) onConfirm?.()
     else onCancel?.()
   }
@@ -217,7 +226,7 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
         setSelected(act.choice)
         break
       case 'confirm':
-        decide(act.ok, act.always === true, act.reason)
+        decide(act.ok, act.always === true, act.reason, act.interrupt === true)
         break
       case 'draft':
         // ① 字符不吞：转发主输入框（含 Enter——未选择/草稿非空时提交草稿走插话通道）

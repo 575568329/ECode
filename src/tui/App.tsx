@@ -51,6 +51,8 @@ interface AppProps {
   draft?: string
   /** 批2b-fix：按键时刻直读主输入框权威值（透传 ConfirmPrompt） */
   readDraft?: () => string
+  /** F-31：卡上 Ctrl+C=拒卡+中断整轮（透传 ConfirmPrompt） */
+  onInterruptTurn?: () => void
   children?: ReactNode
 }
 
@@ -64,6 +66,7 @@ export function App({
   onDraftKey,
   draft,
   readDraft,
+  onInterruptTurn,
   activity,
   activityText,
   iter,
@@ -103,6 +106,7 @@ export function App({
         onDraftKey={onDraftKey}
         draft={draft}
         readDraft={readDraft}
+        onInterruptTurn={onInterruptTurn}
         conditions={conditions}
       >
         <ActivityBar state={activity} text={activityText} />

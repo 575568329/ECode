@@ -92,8 +92,8 @@ describe('confirmKeyAction：单字母快捷与草稿让位（批2b①②）', (
   it('Ctrl/Meta 组合键不触发快捷（y 带 ctrl=none：既不确认也不进草稿）', () => {
     expect(confirmKeyAction('y', { ctrl: true }, baseCtx())).toEqual({ action: 'none' })
     expect(confirmKeyAction('n', { meta: true }, baseCtx())).toEqual({ action: 'none' })
-    // ctrl+c 是唯一例外：拒绝（③与 Esc 同语义）
-    expect(confirmKeyAction('c', { ctrl: true }, baseCtx())).toEqual({ action: 'confirm', ok: false })
+    // ctrl+c 例外：F-31 拒卡+中断整轮（用户拍板「按一下直接退出 loop」——与 Esc 纯拒绝分家）
+    expect(confirmKeyAction('c', { ctrl: true }, baseCtx())).toEqual({ action: 'confirm', ok: false, interrupt: true })
   })
 
   it('普通字符/退格/Delete/Home/End 进 draft（①不吞）；Tab 不进', () => {

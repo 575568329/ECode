@@ -1075,6 +1075,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       onDraftKey={handleConfirmDraftKey}
       draft={mainDraft}
       readDraft={() => draftPortRef.current?.read() ?? ''}
+      onInterruptTurn={() => {
+        // F-31：卡上 Ctrl+C=拒卡+中断整轮（用户拍板「按一下直接退出 loop」）
+        void host.send({ op: 'interrupt' })
+      }}
       activity={activity.state}
       activityText={activity.text}
       running={running}

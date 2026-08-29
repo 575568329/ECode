@@ -96,6 +96,8 @@ interface ConversationProps {
   draft?: string
   /** 批2b-fix：按键时刻直读主输入框权威值（透传 ConfirmPrompt） */
   readDraft?: () => string
+  /** F-31：卡上 Ctrl+C=拒卡+中断整轮（透传 ConfirmPrompt） */
+  onInterruptTurn?: () => void
   children?: ReactNode
   /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar 各 ≤3 行——allocateDynamic 显式扣减） */
   conditions?: { tasksBar?: boolean; subagentBar?: boolean }
@@ -110,6 +112,7 @@ export function Conversation({
   onDraftKey,
   draft,
   readDraft,
+  onInterruptTurn,
   children,
   conditions,
 }: ConversationProps): ReactElement {
@@ -158,6 +161,7 @@ export function Conversation({
           onDraftKey={onDraftKey}
           draft={draft}
           readDraft={readDraft}
+          onInterruptTurn={onInterruptTurn}
         />
       ) : (
         active.streamingText !== '' &&

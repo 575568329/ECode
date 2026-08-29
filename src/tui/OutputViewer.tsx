@@ -271,6 +271,19 @@ const firstLine = (s: string): string => (s.split('\n')[0] ?? '').trim()
 
 // —— OutputViewer：文本滚动窗 ——
 
+/** F-48 批 2：alt 全屏 offset 记忆（title → 上次位置；模块级跨面板开关保留。
+ *  LRU 封顶 32 对齐 wrapCache 惯例；仅 alt 模式写入——嵌入式面板无记忆需求） */
+const offsetMemo = new Map<string, number>()
+const OFFSET_MEMO_MAX = 32
+function memoOffset(key: string, value: number): void {
+  if (offsetMemo.size >= OFFSET_MEMO_MAX && !offsetMemo.has(key)) {
+    const oldest = offsetMemo.keys().next().value
+    if (oldest !== undefined) offsetMemo.delete(oldest)
+  }
+  offsetMemo.set(key, value)
+}
+
+
 interface OutputViewerProps {
   title: string
   source: LineSource
@@ -278,12 +291,10 @@ interface OutputViewerProps {
   onBack: () => void
   /** F-48：alt-screen 全屏模式——总帧高恒 rows−2（满屏分支/win32 每帧全清的规避，架构审阅 P0-1），chrome 收起 */
   altMode?: boolean
-  /** F-48：面板内 Ctrl+C=中断轮次（TuiApp 接线 host interrupt） */
-  onInterrupt?: () => void
 }
 
 /** 搜索态：null=未搜索；string=已确认词（n/N 跳转） */
-export function OutputViewer({ title, source, onBack, altMode, onInterrupt }: OutputViewerProps): ReactElement {
+export function OutputViewer({ title, source, onBack, altMode }: OutputViewerProps): ReactElement {
   const { budget, rows } = useViewport()
   // 内容窗高度（审阅 P0-2 修正）：帧高账目 = 面板（height + 骨架实占 5：marginTop1+边框2+
   // 标题1+状态1；搜索行出现时 +1）+ App 外部骨架 3（ActivityBar1+输入行1+StatusBar1）
@@ -297,8 +308,14 @@ export function OutputViewer({ title, source, onBack, altMode, onInterrupt }: Ou
     : Math.max(3, sectionBudget(budget, 10))
   const lines = source.lines()
   const total = lines.length
-  const [offset, setOffset] = useState(() => Math.max(0, total - height))
-  const [followed, setFollowed] = useState(source.isGrowing())
+  // F-48 批 2：offset 记忆（alt 全屏，title 为 key）——退出再进恢复上次位置；
+  // 恢复记忆位=脱离跟随（follow 仅无记忆的新源/增长源默认开）
+  const memoInitial = altMode === true ? offsetMemo.get(title) : undefined
+  const [offset, setOffset] = useState(() => {
+    if (memoInitial !== undefined) return Math.max(0, Math.min(total - height, memoInitial))
+    return Math.max(0, total - height)
+  })
+  const [followed, setFollowed] = useState(() => (memoInitial === undefined ? source.isGrowing() : false))
   const [query, setQuery] = useState<string | null>(null)
   const [searchInput, setSearchInput] = useState<string | null>(null)
   const [, forceRerender] = useState(0)
@@ -318,6 +335,11 @@ export function OutputViewer({ title, source, onBack, altMode, onInterrupt }: Ou
   followedRef.current = followed
   const heightRef = useRef(height)
   heightRef.current = height
+  // F-48 批 2：offset 记忆写入（alt 全屏；offset/followed 变化即落）——退出面板后再进恢复
+  useEffect(() => {
+    if (altMode !== true) return
+    memoOffset(title, offset)
+  }, [altMode, title, offset])
 
   const matches = useMemo(() => {
     if (query === null || query === '') return null
@@ -371,12 +393,9 @@ export function OutputViewer({ title, source, onBack, altMode, onInterrupt }: Ou
       }
       return
     }
-    // F-48：面板内 Ctrl+C=中断轮次（交互拍板：与 Esc/q 退出分离，状态行标注）
-    if (key.ctrl && input === 'c' && onInterrupt !== undefined) {
-      onInterrupt()
-      return
-    }
-    if (input === 'q') {
+    // F-48 拍板：面板内 Ctrl+C/q/Esc 均为退出（pager 惯例对齐；中断先退面板再按——
+    // 退出后 Ctrl+C 即中断，一次按键成本；避免与中断语义双吃）
+    if (key.ctrl && input === 'c' || input === 'q') {
       onBack()
       return
     }
@@ -464,13 +483,11 @@ export interface OutputListPageProps {
   recentTools: RecentTool[]
   onOpen: (entry: OutputEntry) => void
   onExit: () => void
-  /** F-48：面板内 Ctrl+C=中断轮次（alt 全屏时仍可打断） */
-  onInterrupt?: () => void
   /** F-48：alt-screen 全屏模式 */
   altMode?: boolean
 }
 
-export function OutputListPage({ recentTools, onOpen, onExit, onInterrupt, altMode }: OutputListPageProps): ReactElement {
+export function OutputListPage({ recentTools, onOpen, onExit, altMode }: OutputListPageProps): ReactElement {
   // 任务快照 + 轮询（运行中状态实时；F-46：子代理列表同样每次打开面板刷新——
   // 原实现 useState 快照=TuiApp 挂载时一次，本会话新起的子代理永不在列）
   const [tasks, setTasks] = useState(() => taskRegistry.snapshot())
@@ -484,14 +501,6 @@ export function OutputListPage({ recentTools, onOpen, onExit, onInterrupt, altMo
     return () => clearInterval(timer)
   }, [])
   const { columns } = useViewport()
-  // F-48：q 退出（pager 惯例，alt 全屏语义）+ 面板内 Ctrl+C=中断轮次（中断与退出分离）
-  useInput((input, key) => {
-    if (key.ctrl && input === 'c' && onInterrupt !== undefined) {
-      onInterrupt()
-      return
-    }
-    if (altMode === true && input === 'q') onExit()
-  })
 
   const rows = useMemo<Array<PanelRow<OutputEntry>>>(() => {
     // 审阅 P1-7：label 一律按显示宽度截断（columns−4 留边框缩进）——slice 按字符且 80 列
@@ -545,7 +554,7 @@ export function OutputListPage({ recentTools, onOpen, onExit, onInterrupt, altMo
       onPick={onOpen}
       onCancel={onExit}
       emptyHint="暂无可查看的输出（工具调用/后台任务/子代理）"
-      keyHints={altMode === true ? '↑↓ 选择 · 回车 查看 · q/Esc 退出 · Ctrl+C 中断' : '↑↓ 选择 · 回车 查看 · Esc 返回'}
+      keyHints={altMode === true ? '↑↓ 选择 · 回车 查看 · q/Esc/Ctrl+C 退出' : '↑↓ 选择 · 回车 查看 · Esc 返回'}
     />
   )
 }

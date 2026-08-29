@@ -1080,8 +1080,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         if (overlay?.kind === 'output-panel' || overlay?.kind === 'output-view') {
           closeOutputPanel()
         } else {
-          enterAltScreen()
-          altActiveRef.current = true
+          // F-48 批 2：降级链——ECODE_NO_ALT_SCREEN 显式禁用 / tmux control-mode
+          // （CC 同款判定）→ 不写 1049 序列，直接嵌入手低面板（功能可用观感降级）
+          const noAlt = process.env.ECODE_NO_ALT_SCREEN === '1' || (process.env.TMUX !== undefined && process.env.TMUX.startsWith('/') === false)
+          if (!noAlt) enterAltScreen()
+          altActiveRef.current = !noAlt
           setOverlay({ kind: 'output-panel' })
         }
       }
@@ -1161,7 +1164,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             }
           }}
           onExit={() => closeOutputPanel()}
-          onInterrupt={() => void host.send({ op: 'interrupt' })}
           altMode
         />
       )}

@@ -54,7 +54,7 @@ server.listen(0, '127.0.0.1', async () => {
   const pos = out.length
   proc.write('\x14')
   ok = false
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('Ctrl+C 中断') }
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('q/Esc/Ctrl+C 退出') }
   if (!ok) {
     console.log('FAIL 面板未打开——dump:')
     console.log(strip(out.slice(pos)).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-12).join('\n'))
@@ -84,7 +84,7 @@ server.listen(0, '127.0.0.1', async () => {
   await sleep(300)
   proc.write('\x14')
   ok = false
-  for (let i = 0; i < 20 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos2 + 200)).includes('Ctrl+T 输出') }
+  for (let i = 0; i < 20 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos2 + 200)).includes('q/Esc/Ctrl+C') }
   console.log('OK   二次进入面板（toggle 往返）')
 
   console.log('== 结论：alt-screen 全屏面板真机链路通过 ==')

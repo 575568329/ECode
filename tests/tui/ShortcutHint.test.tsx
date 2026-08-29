@@ -6,12 +6,10 @@ import { ShortcutHint } from '../../src/tui/ShortcutHint.js'
 afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
 
 describe('ShortcutHint', () => {
-  it('default 上下文显示发送/命令/历史', () => {
+  // F-45（用户点名）：idle 态快捷键教学提示去除——组件在 default 上下文渲染为空
+  it('default 上下文渲染为空（教学提示去除）', () => {
     const { lastFrame } = render(React.createElement(ShortcutHint, {}))
-    const f = lastFrame() ?? ''
-    expect(f).toContain('发送')
-    expect(f).toContain('命令')
-    expect(f).toContain('历史')
+    expect((lastFrame() ?? '').trim()).toBe('')
   })
 
   it('busy 上下文显示中断', () => {
@@ -19,8 +17,8 @@ describe('ShortcutHint', () => {
     expect(lastFrame()).toContain('中断')
   })
 
-  it('未知 context 回退 default', () => {
+  it('未知 context 回退 default（同样为空）', () => {
     const { lastFrame } = render(React.createElement(ShortcutHint, { context: 'unknown' }))
-    expect(lastFrame()).toContain('发送')
+    expect((lastFrame() ?? '').trim()).toBe('')
   })
 })

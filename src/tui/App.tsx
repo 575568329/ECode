@@ -130,8 +130,14 @@ export function App({
               sandbox={sandbox}
               sandboxDanger={sandboxDanger}
             />
-            <Text dimColor> · </Text>
-            <ShortcutHint context={busy ? 'busy' : 'default'} />
+            {/* F-45：idle 态快捷键教学提示去除（用户点名「⏎ 发送 / 命令 ↑↓ 历史这些都不用显示」）——
+                busy 态保留 Ctrl+C 中断（运行中怎么打断是关键信息）；分隔符随 hint 存在性条件渲染 */}
+            {busy && (
+              <>
+                <Text dimColor> · </Text>
+                <ShortcutHint context="busy" />
+              </>
+            )}
           </Box>
           {warning !== undefined && (
             <Text color={warningLevel === 'error' ? theme.error : warningLevel === 'info' ? theme.info : theme.warn}>

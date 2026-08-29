@@ -8,6 +8,7 @@ import Table from 'cli-table3'
 import { parseAnsi, type Span } from './ansi.js'
 import { smartWrapAnsi } from './wrap.js'
 import { hasMarkdownSyntax, inlineToAnsi, type InlineTok } from './mdparse.js'
+import { GAP, WIDTH } from './layout.js'
 
 /**
  * Markdown 渲染组件（M2 阶段一：静态 markdown，给已 commit 的助手消息用）。
@@ -36,9 +37,9 @@ interface BlockTok {
   raw?: string
 }
 
-/** 渲染列宽：终端更窄取终端宽，上限 100 避免过宽难读 */
+/** 渲染列宽：终端更窄取终端宽，上限 100 避免过宽难读（排版批②：公式归一 layout.ts WIDTH.content） */
 function cols(): number {
-  return Math.min(process.stdout.columns || 80, 100)
+  return WIDTH.content(process.stdout.columns || 80)
 }
 
 /** 去掉 text 字段，剩余作为 Ink <Text> 的样式 props（rest 解构不算 unused） */
@@ -326,7 +327,9 @@ function renderToken(tok: BlockTok, key: number): ReactNode {
       )
     }
     case 'space':
-      return <Text key={key}> </Text>
+      // 排版批②：space token 不再渲染成单个空格（原样混进流里很怪）——
+      // 块间距已由外层 Box gap={GAP.block} 统一提供，token 本身零渲染
+      return null
     case 'table':
       return <TableBlock key={key} token={tok} />
     case 'html':
@@ -360,7 +363,7 @@ export function Markdown({ text }: { text: string }): ReactElement {
   }
   const tokens = marked.lexer(decoded) as unknown as BlockTok[]
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" gap={GAP.block}>
       {tokens.map((tok, i) => renderToken(tok, i))}
     </Box>
   )

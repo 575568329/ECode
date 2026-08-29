@@ -3,6 +3,7 @@ import { Text, Box } from 'ink'
 import { summarize, type ToolCallEntry } from './toolview.js'
 import { theme } from './theme.js'
 import { symbols } from './symbols.js'
+import { GAP, INDENT } from './layout.js'
 
 /**
  * 单个工具调用渲染（TUI 规范 §4.11 / M2 方案 B.3）：
@@ -41,9 +42,9 @@ export function ToolCallView({ entry, expanded }: ToolCallViewProps): ReactEleme
         : null
 
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" marginTop={GAP.block}>
       <Box>
-        <Box minWidth={2}>
+        <Box minWidth={INDENT.icon}>
           <Text color={markColor}>{symbols.tool}</Text>
         </Box>
         <Text bold color={theme.tool}>
@@ -54,7 +55,7 @@ export function ToolCallView({ entry, expanded }: ToolCallViewProps): ReactEleme
         {tail !== null && <Text color={tail.color}> {tail.sym}</Text>}
       </Box>
       {hasOutput && (
-        <Box flexDirection="column" paddingLeft={3}>
+        <Box flexDirection="column" paddingLeft={INDENT.gutter}>
           <Box>
             <Text dimColor>{collapsed ? symbols.foldCollapsed : symbols.foldExpanded}</Text>
             {collapsed ? (

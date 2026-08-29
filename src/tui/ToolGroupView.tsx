@@ -5,7 +5,18 @@ import { DiffLine } from './DiffLine.js'
 import { theme } from './theme.js'
 import { symbols } from './symbols.js'
 import { clipWidth, foldLines, useViewport } from './viewport.js'
+import { GAP, INDENT, WIDTH } from './layout.js'
 import type { ActiveTool } from './types.js'
+
+/** gutter 列（排版批②：对齐 CC MessageResponse 模式——dim ⎿ + 右侧内容列，
+ *  子内容 wrap 宽度被约束在内容列内，续行自动对齐 ⎿ 下方 = 悬挂缩进） */
+function Gutter(): ReactElement {
+  return (
+    <Box minWidth={INDENT.gutter}>
+      <Text dimColor>{'  ⎿  '}</Text>
+    </Box>
+  )
+}
 
 /** 字节数格式化（B/KB/MB）。与 ToolCallView 一致，复用同一展示约定。 */
 function formatBytes(n: number): string {
@@ -50,7 +61,7 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
   const { budget, columns } = useViewport()
   // M14-V2：展开输出 head-tail 上限（预算一半封顶、绝对上限 12；宽度扣 paddingLeft3+缩进2）
   const expandCap = Math.min(EXPAND_CAP, Math.max(3, Math.floor(budget / 2)))
-  const expandWidth = Math.max(10, columns - 6)
+  const expandWidth = WIDTH.toolOutput(columns)
   if (tools.length === 0) return <Box />
   // M14-V5：可见上限截断（expanded 态同截——展开大输出本就有 expandCap，工具数也须收口）
   const capped = maxTools !== undefined && tools.length > maxTools
@@ -60,13 +71,13 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
   const shown = expanded ? toolsShown : visible
   // F-09：表头名字串压终端右边界时末字符被裁（"bash"→"bas"，ambiguous 宽度/边界取整误差）——
   // clipWidth 提前收口：超宽以 … 明示截断，末名永不静默丢字（CC 工具行同思路：摘要列固定收口）
-  const namesPreview = clipWidth(visible.map((t) => t.name).join(', '), Math.max(12, columns - 14))
+  const namesPreview = clipWidth(visible.map((t) => t.name).join(', '), WIDTH.toolNames(columns))
   const headerSuffix = overflow > 0 ? ` ${symbols.trunc} +${overflow} 个` : ''
 
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1}>
+    <Box flexDirection="column" marginTop={GAP.block} marginBottom={GAP.block}>
       <Box>
-        <Box minWidth={2}>
+        <Box minWidth={INDENT.icon}>
           <Text color={theme.tool}>{symbols.tool}</Text>
         </Box>
         <Text bold color={theme.tool}>
@@ -111,9 +122,9 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
             : []
         const todoDone = todoItems.filter((x) => x.status === 'completed').length
         return (
-          <Box key={id} flexDirection="column" paddingLeft={3}>
+          <Box key={id} flexDirection="column">
             <Box>
-              <Text dimColor>{t.name}</Text>
+              <Text bold>{t.name}</Text>
               {isTodo ? (
                 <Text dimColor> {todoDone}/{todoItems.length} 完成</Text>
               ) : (
@@ -125,11 +136,11 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
               <Box flexDirection="column">
                 {todoItems.map((x, i) => (
                   <Box key={i}>
+                    <Gutter />
                     <Text
                       color={x.status === 'in_progress' ? theme.info : undefined}
                       bold={x.status === 'in_progress'}
                     >
-                      {' '}
                       {x.status === 'completed' ? '[x] ' : x.status === 'in_progress' ? '[->] ' : '[ ] '}
                       {x.content}
                     </Text>
@@ -141,11 +152,13 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
               <Box flexDirection="column">
                 {showFull ? (
                   <>
-                    <Text dimColor>
-                      {'  '}
-                      {symbols.foldExpanded} 输出 ({formatBytes(bytes)})
-                      {t.at !== undefined ? ` · ${new Date(t.at).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })}` : ''}
-                    </Text>
+                    <Box>
+                      <Gutter />
+                      <Text dimColor>
+                        {symbols.foldExpanded} 输出 ({formatBytes(bytes)})
+                        {t.at !== undefined ? ` · ${new Date(t.at).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })}` : ''}
+                      </Text>
+                    </Box>
                     {(() => {
                       // M14-V2：展开全文不再无界——物理行 head-tail（头 3 定位 + 尾最新），中段折叠提示
                       const fold = foldLines(content, expandCap, expandWidth, 'head-tail')
@@ -153,22 +166,26 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
                       const tail = fold.visible.slice(fold.markerAt)
                       const marker =
                         fold.foldedCount > 0 ? (
-                          <Text dimColor>
-                            {'  ⋯ '}
-                            {fold.foldedCount} 行已折叠（共 {fold.totalPhysical} 行）
-                          </Text>
+                          <Box>
+                            <Gutter />
+                            <Text dimColor>
+                              {symbols.trunc} {fold.foldedCount} 行已折叠（共 {fold.totalPhysical} 行）
+                            </Text>
+                          </Box>
                         ) : null
                       if (isSideEffect) {
                         return (
                           <>
                             {head.map((line, i) => (
                               <Box key={`h${i}`}>
+                                <Gutter />
                                 <DiffLine line={line} />
                               </Box>
                             ))}
                             {marker}
                             {tail.map((line, i) => (
                               <Box key={`t${i}`}>
+                                <Gutter />
                                 <DiffLine line={line} />
                               </Box>
                             ))}
@@ -178,24 +195,32 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
                       return (
                         <>
                           {head.length > 0 && (
-                            <Text color={t.status === 'error' ? theme.error : undefined}>{head.join('\n')}</Text>
+                            <Box>
+                              <Gutter />
+                              <Text color={t.status === 'error' ? theme.error : undefined}>{head.join('\n')}</Text>
+                            </Box>
                           )}
                           {marker}
                           {tail.length > 0 && (
-                            <Text color={t.status === 'error' ? theme.error : undefined}>{tail.join('\n')}</Text>
+                            <Box>
+                              <Gutter />
+                              <Text color={t.status === 'error' ? theme.error : undefined}>{tail.join('\n')}</Text>
+                            </Box>
                           )}
                         </>
                       )
                     })()}
                   </>
                 ) : (
-                  <Text dimColor>
-                    {'  '}
-                    {symbols.foldCollapsed} {preview}
-                    {content.length > preview.length
-                      ? ` ${symbols.trunc}(${formatBytes(bytes)})`
-                      : ''}
-                  </Text>
+                  <Box>
+                    <Gutter />
+                    <Text dimColor>
+                      {symbols.foldCollapsed} {preview}
+                      {content.length > preview.length
+                        ? ` ${symbols.trunc}(${formatBytes(bytes)})`
+                        : ''}
+                    </Text>
+                  </Box>
                 )}
               </Box>
             )}
@@ -203,12 +228,14 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
         )
       })}
       {!expanded && overflow > 0 && (
-        <Box paddingLeft={3}>
+        <Box>
+          <Gutter />
           <Text dimColor>还有 {overflow} 个工具</Text>
         </Box>
       )}
       {capped && (
-        <Box paddingLeft={3}>
+        <Box>
+          <Gutter />
           <Text dimColor>…还有 {hiddenTools} 个工具因终端预算折叠（Ctrl+O 展开 / /output 查看全文）</Text>
         </Box>
       )}

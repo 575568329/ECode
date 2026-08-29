@@ -38,8 +38,9 @@ export function GrayStreaming({ text, maxLines }: { text: string; maxLines?: num
 function FoldedUserInput({ text }: { text: string }): ReactElement {
   const { columns } = useViewport()
   const { lines, folded, total } = foldStreamText(text, USER_INPUT_MAX_LINES, columns)
+  // 排版批②：外层不再叠 marginTop（UserMessage 自带 GAP.block——原双倍空行，差距清单§2 点名）
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column">
       {folded > 0 && <Text dimColor>↑ {folded} 行已折叠（共 {total} 行）</Text>}
       <UserMessage text={lines.join('\n')} />
     </Box>

@@ -75,7 +75,10 @@ function SessionRow({ brief, active, onClick }: { brief: SessionBrief; active: b
   )
 }
 
-/** W7：软键盘视口跟随（iOS visualViewport——键盘弹起时压缩可视高度，输入区保持可见） */
+/** W7：软键盘视口跟随（iOS visualViewport）。本组件只负责把 vv.height 写进 --vvh 变量；
+ * 高度统一在根上消费（index.css：html/body/#root = var(--vvh, 100%)）。包裹层自身不得再钉
+ * var(--vvh) 高度——它在 flex 列里以整窗高作 basis，会把上方 flex-1 滚动体挤成一条缝
+ * （桌面实测：main 981px 中对话区仅剩 24px，历史会话只露出底部一行——2026-08-29 布局塌陷修复） */
 function KeyboardAware({ children }: { children: React.ReactNode }): React.JSX.Element {
   useEffect(() => {
     const vv = window.visualViewport
@@ -87,7 +90,7 @@ function KeyboardAware({ children }: { children: React.ReactNode }): React.JSX.E
     onResize()
     return () => vv.removeEventListener('resize', onResize)
   }, [])
-  return <div style={{ height: 'var(--vvh, auto)' }}>{children}</div>
+  return <div>{children}</div>
 }
 
 /** W9 顶栏模型芯片：显示当前 model，下拉列出当前 provider 的可选模型，选中发 model/set

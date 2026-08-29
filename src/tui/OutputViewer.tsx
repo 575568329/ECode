@@ -118,20 +118,81 @@ export function taskFileSource(taskId: string, width: number): LineSource {
   }
 }
 
-/** ③ 子代理 transcript：~/.ecode/agents/<id>.jsonl 一行一条调用（只读快照）。 */
+  /** ③ 子代理 transcript：~/.ecode/agents/<id>.jsonl（只读快照）。
+   *  F-46：运行期可见——文件含两类行：事件行（kind=meta/tool_start/tool_result/warn，
+   *  子代理执行中逐条追加）与终态 messages 行（结束后全量重写）。渲染统一格式化为
+   *  人读行；isGrowing=true + mtime 轮询 subscribe——运行中每 500ms 检查增长自动刷新。 */
 export function subagentSource(agentId: string, width: number): LineSource {
   const file = join(homedir(), '.ecode', 'agents', `${agentId}.jsonl`)
   const readLines = (): string[] => {
     try {
-      return cachedWrap(`agent:${agentId}`, readFileSync(file, 'utf8'), width)
+      const raw = readFileSync(file, 'utf8')
+      const out: string[] = []
+      for (const line of raw.split('\n')) {
+        if (line.trim() === '') continue
+        out.push(...formatAgentLine(line, width))
+      }
+      return out
     } catch {
       return []
     }
   }
   return {
     lines: readLines,
-    isGrowing: () => false,
+    isGrowing: () => true,
+    subscribe: (cb) => {
+      let lastMtime = 0
+      const timer = setInterval(() => {
+        try {
+          const m = statSync(file).mtimeMs
+          if (m !== lastMtime) {
+            lastMtime = m
+            cb()
+          }
+        } catch {
+          /* 文件尚未创建（子代理未落首行）——继续轮询 */
+        }
+      }, 500)
+      return () => clearInterval(timer)
+    },
   }
+}
+
+/** F-46：transcript 单行格式化（事件行/消息行 → 人读文本；parse 失败原样透出）。 */
+function formatAgentLine(line: string, width: number): string[] {
+  let j: Record<string, unknown>
+  try {
+    j = JSON.parse(line) as Record<string, unknown>
+  } catch {
+    return [line]
+  }
+  const preview = (s: unknown, n = 200): string => {
+    const text = String(s ?? '').replace(/\s+/g, ' ').trim()
+    return text.length > n ? text.slice(0, n) + '…' : text
+  }
+  const kind = j.kind
+  if (kind === 'meta') return [`▶ 子任务 [${String(j.type ?? 'general')}] ${preview(j.description)}`]
+  if (kind === 'tool_start') return [`  ⚙ ${String(j.name)}`]
+  if (kind === 'tool_result') return [`  ✓ ${String(j.name)} 完成`]
+  if (kind === 'warn') return [`  ⚠ ${preview(j.text)}`]
+  if (kind === 'event') return [line.slice(0, width)]
+  // 终态 messages 行（role/content）
+  const role = j.role
+  if (role === 'user') {
+    const c = j.content
+    const text = typeof c === 'string' ? c : Array.isArray(c) ? c.map((b) => (b as { text?: string }).text ?? (b as { type?: string }).type ?? '').join(' ') : ''
+    return [`▶ user: ${preview(text, 300)}`]
+  }
+  if (role === 'assistant') {
+    const c = j.content as Array<{ type?: string; text?: string; name?: string }> | undefined
+    if (!Array.isArray(c)) return []
+    return c.map((b) => {
+      if (b.type === 'text') return `◆ ${preview(b.text, 300)}`
+      if (b.type === 'tool_use') return `  ⚙ ${String(b.name)}`
+      return `  · ${String(b.type ?? '')}`
+    })
+  }
+  return [line.slice(0, width)]
 }
 
 /** 列出可查看的子代理 transcript 文件（id + mtime + 首行摘要，新→旧）。

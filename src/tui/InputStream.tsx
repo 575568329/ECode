@@ -42,6 +42,10 @@ export function matchSlashEntries(prefix: string): SlashEntry[] {
 /** 补全列表窗口高度（M8：防长清单顶飞输入区——窗口化 + 总数提示让用户知道还有更多） */
 const SUGGEST_MAX_ROWS = 6
 
+/** F-46：忙碌态放行的只读命令白名单——纯读快照零竞态（/output 看子代理实时 transcript、
+ *  /warnings 告警历史、/help 命令列表）；其余命令 busy 仍拦（/clear 与 runLoop 竞态等）。 */
+const BUSY_READONLY_SLASH = new Set(['output', 'warnings', 'help'])
+
 export function SlashSuggest({
   text,
   selectedIdx = -1,
@@ -249,16 +253,18 @@ export function InputStream({
     appendInputHistory(cwdRef.current, trimmed)
     setHistory((h) => [...h.filter((e) => e !== trimmed), trimmed])
     if (trimmed.startsWith('/')) {
-      // M11 审阅 P0-1：忙碌态斜杠在分流点拦截（/clear 等若立即执行会与 runLoop 竞态——
-      // messagesRef 被清而 loop 持旧数组引用继续跑 = 僵尸循环）
-      // 批2b 配套：只提示不吞——命令文本保留在输入框（用户空闲后补发，不须重打）
-      if (busy) {
-        onSlashBusy?.()
-        return
-      }
       const sp = trimmed.indexOf(' ')
       const name = sp === -1 ? trimmed.slice(1) : trimmed.slice(1, sp)
       const args = sp === -1 ? undefined : trimmed.slice(sp + 1).trim()
+      // M11 审阅 P0-1：忙碌态斜杠在分流点拦截（/clear 等若立即执行会与 runLoop 竞态——
+      // messagesRef 被清而 loop 持旧数组引用继续跑 = 僵尸循环）
+      // 批2b 配套：只提示不吞——命令文本保留在输入框（用户空闲后补发，不须重打）
+      // F-46：只读查看类白名单 busy 放行——/output（看子代理实时 transcript）/warnings/
+      // help 均纯读快照零竞态；子代理运行期「看不了在干什么」的堵点正在于此
+      if (busy && !BUSY_READONLY_SLASH.has(name)) {
+        onSlashBusy?.()
+        return
+      }
       const cmd = commandRegistry.get(name)
       if (cmd) {
         const result = cmd.run(args)

@@ -3,7 +3,7 @@
  * MockProvider 驱动子 runLoop（不发网络）；不测并发编排（P3 集成）。
  */
 import { describe, it, expect } from 'vitest'
-import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { makeTaskTool, makeSubagentOpts, buildSubRegistry, SubRegistry, subagentSystem, makeAgentLogger, setSubagentProgressHandler, setSubagentBridge } from '../../src/services/subagent.js'
@@ -130,6 +130,44 @@ describe('makeTaskTool.execute（返回契约 + transcript）', () => {
     // 返回文案是展示路径（~/ 字面量），实际落盘在（本测试已 mock 的）homedir 下
     const body = readFileSync((m?.[1] as string).replace(/^~/, homedir()), 'utf8')
     expect(body).toContain('查 src 结构')
+  })
+
+  it('F-46 运行期事件行逐条落盘（/output 运行期可见性）', async () => {
+    const desc = `F46 运行期落盘探针 ${Date.now()}`
+    let observed: string | null = null
+    const probe: Tool = {
+      name: 'probe',
+      description: 'probe',
+      input_schema: { type: 'object', properties: {} },
+      readonly: true,
+      async execute() {
+        // 等 meta/tool_start 异步 append 完成（fire-and-forget 落盘）
+        await new Promise((r) => setTimeout(r, 120))
+        const dir = join(homedir(), '.ecode', 'agents')
+        for (const f of existsSync(dir) ? readdirSync(dir) : []) {
+          const p = join(dir, f)
+          const body = readFileSync(p, 'utf8')
+          if (body.includes(desc)) { observed = body; break }
+        }
+        return { content: 'ok' }
+      },
+    }
+    const reg = new ToolRegistryImpl()
+    reg.register(probe)
+    const deps = makeDeps({
+      registry: reg,
+      getProvider: () => new MockProvider([
+        [{ type: 'tool_use_start', id: 't1', name: 'probe' }, { type: 'tool_use_end', id: 't1' }, { type: 'done', stop_reason: 'tool_use' }],
+        [{ type: 'text', text: '结论：完成' }, { type: 'done', stop_reason: 'end' }],
+      ]),
+    })
+    const tool = makeTaskTool(deps)
+    await tool.execute({ description: desc, prompt: 'x' }, ctx)
+    // probe.execute 读到的快照：meta 与 tool_start 事件行已在（运行期可见）
+    expect(observed, '工具执行中 transcript 应已含事件行').not.toBeNull()
+    expect(observed).toContain('"kind":"meta"')
+    expect(observed).toContain('"kind":"tool_start"')
+    expect(observed).toContain('probe')
   })
 
   it('子循环致命错误转 is_error 可读文案（不炸父；catch 双保险）', async () => {

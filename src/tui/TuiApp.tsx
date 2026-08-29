@@ -891,6 +891,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
 
   const { warning } = useInterrupt({
     onInterrupt: () => {
+      deps.logger.debug('system', 'interrupt_latency_probe', { stage: 'pressed' }) // 诊断插桩：四点计时起点
       // 本地 abort（hook 子进程中断）+ 宿主 interrupt（loop 的 signal 在宿主）
       abortRef.current.abort()
       void host.send({ op: 'interrupt' })

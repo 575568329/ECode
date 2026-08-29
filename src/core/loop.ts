@@ -231,6 +231,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
       if (isAbort) {
         stopReason = 'aborted'
         isAborted = true
+        opts.logger.debug('loop', 'interrupt_latency_probe', { stage: 'surfaced', iter }) // 诊断插桩
       }
       // P0-2: CONTEXT_TOO_LONG 不 fatal throw（真实 provider 400 是 throw APIError，非 SSE error delta），
       //   让它落到下方压缩兜底分支；其它 !recoverable 才 fatal throw

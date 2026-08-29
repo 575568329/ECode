@@ -571,6 +571,7 @@ export class HostSession {
         return { ok: true, routed: 'Started' }
       }
       case 'interrupt':
+        this.deps.logger.debug('system', 'interrupt_latency_probe', { stage: 'received' }) // 诊断插桩：Ctrl+C 迟滞分段计时
         this.abort.abort()
         return { ok: true }
       case 'interjection/clear':
@@ -932,6 +933,7 @@ export class HostSession {
   }
 
   private finishTurn(turnId: string): void {
+    this.deps.logger.debug('system', 'interrupt_latency_probe', { stage: 'turn_finished' }) // 诊断插桩
     if (!this.turnHadTools) this.loopGuardTextTurn() // M13-B2：纯文本轮复读（onWarn 通道）
     this.publish('turn/completed', { turnId })
     this.publish('thread/status', { busy: false, waitingOn: null, iter: 0 })

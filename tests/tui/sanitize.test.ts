@@ -44,7 +44,9 @@ describe('stripUntrustedAnsi（alt 面板不可信内容净化）', () => {
     const text = '结论：一切正常\n- 项一\n  ⚙ bash 完成'
     expect(stripUntrustedAnsi(text)).toBe(text)
   })
-  it('SGR 颜色一期全剥（黑白阅读基调）', () => {
-    expect(stripUntrustedAnsi('\x1b[31m红\x1b[0m文本')).toBe('红文本')
+  it('SGR 颜色保留（F-50b 轻格式：粗体/行内代码需要颜色通道；恶意 CSI 仍剥）', () => {
+    expect(stripUntrustedAnsi('\x1b[31m红\x1b[0m文本')).toBe('\x1b[31m红\x1b[0m文本')
+    expect(stripUntrustedAnsi('\x1b[?1049h文本')).toBe('文本') // 非 SGR CSI 仍剥
+    expect(stripUntrustedAnsi('\x1b[2J文本')).toBe('文本')
   })
 })

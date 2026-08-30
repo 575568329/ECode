@@ -242,12 +242,21 @@ export function formatAgentLine(line: string, width: number): string[] {
     const c = j.content as Array<{ type?: string; text?: string; name?: string }> | undefined
     if (!Array.isArray(c)) return []
     return c.map((b) => {
-      if (b.type === 'text') return `◆ ${preview(b.text, 300)}`
+      if (b.type === 'text') return `◆ ${mdInline(preview(b.text, 300))}`
       if (b.type === 'tool_use') return `  ⚙ ${String(b.name)}`
       return `  · ${String(b.type ?? '')}`
     })
   }
   return [line.slice(0, width)]
+}
+
+/** F-50b：行内轻量 markdown——**粗体** 与 \`行内代码\` 上色（SGR 通道已放行）。
+ *  块级结构（代码块/表格）不做完整渲染（虚拟行列表约束），保持缩进形态。 */
+function mdInline(text: string): string {
+  const ESC = String.fromCharCode(27)
+  return text
+    .replace(/\*\*([^*]+)\*\*/g, `${ESC}[1m$1${ESC}[22m`)
+    .replace(/`([^`]+)`/g, `${ESC}[36m$1${ESC}[0m`)
 }
 
 /** 列出可查看的子代理 transcript 文件（id + mtime + 首行摘要，新→旧）。

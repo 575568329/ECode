@@ -234,7 +234,7 @@ describe('makeTaskTool.execute（返回契约 + transcript）', () => {
   })
 
   it('进度桥：setSubagentProgressHandler 收运行中快照（onToolStart 更新活动，结束移除）', async () => {
-    const snaps: Array<Array<{ id: string; description: string; activity: string }>> = []
+    const snaps: Array<Array<{ id: string; description: string; activity: string; waitingSince?: number }>> = []
     setSubagentProgressHandler((list) => snaps.push(list.map((x) => ({ ...x }))))
     const provider = new MockProvider([
       [
@@ -248,9 +248,10 @@ describe('makeTaskTool.execute（返回契约 + transcript）', () => {
     const tool = makeTaskTool(deps)
     await tool.execute({ description: '调研', prompt: 'p' }, ctx)
     setSubagentProgressHandler(null)
-    // 启动快照（activity=启动中）→ 工具活动快照 → 结束空快照
+    // 启动快照（activity=启动中）→ 工具活动快照 → LLM 等待期快照（思考中+打点）→ 结束空快照
     expect(snaps.some((l) => l.length === 1 && l[0].description === '调研' && l[0].activity === '启动中')).toBe(true)
     expect(snaps.some((l) => l.length === 1 && l[0].activity === 'read_file')).toBe(true)
+    expect(snaps.some((l) => l.length === 1 && l[0].activity === '思考中' && typeof l[0].waitingSince === 'number')).toBe(true)
     expect(snaps.at(-1)).toEqual([])
   })
 })

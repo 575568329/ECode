@@ -130,7 +130,14 @@ export interface SubagentStatus {
   description: string
   /** 最近工具活动（折叠行动态段） */
   activity: string
+  /** 等待 LLM 响应的起点（onToolResult 置「思考中」时打点，onToolStart 清除）——
+   *  SubagentBar 据此逐秒递增，消解「上一工具名冻结整个 LLM 等待期」的假死观感 */
+  waitingSince?: number
 }
+
+/** 工具返回后到下一轮 LLM 响应前的活动标签（F-50 后观察期：工具名只在上个工具出现，
+ *  若不换标签整段等待期都冻结在旧工具名上，用户误读为卡死） */
+const THINKING_LABEL = '思考中'
 
 const activeAgents = new Map<string, SubagentStatus>()
 let progressHandler: ((list: SubagentStatus[]) => void) | null = null
@@ -249,7 +256,7 @@ export function makeSubagentOpts(
   description: string,
   type: SubagentType,
   signal: AbortSignal,
-  onActivity?: (name: string) => void,
+  onActivity?: (st: { activity: string; waitingSince?: number }) => void,
   sessionConfirm?: (use: ToolUseBlock) => Promise<boolean | string>,
   sessPort?: SessionPort['session'],
   /** M14-C5②：宿主桥解析好的摘要角色（roles.summary 换笔——子代理独立压缩链与主链同源；null=回退主模型） */
@@ -295,15 +302,24 @@ export function makeSubagentOpts(
         const st = activeAgents.get(agentId)
         if (st !== undefined) {
           st.activity = name
+          delete st.waitingSince
           notifyProgress()
         }
-        onActivity?.(name)
+        onActivity?.({ activity: name })
       },
       onUsage: (i, o, c) => reportUsage(i, o, c),
       onToolResult: (_id, name) => {
         void appendAgentEvent(agentId, { kind: 'tool_result', name, ts: Date.now() })
         // 审阅 P1-2：子代理的 mcp__ 调用计数（此前只计主循环）
         if (name.startsWith('mcp__')) sessPort?.countMcpCall?.()
+        // 工具返回即进入 LLM 等待期——换标签+打点（秒数递增），不再冻结在旧工具名上
+        const st = activeAgents.get(agentId)
+        if (st !== undefined) {
+          st.activity = THINKING_LABEL
+          st.waitingSince = Date.now()
+          notifyProgress()
+        }
+        onActivity?.({ activity: THINKING_LABEL, waitingSince: Date.now() })
       },
       onWarn: (m) => {
         void appendAgentEvent(agentId, { kind: 'warn', text: m.slice(0, 200), ts: Date.now() })
@@ -460,7 +476,7 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
           notifyProgress()
         }
       }
-      up({ id: agentId, description, activity: '启动中' })
+      up({ id: agentId, description, activity: '启动中', waitingSince: Date.now() })
       // F-46：meta 行先行落盘——父端 /output 列表（按 mtime）运行期即可见本子代理。
       // F-49：meta 带发起会话 sid——面板「只看当前会话」的过滤依据（argv 兜底无 sid 留空）
       void appendAgentEvent(agentId, { kind: 'meta', description, type, ts: Date.now(), sid: sess?.getSessionId?.() ?? '' })
@@ -470,13 +486,15 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
       // 审阅 P0-3/C5②：摘要角色经会话端口优先（与主链同源——resolveSummaryRole 含缓存/floor
       // 告警，roles.summary 配了换笔）；模块桥降兜底；都无（argv 单次/旧测试）=null 回退子代理主模型
       const summaryRole = await (sess?.getSummaryRole?.() ?? bridge?.getSummaryRole?.() ?? null)
-      const opts = makeSubagentOpts(deps, agentId, description, type, signal, (name) => {
+      const opts = makeSubagentOpts(deps, agentId, description, type, signal, (act) => {
         if (sess?.updateSubagent !== undefined) {
-          sess.updateSubagent({ id: agentId, description, activity: name })
+          sess.updateSubagent({ id: agentId, description, activity: act.activity, waitingSince: act.waitingSince })
         } else {
           const st = activeAgents.get(agentId)
           if (st !== undefined) {
-            st.activity = name
+            st.activity = act.activity
+            if (act.waitingSince !== undefined) st.waitingSince = act.waitingSince
+            else delete st.waitingSince
             notifyProgress()
           }
         }

@@ -4,6 +4,7 @@
  * 不与父抢 ActivityBar/StatusBar（方案 §1.5：onActivity/onIter 不配，可见性由此承担）。
  */
 
+import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import { Box, Text } from 'ink'
 import { theme } from './theme.js'
@@ -14,7 +15,17 @@ import type { SubagentStatus } from '../services/subagent.js'
 const MAX_LINES = 3
 
 export function SubagentBar({ agents }: { agents: SubagentStatus[] }): ReactElement | null {
+  // 等待期秒数递增（activity=思考中/启动中时）：1s 自持节拍仅代理可见时跑（TasksBar 轮询同款模式）——
+  // 状态本身只在工具开跑/返回时推送，秒数走本地时钟换算（waitingSince），不靠事件驱动
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (agents.length === 0) return
+    const timer = setInterval(() => setTick((n) => n + 1), 1000)
+    timer.unref?.()
+    return () => clearInterval(timer)
+  }, [agents.length])
   if (agents.length === 0) return null
+  const now = Date.now()
   if (agents.length > MAX_LINES) {
     const names = agents.slice(0, MAX_LINES).map((a) => a.description).join(' · ')
     return (
@@ -29,7 +40,11 @@ export function SubagentBar({ agents }: { agents: SubagentStatus[] }): ReactElem
       {agents.map((a) => (
         <Box key={a.id} paddingLeft={1}>
           <Text color={theme.info}>{symbols.tool} 「{a.description}」</Text>
-          <Text dimColor> · {a.activity}</Text>
+          <Text dimColor>
+            {' '}
+            · {a.activity}
+            {a.waitingSince !== undefined ? ` ${Math.max(0, Math.round((now - a.waitingSince) / 1000))}s` : ''}
+          </Text>
         </Box>
       ))}
     </Box>

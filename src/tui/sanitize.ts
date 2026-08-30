@@ -39,17 +39,24 @@ export function stripUntrustedAnsi(text: string): string {
     // ESC 序列：按下一字节分派；未终结/不认识的序列吞到「下一个可打印字符前」
     const next = i + 1 < n ? text[i + 1]! : ''
     if (next === '[') {
-      // CSI：参数(0x30-0x3f) 中间(0x20-0x2f) final(0x40-0x7e)——吞到 final 为止
+      // CSI：扫描到 final(0x40-0x7e)。SGR（final 'm' 且参数仅 0-9;:，无私有前缀）放行——
+      // 颜色是内容可读性的一部分（F-50 轻量 markdown），Ink 内置净化同样保留 SGR；
+      // 其余 CSI（1049/1000/2J/光标移动等）全部剥
       i += 2
+      let params = ''
+      let finalByte = ''
       while (i < n) {
         const c = text.charCodeAt(i)
+        const ch = text[i]!
         if (c >= 0x40 && c <= 0x7e) {
+          finalByte = ch
           i++
           break
         }
-        // 参数/中间字节与容错范围内的字节都属序列体；越界即序列非法——吞掉该字节继续（防死循环）
+        params += ch
         i++
       }
+      if (finalByte === 'm' && /^[0-9;:]*$/.test(params)) out += `[${params}m`
       continue
     }
     if (next === ']' || next === 'P' || next === 'X' || next === '^' || next === '_') {

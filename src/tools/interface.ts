@@ -40,8 +40,8 @@ export interface ToolContext {
   session?: {
     /** 会话级后台任务表（bash run_in_background/task_output/task_stop） */
     tasks?: import('../services/tasks.js').TaskRegistry
-    /** 会话级子代理进度（task 工具执行期上报） */
-    updateSubagent?(st: { id: string; description: string; activity: string }): void
+    /** 会话级子代理进度（task 工具执行期上报；waitingSince=LLM 等待起点，进度行秒数递增用） */
+    updateSubagent?(st: { id: string; description: string; activity: string; waitingSince?: number }): void
     removeSubagent?(id: string): void
     /** B8.2：子代理 confirm 会话化（多宿主不串台——模块级桥降为单会话兜底） */
     confirmTool?(use: import('../core/types.js').ToolUseBlock): Promise<boolean | string>

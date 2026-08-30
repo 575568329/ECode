@@ -1,9 +1,9 @@
 /** proc 工具测：isDangerousCommand 黑名单扩展 + resolveGitBash 模块级缓存（真实探测，无网络）。 */
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isDangerousCommand, resolveGitBash, spawnShellCommand, __resetGitBashCacheForTest } from '../../src/services/proc.js'
+import { isDangerousCommand, resolveGitBash, spawnShellCommand, gitBashCandidates, __resetGitBashCacheForTest } from '../../src/services/proc.js'
 
 describe('isDangerousCommand（黑名单扩展）', () => {
   it('管道进 shell 家族：sh/bash 与绝对路径、zsh/dash/ksh/fish/csh/tcsh', () => {
@@ -98,6 +98,54 @@ describe('resolveGitBash（模块级缓存）', () => {
     } finally {
       rmSync(a.dir, { recursive: true, force: true })
       rmSync(b.dir, { recursive: true, force: true })
+    }
+  })
+
+  it('自定义盘候选命中（2026-08-30 真机：D:\\tool\\Git 未进 PATH 曾被回退假路径掩盖）', () => {
+    // 探测在真实文件系统上进行：本机若真装了自定义盘 Git 且【无更高优先级候选】，断言命中；
+    // 否则本用例退化为"至少不抛错"冒烟（CI/他人机器无 D 盘 Git 也不红）。
+    // 前置收窄（终审 P3）：若 C 盘候选也存在，resolveGitBash 按优先级返回 C 盘——
+    // 本用例的 existing（D/E 盘）断言会误红，故显式排除该形态
+    __resetGitBashCacheForTest()
+    delete process.env.SHELL
+    const all = gitBashCandidates()
+    const hasCAndPublic = all.some((p) => /^[C]:/i.test(p) && existsSync(p))
+    const customCandidates = all.filter((p) => /^[DE]:/i.test(p))
+    const existing = customCandidates.find((p) => existsSync(p))
+    if (existing === undefined || hasCAndPublic) return // 无 D/E 盘 Git，或 C 盘优先级候选共存：冒烟通过
+    expect(resolveGitBash()).toBe(existing)
+  })
+
+  it('探测全空 → 抛带修复指引的明确错误（不再静默回退假路径 spawn ENOENT）', () => {
+    // "全空"形态：与源码同源遍历完整候选清单（P2-2——清单变更测试自动跟随）+ 无 SHELL。
+    // 真实文件系统无法临时摘除已装的 Git：本机有任一候选则 resolveGitBash 合法返回，
+    // 用例自动退化为冒烟；无候选机器上才真正断言抛错路径（两种环境都不红）
+    __resetGitBashCacheForTest()
+    delete process.env.SHELL
+    const all = gitBashCandidates()
+    if (all.some((p) => existsSync(p))) return // 本机有候选：抛错路径不可达，冒烟通过
+    expect(() => resolveGitBash()).toThrow(/Git Bash/)
+    expect(() => resolveGitBash()).toThrow(/SHELL/)
+  })
+
+  it('负缓存：探过「未找到」后不重复全量探测（终审 P2-1 反事实断言）', () => {
+    // 无候选机器专用（有候选机器自动冒烟跳过）。反事实验证法：首次调用建立负缓存后，
+    // 注入一个【真实存在】的 SHELL——
+    //   负缓存生效（修复后）：直接重抛缓存错误 → 仍 throw ✓
+    //   负缓存失效（缺陷形态 return probeGitBash()）：SHELL 分支接住并【返回路径】→ 不抛 ✗ 红
+    // 该断言能真正锁死「负缓存命中不再全量探测」，清单或环境变化自动跟随
+    __resetGitBashCacheForTest()
+    delete process.env.SHELL
+    if (gitBashCandidates().some((p) => existsSync(p))) return // 有候选：负缓存路径不可达
+    expect(() => resolveGitBash()).toThrow(/Git Bash/) // 首次：建立负缓存
+    const dir = mkdtempSync(join(tmpdir(), 'ecode-proc-neg-'))
+    try {
+      process.env.SHELL = join(dir, 'bash') // 真实存在的 bash 名文件（若无负缓存会被接住返回）
+      writeFileSync(process.env.SHELL, '')
+      expect(() => resolveGitBash()).toThrow(/Git Bash/) // 反事实：负缓存生效则仍抛
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      delete process.env.SHELL
     }
   })
 })

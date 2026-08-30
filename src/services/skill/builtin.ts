@@ -26,11 +26,11 @@ ECode 自身的权威配置指南。修改配置前先读本手册；不确定�
 | <项目根>/.ecode/settings.json | 项目级权限 | 同上；进 git 团队共享 |
 | <项目根>/.ecode/settings.local.json | local 权限 | 弹窗「永久记住」的落点；gitignore 不污染团队 |
 | <项目根>/.mcp.json | 项目级 MCP | 团队共享可进 git；首用时弹批准（指纹存 ~/.ecode/approved-mcp.json） |
-| .env | 仅开发模式 | npm run dev 时读；发布版（ecode 命令）不读 |
+| .env | cwd 级环境变量 | dev 与 serve 都读**启动目录**的 .env；值不进 process.env（防密钥泄漏）；ECODE_SERVE_*/ECODE_BASE_URL 等均支持 |
 | ~/.ecode/skills/ | 用户级 skill | 目录名=skill 名，内放 SKILL.md |
 | <项目根>/.ecode/skills/ | 项目级 skill | 同名覆盖用户级 |
 
-优先级：进程环境变量 > .env（dev）> config.json。密钥优先环境变量 ANTHROPIC_API_KEY，其次 config 的 apiKey。
+优先级：进程环境变量 > .env（cwd）> config.json。密钥优先环境变量 ANTHROPIC_API_KEY，其次 config 的 apiKey。
 
 ## config.json 字段速览
 
@@ -48,8 +48,16 @@ ECode 自身的权威配置指南。修改配置前先读本手册；不确定�
 | providers.*.pricing | Record<模型, {input,output,cacheRead?,cacheWrite?}> | — | 定价覆盖（¥/Mtok，优先于内置表与 models.dev 同步值） |
 | plugins | Record<"name@market", boolean> | — | 插件启用状态（/plugin 面板维护） |
 | sandbox | {defaultMode?, blockedCommands?} | 关 | 沙箱（M9）：defaultMode = default/read-only/workspace-write/full-access（Tab 键或 /sandbox 面板切换）；blockedCommands 通配黑名单全档硬拒 |
-| lintCommand / testCommand | string | 自动探测 | 编辑后自动验证（M9）：留空探测 package.json 的 lint/test scripts；显式命令优先；无 scripts 不跑。失败输出回喂模型自纠，连续失败熔断 |
+| lintCommand / testCommand | string | 关 | 编辑后自动验证（M9）：**空串/缺省=关闭，不会自动探测**；显式命令优先。失败输出回喂模型自纠，连续失败熔断 |
 | autoCommit | boolean | false | git 轻量集成（M9）：轮末有编辑且 lint/test 绿自动 commit（带 Ecode-Commit trailer，只提交本轮文件；/undo 只退 ECode 提交） |
+| maxTokens（providers.*） | number | 32768 | 单次最大输出 token——8192 配 thinking（budget 占额）极易触顶截断（表现：回复半截后静默，12s 后告警行消失；/warnings 可查） |
+| notificationIdleSeconds | number | 60 | 审批/等待输入持续 N 秒触发通知（0=关，批2d） |
+| bellOnApproval | boolean | true | 审批卡首次出现响终端 BEL（批2d） |
+| sessionIdleMinutes | number | 120 | serve 会话空闲回收分钟（0=不收；M13 serve 场景） |
+| approvalTimeoutMs | number | 900000 | 审批挂起超时 ms（0=不限；超时自动拒绝，M13） |
+| feishu | {appId, appSecret, allowUsers?} | — | 飞书 IM 网关（M13）：配了凭据 serve 自动激活，长连接免公网；allowUsers=open_id 白名单，**缺省/空=拒绝所有** |
+| webSearch | {provider?, apiKey?, engine?, preferMcp?} | bing | 联网搜索（M10）：bing RSS 免费；可切 zhipu（配 apiKey/engine）；preferMcp 声明搜索 MCP server 名 |
+| roles | {summary?: {provider, model}} | — | 角色分流（M13）：summary=压缩摘要专用便宜模型；provider 名必须存在于 providers |
 
 providers.<名> 字段：
 
@@ -124,6 +132,12 @@ thinking 注意：anthropic 协议映射为 budget_tokens（low=2048 / medium=81
 
 ### 加第二家供应商
 providers 下新增 key（type/baseURL/apiKey/models）→ 重启 → /model 切换。/setup 向导可代配（增量编辑不洗掉其他字段，写前自动备份 .bak）。
+
+### 手机上看 ECode（serve 常驻）
+1. 构建 web 前端（仓库内：cd web && npm ci && npm run build；发布包自带 web/dist 免此步）
+2. 项目根 .env 写 ECODE_SERVE_HOST=0.0.0.0 + ECODE_SERVER_PASSWORD=<强密码>（非 loopback 必须密码，否则拒绝启动）；可选 ECODE_SERVE_PORT（默认随机）
+3. ecode serve 启动 → 打印 Mobile: http://<局域网IP>:<port> → 手机同 WiFi 浏览器打开输密码
+4. ecode serve stop 停止。外网访问不内置穿透——用 Tailscale。或配 feishu 节走飞书 IM（免公网免同 WiFi）
 
 ## 运维事实
 

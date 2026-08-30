@@ -110,6 +110,10 @@ interface ConfigFile {
   notificationIdleSeconds?: number
   /** 批2d：审批卡首次出现响 BEL（缺省 true） */
   bellOnApproval?: boolean
+  /** M13-W2：serve 会话空闲回收分钟（缺省 120；0=不收——补死键：此前磁盘接口漏此字段，写了不生效） */
+  sessionIdleMinutes?: number
+  /** M13-B2：审批挂起超时毫秒（缺省 900_000=15min；0=不限——补死键同上） */
+  approvalTimeoutMs?: number
   /** M13-B3：角色分流（summary=压缩摘要专用便宜模型；校验 provider 名存在） */
   roles?: { summary?: { provider: string; model: string } }
   /** M13-W8：飞书凭据（jsonc 透传） */
@@ -146,7 +150,7 @@ export const CONFIG_TEMPLATE = `{
       "apiKey": "",                                         // ← 必填
       "models": ["glm-5.2"],                                // 可用模型（/model 列这些；可多个）
       "thinking": "medium",                                 // 思考强度：off | low | medium | high
-      "maxTokens": 8192                                     // 单次最大输出 token
+      "maxTokens": 32768                                    // 单次最大输出 token（8192 配 thinking 极易触顶截断——budget 占额后可见文本更少）
       // "temperature": 0.7,                                // 采样温度（可选，per-provider）
       // "topP": 0.95                                       // nucleus sampling（可选）
     }
@@ -179,14 +183,24 @@ export const CONFIG_TEMPLATE = `{
 
   "maxIterations": 50,        // Agent 循环最大轮数
   "bashMaxOutputBytes": 50000, // bash 输出截断阈值（50KB 头尾中截，超限落盘 .outputs/ 可回看——对标 CC 50K chars）
-  // M9：编辑后自动 lint/test（仅认此处显式配置；空串/缺省=关闭，不自动探测 package.json——安全默认）
+  // M9：编辑后自动 lint/test（空串/缺省=关闭——不会自动探测 package.json，安全默认）
   "lintCommand": "",
   "testCommand": "",
   // M9：沙箱（default=现状=关；blockedCommands 通配全档硬拒，full-access 也不放行）
   "sandbox": { "defaultMode": "default", "blockedCommands": ["git push --force*", "npm publish*"] },
   "autoCommit": false, // M9：编辑轮末自动 git commit（默认关；/undo 只退 ECode 提交）
   // M10：联网搜索（缺省 bing RSS 免费零配置；配了搜索类 MCP 可 preferMcp 声明其名；质量增强可切 zhipu）
-  "webSearch": { "provider": "bing" }
+  "webSearch": { "provider": "bing" },
+  // 批2d：审批等待提示（notificationIdleSeconds 缺省 60，0=关；bellOnApproval 缺省 true）
+  // "notificationIdleSeconds": 60,
+  // "bellOnApproval": true,
+  // M13 serve 常驻（ecode serve 手机/Web 访问；缺省不配=纯本机 127.0.0.1）：
+  // "sessionIdleMinutes": 120,            // serve 会话空闲回收分钟（0=不收）
+  // "approvalTimeoutMs": 900000,          // 审批挂起超时 ms（0=不限；超时自动拒绝）
+  // "feishu": {                           // 飞书 IM 网关（配了凭据 serve 自动激活；长连接免公网）
+  //   "appId": "cli_xxx", "appSecret": "\${FEISHU_SECRET}",
+  //   "allowUsers": ["ou_xxx"]            // open_id 白名单——缺省/空=拒绝所有（安全默认，必配）
+  // }
   // "logLevel": "info",       // 日志级别：debug | info | warn | error
   // "maxInstructionsKB": 32,  // 指令/记忆注入单级上限 KB（ECODE.md/CLAUDE.md/MEMORY.md）
   // "webFetchMaxKB": 30,      // web_fetch 回喂内容上限 KB（头尾中截）
@@ -358,6 +372,8 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     logLevel: (file.logLevel as Config['logLevel']) ?? DEFAULT_LOG_LEVEL,
     notificationIdleSeconds: file.notificationIdleSeconds ?? DEFAULT_NOTIFICATION_IDLE_SECONDS,
     bellOnApproval: file.bellOnApproval ?? DEFAULT_BELL_ON_APPROVAL,
+    ...(file.sessionIdleMinutes !== undefined ? { sessionIdleMinutes: file.sessionIdleMinutes } : {}),
+    ...(file.approvalTimeoutMs !== undefined ? { approvalTimeoutMs: file.approvalTimeoutMs } : {}),
     ...(file.mcpServers !== undefined ? { mcpServers: file.mcpServers } : {}),
   ...(file.hooks !== undefined ? { hooks: file.hooks } : {}),
   }
@@ -417,7 +433,7 @@ function wizardProviderObject(values: WizardValues): Record<string, unknown> {
     apiKey: values.apiKey,
     models,
     thinking: values.thinking,
-    maxTokens: 8192,
+    maxTokens: 32768, // 8192 配 thinking 极易触顶截断（max_tokens_truncated）——模板同步值
   }
 }
 
@@ -483,5 +499,7 @@ export function emptyShellConfig(): Config {
     maxIterations: DEFAULT_MAX_ITERATIONS,
     bashMaxOutputBytes: DEFAULT_BASH_MAX_BYTES,
     logLevel: DEFAULT_LOG_LEVEL,
+    notificationIdleSeconds: DEFAULT_NOTIFICATION_IDLE_SECONDS,
+    bellOnApproval: DEFAULT_BELL_ON_APPROVAL,
   }
 }

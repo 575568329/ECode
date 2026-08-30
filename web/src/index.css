@@ -26,3 +26,16 @@ body,
   background: #333;
   border-radius: 3px;
 }
+
+/* W-7 移动细节包（2026-08-30）：触屏手势白名单（禁双指缩放/边缘手势打架）+ iOS 聚焦缩放
+   防线（输入字号 <16px 时 iOS Safari 聚焦自动放大页面）。桌面无感。 */
+@media (pointer: coarse) {
+  body {
+    touch-action: pan-x pan-y;
+    overflow-x: hidden;
+  }
+  textarea,
+  input {
+    font-size: 16px;
+  }
+}

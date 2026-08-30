@@ -11,6 +11,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { VList, type VListHandle } from 'virtua'
 import { sendCommand } from './connect'
+import { parseDiffContent } from './diffView'
 import { buildMessageActions, type MessageActionContext } from './messageActions'
 import { useApp, type ChatEntry, type ChatImage, type ToolItem } from './store'
 
@@ -62,9 +63,38 @@ function ToolCard({ project, sessionId, item }: { project: string; sessionId: st
         {item.summary !== undefined && item.summary !== '' && <span className="truncate text-xs text-neutral-600">{item.summary}</span>}
         {item.truncated === true && item.fullLoaded !== true && <span className="shrink-0 text-[10px] text-amber-600">已截断</span>}
       </button>
-      {open && item.content !== undefined && (
-        <pre className="max-h-72 overflow-auto border-t border-neutral-800 px-3 py-2 text-xs leading-relaxed text-neutral-400">{item.content}</pre>
-      )}
+      {open && item.content !== undefined && <ToolOutput name={item.name} content={item.content} />}
+    </div>
+  )
+}
+
+/** 工具展开内容：编辑类工具（edit_file/write_file）渲染着色 diff（W-4），其余走原始 pre */
+function ToolOutput({ name, content }: { name: string; content: string }): JSX.Element {
+  const isEdit = name === 'edit_file' || name === 'write_file'
+  const view = useMemo(() => (isEdit ? parseDiffContent(content) : null), [isEdit, content])
+  if (view === null) {
+    return <pre className="max-h-72 overflow-auto border-t border-neutral-800 px-3 py-2 text-xs leading-relaxed text-neutral-400">{content}</pre>
+  }
+  const kindClass: Record<string, string> = {
+    file: 'text-neutral-400 font-semibold',
+    hunk: 'text-sky-400',
+    add: 'bg-emerald-950/60 text-emerald-300',
+    del: 'bg-red-950/60 text-red-300',
+    ctx: 'text-neutral-500',
+  }
+  return (
+    <div className="border-t border-neutral-800">
+      {view.header !== '' && <div className="px-3 pt-2 text-xs text-neutral-500">{view.header}</div>}
+      <div className="max-h-72 overflow-auto px-3 py-2 font-mono text-xs leading-relaxed">
+        {view.lines.map((l, i) => (
+          <div key={i} className={kindClass[l.kind] ?? 'text-neutral-500'}>
+            {l.text === '' ? ' ' : l.text}
+          </div>
+        ))}
+        {view.truncated && (
+          <div className="pt-1 text-neutral-600">…已截断，省略 {view.omitted} 行（完整内容经 /output 查看）</div>
+        )}
+      </div>
     </div>
   )
 }
@@ -91,17 +121,7 @@ const EntryRow = memo(function EntryRow({ e, actionCtx }: { e: ChatEntry; action
     )
   }
   if (e.kind === 'tool') {
-    return (
-      <div className="space-y-1.5">
-        <div className="flex items-center gap-2 rounded border border-neutral-800 px-2.5 py-1.5 text-xs text-neutral-500">
-          <Terminal size={12} className="shrink-0 text-neutral-600" />
-          <span className="text-neutral-400">{e.name}</span>
-          <span className={e.ok === false ? 'text-red-400' : 'text-emerald-500'}>{e.ok === false ? '✗' : '✓'}</span>
-          {e.text !== '' && <span className="truncate">{e.text}</span>}
-        </div>
-        {e.images !== undefined && e.images.length > 0 && <Images images={e.images} />}
-      </div>
-    )
+    return <ToolEntryRow e={e} actionCtx={actionCtx} />
   }
   return (
     <div className={`rounded border px-2.5 py-1.5 text-xs ${e.error === true ? 'border-red-900/60 bg-red-950/20 text-red-400' : 'border-neutral-800 text-neutral-500'}`}>
@@ -110,6 +130,64 @@ const EntryRow = memo(function EntryRow({ e, actionCtx }: { e: ChatEntry; action
     </div>
   )
 })
+
+/** 历史工具行（批 3 W-4）：点击展开完整结果——编辑类工具着色 diff（+/- 着色/超长截断），
+ *  其余 pre；附着图照渲。open 态行内私有。 */
+function ToolEntryRow({ e, actionCtx }: { e: ChatEntry; actionCtx: MessageActionContext }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const isEdit = e.name === 'edit_file' || e.name === 'write_file'
+  const view = useMemo(
+    () => (open && isEdit && e.detail !== undefined ? parseDiffContent(e.detail) : null),
+    [open, isEdit, e.detail],
+  )
+  const actions = buildMessageActions(e, actionCtx)
+  return (
+    <div className="space-y-1.5">
+      <div className="group flex items-center gap-2 rounded border border-neutral-800 px-2.5 py-1.5 text-xs text-neutral-500">
+        <button onClick={() => setOpen(!open)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+          {open ? <ChevronDown size={12} className="shrink-0 text-neutral-600" /> : <ChevronRight size={12} className="shrink-0 text-neutral-600" />}
+          <Terminal size={12} className="shrink-0 text-neutral-600" />
+          <span className="text-neutral-400">{e.name}</span>
+          <span className={e.ok === false ? 'text-red-400' : 'text-emerald-500'}>{e.ok === false ? '✗' : '✓'}</span>
+          {e.text !== '' && <span className="truncate">{e.text}</span>}
+        </button>
+        <ActionBar actions={actions} />
+      </div>
+      {open && e.detail !== undefined && (
+        <div className="pl-4">
+          {view !== null ? (
+            <div className="rounded border border-neutral-800">
+              <div className="max-h-80 overflow-auto px-3 py-2 font-mono text-xs leading-relaxed">
+                {view.lines.map((l, i) => (
+                  <div
+                    key={i}
+                    className={
+                      l.kind === 'add'
+                        ? 'bg-emerald-950/60 text-emerald-300'
+                        : l.kind === 'del'
+                          ? 'bg-red-950/60 text-red-300'
+                          : l.kind === 'hunk'
+                            ? 'text-sky-400'
+                            : l.kind === 'file'
+                              ? 'text-neutral-400 font-semibold'
+                              : 'text-neutral-500'
+                    }
+                  >
+                    {l.text === '' ? ' ' : l.text}
+                  </div>
+                ))}
+                {view.truncated && <div className="pt-1 text-neutral-600">…已截断，省略 {view.omitted} 行</div>}
+              </div>
+            </div>
+          ) : (
+            <pre className="max-h-72 overflow-auto rounded border border-neutral-800 px-3 py-2 text-xs leading-relaxed text-neutral-400">{e.detail}</pre>
+          )}
+        </div>
+      )}
+      {e.images !== undefined && e.images.length > 0 && <Images images={e.images} />}
+    </div>
+  )
+}
 
 /** W-5 行内操作条：hover 浮现（触屏常显成本高——先桌面优先） */
 function ActionBar({ actions }: { actions: Array<{ key: string; label: string; title: string; run: () => void }> }): JSX.Element {

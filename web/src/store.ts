@@ -44,6 +44,8 @@ export interface ChatEntry {
   images?: ChatImage[]
   /** system 行的失败标记（error 帧红显；systemMsg/notice 灰显） */
   error?: boolean
+  /** 批 3（W-4）：tool 行的完整结果（历史展开/diff 卡数据源；仅历史投影携带） */
+  detail?: string
 }
 
 /** askUser 题（宿主 AskUserQuestion 投影——web 从简为「点选填入 + 自由文本」） */
@@ -202,13 +204,13 @@ export const useApp = create<AppState>((set) => ({
         if (!Array.isArray(lines)) return { ...v, loaded: true }
         // 两遍投影：先收 tool_use_id → result（成败/摘要/附着图），再按序出 entry——历史轮的工具调用
         // 不再被丢弃（G3 挂账：此前只投影 text 块，恢复会话看不到当时干了什么）
-        const results = new Map<string, { ok: boolean; summary: string; images: ChatImage[] }>()
+        const results = new Map<string, { ok: boolean; summary: string; images: ChatImage[]; content: string }>()
         for (const l of lines as Array<Record<string, unknown>>) {
           if (typeof l !== 'object' || l === null || l.role !== 'user' || !Array.isArray(l.content)) continue
           for (const b of l.content as Array<Record<string, unknown>>) {
             if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
               const content = typeof b.content === 'string' ? b.content : ''
-              results.set(b.tool_use_id, { ok: b.is_error !== true, summary: content.split('\n')[0]?.slice(0, 80) ?? '', images: pickImages(b.blocks) })
+              results.set(b.tool_use_id, { ok: b.is_error !== true, summary: content.split('\n')[0]?.slice(0, 80) ?? '', images: pickImages(b.blocks), content })
             }
           }
         }
@@ -226,7 +228,15 @@ export const useApp = create<AppState>((set) => ({
             for (const b of content) {
               if (b.type !== 'tool_use' || typeof b.name !== 'string') continue
               const r = results.get(String(b.id ?? ''))
-              entries.push({ kind: 'tool', text: r?.summary ?? '', name: b.name, ok: r?.ok ?? true, ...(r !== undefined && r.images.length > 0 ? { images: r.images } : {}) })
+              entries.push({
+                kind: 'tool',
+                text: r?.summary ?? '',
+                name: b.name,
+                ok: r?.ok ?? true,
+                ...(r !== undefined && r.images.length > 0 ? { images: r.images } : {}),
+                // 批 3（W-4）：完整结果留档——历史行展开/diff 卡数据源
+                ...(r !== undefined && r.content !== '' ? { detail: r.content } : {}),
+              })
             }
           }
         }

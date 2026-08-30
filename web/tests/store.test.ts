@@ -143,8 +143,8 @@ describe('loadHistory 历史投影', () => {
     expect(v?.entries).toEqual([
       { kind: 'user', text: '看下这个图' },
       { kind: 'assistant', text: '我来看' },
-      { kind: 'tool', text: '第一行摘要', name: 'read_file', ok: true, images: [{ mediaType: 'image/png', data: 'aGk=' }] },
-      { kind: 'tool', text: 'boom', name: 'bash', ok: false },
+      { kind: 'tool', text: '第一行摘要', name: 'read_file', ok: true, images: [{ mediaType: 'image/png', data: 'aGk=' }], detail: '第一行摘要\n详情' },
+      { kind: 'tool', text: 'boom', name: 'bash', ok: false, detail: 'boom' },
     ])
   })
   it('user 纯图消息（无文本）保留', () => {

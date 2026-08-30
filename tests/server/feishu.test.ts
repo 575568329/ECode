@@ -83,6 +83,28 @@ describe('审阅批：白名单与审批会话回填', () => {
     expect(cap.commands).toHaveLength(1)
     expect(cap.commands[0]).toMatchObject({ op: { op: 'prompt', text: '你好' } })
   })
+  it('长连接扁平事件形态（message/sender 在顶层，无 event 包裹）→ 白名单命中同样送达（G-IM 真机实证的 WSClient 结构）', async () => {
+    const cap: Capture = { commands: [], replies: [], listRtn: [], frames: [] }
+    const gw = new FeishuGateway(makeDeps(cap, ['ou_bob'])) as unknown as MsgDriven
+    const flat = (openId: string, text: string): unknown => ({
+      schema: '2.0',
+      event_type: 'im.message.receive_v1',
+      message: { chat_id: 'chat-1', chat_type: 'p2p', message_type: 'text', content: JSON.stringify({ text }) },
+      sender: { sender_id: { 'open_id': openId }, sender_type: 'user' },
+    })
+    await gw.onMessage(flat('ou_bob', '你好扁平'))
+    expect(cap.commands).toHaveLength(1)
+    expect(cap.commands[0]).toMatchObject({ op: { op: 'prompt', text: '你好扁平' } })
+  })
+  it('卡片回调扁平形态（action/operator 在顶层）→ 白名单命中回填挂起卡', async () => {
+    const cap: Capture = { commands: [], replies: [], listRtn: [], frames: [] }
+    const gw = new FeishuGateway(makeDeps(cap, ['ou_bob'])) as unknown as CardDriven
+    type Cards = { pendingCards: Map<string, { chatId: string; messageId: string; sessionId?: string }> }
+    ;(gw as unknown as Cards).pendingCards.set('req-9', { chatId: 'chat-1', messageId: 'om_9', sessionId: 'sess-x' })
+    await gw.onCardAction({ operator: { open_id: 'ou_bob' }, action: { value: JSON.stringify({ requestId: 'req-9', decision: 'once' }) } })
+    expect(cap.commands).toHaveLength(1)
+    expect(cap.commands[0]).toMatchObject({ sessionId: 'sess-x', op: { op: 'approval/respond', requestId: 'req-9' } })
+  })
   it('卡片回调：operator 非白名单拒；命中时 approval/respond 回填挂起帧的 sessionId', async () => {
     const cap: Capture = { commands: [], replies: [], listRtn: [], frames: [] }
     const gw = new FeishuGateway(makeDeps(cap, ['ou_bob'])) as unknown as CardDriven & MsgDriven
@@ -106,21 +128,23 @@ describe('审阅批：白名单与审批会话回填', () => {
 })
 
 describe('M14-C5③ markdownToPost（飞书 post 富文本转换）', () => {
-  it('块级：标题 bold / 列表 • / 空行分段 / 围栏代码逐行 code 带语言', async () => {
+  // G-IM 真机实证（2026-08-30）：post 无独立 bold/code tag（发 400）——
+  // 加粗走 text 元素 style:['bold']，代码行降级 text（缩进保留块感），空行用空格 text 占位
+  it('块级：标题 style-bold / 列表 • / 空行占位 / 围栏代码逐行缩进 text', async () => {
     const { markdownToPost } = await import('../../src/server/im/feishu.js')
     const post = markdownToPost('## 标题\n\n- 项目一\n正文 **粗** 段\n```ts\nconst a = 1\nconst b = 2\n```')
-    expect(post[0]).toEqual([{ tag: 'bold', text: '标题' }])
-    expect(post[1]).toEqual([])
+    expect(post[0]).toEqual([{ tag: 'text', text: '标题', style: ['bold'] }])
+    expect(post[1]).toEqual([{ tag: 'text', text: ' ' }])
     expect(post[2]).toEqual([{ tag: 'text', text: '• ' }, { tag: 'text', text: '项目一' }])
-    expect(post[3]).toEqual([{ tag: 'text', text: '正文 ' }, { tag: 'bold', text: '粗' }, { tag: 'text', text: ' 段' }])
-    expect(post[4]).toEqual([{ tag: 'code', text: 'const a = 1', language: 'ts' }])
-    expect(post[5]).toEqual([{ tag: 'code', text: 'const b = 2', language: 'ts' }])
+    expect(post[3]).toEqual([{ tag: 'text', text: '正文 ' }, { tag: 'text', text: '粗', style: ['bold'] }, { tag: 'text', text: ' 段' }])
+    expect(post[4]).toEqual([{ tag: 'text', text: '  const a = 1' }])
+    expect(post[5]).toEqual([{ tag: 'text', text: '  const b = 2' }])
   })
-  it('行内：`code` 与 [链接](url)；未闭合围栏兜底 flush；纯文本单元素', async () => {
+  it('行内：`code` 降级 text 与 [链接](url)；未闭合围栏兜底 flush；纯文本单元素', async () => {
     const { markdownToPost } = await import('../../src/server/im/feishu.js')
     const post = markdownToPost('跑 `npm test` 见 [报告](https://x.example/r) 详情')
-    expect(post[0]).toEqual([{ tag: 'text', text: '跑 ' }, { tag: 'code', text: 'npm test' }, { tag: 'text', text: ' 见 ' }, { tag: 'a', text: '报告', href: 'https://x.example/r' }, { tag: 'text', text: ' 详情' }])
-    expect(markdownToPost('```js\nunterminated')).toEqual([[{ tag: 'code', text: 'unterminated', language: 'js' }]])
+    expect(post[0]).toEqual([{ tag: 'text', text: '跑 ' }, { tag: 'text', text: 'npm test' }, { tag: 'text', text: ' 见 ' }, { tag: 'a', text: '报告', href: 'https://x.example/r' }, { tag: 'text', text: ' 详情' }])
+    expect(markdownToPost('```js\nunterminated')).toEqual([[{ tag: 'text', text: '  unterminated' }]])
     expect(markdownToPost('普通一行')).toEqual([[{ tag: 'text', text: '普通一行' }]])
   })
 })

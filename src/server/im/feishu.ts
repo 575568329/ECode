@@ -79,7 +79,15 @@ export class FeishuGateway {
         return { toast: { type: 'success', content: '已处理' } }
       },
     })
-    this.ws = new lark.WSClient({ appId: this.deps.appId, appSecret: this.deps.appSecret })
+    // 诊断（G-IM 真机门排查）：WS 状态转移落日志——serve 形态事件零到达，需观察连接是否被踢/重连
+    this.ws = new lark.WSClient({
+      appId: this.deps.appId,
+      appSecret: this.deps.appSecret,
+      loggerLevel: lark.LoggerLevel.info,
+      onReconnecting: () => this.deps.logger.warn('im', 'feishu_ws_reconnecting', {}),
+      onReconnected: () => this.deps.logger.warn('im', 'feishu_ws_reconnected', {}),
+      onError: (e: unknown) => this.deps.logger.warn('im', 'feishu_ws_error', { message: e instanceof Error ? e.message : String(e) }),
+    })
     await this.ws.start({ eventDispatcher: dispatcher })
     // mux 订阅：审批帧 → 卡片；轮末 → 推送回复
     this.unsub = this.deps.subscribe((frame) => void this.onFrame(frame))
@@ -100,11 +108,17 @@ export class FeishuGateway {
 
   // —— 消息入（单聊驱动会话） ——
   private async onMessage(data: unknown): Promise<void> {
-    const d = data as { event?: { message?: { chat_id?: string; chat_type?: string; message_type?: string; content?: string }; sender?: { sender_id?: { open_id?: string } } } }
-    const ev = d.event
-    const msg = ev?.message
+    // WSClient 长连接事件是扁平结构（message/sender 在顶层——真机 G-IM 实证）；
+    // webhook 回调形态才是 { event: { message, sender } } 包裹。两种都兼容。
+    const d = data as {
+      message?: { chat_id?: string; chat_type?: string; message_type?: string; content?: string }
+      sender?: { sender_id?: { open_id?: string } }
+      event?: { message?: { chat_id?: string; chat_type?: string; message_type?: string; content?: string }; sender?: { sender_id?: { open_id?: string } } }
+    }
+    const msg = d.message ?? d.event?.message
+    const sender = d.sender ?? d.event?.sender
     const chatType = msg?.chat_type
-    const openId = ev?.sender?.sender_id?.open_id ?? ''
+    const openId = sender?.sender_id?.open_id ?? ''
     if (chatType !== 'p2p' || msg?.message_type !== 'text') return // 群聊/富文本忽略（Q14 单聊先行）
     if (!this.allowed(openId)) {
       // 非白名单静默忽略（不回执——不向陌生者暴露 bot 存活面）
@@ -233,11 +247,12 @@ export class FeishuGateway {
 
   // —— 卡片按钮回调 → approval/respond ——
   private async onCardAction(data: unknown): Promise<void> {
-    const d = data as { event?: { action?: { value?: string }; operator?: { open_id?: string } } }
-    const raw = d.event?.action?.value
+    // 同 onMessage：长连接事件扁平结构（action/operator 在顶层），webhook 形态才有 event 包裹
+    const d = data as { action?: { value?: string }; operator?: { open_id?: string }; event?: { action?: { value?: string }; operator?: { open_id?: string } } }
+    const raw = d.action?.value ?? d.event?.action?.value
     if (typeof raw !== 'string') return
     // 操作者同走白名单（审批卡可能被转发到别的会话/由他人点按——审阅 P0-1 卡片侧）
-    const operator = d.event?.operator?.open_id ?? ''
+    const operator = d.operator?.open_id ?? d.event?.operator?.open_id ?? ''
     if (!this.allowed(operator)) {
       this.deps.logger.warn('im', 'feishu_card_denied', { openId: operator })
       return
@@ -286,7 +301,8 @@ interface PostElement {
   tag: string
   text?: string
   href?: string
-  language?: string
+  /** 飞书 post 无独立 bold/code tag——样式走 text 元素的 style 数组（官方 create_json 文档） */
+  style?: string[]
 }
 
 /**
@@ -299,12 +315,11 @@ export function markdownToPost(text: string): PostElement[][] {
   const out: PostElement[][] = []
   const lines = text.split('\n')
   let codeBuf: string[] | null = null
-  let codeLang = ''
   const flushCode = (): void => {
     if (codeBuf === null) return
-    for (const l of codeBuf) out.push([{ tag: 'code', text: l, ...(codeLang !== '' ? { language: codeLang } : {}) }])
+    // post 无 code tag（400 实证）——代码行降级 text；缩进保留视觉块感
+    for (const l of codeBuf) out.push([{ tag: 'text', text: `  ${l}` }])
     codeBuf = null
-    codeLang = ''
   }
   for (const raw of lines) {
     const fence = /^```(\w*)\s*$/.exec(raw.trim())
@@ -312,7 +327,6 @@ export function markdownToPost(text: string): PostElement[][] {
       if (codeBuf !== null) flushCode()
       else {
         codeBuf = []
-        codeLang = fence[1] ?? ''
       }
       continue
     }
@@ -322,12 +336,12 @@ export function markdownToPost(text: string): PostElement[][] {
     }
     const t = raw.trim()
     if (t === '') {
-      out.push([])
+      out.push([{ tag: 'text', text: ' ' }]) // 空段落用单空格 text 占位（裸 [] 400 风险）
       continue
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(t)
     if (heading !== null) {
-      out.push([{ tag: 'bold', text: heading[2] }])
+      out.push([{ tag: 'text', text: heading[2], style: ['bold'] }])
       continue
     }
     const li = /^[-*]\s+(.*)$/.exec(t)
@@ -348,8 +362,8 @@ function inlineRuns(line: string): PostElement[] {
   let last = 0
   for (let m = re.exec(line); m !== null; m = re.exec(line)) {
     if (m.index > last) runs.push({ tag: 'text', text: line.slice(last, m.index) })
-    if (m[1] !== undefined) runs.push({ tag: 'bold', text: m[1] })
-    else if (m[2] !== undefined) runs.push({ tag: 'code', text: m[2] })
+    if (m[1] !== undefined) runs.push({ tag: 'text', text: m[1], style: ['bold'] })
+    else if (m[2] !== undefined) runs.push({ tag: 'text', text: m[2] }) // post 无行内 code——降级 text
     else if (m[3] !== undefined && m[4] !== undefined) runs.push({ tag: 'a', text: m[3], href: m[4] })
     last = m.index + m[0].length
   }

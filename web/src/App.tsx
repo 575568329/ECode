@@ -377,16 +377,19 @@ export function App(): React.JSX.Element {
     if (next) loadArchived()
   }
 
-  /** 归档/恢复：协议落 sidecar + session/updated 帧广播多端；本端乐观刷新两个列表 */
+  /** 归档/恢复：协议落 sidecar + session/updated 帧广播多端；本端乐观刷新两个列表。
+   *  审阅修复：ok:false 不做乐观更新（防幽灵行）；归档时同步剪主列表 sessions */
   const setSessionArchived = (sessionId: string, archived: boolean): void => {
     if (selectedProject === null) return
     void sendCommand(BASE, selectedProject, undefined, { op: 'session/archive', sessionId, archived })
-      .then(() => {
+      .then((r) => {
+        if (!r.ok) return
         if (archived) {
-          setArchivedSessions((prev) => {
-            const src = prev.length > 0 ? prev : activeSessions.map((s) => ({ ...s, archived: true as const }))
-            return src.map((s) => (s.sessionId === sessionId ? { ...s, archived: true as const } : s))
-          })
+          // 主列表同步剪除（mux 只订阅选中会话，session/updated 帧未必可达）
+          useApp.setState((st) => ({
+            sessions: st.sessions.map((s) => (s.sessionId === sessionId && s.project === selectedProject ? { ...s, archived: true } : s)),
+          }))
+          loadArchived()
         } else {
           setArchivedSessions((prev) => prev.filter((s) => s.sessionId !== sessionId))
           sendCommand(BASE, selectedProject, undefined, { op: 'session/list' })
@@ -413,7 +416,8 @@ export function App(): React.JSX.Element {
     const t = title.trim()
     if (t === '') return
     void sendCommand(BASE, selectedProject ?? '', undefined, { op: 'session/rename', sessionId, title: t })
-      .then(() => {
+      .then((r) => {
+        if (!r.ok) return
         const s = useApp.getState().sessions.find((x) => x.sessionId === sessionId)
         if (s !== undefined) upsertSession({ ...s, title: t })
       })

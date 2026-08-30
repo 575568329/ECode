@@ -92,7 +92,7 @@ function ToolOutput({ name, content }: { name: string; content: string }): JSX.E
           </div>
         ))}
         {view.truncated && (
-          <div className="pt-1 text-faint">…已截断，省略 {view.omitted} 行（完整内容经 /output 查看）</div>
+          <div className="pt-1 text-faint">…已截断，省略 {view.omitted} 行</div>
         )}
       </div>
     </div>
@@ -192,7 +192,7 @@ function ToolEntryRow({ e, actionCtx }: { e: ChatEntry; actionCtx: MessageAction
 /** W-5 行内操作条：hover 浮现（触屏常显成本高——先桌面优先） */
 function ActionBar({ actions }: { actions: Array<{ key: string; label: string; title: string; run: () => void }> }): JSX.Element {
   return (
-    <span className="absolute right-1.5 top-1.5 hidden gap-1 group-hover:flex">
+    <span className="absolute right-1.5 top-1.5 flex gap-1">
       {actions.map((a) => (
         <button
           key={a.key}
@@ -227,6 +227,11 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
   const listRef = useRef<VListHandle>(null)
   const atBottomRef = useRef(true)
   const [atBottom, setAtBottom] = useState(true)
+  // 切会话重置底部跟随——上一个会话的上翻状态不应影响新会话的自动贴底
+  useEffect(() => {
+    atBottomRef.current = true
+    setAtBottom(true)
+  }, [sessionId])
   // 历史补拉（选中且未加载时一次；断线重连后的补拉由 onReconnect 触发 select 重置 loaded）。
   // 冷会话须先 session/restore 拉起（宿主对冷会话仅 restore 放行——G3 冒烟实测缺口），再 read。
   // base 恒传 ''（同源相对 URL）——曾把项目路径当 base 传，fetch 被浏览器解析成 file:// 直接拒
@@ -273,7 +278,7 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
   // W-2：虚拟化行清单——entries + 活动工具卡 + 流式尾 + 排队行，全部进 VList（DOM 恒定只挂可视行）
   const rows = useMemo(() => {
     const nodes: Array<{ key: string; node: JSX.Element }> = []
-    if (view?.loadError !== '') {
+    if (view !== undefined && view.loadError !== '') {
       nodes.push({
         key: 'loaderror',
         node: (

@@ -280,12 +280,16 @@ describe('W-9：重连游标 + 旧帧去重（批 4）', () => {
     frame('s1', { type: 'delta', seq: n, text: 'seed' })
     __flushDeltaBuffer()
   }
-  it('正常基线（serverLast >= clientLast）仅推进游标，不触发 resync', () => {
+  it('正常基线（serverLast >= clientLast）不触发 resync，且**不采纳** serverLast 推进游标（审阅 P0 修复——否则重放帧被去重闸吞掉）', () => {
     seedCursor(120)
     frame('s1', { type: 'session/subscribed', seq: 150, sessionId: 's1', lastSeq: 150, gap: false })
     const v = useApp.getState().views.s1
     expect(v?.resync ?? false).toBe(false)
-    expect(lastSeqFor('s1')).toBe(150)
+    expect(lastSeqFor('s1')).toBe(120) // 游标不被基线帧提前推进——重放帧自行通过去重闸推进
+    // 重放帧到达（seq > 120）→ 正常落账
+    frame('s1', { type: 'delta', seq: 121, text: '重放内容' })
+    __flushDeltaBuffer()
+    expect(useApp.getState().views.s1?.streaming).toContain('重放内容')
   })
   it('gap=true（断线窗口超出服务端缓冲）→ resync 标记 + 清游标（Conversation 据此全量重拉）', () => {
     seedCursor(120)

@@ -260,14 +260,15 @@ export const useApp = create<AppState>((set) => ({
     )
   },
   setLoadError: (sessionId, msg) => set((st) => patchView(st, sessionId, (v) => ({ ...v, loaded: true, loadError: msg }))),  retryLoad: (sessionId) => set((st) => patchView(st, sessionId, (v) => ({ ...v, loaded: false, loadError: '' }))),
-  appendUser: (sessionId, text) =>
-    set((st) => {
-      __flushDeltaBuffer() // 时序保证：缓冲中的上一轮尾增量先落账，再追加本轮 user 消息
-      return patchView(st, sessionId, (v) => ({
+  appendUser: (sessionId, text) => {
+    __flushDeltaBuffer() // 时序保证（审阅 P1：flush 不得嵌在 set updater 内——外层拿旧状态覆盖冲洗结果）
+    set((st) =>
+      patchView(st, sessionId, (v) => ({
         ...v,
         entries: [...v.entries, { kind: 'user' as const, text }],
-      }))
-    }),
+      })),
+    )
+  },
   completeTool: (sessionId, itemId, content) =>
     set((st) =>
       patchView(st, sessionId, (v) => ({
@@ -442,7 +443,9 @@ export const useApp = create<AppState>((set) => ({
           }
         case 'session/subscribed':
           // W-9（批 4）：重连基线——gap（断线窗口超出服务端缓冲）或服务端 seq 回退（通道重建）
-          // → 清本端游标并标记 resync（Conversation 拉全量重同步）；正常基线仅推进游标
+          // → 清本端游标并标记 resync（Conversation 拉全量重同步）。
+          // 正常基线：**不采纳** serverLast 推进游标——重连后紧跟的重放帧（seq ∈ (since, serverLast]）
+          // 需通过去重闸正常落账；此处提前推进会把它们整体吞掉（审阅 P0：四角色正确性审阅发现）
           {
             const clientLast = lastSeqBySession.get(f.sessionId) ?? null
             const serverLast = typeof f.ev.lastSeq === 'number' ? f.ev.lastSeq : null
@@ -451,7 +454,6 @@ export const useApp = create<AppState>((set) => ({
               lastSeqBySession.delete(f.sessionId)
               return patchView(st, f.sessionId, (v) => ({ ...v, resync: true }))
             }
-            if (serverLast !== null) lastSeqBySession.set(f.sessionId, serverLast)
             return st
           }
         default:

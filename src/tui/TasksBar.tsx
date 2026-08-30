@@ -66,7 +66,7 @@ export function TasksBar(): ReactElement | null {
               {clipWidth(`⏵ ${t.id} ${t.command}`, max - 24)}
               <Text dimColor>
                 {' '}
-                {tail === '' ? '（暂无输出） · Ctrl+T 查看' : `${tail.slice(0, 40)} · /output 查看`}
+                {tail === '' ? '（暂无输出） · Ctrl+T 查看' : `${tail.slice(0, 40)} · Ctrl+T 查看`}
               </Text>
             </Text>
           </Box>

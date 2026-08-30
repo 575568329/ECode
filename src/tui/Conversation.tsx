@@ -162,9 +162,14 @@ export function Conversation({
       {active.userInput !== '' && <FoldedUserInput text={active.userInput} />}
       {active.tools.length > 0 &&
         (alloc.degraded ? (
-          <MessageRow icon="" dim>
-            <Text dimColor>{TOO_SMALL_HINT}</Text>
-          </MessageRow>
+          // F-51：极小终端智能分级——不渲染输出体但保留工具名行（用户仍知「跑过什么」），
+          // 只对塞不下的输出体统一折叠提示；避免整轮纯黑盒
+          <>
+            <ToolGroupView tools={active.tools} maxTools={0} />
+            <MessageRow icon="" dim>
+              <Text dimColor>{TOO_SMALL_HINT}</Text>
+            </MessageRow>
+          </>
         ) : (
           <ToolGroupView
             tools={active.tools}
@@ -193,7 +198,9 @@ export function Conversation({
         active.streamingText !== '' &&
         (alloc.degraded ? (
           <MessageRow icon="" dim>
-            <Text dimColor>{TOO_SMALL_HINT}</Text>
+            <Text dimColor>
+              {TOO_SMALL_HINT}（模型输出中，已 {active.streamingText.length} 字）
+            </Text>
           </MessageRow>
         ) : active.streaming ? (
           <MessageRow>

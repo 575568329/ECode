@@ -87,12 +87,16 @@ server.listen(0, '127.0.0.1', async () => {
   const pos = out.length
   proc.write('\x14') // Ctrl+T
   ok = false
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('回车 查看 · Esc 返回') }
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('回车 查看') }
   if (!ok) { console.log('FAIL Ctrl+T 未开面板'); proc.kill(); server.close(); process.exit(1) }
-  const listFrame = strip(out.slice(pos))
-  const hasA = listFrame.includes('查甲')
-  const hasB = listFrame.includes('查乙')
-  console.log(hasA && hasB ? 'OK   面板列表同时含两条子代理条目' : `FAIL 列表条目 甲=${hasA} 乙=${hasB}`)
+  // F-49：列表过滤后只显示本会话的甲/乙两条——等 1s 列表轮询把 meta 摘要刷出来
+  ok = false
+  for (let i = 0; i < 40 && !ok; i++) {
+    await sleep(250)
+    const lf = strip(out.slice(pos))
+    ok = lf.includes('甲任务并发探针') && lf.includes('乙任务并发探针')
+  }
+  console.log(ok ? 'OK   面板列表同时含两条子代理条目' : 'FAIL 列表条目缺失')
   // 回车进子代理条目：列表顺序 = 最近工具调用（task×2）→ 子代理区（甲/乙）。
   // ↓×4 到第一个子代理条目（index 2 起），每个键间隔 250ms 防 escape 合并
   const pos2 = out.length

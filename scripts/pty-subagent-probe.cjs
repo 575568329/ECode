@@ -79,15 +79,17 @@ server.listen(0, '127.0.0.1', async () => {
   const pos = out.length
   proc.write('\x14')
   ok = false
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('回车 查看 · Esc 返回') }
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('回车 查看') }
   if (!ok) { console.log('FAIL Ctrl+T 未开面板'); proc.kill(); server.close(); process.exit(1) }
   console.log('OK   Ctrl+T 打开输出面板')
   // 面板列表：子代理条目（唯一 description 摘要）
   ok = strip(out.slice(pos)).includes('子代理探针任务')
-  // 判定：面板列表首条=本探针的子代理（终态 messages 的 user prompt 摘要——结束后事件行
-  // 被权威 messages 重写覆盖，摘要取首条 user 文本；列表实时刷新=本会话子代理可见）
-  ok = strip(out.slice(pos)).includes('随便查一下')
+  // 判定（F-49）：摘要=meta description（终态重写保留 meta 首行）；currentSid 过滤后
+  // 本会话子代理可见、跨会话条目不出现
+  ok = strip(out.slice(pos)).includes('子代理探针任务')
   console.log(ok ? 'OK   面板列表含本子代理条目（实时刷新生效）' : 'FAIL 面板列表未见子代理条目')
+  console.log('# 列表 dump:')
+  console.log(strip(out.slice(pos)).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => /§|transcript/.test(l)).join('\n'))
   // 回车进查看器 → 格式化内容
   const pos2 = out.length
   proc.write('\r')

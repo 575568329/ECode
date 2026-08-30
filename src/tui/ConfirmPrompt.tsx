@@ -122,10 +122,12 @@ export function confirmKeyAction(input: string, key: {
   // —— 单字母快捷：草稿非空时失效（② 打 yes 不误触发）——
   const letterHotkeys = !hasDraft && !key.ctrl && !key.meta
   // 单字母 y/n/a = 显式选择并立即确认（老习惯）；r = 进理由模式（不直接拒绝）
-  if (letterHotkeys && input === 'y') return { action: 'confirm', ok: true }
-  if (letterHotkeys && input === 'n') return { action: 'confirm', ok: false }
-  if (letterHotkeys && input === 'a' && canAlways) return { action: 'confirm', ok: true, always: true }
-  if (letterHotkeys && input === 'r') {
+  // F-50：按钮 [Y]/[N]/[A] 大写标签（经典 caps-hotkey 惯例），按键大小写都接受
+  const letter = input.toLowerCase()
+  if (letterHotkeys && letter === 'y') return { action: 'confirm', ok: true }
+  if (letterHotkeys && letter === 'n') return { action: 'confirm', ok: false }
+  if (letterHotkeys && letter === 'a' && canAlways) return { action: 'confirm', ok: true, always: true }
+  if (letterHotkeys && letter === 'r') {
     // r 进拒绝理由模式（不直接拒绝；Enter 在理由模式里提交）——r 常用于草稿单词，有草稿时同样失效
     return { action: 'reason-edit', next: reason }
   }
@@ -273,8 +275,9 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
               </Box>
             ))
           : <Text dimColor>{previewLines.join('\n')}</Text>}
+        {/* F-50：v 展开键删除——全文看 Ctrl+T（alt 面板显示完整 diff，Esc 回卡决策） */}
         {canExpand && (
-          <Text dimColor> v {expanded ? '收起' : '看全文'}（共 {allLines.length} 行）</Text>
+          <Text dimColor> Ctrl+T 全文（共 {allLines.length} 行）</Text>
         )}
       </Box>
       {reasonMode ? (
@@ -289,23 +292,23 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
       ) : (
         <Box marginTop={1}>
           <Text inverse={selected === 'y'} bold={selected === 'y'}>
-            {' [y] 执行 '}
+            {' [Y] 执行 '}
           </Text>
           <Text>   </Text>
           <Text inverse={selected === 'n'} bold={selected === 'n'}>
-            {' [n] 取消 '}
+            {' [N] 取消 '}
           </Text>
           {isMcp && (
             <>
               <Text>   </Text>
               <Text inverse={selected === 'a'} bold={selected === 'a'} color="green">
-                {` [a] ${rememberText} `}
+                {` [A] ${rememberText} `}
               </Text>
             </>
           )}
           <Text dimColor>
-            {'   ← →/y/n 选择 · 回车确认 · Esc/r+理由=拒绝'}
-            {isMcp ? ` · a=${rememberText}` : ''}
+            {'   回车 确认 · Esc 拒绝 · R 理由'}
+            {isMcp ? ` · A=${rememberText}` : ' · Ctrl+T 全文'}
           </Text>
         </Box>
       )}

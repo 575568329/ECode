@@ -220,10 +220,12 @@ export function formatAgentLine(line: string, width: number): string[] {
  *  F-26：裸 id 无可读性——逐文件读首 2KB 抽首条 user 文本做摘要；时间取文件 mtime。
  *  无项目归属标记（transcript 只含消息行），扫描范围=全部文件但列表只显示最近 maxShow 条
  *  （调用方截断）——避免跨项目历史条目刷屏。 */
-export function listSubagentTranscripts(maxShow = 30): Array<{ id: string; mtimeMs: number; summary: string }> {
+export function listSubagentTranscripts(maxShow = 30, currentSid?: string): Array<{ id: string; mtimeMs: number; summary: string }> {
   try {
     // 清账 III P2-3（F-26 热路径 IO）：先 stat 排序截断，再对入选的 maxShow 条读首 2KB 摘要
     // ——原实现对全部文件先读 2KB 再截断（百级历史文件 = 每次开面板全量读盘）
+    // F-49：currentSid 非空时只列当前会话的子代理（meta 行带 sid；旧格式无 sid 的文件
+    // 不显示——用户拍板「只想看当前这个对话的」）
     return readdirSync(join(homedir(), '.ecode', 'agents'))
       .filter((f) => f.endsWith('.jsonl'))
       .map((f) => {
@@ -231,11 +233,29 @@ export function listSubagentTranscripts(maxShow = 30): Array<{ id: string; mtime
         return { id: f.slice(0, -'.jsonl'.length), mtimeMs: statSync(full).mtimeMs, full }
       })
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
+      .map((e) => ({ ...e, sid: readMetaSid(e.full) }))
+      .filter((e) => currentSid === undefined || currentSid === '' || e.sid === currentSid)
       .slice(0, maxShow)
       .map(({ id, mtimeMs, full }) => ({ id, mtimeMs, summary: readFirstUserText(full) }))
   } catch {
     return []
   }
+}
+
+/** F-49：读 transcript 首 2KB 抽 meta 行的 sid（无 meta/旧格式返回空串=不匹配过滤）。 */
+function readMetaSid(file: string): string {
+  try {
+    const head = readFileSync(file, 'utf8').slice(0, 2048)
+    for (const line of head.split('\n')) {
+      if (line.trim() === '') continue
+      try {
+        const m = JSON.parse(line) as { kind?: string; sid?: string; role?: string }
+        if (m.kind === 'meta') return m.sid ?? ''
+        if (m.role !== undefined) return '' // 终态 messages 行先于 meta=旧格式
+      } catch { /* 非 JSON 行跳过 */ }
+    }
+  } catch { /* 读失败=无 sid */ }
+  return ''
 }
 
 /** F-26：transcript 首条 user 文本（读首 2KB 截取——大文件不全量读） */
@@ -483,19 +503,21 @@ export interface OutputListPageProps {
   recentTools: RecentTool[]
   onOpen: (entry: OutputEntry) => void
   onExit: () => void
+  /** F-49：当前会话 id——子代理列表只列本会话（用户拍板「只想看当前这个对话的」） */
+  currentSid?: string
   /** F-48：alt-screen 全屏模式 */
   altMode?: boolean
 }
 
-export function OutputListPage({ recentTools, onOpen, onExit, altMode }: OutputListPageProps): ReactElement {
+export function OutputListPage({ recentTools, onOpen, onExit, altMode, currentSid }: OutputListPageProps): ReactElement {
   // 任务快照 + 轮询（运行中状态实时；F-46：子代理列表同样每次打开面板刷新——
   // 原实现 useState 快照=TuiApp 挂载时一次，本会话新起的子代理永不在列）
   const [tasks, setTasks] = useState(() => taskRegistry.snapshot())
-  const [agents, setAgents] = useState(() => listSubagentTranscripts())
+  const [agents, setAgents] = useState(() => listSubagentTranscripts(30, currentSid))
   useEffect(() => {
     const timer = setInterval(() => {
       setTasks(taskRegistry.snapshot())
-      setAgents(listSubagentTranscripts())
+      setAgents(listSubagentTranscripts(30, currentSid))
     }, 1000)
     timer.unref?.()
     return () => clearInterval(timer)

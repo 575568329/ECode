@@ -12,7 +12,7 @@ import type { FoldResult } from './viewport.js'
  */
 interface FoldedProps {
   fold: FoldResult
-  /** 提示行附加说明（如 'Ctrl+O 展开 · /output 查看'） */
+  /** 提示行附加说明（如 'Ctrl+O 展开 · Ctrl+T 查看'） */
   hint?: string
   /** 可见行是否暗色（流式灰字/预览类内容） */
   dim?: boolean

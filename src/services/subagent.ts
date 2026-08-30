@@ -60,6 +60,8 @@ interface SessionPort {
     getProvider?(): LLMProvider
     getModel?(): string
     getSummaryRole?(): Promise<SummaryRole | null>
+    /** F-49：发起会话 id——子代理 transcript meta 带.sid，面板「只看当前会话」过滤依据 */
+    getSessionId?(): string
   }
 }
 
@@ -459,8 +461,9 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
         }
       }
       up({ id: agentId, description, activity: '启动中' })
-      // F-46：meta 行先行落盘——父端 /output 列表（按 mtime）运行期即可见本子代理
-      void appendAgentEvent(agentId, { kind: 'meta', description, type, ts: Date.now() })
+      // F-46：meta 行先行落盘——父端 /output 列表（按 mtime）运行期即可见本子代理。
+      // F-49：meta 带发起会话 sid——面板「只看当前会话」的过滤依据（argv 兜底无 sid 留空）
+      void appendAgentEvent(agentId, { kind: 'meta', description, type, ts: Date.now(), sid: sess?.getSessionId?.() ?? '' })
       // 硬超时与用户中断取或（Node 20+ AbortSignal.any）
       const timeout = AbortSignal.timeout(SUB_TIMEOUT_MS)
       const signal = AbortSignal.any([ctx.signal, timeout])
@@ -542,7 +545,10 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
         try {
           const dir = join(homedir(), '.ecode', 'agents')
           await mkdir(dir, { recursive: true, mode: 0o700 })
-          await writeFile(join(dir, `${agentId}.jsonl`), messages.map((m) => JSON.stringify(m)).join('\n'), 'utf8')
+          // F-49：终态重写保留 meta 首行（sid/description）——面板列表过滤与摘要的依据；
+          // 运行期事件行被覆盖，但 meta 必须存活（否则完成后条目从「当前会话」列表消失）
+          const metaLine = `${JSON.stringify({ kind: 'meta', agentId, description, type, sid: ctx.session?.getSessionId?.() ?? '', ts: Date.now() })}\n`
+          await writeFile(join(dir, `${agentId}.jsonl`), metaLine + messages.map((m) => JSON.stringify(m)).join('\n'), 'utf8')
         } catch (e) {
           // 落盘失败不掩盖主结果（transcript 是辅助通道），但留日志可排查（不空吞；
           // category 用 'tool'——LogCategory 无 subagent 专属类目，此处属 task 工具执行期 IO）

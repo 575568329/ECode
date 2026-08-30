@@ -146,14 +146,15 @@ describe('Notification hook：审批挂起 N 秒未应答触发一次', () => {
   it('N 秒内应答 → 取消定时器；观察窗超过阈值仍无 approval-pending（批2d-fix：漏 clearTimeout 亦可检出）', async () => {
     const hooks: Recorder = { events: [], inputs: [] }
     const host = makeHost([toolRound, textRound], hooks, {
-      notificationIdleSeconds: 0.1, // 100ms 阈值
+      // 审阅 P2：0.1 曾使「应答在阈值内完成」在 CI 慢机压线（观察窗仅 5×）——放宽 0.5s
+      notificationIdleSeconds: 0.5,
       approvalTimeoutMs: 0,
     })
     const evs = collect(host)
     const running = run(host) // turn 因审批挂起不结束，须边跑边答
-    await respondFirstApproval(host, evs) // 应答在 100ms 阈值内完成（mock 轮次毫秒级）
+    await respondFirstApproval(host, evs) // 应答在阈值内完成（mock 轮次毫秒级）
     await running
-    await sleep(500) // 观察窗 5× 阈值——定时器若未取消必在此触发
+    await sleep(3000) // 观察窗 6× 阈值——定时器若未取消必在此触发
     expect(notified(hooks, 'approval-pending')).toBe(0)
   }, 15_000)
 })

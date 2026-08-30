@@ -2,7 +2,8 @@
  * 任务清单常驻面板测试（2026-08-30 对标改造）：todo 清单从对话流工具行移至输入区上方
  * 常驻面板（CC/harness/opencode 三家共识「清单不进 transcript」），默认展开最新整表。
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, afterEach } from 'vitest'
+import { cleanup } from 'ink-testing-library'
 import { render } from 'ink-testing-library'
 import { deriveLatestTodos, TodoPanel, type TodoEntry } from '../../src/tui/TodoPanel.js'
 
@@ -12,7 +13,10 @@ const todos: TodoEntry[] = [
   { content: '跑测试', status: 'pending' },
 ]
 
+// 审阅 P2：ink-testing instances 只增不减——全库 afterEach(cleanup) 铁律最后一处漏网
 describe('TodoPanel 渲染', () => {
+  afterEach(() => cleanup())
+
   it('有清单 → 头部完成度 + 逐项 ASCII 状态符（[x]/[->]/[ ]）', () => {
     const { lastFrame } = render(<TodoPanel todos={todos} />)
     const f = lastFrame() ?? ''

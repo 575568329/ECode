@@ -10,6 +10,10 @@ function toolMsg(id: string): Message {
   return { role: 'assistant', content: [{ type: 'tool_use', id, name: 'edit_file', input: {} }] }
 }
 
+function toolResultMsg(id: string): Message {
+  return { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] }
+}
+
 function summaryText(s: string): string {
   return `[此前对话已压缩] ${s}`
 }
@@ -83,16 +87,36 @@ describe('buildContextMessages（投影纯函数）', () => {
 
 describe('buildContextMessages：rewind 截断（M9-P2）', () => {
   it('rewind 锚定 toolUseId → 投影截到锚消息之前（锚及之后丢弃，rewind 行不出现）', () => {
+    // 四角色审阅 A1：fixture 补配对 tool_result（贴近真实 transcript——孤儿 tool_use 会被
+    // 投影层 repairOrphanToolUses 剥除，见下方专测）
     const lines: HistoryLine[] = [
       msg('a'),
       toolMsg('t1'),
+      toolResultMsg('t1'),
       msg('b1'),
       toolMsg('t2'),
+      toolResultMsg('t2'),
       msg('b2'),
       { rewind: true, seq: 3, toolUseId: 't2', time: '2026-08-16T00:00:00Z' },
     ]
     const result = buildContextMessages(lines)
-    expect(result).toEqual([msg('a'), toolMsg('t1'), msg('b1')])
+    expect(result).toEqual([msg('a'), toolMsg('t1'), toolResultMsg('t1'), msg('b1')])
+  })
+
+  it('孤儿 tool_use（无配对 tool_result）→ 投影层剥除；只含 tool_use 的整条丢弃（审阅 A1：restore 后 400 防御）', () => {
+    const lines: HistoryLine[] = [msg('a'), toolMsg('t9'), msg('b')]
+    expect(buildContextMessages(lines)).toEqual([msg('a'), msg('b')])
+    // 有文本块时只剥 tool_use 保留文本
+    const lines2: HistoryLine[] = [
+      msg('a'),
+      { role: 'assistant', content: [{ type: 'text', text: '半截文本' }, { type: 'tool_use', id: 'tX', name: 'bash', input: {} }] },
+      msg('b'),
+    ]
+    expect(buildContextMessages(lines2)).toEqual([
+      msg('a'),
+      { role: 'assistant', content: [{ type: 'text', text: '半截文本' }] },
+      msg('b'),
+    ])
   })
 
   it('锚失联（toolUseId 不在消息中）→ 忽略截断（全量 Message，防御）', () => {
@@ -125,12 +149,19 @@ describe('buildContextMessages：rewind 截断（M9-P2）', () => {
     const lines: HistoryLine[] = [
       msg('a'),
       toolMsg('t1'), // 被回退的那轮（第一次回退时文件已还原）
+      toolResultMsg('t1'),
       { rewind: true, seq: 2, toolUseId: 't1', time: 't' }, // 第一次回退：截 [t1..rewind]
       msg('after-rewind'), // 回退后的新对话
       { rewind: true, seq: 4, time: 't' }, // 撤销回退（rewind-auto 点还原了文件，RewindLine 无锚）
       msg('after-undo'),
     ]
-    expect(buildContextMessages(lines)).toEqual([msg('a'), toolMsg('t1'), msg('after-rewind'), msg('after-undo')])
+    expect(buildContextMessages(lines)).toEqual([
+      msg('a'),
+      toolMsg('t1'),
+      toolResultMsg('t1'),
+      msg('after-rewind'),
+      msg('after-undo'),
+    ])
   })
 
   it('boundary 在 rewind 行之后（先回退再压缩）→ 拼接子集上 boundary 照常生效，rewind 后新对话保留', () => {

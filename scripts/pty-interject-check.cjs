@@ -1,9 +1,15 @@
 const fs = require('node:fs')
+const os = require('node:os')
 /** 一次性验证：插话轮内留痕（排队行→注入→轮末 commit）。跑法：node scripts/pty-interject-check.cjs */
 const http = require('node:http')
 const pty = require('node-pty')
 const path = require('node:path')
 const REPO = path.resolve(__dirname, '..')
+
+// 审阅 D5：会话/transcript 隔离到临时 home（mock 轮不再污染真实 ~/.ecode）
+const tmpHome = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-probe-home-')), 'home')
+fs.mkdirSync(path.join(tmpHome, '.ecode'), { recursive: true })
+fs.writeFileSync(path.join(tmpHome, '.ecode', 'config.json'), JSON.stringify({}))
 const sse = (res, e, o) => res.write(`event: ${e}\ndata: ${JSON.stringify(o)}\n\n`)
 let slow = false
 const seenRequests = []
@@ -54,7 +60,7 @@ const run = async () => {
   const { port } = server.address()
   const proc = pty.spawn('cmd.exe', ['/c', 'npx', 'tsx', 'src/cli/index.ts'], {
     cwd: REPO,
-    env: { ...process.env, ECODE_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: 'dummy', ECODE_MODEL: 'mock-model' },
+    env: { ...process.env, USERPROFILE: tmpHome, HOME: tmpHome, ECODE_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: 'dummy', ECODE_MODEL: 'mock-model' },
     cols: 110, rows: 34,
   })
   proc.onData((d) => (out += d))

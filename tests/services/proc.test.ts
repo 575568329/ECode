@@ -124,6 +124,13 @@ describe('resolveGitBash（模块级缓存）', () => {
     delete process.env.SHELL
     const all = gitBashCandidates()
     if (all.some((p) => existsSync(p))) return // 本机有候选：抛错路径不可达，冒烟通过
+    // d7fcc42 后探测面扩到自定义盘/按用户安装——候选清单外命中也算「有 Git」：同样冒烟跳过
+    try {
+      resolveGitBash()
+      return
+    } catch {
+      /* 全空机器：继续断言抛错路径 */
+    }
     expect(() => resolveGitBash()).toThrow(/Git Bash/)
     expect(() => resolveGitBash()).toThrow(/SHELL/)
   })
@@ -137,6 +144,13 @@ describe('resolveGitBash（模块级缓存）', () => {
     __resetGitBashCacheForTest()
     delete process.env.SHELL
     if (gitBashCandidates().some((p) => existsSync(p))) return // 有候选：负缓存路径不可达
+    // d7fcc42 后同上：候选外命中（自定义盘）也视为「有 Git」，跳过负缓存路径
+    try {
+      resolveGitBash()
+      return
+    } catch {
+      /* 全空机器：继续负缓存反事实断言 */
+    }
     expect(() => resolveGitBash()).toThrow(/Git Bash/) // 首次：建立负缓存
     const dir = mkdtempSync(join(tmpdir(), 'ecode-proc-neg-'))
     try {

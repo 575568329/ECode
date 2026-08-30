@@ -191,8 +191,8 @@ const run = async () => {
   proc.write('帮我写入文件')
   await new Promise((r) => setTimeout(r, 600))
   proc.write('\r')
-  const cardUp = await waitFor(m2, /\[y\] 执行/, 30_000)
-  if (!cardUp) fail('R2 审批卡弹出', '未出现 [y] 执行 卡面')
+  const cardUp = await waitFor(m2, /\[Y\] 执行/, 30_000)
+  if (!cardUp) fail('R2 审批卡弹出', '未出现 [Y] 执行 卡面')
   console.log('OK  R2 审批卡弹出')
 
   // S1 BEL：卡首次出现 → 裸 \x07 ≥1
@@ -231,7 +231,7 @@ const run = async () => {
   proc.write('帮我写入文件')
   await new Promise((r) => setTimeout(r, 600))
   proc.write('\r')
-  const cardUp2 = await waitFor(m3, /\[y\] 执行/, 30_000)
+  const cardUp2 = await waitFor(m3, /\[Y\] 执行/, 30_000)
   if (!cardUp2) fail('S3 审批卡弹出', '未出现卡面')
   const bells2 = bellCount(out.slice(m3))
   if (bells2 !== 0) fail('S3 BEL 关闭不响', `裸 \\x07=${bells2}`)

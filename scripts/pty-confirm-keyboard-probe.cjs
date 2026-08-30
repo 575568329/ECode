@@ -114,14 +114,14 @@ const run = async () => {
   proc.write('帮我写入文件')
   await new Promise((r) => setTimeout(r, 600))
   proc.write('\r')
-  if (!(await waitFor(m1, /\[y\] 执行/, 30_000))) fail('审批卡弹出')
+  if (!(await waitFor(m1, /\[Y\] 执行/, 30_000))) fail('审批卡弹出')
 
   // B1 字符不吞：写 hello → 回显
   const m2 = markNow()
   proc.write('hello')
   if (!(await waitFor(m2, /hello/, 4000))) fail('B1 字符不吞（卡开时打字回显）')
   // 卡应仍在（打字不消卡）
-  if (!/\[y\] 执行/.test(strip(out.slice(m1)))) fail('B1 打字后卡仍在')
+  if (!/\[Y\] 执行/.test(strip(out.slice(m1)))) fail('B1 打字后卡仍在')
   console.log('OK  B1 字符不吞（hello 回显且卡仍在）')
 
   // B2 Enter 防误批：草稿 hello 时 CR → 卡仍在 + 排队提示
@@ -129,7 +129,7 @@ const run = async () => {
   proc.write('\r')
   await new Promise((r) => setTimeout(r, 1500))
   const frame3 = strip(out.slice(m3))
-  if (!/\[y\] 执行/.test(frame3)) fail('B2 草稿 Enter 不批准（卡应仍在）', '卡消失=误批')
+  if (!/\[Y\] 执行/.test(frame3)) fail('B2 草稿 Enter 不批准（卡应仍在）', '卡消失=误批')
   if (!/已排队/.test(frame3)) fail('B2 草稿 Enter 走插话排队', '未见「已排队」提示')
   console.log('OK  B2 草稿时 Enter=插话排队（卡不消不误批）')
 
@@ -152,7 +152,7 @@ const run = async () => {
   proc.write('继续帮我写入文件')
   await new Promise((r) => setTimeout(r, 600))
   proc.write('\r')
-  if (!(await waitFor(m5, /\[y\] 执行/, 30_000))) fail('B3 第二张审批卡弹出')
+  if (!(await waitFor(m5, /\[Y\] 执行/, 30_000))) fail('B3 第二张审批卡弹出')
   const m5b = markNow()
   proc.write('y')
   if (!(await waitFor(m5b, /执行完毕收尾说明第3轮|执行完毕收尾说明第4轮/, 30_000))) fail('B3 y 快捷放行收尾')
@@ -168,15 +168,15 @@ const run = async () => {
   proc.write('最后帮我写入文件')
   await new Promise((r) => setTimeout(r, 600))
   proc.write('\r')
-  if (!(await waitFor(m6, /\[y\] 执行/, 30_000))) fail('B4 第二张审批卡弹出')
+  if (!(await waitFor(m6, /\[Y\] 执行/, 30_000))) fail('B4 第二张审批卡弹出')
   const m7 = markNow()
   proc.write('\x1b') // Esc
   await new Promise((r) => setTimeout(r, 2500))
   const frame7 = strip(out.slice(m7))
   const tail7 = frame7.slice(-2000)
-  if (/\[y\] 执行/.test(tail7)) {
+  if (/\[Y\] 执行/.test(tail7)) {
     // 取证：打印命中点前后上下文（区分「首卡残影重绘」与「拒绝后重试弹了第二张卡」）
-    const i = tail7.lastIndexOf('[y] 执行')
+    const i = tail7.lastIndexOf('[Y] 执行')
     console.log(`# B4 证据（命中偏移 ${i}/${tail7.length}）：\n` + tail7.slice(Math.max(0, i - 160), i + 160).replace(/\n/g, '⏎'))
     fail('B4 Esc 拒绝后卡消', '卡仍在')
   }

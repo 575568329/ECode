@@ -46,7 +46,7 @@ describe('todo 工具（AJV 边界）', () => {
 })
 
 describe('ToolGroupView todo 渲染（M11-P6）', () => {
-  it('折叠态摘要行显示完成度；展开态逐项 ASCII 状态符', () => {
+  it('折叠/展开态都只留「N/M 完成」摘要行；清单本体不进对话流（0b60219 已移 TodoPanel）', () => {
     const call = todoCall([
       { content: '重构 loop', status: 'completed' },
       { content: '写测试', status: 'in_progress' },
@@ -55,10 +55,12 @@ describe('ToolGroupView todo 渲染（M11-P6）', () => {
     const folded = render(React.createElement(ToolGroupView, { tools: [call] }))
     expect(folded.lastFrame()).toContain('1/3 完成')
 
+    // 对标拍板「清单不进 transcript」：展开态不再渲染逐项 [x]/[->]/[ ]（本体在 TodoPanel，
+    // 见 tests/tui/TodoPanel.test.tsx）——此前断言展开态逐项是 0b60219 改造后的漂移
     const expanded = render(React.createElement(ToolGroupView, { tools: [call], expanded: true }))
     const frame = expanded.lastFrame() ?? ''
-    expect(frame).toContain('[x] 重构 loop')
-    expect(frame).toContain('[->] 写测试')
-    expect(frame).toContain('[ ] 更新文档')
+    expect(frame).toContain('1/3 完成')
+    expect(frame).not.toContain('[x] 重构 loop')
+    expect(frame).not.toContain('[->] 写测试')
   })
 })

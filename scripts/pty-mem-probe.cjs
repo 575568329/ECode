@@ -6,9 +6,16 @@
 const http = require('node:http')
 const pty = require('node-pty')
 const path = require('node:path')
+const fs = require('node:fs')
+const os = require('node:os')
 const { execSync } = require('node:child_process')
 
 const REPO = path.resolve(__dirname, '..')
+
+// 审阅 D5：会话/transcript 隔离到临时 home（mock 轮不再污染真实 ~/.ecode）
+const tmpHome = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-probe-home-')), 'home')
+fs.mkdirSync(path.join(tmpHome, '.ecode'), { recursive: true })
+fs.writeFileSync(path.join(tmpHome, '.ecode', 'config.json'), JSON.stringify({}))
 const sse = (res, event, obj) => res.write(`event: ${event}\ndata: ${JSON.stringify(obj)}\n\n`)
 const server = http.createServer((req, res) => {
   let body = ''
@@ -66,7 +73,7 @@ const run = async () => {
     : ['cmd.exe', ['/c', ...parts]]
   const proc = pty.spawn(file, args, {
     cwd: REPO,
-    env: { ...process.env, ECODE_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: 'dummy-key-for-pty-test', ECODE_MODEL: 'mock-model' },
+    env: { ...process.env, USERPROFILE: tmpHome, HOME: tmpHome, ECODE_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: 'dummy-key-for-pty-test', ECODE_MODEL: 'mock-model' },
     cols: 110, rows: 32,
   })
   let out = ''

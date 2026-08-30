@@ -13,6 +13,11 @@ const fs = require('node:fs')
 const os = require('node:os')
 
 const REPO = path.resolve(__dirname, '..')
+
+// 审阅 D5：会话/transcript 隔离到临时 home（mock 轮不再污染真实 ~/.ecode）
+const tmpHome = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-probe-home-')), 'home')
+fs.mkdirSync(path.join(tmpHome, '.ecode'), { recursive: true })
+fs.writeFileSync(path.join(tmpHome, '.ecode', 'config.json'), JSON.stringify({}))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const strip = (s) => s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\r/g, '')
 
@@ -35,7 +40,7 @@ const server = http.createServer((req, res) => {
 server.listen(0, '127.0.0.1', async () => {
   const port = server.address().port
   const proc = pty.spawn('cmd.exe', ['/c', 'npx', 'tsx', 'src/cli/index.ts'], {
-    cwd: REPO, env: { ...process.env, ECODE_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: 'dummy', ECODE_MODEL: 'mock-model' }, cols: 110, rows: 30,
+    cwd: REPO, env: { ...process.env, USERPROFILE: tmpHome, HOME: tmpHome, ECODE_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: 'dummy', ECODE_MODEL: 'mock-model' }, cols: 110, rows: 30,
   })
   let out = ''
   proc.onData((d) => (out += d))

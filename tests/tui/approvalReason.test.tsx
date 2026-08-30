@@ -142,7 +142,7 @@ describe('P1-1④：拒绝理由接线（resolve 非空 reason 塞 message、空
     for (let attempt = 0; attempt < 5; attempt++) {
       stdin.write('\r')
       await flush(600)
-      if (!(lastFrame() ?? '').includes('[y] 执行')) break
+      if (!(lastFrame() ?? '').includes('[Y] 执行')) break
     }
     // 拒绝路径：卡消。宿主收 tool_result（拒绝）→ mock 收尾
     expect(lastFrame() ?? '').not.toContain('[Y] 执行')
@@ -177,7 +177,7 @@ describe('P1-1④：拒绝理由接线（resolve 非空 reason 塞 message、空
     for (let attempt = 0; attempt < 5; attempt++) {
       stdin.write('\r') // 空理由直接提交（重试安全同上）
       await flush(600)
-      if (!(lastFrame() ?? '').includes('[y] 执行')) break
+      if (!(lastFrame() ?? '').includes('[Y] 执行')) break
     }
     expect(lastFrame() ?? '').not.toContain('[Y] 执行')
     expect(lastFrame() ?? '').toContain('写入收尾')

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { translateAnthropicStream, thinkingToAnthropic, resolveMaxTokens, toAnthropicMsgs } from '../../src/providers/anthropic.js'
+import { DEFAULT_MAX_TOKENS } from '../../src/core/types.js'
 import type { Message } from '../../src/core/types.js'
 
 /**
@@ -182,15 +183,16 @@ describe('thinkingToAnthropic', () => {
 })
 
 describe('resolveMaxTokens', () => {
-  it('thinking off/undefined → maxTokens 或默认 32000（2026-08-30 对标 CC/opencode）', () => {
-    expect(resolveMaxTokens(undefined, 'off')).toBe(32000)
-    expect(resolveMaxTokens(undefined, undefined)).toBe(32000)
+  // 四角色审阅 P2：默认值单源化到 core/types DEFAULT_MAX_TOKENS（曾与 config 模板 32768 分叉）
+  it('thinking off/undefined → maxTokens 或 DEFAULT_MAX_TOKENS（对标 CC/opencode 32k）', () => {
+    expect(resolveMaxTokens(undefined, 'off')).toBe(DEFAULT_MAX_TOKENS)
+    expect(resolveMaxTokens(undefined, undefined)).toBe(DEFAULT_MAX_TOKENS)
     expect(resolveMaxTokens(1000, 'off')).toBe(1000)
   })
 
   it('thinking medium + maxTokens 8192 → clamp 到 8193（budget+1，P0-2 下限保护——显式小值仍保证合法性）', () => {
     expect(resolveMaxTokens(8192, 'medium')).toBe(8193)
-    expect(resolveMaxTokens(undefined, 'medium')).toBe(32000)
+    expect(resolveMaxTokens(undefined, 'medium')).toBe(DEFAULT_MAX_TOKENS)
   })
 
   it('thinking high → clamp 到 16385', () => {

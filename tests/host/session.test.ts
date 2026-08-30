@@ -517,6 +517,44 @@ describe('M14-C1b 工具全文 summary+read 与 transcript 分页', () => {
     host.dispose()
   })
 
+  it('批 2：session/archive + rename——sidecar 标记、list 过滤归档、session/updated 广播', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ecode-b2-'))
+    const sid = `2026-08-30Tb2h-${Date.now()}`
+    const p = new MockProvider([[{ type: 'done', stop_reason: 'end' }]])
+    const deps = {
+      ...makeDeps(p),
+      history: new FileHistoryStore({ sessionId: sid, model: 'm', cwd: '/tmp', dir }),
+      cwd: '/tmp',
+    }
+    deps.history.append({ role: 'user', content: [{ type: 'text', text: 'seed' }] }) // 懒写 meta——jsonl 存在才进 listMetas
+    const host = new HostSession(deps)
+    const events: ProtocolEvent[] = []
+    host.subscribe((e) => events.push(e))
+
+    await host.send({ op: 'session/archive', sessionId: sid, archived: true })
+    // 默认列表过滤归档
+    const list = await host.send({ op: 'session/list' })
+    expect((list.value as Array<{ sessionId: string }>).some((m) => m.sessionId === sid)).toBe(false)
+    // includeArchived 拉到且带标记
+    const all = await host.send({ op: 'session/list', includeArchived: true })
+    const hit = (all.value as Array<{ sessionId: string; archived?: boolean }>).find((m) => m.sessionId === sid)
+    expect(hit?.archived).toBe(true)
+    // session/updated 广播帧（多端同步）
+    expect(events.some((e) => e.type === 'session/updated' && e.sessionId === sid && e.archived === true)).toBe(true)
+
+    // 重命名：sidecar title + 广播
+    await host.send({ op: 'session/rename', sessionId: sid, title: '手起的名字' })
+    const all2 = await host.send({ op: 'session/list', includeArchived: true })
+    expect((all2.value as Array<{ sessionId: string; title?: string }>).find((m) => m.sessionId === sid)?.title).toBe('手起的名字')
+    expect(events.some((e) => e.type === 'session/updated' && e.sessionId === sid && (e as { title?: string }).title === '手起的名字')).toBe(true)
+
+    // 恢复（archived:false）→ 默认列表重新可见
+    await host.send({ op: 'session/archive', sessionId: sid, archived: false })
+    const list2 = await host.send({ op: 'session/list' })
+    expect((list2.value as Array<{ sessionId: string }>).some((m) => m.sessionId === sid)).toBe(true)
+    host.dispose()
+  })
+
   it('截断全文暂存环形缓冲：messages 与盘上都还没有时 item/read 仍命中（并行轮落盘竞态根治）', async () => {
     // 2026-08-29 dogfood 实测竞态：TUI 收到截断帧即回发 item/read，而 tool_result 要等同轮全部
     // 工具结束才追加进 messages——窗口内内存 mirror 与盘上 backup 双双踩空 → 「全文拉取失败」。

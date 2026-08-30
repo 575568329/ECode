@@ -11,6 +11,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { VList, type VListHandle } from 'virtua'
 import { sendCommand } from './connect'
+import { buildMessageActions, type MessageActionContext } from './messageActions'
 import { useApp, type ChatEntry, type ChatImage, type ToolItem } from './store'
 
 /** markdown 渲染（GFM 表格/删除线/任务单；手写暗色样式——prose 插件重，YAGNI）。
@@ -68,20 +69,24 @@ function ToolCard({ project, sessionId, item }: { project: string; sessionId: st
   )
 }
 
-/** 单行渲染（memo：entries 增量追加时旧行引用稳定则跳过重渲——W-2 虚拟化的行经济） */
-const EntryRow = memo(function EntryRow({ e }: { e: ChatEntry }): JSX.Element {
+/** 单行渲染（memo：entries 增量追加时旧行引用稳定则跳过重渲——W-2 虚拟化的行经济）。
+ *  hover 操作条（W-5 注册表）：复制/重发等，行右上角浮现。 */
+const EntryRow = memo(function EntryRow({ e, actionCtx }: { e: ChatEntry; actionCtx: MessageActionContext }): JSX.Element {
+  const actions = buildMessageActions(e, actionCtx)
   if (e.kind === 'user') {
     return (
-      <div className="ml-auto max-w-[85%] space-y-1.5 rounded-lg bg-neutral-800 px-3 py-2">
+      <div className="group relative ml-auto max-w-[85%] space-y-1.5 rounded-lg bg-neutral-800 px-3 py-2">
         {e.images !== undefined && e.images.length > 0 && <Images images={e.images} />}
         {e.text !== '' && <Markdown text={e.text} />}
+        <ActionBar actions={actions} />
       </div>
     )
   }
   if (e.kind === 'assistant') {
     return (
-      <div className="max-w-[95%] text-neutral-200">
+      <div className="group relative max-w-[95%] text-neutral-200">
         <Markdown text={e.text} />
+        <ActionBar actions={actions} />
       </div>
     )
   }
@@ -105,6 +110,24 @@ const EntryRow = memo(function EntryRow({ e }: { e: ChatEntry }): JSX.Element {
     </div>
   )
 })
+
+/** W-5 行内操作条：hover 浮现（触屏常显成本高——先桌面优先） */
+function ActionBar({ actions }: { actions: Array<{ key: string; label: string; title: string; run: () => void }> }): JSX.Element {
+  return (
+    <span className="absolute right-1.5 top-1.5 hidden gap-1 group-hover:flex">
+      {actions.map((a) => (
+        <button
+          key={a.key}
+          onClick={() => a.run()}
+          title={a.title}
+          className="rounded border border-neutral-700 bg-neutral-900/90 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-neutral-200"
+        >
+          {a.label}
+        </button>
+      ))}
+    </span>
+  )
+}
 
 const TailMarkdown = function TailMarkdown({ text }: { text: string }): JSX.Element {
   return (
@@ -151,6 +174,23 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
   const streaming = view?.streaming ?? ''
   const queue = view?.queue ?? []
 
+  // W-5 操作上下文（稳定引用——行 memo 不因回调身份抖动而失效）
+  const actionCtx = useMemo<MessageActionContext>(
+    () => ({
+      copy: (t) => {
+        if (navigator.clipboard !== undefined) void navigator.clipboard.writeText(t).catch(() => {})
+      },
+      resend: (t) => {
+        void sendCommand('', project, sessionId, { op: 'prompt', text: t, mode: 'StartOrSteer' })
+          .then((r) => {
+            if (r.ok) useApp.getState().appendUser(sessionId, t)
+          })
+          .catch(() => {})
+      },
+    }),
+    [project, sessionId],
+  )
+
   // W-2：虚拟化行清单——entries + 活动工具卡 + 流式尾 + 排队行，全部进 VList（DOM 恒定只挂可视行）
   const rows = useMemo(() => {
     const nodes: Array<{ key: string; node: JSX.Element }> = []
@@ -174,7 +214,7 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
       })
     }
     entries.forEach((e, i) => {
-      nodes.push({ key: `e${i}`, node: <EntryRow e={e} /> })
+      nodes.push({ key: `e${i}`, node: <EntryRow e={e} actionCtx={actionCtx} /> })
     })
     items.forEach((it) => {
       nodes.push({ key: `t${it.id}`, node: <ToolCard project={project} sessionId={sessionId} item={it} /> })
@@ -195,7 +235,7 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
       })
     })
     return nodes
-  }, [view?.loadError, entries, items, streaming, queue, project, sessionId, retryLoad])
+  }, [view?.loadError, entries, items, streaming, queue, project, sessionId, retryLoad, actionCtx])
 
   // 底部跟随：仅当用户本就在底部时，行清单变化（新消息/流式推进）滚到底
   useLayoutEffect(() => {

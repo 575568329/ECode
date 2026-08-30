@@ -5,9 +5,10 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, BarChart3, ChevronDown, Plus } from 'lucide-react'
+import { ArrowLeft, Archive, BarChart3, ChevronDown, Pencil, Plus, Search } from 'lucide-react'
+import { groupSessionsByTime, searchSessions, type SidebarSession } from './sessionList'
 import { addProject, connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
-import { toConfigView, useApp, type SessionBrief } from './store'
+import { toConfigView, useApp } from './store'
 import { makeHash, parseHash, type RoutePos } from './routing'
 import { Conversation } from './Conversation'
 import { Composer } from './Composer'
@@ -64,15 +65,75 @@ function ConnBadge(): React.JSX.Element {
   )
 }
 
-function SessionRow({ brief, active, onClick }: { brief: SessionBrief; active: boolean; onClick: () => void }): React.JSX.Element {
+/** 批 2 会话行：状态点 + hover 操作（重命名/归档）。重命名态整行变输入框（Enter 存 / Esc 取消） */
+function SessionRow({
+  brief,
+  active,
+  onClick,
+  onArchive,
+  onRenameStart,
+  renameMode,
+  renameValue,
+  onRenameChange,
+  onRenameSubmit,
+  onRenameCancel,
+}: {
+  brief: { sessionId: string; title: string; running: boolean }
+  active: boolean
+  onClick: () => void
+  onArchive?: () => void
+  onRenameStart?: () => void
+  renameMode?: boolean
+  renameValue?: string
+  onRenameChange?: (v: string) => void
+  onRenameSubmit?: () => void
+  onRenameCancel?: () => void
+}): React.JSX.Element {
+  if (renameMode) {
+    return (
+      <div className="px-0.5 py-0.5">
+        <input
+          autoFocus
+          value={renameValue ?? ''}
+          onChange={(e) => onRenameChange?.(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onRenameSubmit?.()
+            if (e.key === 'Escape') onRenameCancel?.()
+          }}
+          onBlur={() => onRenameCancel?.()}
+          className="w-full rounded border border-neutral-600 bg-neutral-900 px-2 py-1 text-sm outline-none focus:border-neutral-400"
+        />
+      </div>
+    )
+  }
+  const dotColor = brief.running ? 'bg-emerald-500 animate-pulse' : 'bg-neutral-600'
   return (
-    <button
-      onClick={onClick}
-      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${active ? 'bg-neutral-800' : 'hover:bg-neutral-800/60'}`}
-    >
-      <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${brief.running ? 'bg-emerald-500 animate-pulse' : 'bg-neutral-600'}`} />
-      <span className="truncate text-neutral-300">{brief.title === '' ? brief.sessionId.slice(-12) : brief.title}</span>
-    </button>
+    <div className={`group flex w-full items-center rounded ${active ? 'bg-neutral-800' : 'hover:bg-neutral-800/60'}`}>
+      <button onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm">
+        <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} />
+        <span className="truncate text-neutral-300">{brief.title === '' ? brief.sessionId.slice(-12) : brief.title}</span>
+      </button>
+      <span className="mr-1 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        {onRenameStart !== undefined && (
+          <button
+            onClick={onRenameStart}
+            title="重命名（手动命名即固化标题）"
+            className="flex h-5 w-5 items-center justify-center rounded text-neutral-500 hover:bg-neutral-700 hover:text-neutral-300"
+          >
+            <Pencil size={11} />
+          </button>
+        )}
+        {onArchive !== undefined && (
+          <button
+            onClick={onArchive}
+            title="归档（列表隐藏，可从「已归档」恢复）"
+            className="flex h-5 w-5 items-center justify-center rounded text-neutral-500 hover:bg-neutral-700 hover:text-neutral-300"
+          >
+            <Archive size={11} />
+          </button>
+        )}
+      </span>
+    </div>
   )
 }
 
@@ -148,6 +209,12 @@ export function App(): React.JSX.Element {
   const [newPath, setNewPath] = useState('')
   const [addErr, setAddErr] = useState('')
   const [creating, setCreating] = useState(false)
+  // 批 2 会话列表升级：搜索 / 归档面板 / 行内重命名
+  const [query, setQuery] = useState('')
+  const [showArchived, setShowArchived] = useState(false)
+  const [archivedSessions, setArchivedSessions] = useState<SidebarSession[]>([])
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
   // C4-④：用量面板（侧栏底部入口——全局视角与项目选择无关）
   const [statsOpen, setStatsOpen] = useState(false)
   const { projects, sessions, selectedProject, selectedSession, select, setProjects, applyHost, applyFrame, setConn, upsertSession, setConfigView } = useApp()
@@ -192,8 +259,8 @@ export function App(): React.JSX.Element {
         sendCommand(BASE, selectedProject, undefined, { op: 'session/list' })
           .then((r) => {
             if (r.ok && Array.isArray(r.value)) {
-              for (const m of r.value as Array<{ sessionId: string; firstUser: string; createdAt: string; running?: boolean }>) {
-                upsertSession({ project: selectedProject, sessionId: m.sessionId, running: m.running ?? false, title: m.firstUser ?? '', updatedAt: m.createdAt ? Date.parse(m.createdAt) : Date.now() })
+              for (const m of r.value as Array<{ sessionId: string; firstUser: string; title?: string; createdAt: string; running?: boolean; archived?: boolean }>) {
+                upsertSession({ project: selectedProject, sessionId: m.sessionId, running: m.running ?? false, title: m.title ?? m.firstUser ?? '', updatedAt: m.createdAt ? Date.parse(m.createdAt) : Date.now() })
               }
             }
           })
@@ -244,8 +311,8 @@ export function App(): React.JSX.Element {
     sendCommand(BASE, selectedProject, undefined, { op: 'session/list' })
       .then((r) => {
         if (r.ok && Array.isArray(r.value)) {
-          for (const m of r.value as Array<{ sessionId: string; firstUser: string; createdAt: string; running?: boolean }>) {
-            upsertSession({ project: selectedProject, sessionId: m.sessionId, running: m.running ?? false, title: m.firstUser ?? '', updatedAt: m.createdAt ? Date.parse(m.createdAt) : Date.now() })
+          for (const m of r.value as Array<{ sessionId: string; firstUser: string; title?: string; createdAt: string; running?: boolean; archived?: boolean }>) {
+            upsertSession({ project: selectedProject, sessionId: m.sessionId, running: m.running ?? false, title: m.title ?? m.firstUser ?? '', updatedAt: m.createdAt ? Date.parse(m.createdAt) : Date.now() })
           }
         }
       })
@@ -269,10 +336,83 @@ export function App(): React.JSX.Element {
     if (makeHash(fromStore) !== location.hash) location.hash = makeHash(fromStore)
   }, [selectedProject, selectedSession])
 
-  const projectSessions = useMemo(
-    () => sessions.filter((s) => s.project === selectedProject).sort((a, b) => b.updatedAt - a.updatedAt),
+  // 批 2：主列表=未归档；搜索走客户端子串；时间分组（今日/昨日/过去 7 天/更早）
+  const activeSessions = useMemo(
+    () => sessions.filter((s) => s.project === selectedProject && s.archived !== true).sort((a, b) => b.updatedAt - a.updatedAt),
     [sessions, selectedProject],
   )
+  const searchedSessions = useMemo(() => searchSessions(activeSessions, query), [activeSessions, query])
+  const sessionGroups = useMemo(() => groupSessionsByTime(searchedSessions), [searchedSessions])
+
+  /** 归档面板数据：session/list includeArchived 拉全量后拆归档桶 */
+  const loadArchived = (): void => {
+    if (selectedProject === null) return
+    sendCommand(BASE, selectedProject, undefined, { op: 'session/list', includeArchived: true })
+      .then((r) => {
+        if (r.ok && Array.isArray(r.value)) {
+          const arch: SidebarSession[] = (r.value as Array<{ sessionId: string; firstUser?: string; title?: string; createdAt: string; archived?: boolean }>)
+            .filter((m) => m.archived === true)
+            .map((m) => ({
+              sessionId: m.sessionId,
+              title: m.title ?? m.firstUser ?? '',
+              updatedAt: m.createdAt ? Date.parse(m.createdAt) : 0,
+              running: false,
+              archived: true,
+            }))
+          setArchivedSessions(arch)
+        }
+      })
+      .catch(() => {})
+  }
+
+  const toggleShowArchived = (): void => {
+    const next = !showArchived
+    setShowArchived(next)
+    if (next) loadArchived()
+  }
+
+  /** 归档/恢复：协议落 sidecar + session/updated 帧广播多端；本端乐观刷新两个列表 */
+  const setSessionArchived = (sessionId: string, archived: boolean): void => {
+    if (selectedProject === null) return
+    void sendCommand(BASE, selectedProject, undefined, { op: 'session/archive', sessionId, archived })
+      .then(() => {
+        if (archived) {
+          setArchivedSessions((prev) => {
+            const src = prev.length > 0 ? prev : activeSessions.map((s) => ({ ...s, archived: true as const }))
+            return src.map((s) => (s.sessionId === sessionId ? { ...s, archived: true as const } : s))
+          })
+        } else {
+          setArchivedSessions((prev) => prev.filter((s) => s.sessionId !== sessionId))
+          sendCommand(BASE, selectedProject, undefined, { op: 'session/list' })
+            .then((r) => {
+              if (r.ok && Array.isArray(r.value)) {
+                for (const m of r.value as Array<{ sessionId: string; firstUser?: string; title?: string; createdAt: string; running?: boolean }>) {
+                  upsertSession({
+                    project: selectedProject,
+                    sessionId: m.sessionId,
+                    running: m.running ?? false,
+                    title: m.title ?? m.firstUser ?? '',
+                    updatedAt: m.createdAt ? Date.parse(m.createdAt) : Date.now(),
+                  })
+                }
+              }
+            })
+            .catch(() => {})
+        }
+      })
+      .catch(() => {})
+  }
+
+  const renameSession = (sessionId: string, title: string): void => {
+    const t = title.trim()
+    if (t === '') return
+    void sendCommand(BASE, selectedProject ?? '', undefined, { op: 'session/rename', sessionId, title: t })
+      .then(() => {
+        const s = useApp.getState().sessions.find((x) => x.sessionId === sessionId)
+        if (s !== undefined) upsertSession({ ...s, title: t })
+      })
+      .catch(() => {})
+  }
 
   /** 真新建会话（「+新对话」/hero 输入共用）：serve 信封层 session/new → 实 id 转正选中。
    *  旧「''占位+prompt 隐式建」废弃（缺省路由复用默认会话——两次 +新对话进同一会话的病灶） */
@@ -394,25 +534,92 @@ export function App(): React.JSX.Element {
           )}
           {projects.map((p) => {
             const short = p.split('/').filter(Boolean).slice(-2).join('/')
+            const selected = selectedProject === p
             return (
-              <button
-                key={p}
-                onClick={() => select(p, null)}
-                className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${selectedProject === p ? 'bg-neutral-800' : 'hover:bg-neutral-800/60'}`}
-              >
-                <span className="truncate text-neutral-300" title={p}>
-                  {short}
-                </span>
-              </button>
+              <div key={p} className={`flex w-full items-center rounded ${selected ? 'bg-neutral-800' : 'hover:bg-neutral-800/60'}`}>
+                <button onClick={() => select(p, null)} className="min-w-0 flex-1 px-2 py-1.5 text-left text-sm">
+                  <span className="truncate text-neutral-300" title={p}>
+                    {short}
+                  </span>
+                </button>
+                {selected && (
+                  <button
+                    onClick={toggleShowArchived}
+                    title="已归档会话"
+                    className={`mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded ${showArchived ? 'text-amber-400' : 'text-neutral-500'} hover:bg-neutral-700 hover:text-neutral-300`}
+                  >
+                    <Archive size={12} />
+                  </button>
+                )}
+              </div>
             )
           })}
           {projects.length === 0 && <div className="px-2 py-3 text-xs text-neutral-600">暂无项目——点上方「+」添加，或在本机项目里跑一次 ecode</div>}
           {selectedProject !== null && (
             <>
-              <div className="px-1 pb-1 pt-3 text-[11px] uppercase tracking-wider text-neutral-600">会话</div>
-              {projectSessions.map((s) => (
-                <SessionRow key={s.sessionId} brief={s} active={selectedSession === s.sessionId} onClick={() => select(selectedProject, s.sessionId)} />
-              ))}
+              <div className="flex items-center gap-1.5 px-1 pb-1 pt-3">
+                <Search size={11} className="shrink-0 text-neutral-600" />
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="搜索会话…"
+                  className="w-full min-w-0 rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs outline-none placeholder:text-neutral-600 focus:border-neutral-600"
+                />
+              </div>
+              {query.trim() !== '' ? (
+                searchedSessions.length > 0 ? (
+                  searchedSessions.map((s) => (
+                    <SessionRow
+                      key={s.sessionId}
+                      brief={s}
+                      active={selectedSession === s.sessionId}
+                      onClick={() => select(selectedProject, s.sessionId)}
+                      onArchive={() => setSessionArchived(s.sessionId, true)}
+                      onRenameStart={() => {
+                        setRenamingId(s.sessionId)
+                        setRenameValue(s.title === '' ? s.sessionId.slice(-12) : s.title)
+                      }}
+                      renameMode={renamingId === s.sessionId}
+                      renameValue={renameValue}
+                      onRenameChange={setRenameValue}
+                      onRenameSubmit={() => {
+                        renameSession(s.sessionId, renameValue)
+                        setRenamingId(null)
+                      }}
+                      onRenameCancel={() => setRenamingId(null)}
+                    />
+                  ))
+                ) : (
+                  <div className="px-2 py-2 text-xs text-neutral-600">无匹配会话</div>
+                )
+              ) : (
+                sessionGroups.map((g) => (
+                  <div key={g.label}>
+                    <div className="px-1 pb-0.5 pt-2 text-[11px] text-neutral-600">{g.label}</div>
+                    {g.items.map((s) => (
+                      <SessionRow
+                        key={s.sessionId}
+                        brief={s}
+                        active={selectedSession === s.sessionId}
+                        onClick={() => select(selectedProject, s.sessionId)}
+                        onArchive={() => setSessionArchived(s.sessionId, true)}
+                        onRenameStart={() => {
+                          setRenamingId(s.sessionId)
+                          setRenameValue(s.title === '' ? s.sessionId.slice(-12) : s.title)
+                        }}
+                        renameMode={renamingId === s.sessionId}
+                        renameValue={renameValue}
+                        onRenameChange={setRenameValue}
+                        onRenameSubmit={() => {
+                          renameSession(s.sessionId, renameValue)
+                          setRenamingId(null)
+                        }}
+                        onRenameCancel={() => setRenamingId(null)}
+                      />
+                    ))}
+                  </div>
+                ))
+              )}
               <button
                 onClick={startNewSession}
                 disabled={creating}
@@ -420,6 +627,22 @@ export function App(): React.JSX.Element {
               >
                 {creating ? '新建中…' : '+ 新对话'}
               </button>
+              {showArchived && (
+                <div className="mt-1 rounded border border-neutral-800/80 px-1.5 py-1.5">
+                  <div className="px-0.5 pb-1 text-[11px] text-amber-500/90">已归档会话</div>
+                  {archivedSessions.length === 0 && <div className="px-1 py-1 text-[11px] text-neutral-600">无归档会话</div>}
+                  {archivedSessions.map((s) => (
+                    <div key={s.sessionId} className="flex w-full items-center rounded hover:bg-neutral-800/60">
+                      <button onClick={() => select(selectedProject, s.sessionId)} className="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-xs text-neutral-500" title="点击打开归档会话">
+                        {s.title === '' ? s.sessionId.slice(-12) : s.title}
+                      </button>
+                      <button onClick={() => setSessionArchived(s.sessionId, false)} title="恢复到主列表" className="mr-1 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-neutral-500 hover:bg-neutral-700 hover:text-neutral-300">
+                        恢复
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </>
           )}
         </div>

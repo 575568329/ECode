@@ -31,6 +31,10 @@ export interface SessionMeta {
   cwd?: string
   /** M13-W4：活会话运行态（dispatch session/list 冷热合并时注入——不落盘） */
   running?: boolean
+  /** 批 2（2026-08-30）：手动命名（pin 语义——覆盖 firstUser 显示；sidecar 存储，不改首行） */
+  title?: string
+  /** 批 2：归档标记（web 列表默认过滤；sidecar 存储） */
+  archived?: boolean
 }
 
 /** M12-P0：会话用量统计行（追加进会话 JSONL；自包含 cwd/model/ts——聚合不依赖 meta）。
@@ -57,6 +61,8 @@ export interface HistoryStore {
   append(msg: Message): void
   /** 列所有会话 meta（读每个文件首行，按 createdAt 倒序）；传 cwd 时只列该项目的会话 */
   loadAll(cwd?: string): SessionMeta[]
+  /** 批 2：patch 会话元数据（title/archived，sidecar `<id>.meta.json` 存储） */
+  patchSessionMeta(sessionId: string, patch: { title?: string; archived?: boolean }): void
   /** 读某会话全部 messages（跳过 meta + boundary 行，纯 Message；M4 兼容） */
   restore(sessionId: string): Message[]
   /** 读某会话全量行（含 boundary，跳过 meta；M5 投影/UI/审计用） */
@@ -224,6 +230,38 @@ export class FileHistoryStore implements HistoryStore {
     return FileHistoryStore.listMetas(this.dir, cwd)
   }
 
+  /** 批 2：patch 会话元数据（title/archived）——写 sidecar `<sessionId>.meta.json`，
+   *  不动 jsonl 首行（首行重写=全文件重写，代价不可接受）。listMetas 读时合并覆盖。 */
+  patchSessionMeta(sessionId: string, patch: { title?: string; archived?: boolean }): void {
+    FileHistoryStore.patchSessionMeta(this.dir, sessionId, patch)
+  }
+
+  /** 读 sidecar 元数据（无文件/解析失败返回 {}——展示信息容错不致命） */
+  static readSidecarMeta(dir: string, sessionId: string): { title?: string; archived?: boolean } {
+    try {
+      const raw = fs.readFileSync(path.join(dir, `${sessionId}.meta.json`), 'utf8')
+      const parsed = JSON.parse(raw) as { title?: string; archived?: boolean }
+      return {
+        ...(typeof parsed.title === 'string' ? { title: parsed.title } : {}),
+        ...(parsed.archived === true ? { archived: true } : {}),
+      }
+    } catch {
+      return {}
+    }
+  }
+
+  static patchSessionMeta(dir: string, sessionId: string, patch: { title?: string; archived?: boolean }): void {
+    // 会话 id 进文件路径——沿 TUI 侧 isValidSessionId 白名单语义（serve 层已校验，双保险）
+    if (!/^\d{4}-\d{2}-\d{2}T[\w-]{1,64}$/.test(sessionId)) throw new Error(`会话 id 非法：${sessionId}`)
+    const sidecarPath = path.join(dir, `${sessionId}.meta.json`)
+    const current = FileHistoryStore.readSidecarMeta(dir, sessionId)
+    const next = { ...current, ...patch }
+    for (const key of Object.keys(next) as Array<keyof typeof next>) {
+      if (next[key] === undefined) delete next[key]
+    }
+    fs.writeFileSync(sidecarPath, JSON.stringify(next), 'utf8')
+  }
+
   /** M14-C1③ 只读静态路径：浏览即装配收敛——serve 侧 session/list 对冷项目不装配宿主
    *  （resolveHost→acquire 会让点过的项目全变常驻），经此读历史 meta 快照。 */
   static listMetas(dir: string, cwd?: string): SessionMeta[] {
@@ -240,12 +278,15 @@ export class FileHistoryStore implements HistoryStore {
         if (!firstLine.trim()) continue
         const parsed = JSON.parse(firstLine) as MetaLine
         if (parsed.meta) {
+          // 批 2：合并 sidecar 元数据（title/archived——重命名与归档的持久化层）
+          const sidecar = FileHistoryStore.readSidecarMeta(dir, parsed.sessionId)
           metas.push({
             cwd: parsed.cwd,
             sessionId: parsed.sessionId,
             createdAt: parsed.createdAt,
             model: parsed.model,
             firstUser: parsed.firstUser,
+            ...sidecar,
           })
         }
       } catch (e) {
@@ -392,6 +433,7 @@ export class NoopHistoryStore implements HistoryStore {
   appendCompactBoundary(_boundary: BoundaryLine): void {}
   appendRewind(_line: RewindLine): void {}
   appendUsageStats(_record: UsageStatsRecord): void {}
+  patchSessionMeta(_sessionId: string, _patch: { title?: string; archived?: boolean }): void {}
   loadAll(): SessionMeta[] {
     return []
   }

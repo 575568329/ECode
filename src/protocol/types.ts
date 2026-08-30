@@ -55,6 +55,8 @@ export type ProtocolEvent =
   | { type: 'turn/started'; seq: number; turnId: string }
   | { type: 'turn/completed'; seq: number; turnId: string }
   | { type: 'thread/status'; seq: number; busy: boolean; waitingOn: 'approval' | 'userInput' | null; iter: number; maxIter?: number }
+  /** 批 2（2026-08-30）：会话元数据更新广播（归档/恢复/重命名）——多端列表同步 */
+  | { type: 'session/updated'; seq: number; sessionId: string; title?: string; archived?: boolean }
   | { type: 'approval/requested'; seq: number; requestId: string; kind: ApprovalKind; tool: string; preview: string; decisions: ApprovalDecision[] }
   | { type: 'approval/claimed'; seq: number; requestId: string; claimant: string }
   | { type: 'approval/resolved'; seq: number; requestId: string; outcome: ApprovalOutcome }
@@ -99,8 +101,12 @@ export type ProtocolCommand =
   | { op: 'interrupt' }
   | { op: 'interjection/clear' }
   | { op: 'command/exec'; name: string; args?: string }
-  | { op: 'session/list' }
+  | { op: 'session/list'; includeArchived?: boolean }
   | { op: 'session/read'; sessionId: string; fromLine?: number; limit?: number }
+  /** 批 2（2026-08-30）：归档/恢复会话（meta sidecar 标记；session/list 默认过滤 archived） */
+  | { op: 'session/archive'; sessionId: string; archived: boolean }
+  /** 批 2：手动重命名（pin 语义——覆盖 firstUser 显示） */
+  | { op: 'session/rename'; sessionId: string; title: string }
   /** M14-C1⑤ 工具全文按需读取（帧内 content 已截断 4KB——summary+read 分野；上限 1MB） */
   | { op: 'item/read'; itemId: string }
   | { op: 'session/restore'; sessionId: string }

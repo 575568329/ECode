@@ -238,3 +238,36 @@ describe('NoopHistoryStore', () => {
     expect(() => noop.setSessionId('y')).not.toThrow()
   })
 })
+
+describe('批 2：session/archive + rename（sidecar 元数据）', () => {
+  it('patchSessionMeta 写 sidecar；loadAll 合并 title/archived', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-b2-'))
+    const store = new FileHistoryStore({ sessionId: '2026-08-30Tb2-x', model: 'm', cwd: 'D:/proj', dir })
+    store.append(userMsg('第一条'))
+
+    // 未打标：无 title/archived
+    const before = store.loadAll('D:/proj')[0]
+    expect(before?.title).toBeUndefined()
+    expect(before?.archived).toBeUndefined()
+
+    // 重命名 + 归档
+    store.patchSessionMeta('2026-08-30Tb2-x', { title: '手动名字', archived: true })
+    const after = store.loadAll('D:/proj')[0]
+    expect(after?.title).toBe('手动名字')
+    expect(after?.archived).toBe(true)
+
+    // 恢复：archived 清除（title 保留）
+    store.patchSessionMeta('2026-08-30Tb2-x', { archived: false })
+    const restored = store.loadAll('D:/proj')[0]
+    expect(restored?.archived).toBeUndefined()
+    expect(restored?.title).toBe('手动名字')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('非法 sessionId 抛错（路径安全双保险）', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-b2-'))
+    const store = new FileHistoryStore({ sessionId: '2026-08-30Tb2-y', model: 'm', dir })
+    expect(() => store.patchSessionMeta('../evil', { archived: true })).toThrow(/非法/)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+})

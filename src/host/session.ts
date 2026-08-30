@@ -628,10 +628,30 @@ export class HostSession {
         // M13-W4 冷热合并：历史 meta（冷）∪ 活会话 running 态（热）——前端一份列表两端状态。
         // cwd 过滤（审阅 P0-3②）：history 目录用户级全局，无过滤会把本机所有项目的会话
         // 全量返回给任一项目（web 端又无条件标注 selectedProject，跨项目会话混列）
+        // 批 2：默认过滤归档会话（web「已归档」入口带 includeArchived 拉全量）
         const states = this.deps.conversationStates?.()
-        const metas = this.deps.history.loadAll(this.deps.cwd)
+        let metas = this.deps.history.loadAll(this.deps.cwd)
+        if (cmd.includeArchived !== true) metas = metas.filter((m) => m.archived !== true)
         if (states === undefined) return { ok: true, value: metas }
         return { ok: true, value: metas.map((m) => (states.has(m.sessionId) ? { ...m, running: states.get(m.sessionId) } : m)) }
+      }
+      case 'session/archive': {
+        // 批 2：归档/恢复——meta sidecar 标记 + session/updated 帧广播（多端列表同步）
+        if (!isValidSessionId(cmd.sessionId)) return { ok: false, error: `会话 id 非法：${cmd.sessionId}`, code: 'BAD_SESSION_ID' }
+        this.deps.history.patchSessionMeta(cmd.sessionId, { archived: cmd.archived })
+        this.publish('session/updated', { sessionId: cmd.sessionId, archived: cmd.archived })
+        this.deps.logger.info('system', 'session_archived', { sessionId: cmd.sessionId, archived: cmd.archived })
+        return { ok: true }
+      }
+      case 'session/rename': {
+        // 批 2：手动重命名（pin 语义——覆盖 firstUser 显示）；同帧广播多端同步
+        if (!isValidSessionId(cmd.sessionId)) return { ok: false, error: `会话 id 非法：${cmd.sessionId}`, code: 'BAD_SESSION_ID' }
+        const title = cmd.title.trim().slice(0, 80)
+        if (title === '') return { ok: false, error: '标题不能为空', code: 'BAD_TITLE' }
+        this.deps.history.patchSessionMeta(cmd.sessionId, { title })
+        this.publish('session/updated', { sessionId: cmd.sessionId, title })
+        this.deps.logger.info('system', 'session_renamed', { sessionId: cmd.sessionId })
+        return { ok: true }
       }
       case 'session/read':
         // M14-C1①a：分页带宽选项——fromLine/limit 是 **transcript 行索引**语义（原 beforeSeq 名义

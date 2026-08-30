@@ -256,3 +256,20 @@ describe('M14-C2⑤ 补账：approval/claimed 他端认领标记', () => {
     expect(useApp.getState().views.s1?.approval).toBeNull()
   })
 })
+
+describe('批 2：session/updated 帧（归档/重命名多端同步）', () => {
+  it('title 帧 → 更新 brief.title；archived 帧 → 更新归档标记', () => {
+    useApp.getState().upsertSession({ project: 'D:/proj', sessionId: 's1', running: false, title: '旧标题', updatedAt: 1 })
+    frame('s1', { type: 'session/updated', sessionId: 's1', title: '新标题' })
+    expect(useApp.getState().sessions.find((s) => s.sessionId === 's1')?.title).toBe('新标题')
+    frame('s1', { type: 'session/updated', sessionId: 's1', archived: true })
+    expect(useApp.getState().sessions.find((s) => s.sessionId === 's1')?.archived).toBe(true)
+  })
+  it('无关会话的 updated 帧不影响本会话', () => {
+    useApp.getState().upsertSession({ project: 'D:/proj', sessionId: 's1', running: false, title: '保持', updatedAt: 1 })
+    frame('other', { type: 'session/updated', sessionId: 'other', archived: true })
+    const s1 = useApp.getState().sessions.find((s) => s.sessionId === 's1')
+    expect(s1?.title).toBe('保持')
+    expect(s1?.archived).toBeUndefined()
+  })
+})

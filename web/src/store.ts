@@ -12,6 +12,8 @@ export interface SessionBrief {
   running: boolean
   title: string
   updatedAt: number
+  /** 批 2：归档标记（session/updated 帧同步；归档会话默认不入主列表） */
+  archived?: boolean
 }
 
 /** 工具卡（item/started→running；item/completed→终态带摘要与可展开内容）。
@@ -391,6 +393,20 @@ export const useApp = create<AppState>((set) => ({
             ...v,
             entries: [...v.entries, { kind: 'system', text: `${f.ev.level === 'error' ? '✖' : f.ev.level === 'warn' ? '⚠' : 'ℹ'} ${String(f.ev.text ?? '')}`, ...(f.ev.level === 'error' ? { error: true } : {}) }],
           }))
+        case 'session/updated':
+          // 批 2：归档/重命名广播——同步侧栏 brief（title/archived）
+          return {
+            ...st,
+            sessions: st.sessions.map((s) =>
+              s.sessionId === f.sessionId
+                ? {
+                    ...s,
+                    ...(typeof f.ev.title === 'string' ? { title: f.ev.title } : {}),
+                    ...(typeof f.ev.archived === 'boolean' ? { archived: f.ev.archived } : {}),
+                  }
+                : s,
+            ),
+          }
         default:
           return st
       }

@@ -68,7 +68,7 @@ providers.<名> 字段：
   "apiKey": "",                     // 密钥（必填；环境变量优先）
   "models": ["glm-5.2"],            // 可用模型（/model 列这些）
   "thinking": "medium",             // off | low | medium | high
-  "maxTokens": 8192,                // 单次最大输出 token
+  "maxTokens": 32768,               // 单次最大输出 token（8192 配 thinking 极易触顶截断）
   "temperature": 0.7,               // 可选；anthropic 协议 thinking 非 off 时禁用（否则 400）
   "topP": 0.95                      // 可选；同上
 }

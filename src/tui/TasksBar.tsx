@@ -51,7 +51,7 @@ export function TasksBar(): ReactElement | null {
         <Text dimColor>（{clipWidth(running
           .slice(0, MAX_LINES)
           .map((t) => t.command.slice(0, 24))
-          .join(' · '), max - 24)}… · /output 查看）</Text>
+          .join(' · '), max - 24)}… · Ctrl+T 查看）</Text>
       </Box>
     )
   }
@@ -66,7 +66,7 @@ export function TasksBar(): ReactElement | null {
               {clipWidth(`⏵ ${t.id} ${t.command}`, max - 24)}
               <Text dimColor>
                 {' '}
-                {tail === '' ? '（暂无输出） · /output 查看' : `${tail.slice(0, 40)} · /output 查看`}
+                {tail === '' ? '（暂无输出） · Ctrl+T 查看' : `${tail.slice(0, 40)} · /output 查看`}
               </Text>
             </Text>
           </Box>

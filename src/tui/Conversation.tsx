@@ -21,7 +21,7 @@ import type { CommittedItem, ActiveState, ActiveTool, CommittedToolCall } from '
 const USER_INPUT_MAX_LINES = 2
 
 /** M14-V5 退化保护提示（budget < 12：宁可不显示也不触发 Ink 全清兜底） */
-const TOO_SMALL_HINT = '[终端过小，本轮内容已折叠——/output 查看]'
+const TOO_SMALL_HINT = '[终端过小，本轮内容已折叠——Ctrl+T 查看]'
 
 /** 流式灰字占位（commit 前用；超 maxLines 行折叠头部）。
  *  M14-V2：宽度感知物理行折叠（超长单行不再爆物理行）。
@@ -221,7 +221,7 @@ export function Conversation({
 }
 
 /** M14-V5：轮末残留 markdown（error 轮无 completed 帧）超预算时不渲染全文（markdown 截断
- *  会破碎语法）——降级提示行，全文在 transcript（/output 可看） */
+ *  会破碎语法）——降级提示行，全文在 transcript（Ctrl+T 可看） */
 function CappedAssistantMessage({ text, maxLines }: { text: string; maxLines: number }): ReactElement {
   const { columns } = useViewport()
   const { total } = foldStreamText(text, undefined, columns)

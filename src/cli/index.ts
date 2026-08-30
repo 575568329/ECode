@@ -315,6 +315,9 @@ function restartProcess(instance: { unmount(): void }, history: HistoryStore | n
   } catch {
     // unmount 竞态不阻塞重启
   }
+  // 光标守卫随旧 TUI 一起撤（attach 等待期间旧进程仍存活——心跳每 500ms 压 ?25l，
+  // 现阶段与新 TUI 藏光标意图一致无症状，但新进程一旦需要显示硬件光标即被压制）
+  stopCursorGuard()
   const argv = process.argv.slice(1)
   // /restart 重放 --history 时换成当前会话 id：restore 后是 fork 新 id（含最新状态），
   // 原样重放旧值会退回恢复前的快照；恢复后未发言就重启的，先播种落盘重放才有文件
@@ -337,6 +340,15 @@ function restartProcess(instance: { unmount(): void }, history: HistoryStore | n
     child.on('exit', (code) => process.exit(code ?? 0))
     // 释放 stdin 读取——conpty 输入投递给在读进程，父进程若占住 stdin，新实例键盘无响应
     process.stdin.pause()
+    // destroy 副本句柄（pause 不够）：内核里 pending 的 console ReadFile 无法被 pause 取消，
+    // 输入永远先喂给父句柄上那次读并被丢弃——子进程 Ink 输入管线挂载完好却永远等不到字节
+    // （探针十连败实证；destroy 副本句柄令 pending read 失效，conpty 只剩子进程一个读者。
+    //  用户真机报障「/restart 后无法输入」即此，npm run dev 形态复现→修复→探针转绿）
+    try {
+      process.stdin.destroy()
+    } catch {
+      // 已关闭/不可销毁——pause 兜底
+    }
     return
   }
   // 同 Windows 分支：execArgv 拼进 argv（tsx loader 继承）

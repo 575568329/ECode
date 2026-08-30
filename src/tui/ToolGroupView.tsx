@@ -86,8 +86,9 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
         <Box minWidth={INDENT.icon}>
           <Text color={theme.tool}>{symbols.tool}</Text>
         </Box>
+        {/* 2026-08-29 用户点名：图标槽后不得再垫字面量空格——● 槽 2 列后内容恒从第 2 列起
+            （「个工具」与文件名列表之间的分隔空格保留，那是行内语义间距非栅格） */}
         <Text bold color={theme.tool}>
-          {' '}
           {count} 个工具
         </Text>
         <Text dimColor>
@@ -170,7 +171,7 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
                     // M14-V2：展开全文 head-tail 物理行折叠（头 3 定位 + 尾最新）——只读工具适用。
                     // 2026-08-29 用户再拍板「diff 必须显示全」：副作用工具传 Infinity 不限行数
                     // （同一条 wrapAnsi 硬折行路径保 ⎿ 悬挂缩进对齐；极端体积由上游 50KB 工具
-                    // 结果截断兜底，F-39 超限落盘 /output 可回看），只读工具输出仍封顶。
+                    // 结果截断兜底，F-39 超限落盘 Ctrl+T 可回看），只读工具输出仍封顶。
                     const fold = foldLines(
                       content,
                       isSideEffect ? Number.POSITIVE_INFINITY : expandCap,
@@ -245,7 +246,7 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
       {capped && (
         <Box>
           <Gutter />
-          <Text dimColor>…还有 {hiddenTools} 个工具因终端预算折叠（Ctrl+O 展开 / /output 查看全文）</Text>
+          <Text dimColor>…还有 {hiddenTools} 个工具因终端预算折叠（Ctrl+O 展开 / Ctrl+T 查看全文）</Text>
         </Box>
       )}
     </Box>

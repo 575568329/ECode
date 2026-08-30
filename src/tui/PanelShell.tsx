@@ -57,6 +57,13 @@ export function rowText(label: ReactNode): string {
   return ''
 }
 
+/** F-48b：SGR 鼠标事件全形态识别（滚轮 64/65、按键 0-2、motion 32+；M 按下/m 释放）——
+ * 鼠标跟踪开启期间这些序列经 Ink 透传为 useInput 的 input 字符串，若不识别会被
+ * 搜索 catch-all 当可打印字符吃掉（真机实证：滚轮→搜索框出现 '[<65;21;8M'）。 */
+function isMouseInput(input: string): boolean {
+  return /^[<d+;d+;d+[Mm]$/.test(input)
+}
+
 export function PanelShell<T>({
   title,
   subtitle,
@@ -168,7 +175,15 @@ export function PanelShell<T>({
       } else if (key.ctrl && input === 'c') onCancel()
       return
     }
-    if (key.upArrow) {
+    // F-48：SGR 鼠标滚轮（Ink 透传形态 '[<64;y;xC' 上滚 / '[<65;y;xC' 下滚）→ 列表滚动。
+    // alt buffer 无原生滚轮，鼠标跟踪上报的序列若不接住会被尾部搜索 catch-all 当可打印
+    // 字符吃进搜索词（真机实证：滚一下搜索框出现 '[<65;21;8M'）
+    const wheel = /^\[<(\d+);\d+;\d+M$/.exec(input ?? '')
+    if (wheel !== null && (Number(wheel[1]) === 64 || Number(wheel[1]) === 65)) {
+      const up = Number(wheel[1]) === 64
+      if (up) setIdx(cursor <= 0 ? items.length - 1 : cursor - 1)
+      else setIdx(cursor >= items.length - 1 ? 0 : cursor + 1)
+    } else if (key.upArrow) {
       setIdx(cursor <= 0 ? items.length - 1 : cursor - 1)
     } else if (key.downArrow) {
       setIdx(cursor >= items.length - 1 ? 0 : cursor + 1)
@@ -186,8 +201,8 @@ export function PanelShell<T>({
       onCancel() // T4：面板期间 Ctrl+C = 退出面板（不中断 loop）
     } else if (key.backspace || key.delete) {
       setQuery((q) => q.slice(0, -1))
-    } else if (input !== '' && !key.ctrl && !key.meta && !key.return && !key.escape && !key.tab) {
-      setQuery((q) => q + input) // 即时搜索（可打印字符）
+    } else if (input !== '' && !key.ctrl && !key.meta && !key.return && !key.escape && !key.tab && !isMouseInput(input)) {
+      setQuery((q) => q + input) // 即时搜索（可打印字符；F-48 排除全部鼠标形态）
     }
   })
 

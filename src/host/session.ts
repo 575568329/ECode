@@ -860,6 +860,9 @@ export class HostSession {
           onIter: (i, m) => this.publish('thread/status', { busy: true, waitingOn: null, iter: i, maxIter: m } as Record<string, unknown>),
           onActivity: (state, text) => this.publish('activity', { state, text }),
           onWarn: (m) => this.publish('warn', { text: m }),
+          // error 级走 notice 常驻通道（TUI error 不自动过期；warn 帧是 12s 过期旧通道）——
+          // max_tokens 续写耗尽等「必须用户行动」的警告用（2026-08-30 对标批；曾随并行提交丢失重补）
+          onError: (m) => this.publish('notice', { level: 'error', text: m }),
         },
         providerReq,
         system,

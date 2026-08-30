@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { App } from './App.js'
 import { InputStream } from './InputStream.js'
+import { deriveLatestTodos, TodoPanel } from './TodoPanel.js'
 import { ErrorBanner } from './ErrorBanner.js'
 import { useInput, Text, Box } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
@@ -1451,6 +1452,16 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           ))}
         </Box>
       )}
+      {/* 任务清单常驻面板（2026-08-30 对标 CC/harness/opencode）：todo 清单不进对话流，
+          最新整表显示在输入区上方、默认展开；数据源=最近一次 todo 调用（active 优先→committed） */}
+      <TodoPanel
+        altMode={altActive}
+        todos={deriveLatestTodos([
+          // 倒序取最新：committed 历史在前、active（进行中的最新 todo 替换）在后压轴
+          ...committed.flatMap((c) => (c.kind === 'tool-group' ? c.calls.map((call) => ({ name: call.use.name, use: call.use })) : [])),
+          ...active.tools.map((t) => ({ name: t.name, use: t.use })),
+        ])}
+      />
       {/* F-48：alt 全屏面板期间 InputStream 保持挂载（草稿/历史位不丢）但 height 0 折叠
           + inactive 让出按键——面板独占键盘（架构审阅 P1-5） */}
       <Box height={altActive ? 0 : undefined}>

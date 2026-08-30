@@ -146,24 +146,8 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
               )}
               {tail && <Text color={tail.color}> {tail.sym}</Text>}
             </Box>
-            {isTodo && showFull && todoItems.length > 0 && (
-              // F-43：单 ⎿ + 内容列（CC MessageResponse 同构）——每行一个 Gutter 会满屏 ⎿
-              <Box>
-                <Gutter />
-                <Box flexDirection="column" flexShrink={1} flexGrow={1}>
-                  {todoItems.map((x, i) => (
-                    <Text
-                      key={i}
-                      color={x.status === 'in_progress' ? theme.info : undefined}
-                      bold={x.status === 'in_progress'}
-                    >
-                      {x.status === 'completed' ? '[x] ' : x.status === 'in_progress' ? '[->] ' : '[ ] '}
-                      {x.content}
-                    </Text>
-                  ))}
-                </Box>
-              </Box>
-            )}
+            {/* 2026-08-30：todo 清单移至输入区上方常驻面板（TodoPanel——对标 CC/harness/opencode
+                「清单不进 transcript」共识），对话流只留一行完成度摘要作时序痕迹 */}
             {hasOutput && (
               <Box flexDirection="column">
                 {showFull ? (

@@ -99,11 +99,6 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     run: () => ({ action: 'clear' }),
   })
   registry.register({
-    name: 'expand',
-    description: '展开/折叠工具输出',
-    run: () => ({ action: 'expand' }),
-  })
-  registry.register({
     name: 'model',
     description: '切换供应商/模型',
     run: () => ({ action: 'pick-model' }),

@@ -19,7 +19,7 @@ import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
-import { createActive, nextSingleExpand, type CommittedItem, type ActiveState } from './types.js'
+import { createActive, type CommittedItem, type ActiveState } from './types.js'
 import { messagesToCommitted } from './commit.js'
 import { buildSystemPrompt } from '../core/system.js'
 import { expandSkill, type SkillRegistry } from '../services/skill.js'
@@ -57,7 +57,7 @@ import { nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
 import type { SubagentStatus } from '../services/subagent.js'
 import { SubagentBar } from './SubagentBar.js'
 import { TasksBar } from './TasksBar.js'
-import { OutputListPage, OutputViewer, toolResultSource, taskFileSource, subagentSource, type OutputEntry, type RecentTool } from './OutputViewer.js'
+import { OutputListPage, OutputViewer, toolResultSource, taskFileSource, subagentSource, timelineSource, type OutputEntry, type RecentTool } from './OutputViewer.js'
 import { taskRegistry } from '../services/tasks.js'
 import { undoEcodeCommit } from '../services/git.js'
 import { readClipboardImage } from '../services/clipboard.js'
@@ -1051,28 +1051,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（二段启动，M4.1）
   }, [])
 
-  // Ctrl+O：toggle 当前轮工具展开/收起（只对有 use 的 done 工具）
-  const toggleExpand = () => {
-    setActive((a) => {
-      const dones = a.tools.filter((t) => t.use)
-      if (dones.length === 0) return a
-      const allExpanded = dones.every((t) => a.expandedTools.has(t.use!.id))
-      const next = new Set<string>(allExpanded ? [] : dones.map((t) => t.use!.id))
-      return { ...a, expandedTools: next }
-    })
-  }
-
-  // 界面批 B1：Ctrl+E 单工具级展开——在「未展开的工具」中循环展开下一个（再按展开下一个；
-  // 全展开后按=全收起重置）。与 Ctrl+O（组级全开/全收）互补：多工具轮里"看刚执行的这一个"。
-  // 展开行数仍入 V2 预算（ToolGroupView expandCap + Conversation 展开态 maxTools=min(cap,1) 钳制）
-  const expandNextTool = () => {
-    setActive((a) => ({ ...a, expandedTools: nextSingleExpand(a.tools, a.expandedTools) }))
-  }
+  // F-50 批 3：Ctrl+O/Ctrl+E 废除（用户拍板「会触碰超限问题，留着没用」）——全量查看
+  // 统一走 Ctrl+T 全屏面板（时间线视图按执行顺序展示全部流程，虚拟窗口渲染不卡）。
+  // expandedTools/nextSingleExpand 数据结构保留（历史兼容），仅入口拆除。
 
   useInput(
     (input, key) => {
-      if (key.ctrl && input === 'o') toggleExpand()
-      if (key.ctrl && input === 'e') expandNextTool()
       // F-46/F-48：Ctrl+T 双向 toggle——output 系面板开着时再按=退出（CC「进来的键就是
       // 出去的键」）；否则进入全屏面板（enterAltScreen 同步先于 setOverlay 的 React 提交，
       // 架构审阅 P0-3 时序铁律）
@@ -1085,7 +1069,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           const noAlt = process.env.ECODE_NO_ALT_SCREEN === '1' || (process.env.TMUX !== undefined && process.env.TMUX.startsWith('/') === false)
           if (!noAlt) enterAltScreen()
           altActiveRef.current = !noAlt
-          setOverlay({ kind: 'output-panel' })
+          // F-50：Ctrl+T 默认落地执行时间线（按执行顺序展示全部流程与模型路径）；
+          // l 键进来源列表（子代理/任务/单工具条目级查看）
+          const width = Math.max(10, (process.stdout.columns ?? 80) - 4)
+          setOverlay({
+            kind: 'output-view',
+            title: '执行时间线（全部流程）',
+            source: timelineSource(() => messagesRef.current, width),
+          })
         }
       }
     },
@@ -1164,6 +1155,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             }
           }}
           onExit={() => closeOutputPanel()}
+          currentSid={deps.history.currentSessionId()}
           altMode
         />
       )}
@@ -1172,8 +1164,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       )}
     </>
   ) : undefined
-
-  const hasDoneTool = active.tools.some((t) => t.use)
 
   // /model 可选项：providers 笛卡尔积（name × models），方案 §8.2
   const entries: ModelEntry[] = []
@@ -1193,7 +1183,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       active={active}
       altMode={altActive}
       altContent={altContent}
-      onToggleTool={hasDoneTool ? toggleExpand : undefined}
       onConfirm={clearConfirm}
       onCancel={clearConfirm}
       onDraftKey={handleConfirmDraftKey}
@@ -1204,7 +1193,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         void host.send({ op: 'interrupt' })
       }}
       activity={activity.state}
-      activityText={activity.text}
+      activityText={(() => {
+        // F-51：thinking 且有流式输出时显示已输出字数——极小终端一行也能知道在干什么（不黑盒）
+        if (activity.state === 'thinking' && active.streamingText !== '') {
+          return `输出中 ${active.streamingText.length} 字`
+        }
+        return activity.text
+      })()}
       running={running}
       queuedInterjects={queuedInterjects}
       mcp={mcpSegment}
@@ -1504,7 +1499,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         }}
         onCommand={(_cmd, result) => {
           if (result.action === 'expand') {
-            toggleExpand()
+            // F-50 批 3：Ctrl+O/E 废除后 expand 命令退役——全量查看统一 Ctrl+T
+            setSystemMsgs(['工具展开已并入 Ctrl+T 全屏面板（全量/可搜索）'], 'info')
             return
           }
           if (result.action === 'skill-panel') {

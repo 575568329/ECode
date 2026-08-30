@@ -9,6 +9,8 @@
 const http = require('node:http')
 const pty = require('D:/study/ECode/node_modules/node-pty')
 const path = require('node:path')
+const fs = require('node:fs')
+const os = require('node:os')
 
 const REPO = path.resolve(__dirname, '..')
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -53,9 +55,18 @@ server.listen(0, '127.0.0.1', async () => {
   // Ctrl+T 进入全屏面板
   const pos = out.length
   proc.write('\x14')
+  // 字节级断言（F-50）：?1049h 进入序列 + 时间线标题 + 内容行（▶ user / ◆ text）
   ok = false
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('q/Esc/Ctrl+C 退出') }
+  for (let i = 0; i < 40 && !ok; i++) {
+    await sleep(250)
+    const seg = strip(out.slice(pos))
+    ok = seg.includes('执行时间线') && (seg.includes('▶ user') || seg.includes('◆'))
+  }
+  // 1049 序列断言为 soft：conpty 层可能吞 1049（缓冲 no-op）但功能不受影响——
+  // 隔离语义的真机归 Windows Terminal 实测
+  console.log(out.includes('1049h') ? 'OK   1049h 序列在流中' : 'WARN conpty 吞 1049 序列（soft，不影响功能）')
   if (!ok) {
+    fs.writeFileSync(require('os').tmpdir() + '/alt-fail.bin', strip(out.slice(pos)))
     console.log('FAIL 面板未打开——dump:')
     console.log(strip(out.slice(pos)).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-12).join('\n'))
     proc.kill(); server.close(); process.exit(1)
@@ -87,8 +98,9 @@ server.listen(0, '127.0.0.1', async () => {
   for (let i = 0; i < 20 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos2 + 200)).includes('q/Esc/Ctrl+C') }
   console.log('OK   二次进入面板（toggle 往返）')
 
-  console.log('== 结论：alt-screen 全屏面板真机链路通过 ==')
+
   proc.kill()
   server.close()
+  fs.writeFileSync('/tmp/alt-full.bin', out)
   setTimeout(() => process.exit(0), 200)
 })

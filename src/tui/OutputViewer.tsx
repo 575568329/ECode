@@ -122,6 +122,40 @@ export function taskFileSource(taskId: string, width: number): LineSource {
   }
 }
 
+  /** F-50：执行时间线——全部对话按执行顺序线性展示（用户消息/模型文本/工具调用+结果摘要，
+   *  web 端对话页同构）。Ctrl+T 默认落地视图：看完整执行顺序与模型思考路径。
+   *  虚拟化：OutputViewer 本身固定窗 slice（只渲 offset..height）——本源负责「格式化缓存」：
+   *  transcript 只追加（条数+末条长度+width 为缓存键），滚动 offset 变化不触发重算。 */
+export function timelineSource(getMessages: () => readonly unknown[], width: number): LineSource {
+  let cache: { count: number; lastLen: number; width: number; lines: string[] } | null = null
+  const readLines = (): string[] => {
+    const msgs = getMessages()
+    const lastLen = msgs.length > 0 ? JSON.stringify(msgs[msgs.length - 1]).length : 0
+    if (cache !== null && cache.count === msgs.length && cache.lastLen === lastLen && cache.width === width) {
+      return cache.lines
+    }
+    const out: string[] = []
+    for (const m of msgs) {
+      for (const logical of formatAgentLine(JSON.stringify(m), width)) {
+        for (const [i, w] of wrapAll(stripUntrustedAnsi(logical), Math.max(10, width - 2)).entries()) {
+          out.push(i === 0 ? w : '  ' + w)
+        }
+      }
+    }
+    cache = { count: msgs.length, lastLen, width, lines: out }
+    return out
+  }
+  return {
+    lines: readLines,
+    isGrowing: () => true, // 对话持续增长——follow 跟随到底部
+    subscribe: (cb) => {
+      const timer = setInterval(cb, 800)
+      timer.unref?.()
+      return () => clearInterval(timer)
+    },
+  }
+}
+
   /** ③ 子代理 transcript：~/.ecode/agents/<id>.jsonl（只读快照）。
    *  F-46：运行期可见——文件含两类行：事件行（kind=meta/tool_start/tool_result/warn，
    *  子代理执行中逐条追加）与终态 messages 行（结束后全量重写）。渲染统一格式化为
@@ -311,11 +345,25 @@ interface OutputViewerProps {
   onBack: () => void
   /** F-48：alt-screen 全屏模式——总帧高恒 rows−2（满屏分支/win32 每帧全清的规避，架构审阅 P0-1），chrome 收起 */
   altMode?: boolean
+  /** F-50：l 键打开来源列表（OutputListPage）——时间线内跳转子代理/任务详情 */
+  onList?: () => void
 }
 
 /** 搜索态：null=未搜索；string=已确认词（n/N 跳转） */
-export function OutputViewer({ title, source, onBack, altMode }: OutputViewerProps): ReactElement {
+const WHEEL_ACCEL_WINDOW_MS = 200
+const WHEEL_ACCEL_STEP = 0.3
+const WHEEL_ACCEL_MAX = 6
+
+function wheelBaseSpeed(): number {
+  const v = Number(process.env.ECODE_SCROLL_SPEED)
+  return Number.isFinite(v) && v > 0 ? v : 1
+}
+
+export function OutputViewer({ title, source, onBack, altMode, onList }: OutputViewerProps): ReactElement {
   const { budget, rows } = useViewport()
+  // F-51：滚轮加速状态（ref 免重渲）；基础倍率=E CODE_SCROLL_SPEED 旋钮（默认 1，
+  // 对齐 CC CLAUDE_CODE_SCROLL_SPEED）
+  const wheelAccelRef = useRef({ last: 0, dir: 0, mult: wheelBaseSpeed() })
   // 内容窗高度（审阅 P0-2 修正）：帧高账目 = 面板（height + 骨架实占 5：marginTop1+边框2+
   // 标题1+状态1；搜索行出现时 +1）+ App 外部骨架 3（ActivityBar1+输入行1+StatusBar1）
   // ≤ budget（= rows−2，SAFETY_MARGIN 已在其中）。即 height ≤ budget−8；搜索行常驻留量
@@ -402,14 +450,27 @@ export function OutputViewer({ title, source, onBack, altMode }: OutputViewerPro
       return
     }
     // F-48：滚轮（SGR 64=上滚 65=下滚；只认 M 按下帧）→ 行级滚动
+    // F-51：滚轮（SGR 64=上滚 65=下滚）——CC 同款加速：基础 1 行/事件（终端每格滚轮
+    // 本就发对应数量的事件：WT 一格 3 事件=3 行、xterm.js 一格 1 事件），40ms 内连续
+    // 滚动乘数 +0.3 递增至上限 6；反向/停手（>200ms）重置。ECODE_SCROLL_SPEED 旋钮
+    // 调整基础倍率（对齐 CC CLAUDE_CODE_SCROLL_SPEED）。替代批 2 的固定 ±3 拍板值。
     const wheel = /^\[<(\d+);\d+;\d+M$/.exec(input ?? '')
-    if (wheel !== null) {
-      const btn = Number(wheel[1])
-      if (btn === 64) {
+    if (wheel !== null && (Number(wheel[1]) === 64 || Number(wheel[1]) === 65)) {
+      const dir = Number(wheel[1]) === 64 ? -1 : 1
+      const now = Date.now()
+      const st = wheelAccelRef.current
+      if (now - st.last > WHEEL_ACCEL_WINDOW_MS || st.dir !== dir) {
+        st.mult = wheelBaseSpeed()
+        st.dir = dir
+      } else {
+        st.mult = Math.min(WHEEL_ACCEL_MAX, st.mult + WHEEL_ACCEL_STEP)
+      }
+      st.last = now
+      if (dir < 0) {
         setFollowed(false)
-        setOffset((o) => Math.max(0, o - 3))
-      } else if (btn === 65) {
-        setOffset((o) => Math.min(Math.max(0, total - height), o + 3))
+        setOffset((o) => Math.max(0, o - Math.max(1, Math.floor(st.mult))))
+      } else {
+        setOffset((o) => Math.min(Math.max(0, total - height), o + Math.max(1, Math.floor(st.mult))))
       }
       return
     }
@@ -417,6 +478,11 @@ export function OutputViewer({ title, source, onBack, altMode }: OutputViewerPro
     // 退出后 Ctrl+C 即中断，一次按键成本；避免与中断语义双吃）
     if (key.ctrl && input === 'c' || input === 'q') {
       onBack()
+      return
+    }
+    // F-50：l 打开来源列表（子代理/任务/工具条目级选择）
+    if (input === 'l' && onList !== undefined) {
+      onList()
       return
     }
     if (key.escape) {
@@ -468,7 +534,8 @@ export function OutputViewer({ title, source, onBack, altMode }: OutputViewerPro
   const statusParts = [`L${offset + 1}-L${Math.min(total, offset + height)} / ${total}`]
   if (source.isGrowing()) statusParts.push(followed ? '[F]跟随中' : '[F]跟随(off)')
   if (matches !== null) statusParts.push(`匹配 ${matches.length}${query !== '' ? ` "/${query}"` : ''}`)
-  statusParts.push('↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · Esc 返回')
+  // F-50：l 进来源列表（时间线视图内跳转子代理/任务详情）
+  statusParts.push('↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · l 列表 · Esc 返回')
 
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor={theme.border} paddingX={1}>

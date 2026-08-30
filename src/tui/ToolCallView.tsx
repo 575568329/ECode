@@ -48,7 +48,6 @@ export function ToolCallView({ entry, expanded }: ToolCallViewProps): ReactEleme
           <Text color={markColor}>{symbols.tool}</Text>
         </Box>
         <Text bold color={theme.tool}>
-          {' '}
           {s.name}
         </Text>
         {s.inputDigest !== '' && <Text dimColor> {s.inputDigest}</Text>}

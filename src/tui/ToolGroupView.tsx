@@ -86,8 +86,9 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
         <Box minWidth={INDENT.icon}>
           <Text color={theme.tool}>{symbols.tool}</Text>
         </Box>
+        {/* 2026-08-29 用户点名：图标槽后不得再垫字面量空格——● 槽 2 列后内容恒从第 2 列起
+            （「个工具」与文件名列表之间的分隔空格保留，那是行内语义间距非栅格） */}
         <Text bold color={theme.tool}>
-          {' '}
           {count} 个工具
         </Text>
         <Text dimColor>

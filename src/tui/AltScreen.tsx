@@ -18,7 +18,11 @@
 import { useInsertionEffect } from 'react'
 import { writeSync } from 'node:fs'
 
-const ENTER = '\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h'
+/** 进缓冲：1049h 自带「切 alt+清 alt」语义；其后不再补 2J——真机实测（Windows Terminal
+ *  1.24/conpty，2026-08-30 项 8）：conpty 不支持 alt buffer 时会把进入序列扁平化到主缓冲，
+ *  跟在后面的 2J 就直接清掉主屏 scrollback（面板前内容不可恢复）。去掉后：真支持 1049 的
+ *  终端行为不变（1049h 已清 alt），扁平化终端保住 scrollback（主屏仅留 1-2 行退出即恢复的残影）。 */
+const ENTER = '\x1b[?1049h\x1b[H\x1b[?1000h\x1b[?1006h'
 const EXIT = '\x1b[?1000l\x1b[?1006l\x1b[?1049l'
 
 /** 模块级激活标志：幂等（树内安全网与事件处理器双入口不重复写序列）+exit 兜底判据 */

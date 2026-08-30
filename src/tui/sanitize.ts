@@ -29,11 +29,11 @@ export function stripUntrustedAnsi(text: string): string {
   while (i < n) {
     const ch = text[i]!
     if (ch !== '\x1b') {
-      // 非 ESC：C0/C1 控制剥（\n 保留、\t 展开空格），其余原样
+      // 非 ESC：C0/C1 控制剥（\n 保留、\t 展开空格、DEL 0x7f 剥——审阅项 2），其余原样
       const code = ch.charCodeAt(0)
       if (code === 0x0a) out += '\n'
       else if (code === 0x09) out += '    '
-      else if (code >= 0x20 && !(code >= 0x80 && code <= 0x9f)) out += ch
+      else if (code >= 0x20 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f)) out += ch
       i++
       continue
     }
@@ -42,7 +42,9 @@ export function stripUntrustedAnsi(text: string): string {
     if (next === '[') {
       // CSI：扫描到 final(0x40-0x7e)。SGR（final 'm' 且参数仅 0-9;:，无私有前缀）放行——
       // 颜色是内容可读性的一部分（F-50 轻量 markdown），Ink 内置净化同样保留 SGR；
-      // 其余 CSI（1049/1000/2J/光标移动等）全部剥
+      // 其余 CSI（1049/1000/2J/光标移动等）全部剥。
+      // 审阅项 2：参数扫描加 64 字节上限——截断的 CSI（无 final）原实现吞到串尾，
+      // 攻击者可用它把后续正文整段「化妆性删除」；超限按垃圾吞掉已扫部分继续。
       i += 2
       let params = ''
       let finalByte = ''
@@ -54,10 +56,14 @@ export function stripUntrustedAnsi(text: string): string {
           i++
           break
         }
+        if (params.length >= 64) {
+          finalByte = ''
+          break
+        }
         params += ch
         i++
       }
-      if (finalByte === 'm' && /^[0-9;:]*$/.test(params)) out += `[${params}m`
+      if (finalByte === 'm' && /^[0-9;:]*$/.test(params)) out += '\x1b[' + params + 'm'
       continue
     }
     if (next === ']' || next === 'P' || next === 'X' || next === '^' || next === '_') {
@@ -80,6 +86,14 @@ export function stripUntrustedAnsi(text: string): string {
       if (!terminated) i = n
       continue
     }
+    if (next >= '\x20' && next <= '\x2f') {
+      // 审阅项 2：ESC + 中间字节序列（ESC ( B 字符集指定 / ESC % G 编码等）——
+      // 原实现只吞 2 字节，final 落为正文残留。吞 ESC+全部中间字节+1 个 final
+      i += 2
+      while (i < n && text[i]! >= '\x20' && text[i]! <= '\x2f') i++
+      if (i < n) i++
+      continue
+    }
     if (next !== '') {
       // ESC 单字符序列（ESC 7/8/c/=/＞ 等）：吞 ESC+1 字节
       i += 2
@@ -89,4 +103,58 @@ export function stripUntrustedAnsi(text: string): string {
     i++
   }
   return out
+}
+
+/** pending 积压上限（恶意无终结 OSC 的跨 chunk 内存防线）：超限强制按丢弃 flush */
+const STRIPPER_PENDING_CAP = 8192
+
+/** 尾段（以 ESC 开头）是否已构成完整序列——stripper 判定「留在 pending 等下一块」用 */
+function escapeComplete(tail: string): boolean {
+  const next = tail.length > 1 ? tail[1]! : ''
+  if (next === '[') {
+    // CSI：前 64 字节内出现 final 即完整
+    for (let i = 2; i < tail.length && i < 66; i++) {
+      const c = tail.charCodeAt(i)
+      if (c >= 0x40 && c <= 0x7e) return true
+    }
+    return false
+  }
+  if (next === ']' || next === 'P' || next === 'X' || next === '^' || next === '_') {
+    // OSC/DCS 族：出现 BEL 或 ESC\ 即完整
+    return /(\x07|\x1b\\)/.test(tail)
+  }
+  if (next >= '\x20' && next <= '\x2f') {
+    // 中间字节序列：出现 final（0x30-0x7e）即完整
+    for (let i = 2; i < tail.length; i++) {
+      const c = tail.charCodeAt(i)
+      if (c >= 0x30 && c <= 0x7e) return true
+    }
+    return false
+  }
+  return tail.length >= 2 // ESC 单字符序列
+}
+
+/**
+ * 可恢复净化器（项 1，流式接入）：转义序列可能被 delta 切成两半（'[' 在上一块、
+ * 'm' 在下一块）——每次 push 把尾部疑似半截序列扣留在 pending，与下一块拼接后处理。
+ * 输出语义与 stripUntrustedAnsi 完全一致（含 SGR 放行），另保证拼接路径下跨块序列
+ * 同样被正确剥除/放行。恶意积压防线：pending 超 8KB 强制丢弃。
+ */
+export function createAnsiStripper(): { push(chunk: string): string } {
+  let pending = ''
+  return {
+    push(chunk: string): string {
+      let text = pending + chunk
+      pending = ''
+      const lastEsc = text.lastIndexOf('\x1b')
+      if (lastEsc >= 0) {
+        const tail = text.slice(lastEsc)
+        if (!escapeComplete(tail)) {
+          text = text.slice(0, lastEsc)
+          if (tail.length <= STRIPPER_PENDING_CAP) pending = tail
+        }
+      }
+      return stripUntrustedAnsi(text)
+    },
+  }
 }

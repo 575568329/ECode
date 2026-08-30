@@ -72,13 +72,18 @@ export interface RecentTool {
   truncated?: boolean
 }
 
-export function toolResultSource(getTool: () => RecentTool | undefined, width: number): LineSource {
+/** 面板折行宽度（项 4：resize 实时跟随——各源 lines() 内每次取，缓存按 width 校验自动重建） */
+export function panelWidth(): number {
+  return Math.max(10, (process.stdout.columns ?? 80) - 4)
+}
+
+export function toolResultSource(getTool: () => RecentTool | undefined, getWidth: () => number): LineSource {
   return {
     lines: () => {
       const t = getTool()
       if (t === undefined) return []
       // F-47：不可信内容净化在 cachedWrap 之前（strip 改变长度，事后剥破坏 len 校验）
-      return cachedWrap(`tool:${t.itemId}`, stripUntrustedAnsi(t.content), width)
+      return cachedWrap(`tool:${t.itemId}`, stripUntrustedAnsi(t.content), getWidth())
     },
     isGrowing: () => false,
   }
@@ -86,7 +91,7 @@ export function toolResultSource(getTool: () => RecentTool | undefined, width: n
 
 /** ② 后台任务日志：读 outputFile 全量 + mtime 轮询增量通知。
  *  边界：TaskRegistry dispose 会 unlink 日志——只能 attach 现存任务（文件没了显示空）。 */
-export function taskFileSource(taskId: string, width: number): LineSource {
+export function taskFileSource(taskId: string, getWidth: () => number): LineSource {
   const snap = taskRegistry.snapshot().find((t) => t.id === taskId)
   const file = snap?.outputFile ?? ''
   const growing = snap?.status === 'running'
@@ -95,7 +100,7 @@ export function taskFileSource(taskId: string, width: number): LineSource {
     try {
       // 审阅 P1-6：cachedWrap（内容长度校验——日志追加自然 miss 重建）
       // F-47：净化在 wrap 之前（同上）
-      return cachedWrap(`task:${taskId}`, stripUntrustedAnsi(readFileSync(file, 'utf8')), width)
+      return cachedWrap(`task:${taskId}`, stripUntrustedAnsi(readFileSync(file, 'utf8')), getWidth())
     } catch {
       return []
     }
@@ -127,10 +132,10 @@ export function taskFileSource(taskId: string, width: number): LineSource {
    *  虚拟化：OutputViewer 本身固定窗 slice（只渲 offset..height）——本源负责「格式化缓存」：
    *  审阅 P2 改逐消息缓存（WeakMap 按消息对象身份——transcript 只追加、历史消息引用稳定），
    *  新消息到达只格式化增量；滚动 offset 变化/按键重渲不触发任何重算。 */
-export function timelineSource(getMessages: () => readonly unknown[], width: number): LineSource {
+export function timelineSource(getMessages: () => readonly unknown[], getWidth: () => number): LineSource {
   const perMsg = new WeakMap<object, { width: number; lines: string[] }>()
   let cache: { count: number; lastKey: unknown; width: number; lines: string[] } | null = null
-  const formatMsg = (m: unknown): string[] => {
+  const formatMsg = (m: unknown, width: number): string[] => {
     // WeakMap 键必须对象——畸形行（原始字符串等）直格式化不缓存（审阅 D4 补测抓出）
     const cacheable = m !== null && typeof m === 'object'
     if (cacheable) {
@@ -147,13 +152,14 @@ export function timelineSource(getMessages: () => readonly unknown[], width: num
     return lines
   }
   const readLines = (): string[] => {
+    const width = getWidth() // 项 4：resize 实时跟随（缓存按 width 校验自动重建）
     const msgs = getMessages()
     const last = msgs.at(-1)
     if (cache !== null && cache.count === msgs.length && cache.lastKey === last && cache.width === width) {
       return cache.lines
     }
     const out: string[] = []
-    for (const m of msgs) out.push(...formatMsg(m))
+    for (const m of msgs) out.push(...formatMsg(m, width))
     cache = { count: msgs.length, lastKey: last, width, lines: out }
     return out
   }
@@ -172,12 +178,13 @@ export function timelineSource(getMessages: () => readonly unknown[], width: num
    *  F-46：运行期可见——文件含两类行：事件行（kind=meta/tool_start/tool_result/warn，
    *  子代理执行中逐条追加）与终态 messages 行（结束后全量重写）。渲染统一格式化为
    *  人读行；isGrowing=true + mtime 轮询 subscribe——运行中每 500ms 检查增长自动刷新。 */
-export function subagentSource(agentId: string, width: number): LineSource {
+export function subagentSource(agentId: string, getWidth: () => number): LineSource {
   const file = join(homedir(), '.ecode', 'agents', `${agentId}.jsonl`)
   // 审阅 T4：mtime+size 校验缓存——原实现每次渲染全量读盘+逐行 JSON.parse+format+wrap
   // （兄弟源都走 cachedWrap，性能红线自违反）；运行期文件追加 mtime/size 必变自然失效
   let cache: { mtimeMs: number; size: number; width: number; lines: string[] } | null = null
   const readLines = (): string[] => {
+    const width = getWidth() // 项 4：resize 实时跟随
     let st: { mtimeMs: number; size: number }
     try {
       const s = statSync(file)
@@ -268,22 +275,73 @@ export function formatAgentLine(line: string, width: number): string[] {
   if (role === 'assistant') {
     const c = j.content as Array<{ type?: string; text?: string; name?: string }> | undefined
     if (!Array.isArray(c)) return []
-    return c.map((b) => {
-      if (b.type === 'text') return `◆ ${mdInline(preview(b.text, 300))}`
-      if (b.type === 'tool_use') return `  ⚙ ${String(b.name)}`
-      return `  · ${String(b.type ?? '')}`
+    // 项 9：text 块走块级 markdown（◆ 前缀首行、续行缩进 2 对齐 ⚙ 层级）；
+    // 字符上限 4000（保留代码块/段落结构——旧 preview(300) 的空白压平会摧毁块结构）
+    return c.flatMap((b) => {
+      if (b.type === 'text') {
+        const raw = String(b.text ?? '')
+        const clipped = raw.length > 4000 ? raw.slice(0, 4000) : raw
+        return mdBlock(clipped).map((l, i) => (i === 0 ? `◆ ${l}` : `  ${l}`))
+      }
+      if (b.type === 'tool_use') return [`  ⚙ ${String(b.name)}`]
+      return [`  · ${String(b.type ?? '')}`]
     })
   }
   return [line.slice(0, width)]
 }
 
-/** F-50b：行内轻量 markdown——**粗体** 与 \`行内代码\` 上色（SGR 通道已放行）。
- *  块级结构（代码块/表格）不做完整渲染（虚拟行列表约束），保持缩进形态。 */
+/** F-50b：行内轻量 markdown——**粗体** 与 \`行内代码\` 上色（SGR 通道已放行）。 */
 function mdInline(text: string): string {
   const ESC = String.fromCharCode(27)
   return text
     .replace(/\*\*([^*]+)\*\*/g, `${ESC}[1m$1${ESC}[22m`)
     .replace(/`([^`]+)`/g, `${ESC}[36m$1${ESC}[0m`)
+}
+
+/** 项 9（方案 A 二期）：块级 markdown——把一条 assistant 文本格式化为多逻辑行。
+ *  支持块级：围栏代码块（dim+缩进，遵 F-42「代码块无边框」口味）/ 标题（加粗）/
+ *  引用（dim+│ 前缀）/ 无序列表（•）；行内沿用 mdInline。仅产 SGR（净化白名单放行）。
+ *  超过 maxLines 行截断并给计数提示行（时间线/subagent 视图都是虚拟窗口，行数安全）。 */
+export function mdBlock(text: string, maxLines = 60): string[] {
+  const ESC = String.fromCharCode(27)
+  const DIM = `${ESC}[2m`
+  const BOLD = `${ESC}[1m`
+  const OFF = `${ESC}[22m`
+  const out: string[] = []
+  let inCode = false
+  const src = text.split('\n')
+  for (const raw of src) {
+    if (out.length >= maxLines) {
+      out.push(`${DIM}⋯ 还有 ${src.length - maxLines} 行${OFF}`)
+      return out
+    }
+    if (/^\s*```/.test(raw)) {
+      inCode = !inCode
+      out.push(`${DIM}${raw.trim()}${OFF}`)
+      continue
+    }
+    if (inCode) {
+      out.push(`  ${DIM}${raw}${OFF}`)
+      continue
+    }
+    const heading = /^#{1,6}\s+(.*)$/.exec(raw)
+    if (heading !== null) {
+      out.push(`${BOLD}${heading[1]}${OFF}`)
+      continue
+    }
+    const quote = /^\s*>\s?(.*)$/.exec(raw)
+    if (quote !== null) {
+      out.push(`${DIM}│ ${quote[1]}${OFF}`)
+      continue
+    }
+    const bullet = /^(\s*)[-*]\s+(.*)$/.exec(raw)
+    if (bullet !== null) {
+      out.push(`${bullet[1]}• ${mdInline(bullet[2])}`)
+      continue
+    }
+    out.push(mdInline(raw))
+  }
+  return out
 }
 
 /** 列出可查看的子代理 transcript 文件（id + mtime + 首行摘要，新→旧）。
@@ -414,6 +472,12 @@ const WHEEL_ACCEL_WINDOW_MS = 200
 const WHEEL_ACCEL_STEP = 0.3
 const WHEEL_ACCEL_MAX = 6
 
+/** 项 3：时钟可注入（加速窗口判定测试用假时钟；生产恒 Date.now） */
+let wheelClock: () => number = () => Date.now()
+export function __setWheelClockForTest(fn: () => number): void {
+  wheelClock = fn
+}
+
 function wheelBaseSpeed(): number {
   const v = Number(process.env.ECODE_SCROLL_SPEED)
   return Number.isFinite(v) && v > 0 ? v : 1
@@ -519,7 +583,7 @@ export function OutputViewer({ title, source, onBack, altMode, onList }: OutputV
     const wheel = /^\[<(\d+);\d+;\d+M$/.exec(input ?? '')
     if (wheel !== null && (Number(wheel[1]) === 64 || Number(wheel[1]) === 65)) {
       const dir = Number(wheel[1]) === 64 ? -1 : 1
-      const now = Date.now()
+      const now = wheelClock()
       const st = wheelAccelRef.current
       if (now - st.last > WHEEL_ACCEL_WINDOW_MS || st.dir !== dir) {
         st.mult = wheelBaseSpeed()
@@ -597,10 +661,15 @@ export function OutputViewer({ title, source, onBack, altMode, onList }: OutputV
   if (source.isGrowing()) statusParts.push(followed ? '[F]跟随中' : '[F]跟随(off)')
   if (matches !== null) statusParts.push(`匹配 ${matches.length}${query !== '' ? ` "/${query}"` : ''}`)
   // F-50：l 进来源列表（时间线视图内跳转子代理/任务详情）——审阅 P2：仅在 onList 接线时提示
-  // （曾是死键恒提示）；整行按显示宽度截断（窄终端 wrap 会再 +1 行叠进帧账）
-  const hint = onList !== undefined
-    ? '↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · l 列表 · Esc 返回'
-    : '↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · Esc 返回'
+  // （曾是死键恒提示）；整行按显示宽度截断（窄终端 wrap 会再 +1 行叠进帧账）。
+  // 项 5：alt 全屏期间鼠标被面板捕获——明示「退出恢复拖选复制」（用户曾困惑复制失效）
+  const hint = altMode === true
+    ? (onList !== undefined
+        ? '↑↓/滚轮 行滚 · /搜索 · l 列表 · Esc 退出（恢复拖选复制）'
+        : '↑↓ 行滚 · /搜索 · Esc 退出（恢复拖选复制）')
+    : (onList !== undefined
+        ? '↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · l 列表 · Esc 返回'
+        : '↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · Esc 返回')
   statusParts.push(clipWidth(hint, Math.max(20, columns - 4)))
 
   return (
@@ -711,7 +780,7 @@ export function OutputListPage({ recentTools, onOpen, onExit, altMode, currentSi
       onPick={onOpen}
       onCancel={onExit}
       emptyHint="暂无可查看的输出（工具调用/后台任务/子代理）"
-      keyHints={altMode === true ? '↑↓ 选择 · 回车 查看 · q/Esc/Ctrl+C 退出' : '↑↓ 选择 · 回车 查看 · Esc 返回'}
+      keyHints={altMode === true ? '↑↓ 选择 · 回车 查看 · q/Esc 退出（恢复拖选复制）' : '↑↓ 选择 · 回车 查看 · Esc 返回'}
     />
   )
 }

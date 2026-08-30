@@ -3,7 +3,7 @@
  * 每条断言对应一个真实攻击向量（详见同批安全审阅）。
  */
 import { describe, it, expect } from 'vitest'
-import { stripUntrustedAnsi } from '../../src/tui/sanitize.js'
+import { stripUntrustedAnsi, createAnsiStripper } from '../../src/tui/sanitize.js'
 
 describe('stripUntrustedAnsi（alt 面板不可信内容净化）', () => {
   it('1049l 逃逸（退出 alt screen 伪造主界面）被剥', () => {
@@ -48,5 +48,40 @@ describe('stripUntrustedAnsi（alt 面板不可信内容净化）', () => {
     expect(stripUntrustedAnsi('\x1b[31m红\x1b[0m文本')).toBe('\x1b[31m红\x1b[0m文本')
     expect(stripUntrustedAnsi('\x1b[?1049h文本')).toBe('文本') // 非 SGR CSI 仍剥
     expect(stripUntrustedAnsi('\x1b[2J文本')).toBe('文本')
+  })
+})
+
+describe('审阅项 2：净化器三小漏洞补全', () => {
+  it('DEL(0x7f) 控制字符剥除（原透传）', () => {
+    expect(stripUntrustedAnsi('a\x7fb')).toBe('ab')
+  })
+  it('ESC+中间字节序列（字符集指定 ESC ( B）整段剥净（原 final 落为正文）', () => {
+    expect(stripUntrustedAnsi('x\x1b(By')).toBe('xy')
+    expect(stripUntrustedAnsi('x\x1b%Gz')).toBe('xz')
+  })
+  it('截断 CSI 参数超上限：不再吞到串尾，后续正文保留', () => {
+    expect(stripUntrustedAnsi('A\x1b[9999;9999;9999;9999;9999;9999BEND')).toBe('AEND')
+  })
+})
+
+describe('审阅项 1：createAnsiStripper（跨 delta 流式净化）', () => {
+  it('CSI 序列跨 chunk：半截扣留不落正文，危险 CSI 拼接后剥除', () => {
+    const s = createAnsiStripper()
+    expect(s.push('ok\x1b[2')).toBe('ok') // 半截扣留，本轮无输出
+    expect(s.push('J危险')).toBe('危险') // 拼回后 2J 整体剥除
+  })
+  it('SGR 跨 chunk：拼接后照常放行（着色通道不因流式受损）', () => {
+    const s = createAnsiStripper()
+    expect(s.push('\x1b[1m') + s.push('粗\x1b[22m')).toBe('\x1b[1m粗\x1b[22m')
+  })
+  it('OSC 跨 chunk：无终结符等待 BEL，拼接后整体剥除', () => {
+    const s = createAnsiStripper()
+    expect(s.push('\x1b]0;evil')).toBe('')
+    expect(s.push('\x07after')).toBe('after')
+  })
+  it('尾部孤立 ESC：扣留待下一块，正文不受污染', () => {
+    const s = createAnsiStripper()
+    expect(s.push('尾\x1b')).toBe('尾')
+    expect(s.push('7继续')).toBe('继续') // ESC 7 单字符序列剥，正文保留
   })
 })

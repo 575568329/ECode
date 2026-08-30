@@ -81,6 +81,11 @@ server.listen(0, '127.0.0.1', async () => {
   const firstPanelText = seg.indexOf('输出查看')
   console.log(enterIdx >= 0 ? 'OK   1049h 进入序列出现' : 'WARN conpty 未透传 1049h（soft assert——序列存在性归真机门）')
   console.log(enterIdx >= 0 && firstPanelText > enterIdx ? 'OK   面板文本在进入序列之后（内容归属正确）' : 'WARN 文本归属无法静态断言')
+  // 真机门发现回归锁（2026-08-30 项 8）：ENTER 序列禁带 2J——conpty 扁平化 1049 的终端上
+  // 尾随 2J 直接清掉主屏 scrollback（面板前内容不可恢复）。1049h 语义已自带清 alt。
+  const enterSeq = seg.slice(Math.max(0, enterIdx), enterIdx + 48).replace(/[\r\n]/g, '')
+  // 注：\x1b[H 会被 conpty 吞掉（自管光标），只断言「无 2J」这个核心安全性质
+  console.log(!/1049h\x1b\[2J/.test(enterSeq) ? 'OK   进入序列无尾随 2J（scrollback 保全）' : 'FAIL 进入序列带 2J：' + JSON.stringify(enterSeq.slice(0, 24)))
   const altSeg = seg.slice(enterIdx >= 0 ? enterIdx : 0)
   const leaked = /输入消息，\/help/.test(strip(altSeg.slice(0, altSeg.indexOf('1049l') >= 0 ? altSeg.indexOf('1049l') : undefined)))
   console.log(leaked ? 'FAIL alt 段内出现主 UI 文本（泄漏）' : 'OK   alt 段内无主 UI 文本泄漏')

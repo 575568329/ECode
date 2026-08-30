@@ -58,13 +58,14 @@ import { nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
 import type { SubagentStatus } from '../services/subagent.js'
 import { SubagentBar } from './SubagentBar.js'
 import { TasksBar } from './TasksBar.js'
-import { OutputListPage, OutputViewer, toolResultSource, taskFileSource, subagentSource, timelineSource, type OutputEntry, type RecentTool } from './OutputViewer.js'
+import { OutputListPage, OutputViewer, panelWidth, toolResultSource, taskFileSource, subagentSource, timelineSource, type OutputEntry, type RecentTool } from './OutputViewer.js'
 import { taskRegistry } from '../services/tasks.js'
 import { undoEcodeCommit } from '../services/git.js'
 import { readClipboardImage } from '../services/clipboard.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, NOTICE_TTL_MS, type NoticeItem, type NoticeLevel } from './notices.js'
 import { theme } from './theme.js'
 import { enterAltScreen, exitAltScreen, AltScreen } from './AltScreen.js'
+import { createAnsiStripper } from './sanitize.js'
 import { allocateDynamic, useViewport } from './viewport.js'
 import type { ReactNode } from 'react'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
@@ -301,6 +302,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     setOverlay(null)
   }
   const [active, setActive] = useState<ActiveState>(() => createActive())
+  // 项 1（审阅挂账）：流式文本的净化器——转义序列可能被 delta 切成两半，stripper 跨块
+  // 扣留半截序列；新轮 submit 时重置。净化后的文本仅作 UI 显示（transcript 原文不动，
+  // Static 固化另有 commit.ts strip 兜底）
+  const streamStripperRef = useRef(createAnsiStripper())
   const [activity, setActivity] = useState<{ state: ActivityState; text?: string }>({
     state: 'idle',
   })
@@ -442,7 +447,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     const unsub = host.subscribe((ev) => {
       switch (ev.type) {
         case 'delta':
-          setActive((a) => ({ ...a, streamingText: a.streamingText + ev.text }))
+          setActive((a) => ({ ...a, streamingText: a.streamingText + streamStripperRef.current.push(ev.text) }))
           break
         case 'item/started':
           // 审阅 P2：时间线源（Ctrl+T）读 messagesRef——仅轮末同步时 busy 中看不到当前轮；
@@ -690,6 +695,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     pendingImagesRef.current = []
     setPendingImages([])
     setActive({ ...createActive(), userInput: display ?? input, streaming: true })
+    streamStripperRef.current = createAnsiStripper() // 新轮重置（半截序列不跨轮）
     setError(null)
     setActivity({ state: 'thinking' })
     const r = await host.send({
@@ -1098,11 +1104,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           altActiveRef.current = !NO_ALT_SCREEN
           // F-50：Ctrl+T 默认落地执行时间线（按执行顺序展示全部流程与模型路径）；
           // l 键进来源列表（子代理/任务/单工具条目级查看）
-          const width = Math.max(10, (process.stdout.columns ?? 80) - 4)
           setOverlay({
             kind: 'output-view',
             title: '执行时间线（全部流程）',
-            source: timelineSource(() => messagesRef.current, width),
+            // 项 4：width getter 化——面板内 resize 折行宽度实时跟随（缓存按 width 自动重建）
+            source: timelineSource(() => messagesRef.current, panelWidth),
           })
         }
       }
@@ -1164,23 +1170,21 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         <OutputListPage
           recentTools={recentTools}
           onOpen={(entry: OutputEntry) => {
-            const cols = process.stdout.columns ?? 80
-            const width = Math.max(10, cols - 4)
             if (entry.kind === 'tool') {
               setOverlay({
                 kind: 'output-view',
                 title: `${entry.tool.name}（${entry.tool.itemId}）${entry.tool.truncated === true ? ' 〔截断，补全中〕' : ''}`,
-                source: toolResultSource(() => recentToolsRef.current.find((t) => t.itemId === entry.tool.itemId), width),
+                source: toolResultSource(() => recentToolsRef.current.find((t) => t.itemId === entry.tool.itemId), panelWidth),
               })
             } else if (entry.kind === 'task') {
               const snap = taskRegistry.snapshot().find((t) => t.id === entry.id)
               setOverlay({
                 kind: 'output-view',
                 title: `task ${entry.id}：${snap?.command.slice(0, 50) ?? ''}（${snap?.status ?? '?'}）`,
-                source: taskFileSource(entry.id, width),
+                source: taskFileSource(entry.id, panelWidth),
               })
             } else {
-              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, width) })
+              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, panelWidth) })
             }
           }}
           onExit={() => closeOutputPanel()}
@@ -1401,23 +1405,21 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         <OutputListPage
           recentTools={recentTools}
           onOpen={(entry: OutputEntry) => {
-            const cols = process.stdout.columns ?? 80
-            const width = Math.max(10, cols - 4)
             if (entry.kind === 'tool') {
               setOverlay({
                 kind: 'output-view',
                 title: `${entry.tool.name}（${entry.tool.itemId}）${entry.tool.truncated === true ? ' 〔截断，补全中〕' : ''}`,
-                source: toolResultSource(() => recentToolsRef.current.find((t) => t.itemId === entry.tool.itemId), width),
+                source: toolResultSource(() => recentToolsRef.current.find((t) => t.itemId === entry.tool.itemId), panelWidth),
               })
             } else if (entry.kind === 'task') {
               const snap = taskRegistry.snapshot().find((t) => t.id === entry.id)
               setOverlay({
                 kind: 'output-view',
                 title: `task ${entry.id}：${snap?.command.slice(0, 50) ?? ''}（${snap?.status ?? '?'}）`,
-                source: taskFileSource(entry.id, width),
+                source: taskFileSource(entry.id, panelWidth),
               })
             } else {
-              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, width) })
+              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, panelWidth) })
             }
           }}
           onExit={() => setOverlay(null)}

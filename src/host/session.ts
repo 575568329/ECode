@@ -29,7 +29,7 @@ import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
 import { isMessageLine } from '../core/types.js'
 import { ecodeCommit } from '../services/git.js'
-import { makeSandbox, type SandboxMode } from '../services/sandbox.js'
+import { makeSandbox, resolveReal, type SandboxMode } from '../services/sandbox.js'
 import { isSensitivePath, isProjectEcodeSettings } from '../tools/sensitive.js'
 import { buildMediaBlock } from '../services/media.js'
 import { tokensToCost } from '../services/pricing.js'
@@ -254,6 +254,16 @@ export class HostSession {
     return this.running || this.starting || this.queue.length > 0
   }
 
+  /** 批 4（W-9）：断线游标重放——channel 缓冲帧（seq > since）；mux 端点 per-conversation 调用 */
+  replaySince(since: number): { events: ProtocolEvent[]; coveredFrom: number } {
+    return this.channel.replaySince(since)
+  }
+
+  /** 批 4（W-9）：当前会话已分配 seq——订阅基线（客户端据此检测通道重建/seq 回绕） */
+  get lastSeq(): number {
+    return this.channel.lastSeq
+  }
+
   /** B4（D5）：会话级子代理进度上报（task 工具经 ctx.session 调用；发布 subagent/progress 事件） */
   updateSubagent(st: { id: string; description: string; activity: string }): void {
     this.subagentView.set(st.id, st)
@@ -412,6 +422,25 @@ export class HostSession {
 
   private publish(type: ProtocolEvent['type'], data: Record<string, unknown> = {}): void {
     this.channel.publish({ type, ...data } as Parameters<InMemoryChannel['publish']>[0])
+  }
+
+  /** 审阅 S3：会话归属校验——history 目录用户级跨项目共享，id 只验形态可跨项目读/改/归档
+   *  他项目会话（sessionId 时间戳形态可枚举）。cwd 缺省（argv/内联形态）退化为放行（无边界可言）。
+   *  低频元数据/读取命令逐次扫目录可接受（archive/rename/read/restore 均非热路径）。 */
+  private ownsSession(sessionId: string): boolean {
+    if (this.deps.cwd === undefined) return true
+    return this.deps.history.loadAll(this.deps.cwd).some((m) => m.sessionId === sessionId)
+  }
+
+  /** 审阅 S2：路径 cwd 围栏——realpath 双判（词法 resolve 拦不住工作区内指向外部的
+   *  symlink/junction；目标不存在上溯祖先链，sandbox resolveReal 同实现），大小写归一对齐 win32 */
+  private isInsideCwd(abs: string): boolean {
+    const base = resolve(this.deps.cwd ?? process.cwd())
+    const norm = (p: string): string => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase()
+    const realTarget = resolveReal(abs)
+    if (realTarget === undefined) return false
+    const realBase = resolveReal(base) ?? base
+    return norm(realTarget).startsWith(`${norm(realBase)}/`)
   }
 
   /** 清账 III P2-7：serve 端 /help 输出——只列 host 可执行五命令，面板类命令不列（web 履约不了） */
@@ -620,6 +649,8 @@ export class HostSession {
       case 'session/restore':
         // M13-W2：restore=ensure（活复用/冷载入 restoreFrom/并发幂等单飞——落点 ProjectHost）
         if (!isValidSessionId(cmd.sessionId)) return { ok: false, error: `会话 id 非法：${cmd.sessionId}`, code: 'BAD_SESSION_ID' }
+        // 审阅 S3：跨项目拉起他项目会话=在错误项目宿主里种幻影会话——归属校验
+        if (!this.ownsSession(cmd.sessionId)) return { ok: false, error: `会话不存在或不属于当前项目：${cmd.sessionId}`, code: 'SESSION_NOT_FOUND' }
         if (this.deps.ensureConversation === undefined) {
           return { ok: false, error: '命令 session/restore 尚未接线（无 ProjectHost）', code: 'NOT_IMPLEMENTED' }
         }
@@ -638,6 +669,8 @@ export class HostSession {
       case 'session/archive': {
         // 批 2：归档/恢复——meta sidecar 标记 + session/updated 帧广播（多端列表同步）
         if (!isValidSessionId(cmd.sessionId)) return { ok: false, error: `会话 id 非法：${cmd.sessionId}`, code: 'BAD_SESSION_ID' }
+        // 审阅 S3：只验形态可跨项目改写他项目会话元数据（完整性破坏）——归属校验
+        if (!this.ownsSession(cmd.sessionId)) return { ok: false, error: `会话不存在或不属于当前项目：${cmd.sessionId}`, code: 'SESSION_NOT_FOUND' }
         this.deps.history.patchSessionMeta(cmd.sessionId, { archived: cmd.archived })
         this.publish('session/updated', { sessionId: cmd.sessionId, archived: cmd.archived })
         this.deps.logger.info('system', 'session_archived', { sessionId: cmd.sessionId, archived: cmd.archived })
@@ -646,7 +679,10 @@ export class HostSession {
       case 'session/rename': {
         // 批 2：手动重命名（pin 语义——覆盖 firstUser 显示）；同帧广播多端同步
         if (!isValidSessionId(cmd.sessionId)) return { ok: false, error: `会话 id 非法：${cmd.sessionId}`, code: 'BAD_SESSION_ID' }
-        const title = cmd.title.trim().slice(0, 80)
+        // 审阅 S3：同 archive——归属校验（跨项目改标题）
+        if (!this.ownsSession(cmd.sessionId)) return { ok: false, error: `会话不存在或不属于当前项目：${cmd.sessionId}`, code: 'SESSION_NOT_FOUND' }
+        // 审阅 S-P2：标题剥控制字符/ESC 序列（裸 ESC 剥掉后残文无害化）再入 sidecar 与广播
+        const title = cmd.title.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80)
         if (title === '') return { ok: false, error: '标题不能为空', code: 'BAD_TITLE' }
         this.deps.history.patchSessionMeta(cmd.sessionId, { title })
         this.publish('session/updated', { sessionId: cmd.sessionId, title })
@@ -660,6 +696,8 @@ export class HostSession {
         {
           // 审阅 P0-1：sessionId 进文件路径，白名单校验（黑名单必漏形态）
           if (!isValidSessionId(cmd.sessionId)) return { ok: false, error: `会话 id 非法：${cmd.sessionId}`, code: 'BAD_SESSION_ID' }
+          // 审阅 S3（范围外并入）：跨项目读他项目会话全文=机密性缺口，比 archive/rename 更重——同守卫
+          if (!this.ownsSession(cmd.sessionId)) return { ok: false, error: `会话不存在或不属于当前项目：${cmd.sessionId}`, code: 'SESSION_NOT_FOUND' }
           const all = this.deps.history.restoreFull(cmd.sessionId)
           if (cmd.fromLine === undefined && cmd.limit === undefined) return { ok: true, value: all }
           const from = Math.max(0, Math.floor(cmd.fromLine ?? 0))
@@ -968,7 +1006,9 @@ export class HostSession {
     const target = typeof (use.input as { path?: unknown }).path === 'string' ? (use.input as { path: string }).path : ''
     if (this.broker.rememberedTools.size > 0 && REMEMBER_TOOLS.has(use.name)) {
       const abs = target === '' ? null : resolve(this.deps.cwd ?? process.cwd(), target)
-      if (abs !== null && !isSensitivePath(abs) && !isProjectEcodeSettings(abs)) return true
+      // 审阅 S2：remember 直放加 cwd 围栏（realpath 双判，workspace-write 同口径）——
+      // 按过一次 a 键不应对任意路径免确认；越界/无法解析真实路径回落 Broker 照卡（fail-closed）
+      if (abs !== null && !isSensitivePath(abs) && !isProjectEcodeSettings(abs) && this.isInsideCwd(abs)) return true
     }
     if (this.sandboxMode === 'accept-edits' && (use.name === 'edit_file' || use.name === 'write_file')) {
       // 清账 III P2-2：非法输入不属可放行类——path 非法（缺/非字符串）照卡（fail-closed 反转）

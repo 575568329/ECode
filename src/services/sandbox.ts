@@ -109,7 +109,9 @@ export function matchesBlocked(command: string, patterns: string[]): boolean {
  * realpath，再把未存在的尾段拼回（新建嵌套目录下的写文件是常态，一层的 dirname 回退不够）；
  * 上溯到根都不存在（权限/路径异常）返回 undefined，调用方 fail-closed 拒绝——宁可误拒不可越界。
  */
-function resolveReal(p: string): string | undefined {
+/** 实路径解析（目标不存在则上溯祖先链拼回；到根仍失败 fail-closed 返回 undefined）。
+ *  导出共享：host 审批 remember 直放的 cwd 围栏（审阅 S2）同口径消费。 */
+export function resolveReal(p: string): string | undefined {
   try {
     return realpathSync(p)
   } catch {

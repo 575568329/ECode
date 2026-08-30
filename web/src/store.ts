@@ -404,11 +404,13 @@ export const useApp = create<AppState>((set) => ({
             entries: [...v.entries, { kind: 'system', text: `${f.ev.level === 'error' ? '✖' : f.ev.level === 'warn' ? '⚠' : 'ℹ'} ${String(f.ev.text ?? '')}`, ...(f.ev.level === 'error' ? { error: true } : {}) }],
           }))
         case 'session/updated':
-          // 批 2：归档/重命名广播——同步侧栏 brief（title/archived）
+          // 批 2：归档/重命名广播——同步侧栏 brief（title/archived）。
+          // 审阅 A3：匹配 ev.sessionId（真目标）而非信封 f.sessionId（承载会话）——
+          // 元数据命令曾借道缺省会话，按信封匹配会把标题/归档打到错误条目上
           return {
             ...st,
             sessions: st.sessions.map((s) =>
-              s.sessionId === f.sessionId
+              String(f.ev.sessionId ?? '') === s.sessionId
                 ? {
                     ...s,
                     ...(typeof f.ev.title === 'string' ? { title: f.ev.title } : {}),

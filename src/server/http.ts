@@ -68,7 +68,9 @@ export function serveHost(host: HostSession, opts: { port?: number; hostname?: s
         res.end(JSON.stringify(obj))
       }
 
-      // loopback 判定：逐请求 socket 地址（禁信 X-Forwarded-For/Host——伪造防线）
+      // loopback 判定：逐请求 socket 地址（禁信 X-Forwarded-For/Host——伪造防线）。
+      // 审阅 P2：serveHost 直连形态无绑定语义，LAN 恒 403——与 multi.ts 的 remoteDenied
+      // 分流（绑定 0.0.0.0 时放行交 Bearer）并存两套语义；生产链路已收敛到 multi，此处仅测试消费
       const remote = req.socket.remoteAddress ?? ''
       if (!LOOPBACK_ADDRS.has(remote)) {
         json(403, { error: '非 loopback 连接被拒（远程访问需显式 --hostname + token 鉴权）' })

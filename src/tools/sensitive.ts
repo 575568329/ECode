@@ -27,6 +27,13 @@ const SENSITIVE_BASENAME_EXACT = new Set([
   'secrets.yaml',
   'secrets.json',
   'secrets.toml',
+  // 审阅 S-P2 补充：home 级持久化向量（hooks 别名/core.hooksPath 注入）——编辑照卡
+  '.bashrc',
+  '.bash_profile',
+  '.zshrc',
+  '.zprofile',
+  '.profile',
+  '.gitconfig',
 ])
 const SENSITIVE_HOME_SUBDIRS = ['.ecode', '.ssh', '.aws', '.config/gcloud']
 

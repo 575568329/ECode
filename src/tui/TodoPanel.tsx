@@ -14,13 +14,23 @@ export interface TodoEntry {
   status: string
 }
 
-/** 超屏防御：清单超过此数截断（CC TaskListV2 同款思路——面板常驻不能无限占行） */
-const MAX_VISIBLE = 12
+/** 超屏防御：清单超过此数截断（CC TaskListV2 同款思路——面板常驻不能无限占行）。
+ *  导出供 TuiApp 派生 todoLines 预算（allocateDynamic 条件段同源，审阅 P0-2） */
+export const TODO_MAX_VISIBLE = 12
 
-export function TodoPanel({ todos, altMode }: { todos: TodoEntry[] | null; altMode?: boolean }): React.JSX.Element | null {
-  if (altMode || todos === null || todos.length === 0) return null
+export function TodoPanel({
+  todos,
+  altMode,
+  maxVisible = TODO_MAX_VISIBLE,
+}: {
+  todos: TodoEntry[] | null
+  altMode?: boolean
+  /** 预算收口（allocateDynamic degraded 时传 0 隐藏——极小终端宁可整面板不显示也不 3J） */
+  maxVisible?: number
+}): React.JSX.Element | null {
+  if (altMode || todos === null || todos.length === 0 || maxVisible <= 0) return null
   const done = todos.filter((x) => x.status === 'completed').length
-  const shown = todos.length > MAX_VISIBLE ? todos.slice(0, MAX_VISIBLE) : todos
+  const shown = todos.length > maxVisible ? todos.slice(0, maxVisible) : todos
   return (
     <Box flexDirection="column" marginBottom={0}>
       <Box>
@@ -43,7 +53,7 @@ export function TodoPanel({ todos, altMode }: { todos: TodoEntry[] | null; altMo
               {x.content}
             </Text>
           ))}
-          {todos.length > MAX_VISIBLE && <Text dimColor>…还有 {todos.length - MAX_VISIBLE} 项</Text>}
+          {todos.length > maxVisible && <Text dimColor>…还有 {todos.length - maxVisible} 项</Text>}
         </Box>
       </Box>
     </Box>

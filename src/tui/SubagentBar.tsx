@@ -7,8 +7,10 @@
 import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import { Box, Text } from 'ink'
+import stringWidth from 'string-width'
 import { theme } from './theme.js'
 import { symbols } from './symbols.js'
+import { clipWidth } from './viewport.js'
 import type { SubagentStatus } from '../services/subagent.js'
 
 /** 折叠为合计行的阈值（方案 D9 v1.4 定值：超屏预算体系不建，直接定常数） */
@@ -24,10 +26,12 @@ export function SubagentBar({ agents }: { agents: SubagentStatus[] }): ReactElem
     timer.unref?.()
     return () => clearInterval(timer)
   }, [agents.length])
+  // 审阅 P2：长描述/activity wrap 会使 allocateDynamic「各 ≤3 行」预留翻倍——按列宽截断
+  const maxLine = Math.max(20, process.stdout.columns ?? 80)
   if (agents.length === 0) return null
   const now = Date.now()
   if (agents.length > MAX_LINES) {
-    const names = agents.slice(0, MAX_LINES).map((a) => a.description).join(' · ')
+    const names = clipWidth(agents.slice(0, MAX_LINES).map((a) => a.description).join(' · '), maxLine - 20)
     return (
       <Box paddingLeft={1}>
         <Text color={theme.info}>{symbols.tool} {agents.length} 个子代理运行中</Text>
@@ -37,16 +41,19 @@ export function SubagentBar({ agents }: { agents: SubagentStatus[] }): ReactElem
   }
   return (
     <Box flexDirection="column">
-      {agents.map((a) => (
-        <Box key={a.id} paddingLeft={1}>
-          <Text color={theme.info}>{symbols.tool} 「{a.description}」</Text>
-          <Text dimColor>
-            {' '}
-            · {a.activity}
-            {a.waitingSince !== undefined ? ` ${Math.max(0, Math.round((now - a.waitingSince) / 1000))}s` : ''}
-          </Text>
-        </Box>
-      ))}
+      {agents.map((a) => {
+        const desc = clipWidth(`「${a.description}」`, Math.max(10, Math.floor(maxLine * 0.5)))
+        const suffix = clipWidth(
+          ` · ${a.activity}${a.waitingSince !== undefined ? ` ${Math.max(0, Math.round((now - a.waitingSince) / 1000))}s` : ''}`,
+          Math.max(10, maxLine - 4 - stringWidth(desc)),
+        )
+        return (
+          <Box key={a.id} paddingLeft={1}>
+            <Text color={theme.info}>{symbols.tool} {desc}</Text>
+            <Text dimColor>{suffix}</Text>
+          </Box>
+        )
+      })}
     </Box>
   )
 }

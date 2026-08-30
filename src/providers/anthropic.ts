@@ -11,12 +11,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import type { LLMProvider, LLMProviderRunRequest, ThinkingLevel } from './interface.js'
-import type { Delta, Message, StopReason, ImageBlock, DocumentBlock } from '../core/types.js'
-
-/** 默认输出上限（max_tokens 是 SDK 必填；M4 从 config 透传）。对标定值（2026-08-30 调研）：
- *  CC/opencode 均 32k（CC 按模型 32k~64k、opencode OUTPUT_TOKEN_MAX=32k），8192 旧默认在
- *  thinking medium（budget 8192 计入 max_tokens）下可见文本可被思考吃光——用户真机报障实证。 */
-const DEFAULT_MAX_TOKENS = 32000
+import { DEFAULT_MAX_TOKENS, type Delta, type Message, type StopReason, type ImageBlock, type DocumentBlock } from '../core/types.js'
 
 /** thinking 枚举 → budget_tokens 映射（D9；P0-2 clamp 共用，提常量免散落 P2-1）。 */
 const THINKING_BUDGET: Record<Exclude<ThinkingLevel, 'off'>, number> = { low: 2048, medium: 8192, high: 16384 }

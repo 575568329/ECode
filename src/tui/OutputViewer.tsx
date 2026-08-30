@@ -19,7 +19,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import wrapAnsi from 'wrap-ansi'
 import { theme } from './theme.js'
-import { PanelShell, type PanelRow } from './PanelShell.js'
+import { PanelShell, isMouseInput, type PanelRow } from './PanelShell.js'
 import { clipWidth, sectionBudget, useViewport } from './viewport.js'
 import { taskRegistry } from '../services/tasks.js'
 import { isAgentActive } from '../services/subagent.js'
@@ -125,24 +125,36 @@ export function taskFileSource(taskId: string, width: number): LineSource {
   /** F-50：执行时间线——全部对话按执行顺序线性展示（用户消息/模型文本/工具调用+结果摘要，
    *  web 端对话页同构）。Ctrl+T 默认落地视图：看完整执行顺序与模型思考路径。
    *  虚拟化：OutputViewer 本身固定窗 slice（只渲 offset..height）——本源负责「格式化缓存」：
-   *  transcript 只追加（条数+末条长度+width 为缓存键），滚动 offset 变化不触发重算。 */
+   *  审阅 P2 改逐消息缓存（WeakMap 按消息对象身份——transcript 只追加、历史消息引用稳定），
+   *  新消息到达只格式化增量；滚动 offset 变化/按键重渲不触发任何重算。 */
 export function timelineSource(getMessages: () => readonly unknown[], width: number): LineSource {
-  let cache: { count: number; lastLen: number; width: number; lines: string[] } | null = null
+  const perMsg = new WeakMap<object, { width: number; lines: string[] }>()
+  let cache: { count: number; lastKey: unknown; width: number; lines: string[] } | null = null
+  const formatMsg = (m: unknown): string[] => {
+    // WeakMap 键必须对象——畸形行（原始字符串等）直格式化不缓存（审阅 D4 补测抓出）
+    const cacheable = m !== null && typeof m === 'object'
+    if (cacheable) {
+      const hit = perMsg.get(m as object)
+      if (hit !== undefined && hit.width === width) return hit.lines
+    }
+    const lines: string[] = []
+    for (const logical of formatAgentLine(JSON.stringify(m), width)) {
+      for (const [i, w] of wrapAll(stripUntrustedAnsi(logical), Math.max(10, width - 2)).entries()) {
+        lines.push(i === 0 ? w : '  ' + w)
+      }
+    }
+    if (cacheable) perMsg.set(m as object, { width, lines })
+    return lines
+  }
   const readLines = (): string[] => {
     const msgs = getMessages()
-    const lastLen = msgs.length > 0 ? JSON.stringify(msgs[msgs.length - 1]).length : 0
-    if (cache !== null && cache.count === msgs.length && cache.lastLen === lastLen && cache.width === width) {
+    const last = msgs.at(-1)
+    if (cache !== null && cache.count === msgs.length && cache.lastKey === last && cache.width === width) {
       return cache.lines
     }
     const out: string[] = []
-    for (const m of msgs) {
-      for (const logical of formatAgentLine(JSON.stringify(m), width)) {
-        for (const [i, w] of wrapAll(stripUntrustedAnsi(logical), Math.max(10, width - 2)).entries()) {
-          out.push(i === 0 ? w : '  ' + w)
-        }
-      }
-    }
-    cache = { count: msgs.length, lastLen, width, lines: out }
+    for (const m of msgs) out.push(...formatMsg(m))
+    cache = { count: msgs.length, lastKey: last, width, lines: out }
     return out
   }
   return {
@@ -162,7 +174,20 @@ export function timelineSource(getMessages: () => readonly unknown[], width: num
    *  人读行；isGrowing=true + mtime 轮询 subscribe——运行中每 500ms 检查增长自动刷新。 */
 export function subagentSource(agentId: string, width: number): LineSource {
   const file = join(homedir(), '.ecode', 'agents', `${agentId}.jsonl`)
+  // 审阅 T4：mtime+size 校验缓存——原实现每次渲染全量读盘+逐行 JSON.parse+format+wrap
+  // （兄弟源都走 cachedWrap，性能红线自违反）；运行期文件追加 mtime/size 必变自然失效
+  let cache: { mtimeMs: number; size: number; width: number; lines: string[] } | null = null
   const readLines = (): string[] => {
+    let st: { mtimeMs: number; size: number }
+    try {
+      const s = statSync(file)
+      st = { mtimeMs: s.mtimeMs, size: s.size }
+    } catch {
+      return cache?.lines ?? [] // 文件尚未创建/被清理——缓存仍在则展示旧内容
+    }
+    if (cache !== null && cache.mtimeMs === st.mtimeMs && cache.size === st.size && cache.width === width) {
+      return cache.lines
+    }
     try {
       const raw = readFileSync(file, 'utf8')
       const out: string[] = []
@@ -175,9 +200,10 @@ export function subagentSource(agentId: string, width: number): LineSource {
           out.push(...wrapAll(stripUntrustedAnsi(logical), Math.max(10, width - 2)).map((l, i) => (i === 0 ? l : '  ' + l)))
         }
       }
+      cache = { ...st, width, lines: out }
       return out
     } catch {
-      return []
+      return cache?.lines ?? []
     }
   }
   return {
@@ -196,6 +222,7 @@ export function subagentSource(agentId: string, width: number): LineSource {
           /* 文件尚未创建（子代理未落首行）——继续轮询 */
         }
       }, 500)
+      timer.unref?.() // 审阅 P2：兄弟源均有，补齐（防持有事件循环）
       return () => clearInterval(timer)
     },
   }
@@ -276,7 +303,7 @@ export function listSubagentTranscripts(maxShow = 30, currentSid?: string): Arra
         return { id: f.slice(0, -'.jsonl'.length), mtimeMs: statSync(full).mtimeMs, full }
       })
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
-      .map((e) => ({ ...e, sid: readMetaSid(e.full) }))
+      .map((e) => ({ ...e, sid: readMetaSid(e.full, e.mtimeMs) }))
       .filter((e) => currentSid === undefined || currentSid === '' || e.sid === currentSid)
       .slice(0, maxShow)
       .map(({ id, mtimeMs, full }) => ({ id, mtimeMs, summary: readFirstUserText(full) }))
@@ -285,20 +312,42 @@ export function listSubagentTranscripts(maxShow = 30, currentSid?: string): Arra
   }
 }
 
-/** F-49：读 transcript 首 2KB 抽 meta 行的 sid（无 meta/旧格式返回空串=不匹配过滤）。 */
-function readMetaSid(file: string): string {
+/** F-49：读 transcript 首 2KB 抽 meta 行的 sid（无 meta/旧格式返回空串=不匹配过滤）。
+ *  审阅 T5：mtime 索引缓存——列表页每秒轮询曾对全部历史文件各读 2KB（百级文件=每秒百次
+ *  同步读，正是清账 III P2-3 刚优化掉的模式）；mtime 未变直接命中，只有新/变文件落盘。 */
+const metaSidCache = new Map<string, { mtimeMs: number; sid: string }>()
+function readMetaSid(file: string, mtimeMs?: number): string {
+  let mtime = mtimeMs ?? -1
+  if (mtime < 0) {
+    try {
+      mtime = statSync(file).mtimeMs
+    } catch {
+      return ''
+    }
+  }
+  const hit = metaSidCache.get(file)
+  if (hit !== undefined && hit.mtimeMs === mtime) return hit.sid
+  let sid = ''
   try {
     const head = readFileSync(file, 'utf8').slice(0, 2048)
     for (const line of head.split('\n')) {
       if (line.trim() === '') continue
       try {
         const m = JSON.parse(line) as { kind?: string; sid?: string; role?: string }
-        if (m.kind === 'meta') return m.sid ?? ''
-        if (m.role !== undefined) return '' // 终态 messages 行先于 meta=旧格式
+        if (m.kind === 'meta') {
+          sid = m.sid ?? ''
+          break
+        }
+        if (m.role !== undefined) break // 终态 messages 行先于 meta=旧格式
       } catch { /* 非 JSON 行跳过 */ }
     }
   } catch { /* 读失败=无 sid */ }
-  return ''
+  if (metaSidCache.size >= 512) {
+    const oldest = metaSidCache.keys().next().value
+    if (oldest !== undefined) metaSidCache.delete(oldest)
+  }
+  metaSidCache.set(file, { mtimeMs: mtime, sid })
+  return sid
 }
 
 /** F-26：transcript 首条 user 文本（读首 2KB 截取——大文件不全量读） */
@@ -343,6 +392,8 @@ function memoOffset(key: string, value: number): void {
     const oldest = offsetMemo.keys().next().value
     if (oldest !== undefined) offsetMemo.delete(oldest)
   }
+  // 审阅 P2：先 delete 再 set——Map 已有键 set 不改迭代序，原名 LRU 实为 FIFO
+  offsetMemo.delete(key)
   offsetMemo.set(key, value)
 }
 
@@ -369,19 +420,19 @@ function wheelBaseSpeed(): number {
 }
 
 export function OutputViewer({ title, source, onBack, altMode, onList }: OutputViewerProps): ReactElement {
-  const { budget, rows } = useViewport()
-  // F-51：滚轮加速状态（ref 免重渲）；基础倍率=E CODE_SCROLL_SPEED 旋钮（默认 1，
+  const { budget, rows, columns } = useViewport()
+  // F-51：滚轮加速状态（ref 免重渲）；基础倍率=ECODE_SCROLL_SPEED 旋钮（默认 1，
   // 对齐 CC CLAUDE_CODE_SCROLL_SPEED）
   const wheelAccelRef = useRef({ last: 0, dir: 0, mult: wheelBaseSpeed() })
   // 内容窗高度（审阅 P0-2 修正）：帧高账目 = 面板（height + 骨架实占 5：marginTop1+边框2+
   // 标题1+状态1；搜索行出现时 +1）+ App 外部骨架 3（ActivityBar1+输入行1+StatusBar1）
   // ≤ budget（= rows−2，SAFETY_MARGIN 已在其中）。即 height ≤ budget−8；搜索行常驻留量
   // 取 reserve=10——原 6 漏算外部 3 行+吃掉安全余量，任何终端打开都恰满屏触发 3J
-  // F-48：alt 全屏帧高总账恒 rows−2（marginTop1+边框2+标题1+状态1 = 5 行 chrome；
-  // 搜索行出现时 6）——绝不允许 =rows（win32 每帧全清 + 退出 3J 清主 scrollback，
-  // 架构审阅 P0-1）；嵌入式模式维持原 reserve=10
+  // F-48：alt 全屏帧高账（审阅 P0-1 修正）：chrome 5 + 搜索行留量 1 + 安全余量 1 = 常量 7
+  // ——常态帧高 rows−2、搜索打开 rows−1，均 < rows（=rows 即 win32 每帧全清 + 退出 3J
+  // 抹主 scrollback；原 rows−6 开搜索恰好 = rows，任何终端确定性触发）。嵌入式模式维持原 reserve=10
   const height = altMode === true
-    ? Math.max(3, rows - 6)
+    ? Math.max(3, rows - 7)
     : Math.max(3, sectionBudget(budget, 10))
   const lines = source.lines()
   const total = lines.length
@@ -444,7 +495,9 @@ export function OutputViewer({ title, source, onBack, altMode, onList }: OutputV
   useInput((input, key) => {
     if (searchInput !== null) {
       // 搜索输入态：可打印追加/退格清/Enter 确认/Esc 取消
-      if (key.escape) {
+      if (key.ctrl && input === 'c') {
+        onBack() // 审阅 P2：Ctrl+C 曾被当字符 'c' 追加——面板内 Ctrl+C 恒退出（pager 惯例）
+      } else if (key.escape) {
         setSearchInput(null)
       } else if (key.return) {
         setQuery(searchInput)
@@ -452,17 +505,17 @@ export function OutputViewer({ title, source, onBack, altMode, onList }: OutputV
         setFollowed(false)
       } else if (key.backspace || key.delete) {
         setSearchInput((s) => (s === null ? s : s.slice(0, -1)))
-      } else if (input !== '' && !/\[<\d+;\d+;\d+[Mm]$/.test(input ?? '')) {
-        // F-48：SGR 鼠标序列（Ink 透传形态 '[<64;x;yM'）排除在搜索输入外
+      } else if (input !== '' && !isMouseInput(input)) {
+        // F-48：SGR 鼠标序列（Ink 透传形态 '[<64;x;yM'）排除在搜索输入外（共享全形态判定）
         setSearchInput((s) => (s ?? '') + input)
       }
       return
     }
     // F-48：滚轮（SGR 64=上滚 65=下滚；只认 M 按下帧）→ 行级滚动
-    // F-51：滚轮（SGR 64=上滚 65=下滚）——CC 同款加速：基础 1 行/事件（终端每格滚轮
-    // 本就发对应数量的事件：WT 一格 3 事件=3 行、xterm.js 一格 1 事件），40ms 内连续
-    // 滚动乘数 +0.3 递增至上限 6；反向/停手（>200ms）重置。ECODE_SCROLL_SPEED 旋钮
-    // 调整基础倍率（对齐 CC CLAUDE_CODE_SCROLL_SPEED）。替代批 2 的固定 ±3 拍板值。
+    // F-51：滚轮加速（CC 同款）：基础 1 行/事件（终端每格滚轮本就发对应数量的事件：WT 一格
+    // 3 事件=3 行、xterm.js 一格 1 事件），200ms 窗口内连续滚动倍率线性 +0.3 递增至 6；
+    // 反向/停手（>200ms）重置。ECODE_SCROLL_SPEED 旋钮调基础倍率。替代批 2 的固定 ±3 拍板值。
+    // （审阅 P2：注释曾写 40ms 窗/×1.3 与实现常量不符，已对齐）
     const wheel = /^\[<(\d+);\d+;\d+M$/.exec(input ?? '')
     if (wheel !== null && (Number(wheel[1]) === 64 || Number(wheel[1]) === 65)) {
       const dir = Number(wheel[1]) === 64 ? -1 : 1
@@ -543,13 +596,17 @@ export function OutputViewer({ title, source, onBack, altMode, onList }: OutputV
   const statusParts = [`L${offset + 1}-L${Math.min(total, offset + height)} / ${total}`]
   if (source.isGrowing()) statusParts.push(followed ? '[F]跟随中' : '[F]跟随(off)')
   if (matches !== null) statusParts.push(`匹配 ${matches.length}${query !== '' ? ` "/${query}"` : ''}`)
-  // F-50：l 进来源列表（时间线视图内跳转子代理/任务详情）
-  statusParts.push('↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · l 列表 · Esc 返回')
+  // F-50：l 进来源列表（时间线视图内跳转子代理/任务详情）——审阅 P2：仅在 onList 接线时提示
+  // （曾是死键恒提示）；整行按显示宽度截断（窄终端 wrap 会再 +1 行叠进帧账）
+  const hint = onList !== undefined
+    ? '↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · l 列表 · Esc 返回'
+    : '↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · Esc 返回'
+  statusParts.push(clipWidth(hint, Math.max(20, columns - 4)))
 
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor={theme.border} paddingX={1}>
       <Text color={theme.info} bold>
-        {title}
+        {clipWidth(title, Math.max(20, columns - 4))}
       </Text>
       <Box flexDirection="column" minHeight={height} height={height}>
         {shown.map((line, i) => (
@@ -628,8 +685,10 @@ export function OutputListPage({ recentTools, onOpen, onExit, altMode, currentSi
       }
     }
     if (agents.length > 0) {
-      out.push({ type: 'header', label: '子代理 transcript（跨项目最近 30 条）' })
-      for (const a of agents.slice(0, 10)) {
+      // F-49 后列表已按 currentSid 过滤（非跨项目）——审阅 P2：标签与 slice 对齐（曾写
+      // 「跨项目最近 30 条」实显 10 条）；PanelShell 窗口化渲染，全量列出即可
+      out.push({ type: 'header', label: '子代理 transcript（本会话）' })
+      for (const a of agents) {
         // F-26：裸 id → 时间 + 首行摘要（历史条目不再是一串无意义 id）
         const t = new Date(a.mtimeMs)
         const pad = (n: number): string => String(n).padStart(2, '0')

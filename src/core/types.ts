@@ -148,3 +148,9 @@ export function isRewind(line: HistoryLine): line is RewindLine {
 export function isMessageLine(line: HistoryLine): line is Message {
   return !isBoundary(line) && !isRewind(line)
 }
+
+/** 默认单次输出上限（max_tokens；审阅 P2 单源化）：provider 兜底（anthropic.ts）与
+ *  config 模板/向导默认（config.ts）引用同一常量——曾 32000/32768 两处字面量分叉。
+ *  对标定值（2026-08-30 调研）：CC/opencode 均 32k；8192 在 thinking medium（budget 计入
+ *  max_tokens）下可见文本可被思考吃光（真机报障实证）。 */
+export const DEFAULT_MAX_TOKENS = 32768

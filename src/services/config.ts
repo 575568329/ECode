@@ -16,6 +16,7 @@ import * as os from 'node:os'
 import { parse as parseJsonc, modify, applyEdits, type FormattingOptions } from 'jsonc-parser'
 import dotenv from 'dotenv'
 import type { ProviderReq, ThinkingLevel } from '../providers/interface.js'
+import { DEFAULT_MAX_TOKENS } from '../core/types.js'
 
 /** 单个供应商配置（export：buildProviderReq / Wizard / /model 都要用） */
 export interface ProviderCfg {
@@ -150,7 +151,7 @@ export const CONFIG_TEMPLATE = `{
       "apiKey": "",                                         // ← 必填
       "models": ["glm-5.2"],                                // 可用模型（/model 列这些；可多个）
       "thinking": "medium",                                 // 思考强度：off | low | medium | high
-      "maxTokens": 32768                                    // 单次最大输出 token（8192 配 thinking 极易触顶截断——budget 占额后可见文本更少）
+      "maxTokens": ${DEFAULT_MAX_TOKENS}                    // 单次最大输出 token（8192 配 thinking 极易触顶截断——budget 占额后可见文本更少；单源 core/types DEFAULT_MAX_TOKENS）
       // "temperature": 0.7,                                // 采样温度（可选，per-provider）
       // "topP": 0.95                                       // nucleus sampling（可选）
     }
@@ -433,7 +434,7 @@ function wizardProviderObject(values: WizardValues): Record<string, unknown> {
     apiKey: values.apiKey,
     models,
     thinking: values.thinking,
-    maxTokens: 32768, // 8192 配 thinking 极易触顶截断（max_tokens_truncated）——模板同步值
+    maxTokens: DEFAULT_MAX_TOKENS, // 8192 配 thinking 极易触顶截断（max_tokens_truncated）——单源 core/types，与模板/provider 兜底同值
   }
 }
 

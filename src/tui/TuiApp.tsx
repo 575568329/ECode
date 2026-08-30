@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { App } from './App.js'
 import { InputStream } from './InputStream.js'
-import { deriveLatestTodos, TodoPanel } from './TodoPanel.js'
+import { deriveLatestTodos, TodoPanel, TODO_MAX_VISIBLE } from './TodoPanel.js'
 import { ErrorBanner } from './ErrorBanner.js'
 import { useInput, Text, Box } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
@@ -65,6 +65,7 @@ import { readClipboardImage } from '../services/clipboard.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, NOTICE_TTL_MS, type NoticeItem, type NoticeLevel } from './notices.js'
 import { theme } from './theme.js'
 import { enterAltScreen, exitAltScreen, AltScreen } from './AltScreen.js'
+import { allocateDynamic, useViewport } from './viewport.js'
 import type { ReactNode } from 'react'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
 import { Select } from './Select.js'
@@ -93,6 +94,14 @@ function nextInsertSeq(): number {
 
 /** 清屏（可见区 + scrollback + 光标归位）；/clear 用，清可见区残留 */
 const CLEAR_TERMINAL = '\x1b[2J\x1b[3J\x1b[H'
+
+/** F-48 批 2 降级链（审阅 P0-4 修正）：显式禁用 / tmux control-mode（CC 同款判定）→
+ *  不写 1049 序列，altActive 恒 false——面板树走嵌入式分支（功能可用观感降级）。
+ *  模块级读一次：此前的局部判定只盖了 enterAltScreen 一处，altActive 渲染口径没跟，
+ *  <AltScreen/> 照样挂载补写 ENTER，降级整体失效。 */
+const NO_ALT_SCREEN =
+  process.env.ECODE_NO_ALT_SCREEN === '1' ||
+  (process.env.TMUX !== undefined && process.env.TMUX.startsWith('/') === false)
 
 /** 批2d（§13.1 拍板-1 附）：BEL 终端铃字符（审批卡首次出现时写一次，终端自行决定响/闪标题栏） */
 const BEL_CHAR = '\x07'
@@ -275,13 +284,20 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     }
     setCommittedState(items)
   }
-  const closeOutputPanel = (): void => {
+  /** alt 全屏 teardown 三件套（审阅 P0-3）：转义序列写 + 数据冻结解除 + 暂存 commit 补齐。
+   *  审批/askUser 强制退面板与 Ctrl+T 关闭（closeOutputPanel）共用——此前审批路径只
+   *  setOverlay(null)，altActiveRef 卡死后 setCommitted 永久进暂存，主对话静默停更 */
+  const teardownAltFrame = (): void => {
+    // 同步写 1049l 先于 React 提交（AltScreen 卸载 cleanup 的晚写兜底因此跳过——时序铁律）
     exitAltScreen()
     altActiveRef.current = false
     if (pendingCommittedRef.current !== null) {
       setCommittedState(pendingCommittedRef.current)
       pendingCommittedRef.current = null
     }
+  }
+  const closeOutputPanel = (): void => {
+    teardownAltFrame()
     setOverlay(null)
   }
   const [active, setActive] = useState<ActiveState>(() => createActive())
@@ -429,10 +445,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           setActive((a) => ({ ...a, streamingText: a.streamingText + ev.text }))
           break
         case 'item/started':
+          // 审阅 P2：时间线源（Ctrl+T）读 messagesRef——仅轮末同步时 busy 中看不到当前轮；
+          // 工具事件粒度同步（逐 delta 太热），transcript 此时已含本轮已发生条目
+          messagesRef.current = [...host.transcript]
           setActive((a) => ({ ...a, tools: [...a.tools, { name: ev.name, status: 'running', at: Date.now() }] }))
           setActivity({ state: 'tool', text: ev.name })
           break
         case 'item/completed': {
+          messagesRef.current = [...host.transcript]
           // M14-V3：环形缓冲记录（/output 查看器数据源；前台 bash 有工具层 30KB 截断边界）
           setRecentTools((prev) => {
             const next = [{ itemId: ev.itemId, name: ev.name, content: ev.content, isError: ev.isError, at: Date.now(), ...(ev.truncated === true ? { truncated: true } : {}) }, ...prev]
@@ -536,8 +556,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           confirmRef.current = true
           // F-47 批 0：审批是安全边界，优先级高于查看器——强制退出 overlay（含 output
           // 面板）回主界面亮卡。否则审批卡在面板下不可见，15min 超时盲拒用户毫无感知
-          // （安全审阅 P1-3）。setOverlay 包装同时复位 pickerRef，useInterrupt 恢复可用
-          setOverlay((cur) => (cur === null || cur.kind === 'output-panel' || cur.kind === 'output-view' ? null : cur))
+          // （安全审阅 P1-3）。setOverlay 包装同时复位 pickerRef，useInterrupt 恢复可用。
+          // 审阅 P0-3：必须走 closeOutputPanel（teardown 三件套）——只 setOverlay(null)
+          // 不解 altActiveRef 冻结，轮末 commit 永久进暂存，主对话静默停更
+          const forcedOverlay = overlayRef.current
+          if (forcedOverlay?.kind === 'output-panel' || forcedOverlay?.kind === 'output-view') closeOutputPanel()
           // 批2b ④：审批出现即未选择态（draft 状态机重置；Enter 不静默批准）
           // 批2d（§13.1 拍板-1 附）：审批卡首次出现响一次 BEL 终端铃（同一审批不重复——
           // resolved 后弹窗清空，响过的 requestId 留痕即可防重放/连续 requested 重响）
@@ -588,7 +611,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           // M14-C2⑤（D12 advisory）：另一端认领审批——TUI 不撤弹窗（先答先得权威不变），告警中心留痕供扫一眼
           pushNoticeFn('info', `审批已由「${ev.claimant}」端认领处理中（仍可在本端作答）`)
           break
-        case 'askUser/requested':
+        case 'askUser/requested': {
+          // 审阅 P0-3：askUser 覆盖 output 面板前先 teardown（不复位 altActiveRef 即吞后续 commit）
+          const askPrev = overlayRef.current
+          if (askPrev?.kind === 'output-panel' || askPrev?.kind === 'output-view') teardownAltFrame()
           setOverlay({
             kind: 'question-panel',
             questions: ev.questions as AskUserQuestion[],
@@ -599,6 +625,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             },
           })
           break
+        }
         case 'subagent/progress':
           setSubagents(ev.agents as SubagentStatus[])
           break
@@ -1065,11 +1092,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         if (overlay?.kind === 'output-panel' || overlay?.kind === 'output-view') {
           closeOutputPanel()
         } else {
-          // F-48 批 2：降级链——ECODE_NO_ALT_SCREEN 显式禁用 / tmux control-mode
-          // （CC 同款判定）→ 不写 1049 序列，直接嵌入手低面板（功能可用观感降级）
-          const noAlt = process.env.ECODE_NO_ALT_SCREEN === '1' || (process.env.TMUX !== undefined && process.env.TMUX.startsWith('/') === false)
-          if (!noAlt) enterAltScreen()
-          altActiveRef.current = !noAlt
+          // F-48 批 2：降级链——NO_ALT_SCREEN（ECODE_NO_ALT_SCREEN=1 / tmux control-mode）
+          // → 不写 1049 序列、altActiveRef 保持 false，面板树走嵌入式分支（审阅 P0-4）
+          if (!NO_ALT_SCREEN) enterAltScreen()
+          altActiveRef.current = !NO_ALT_SCREEN
           // F-50：Ctrl+T 默认落地执行时间线（按执行顺序展示全部流程与模型路径）；
           // l 键进来源列表（子代理/任务/单工具条目级查看）
           const width = Math.max(10, (process.stdout.columns ?? 80) - 4)
@@ -1127,8 +1153,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const fullCommitted: CommittedItem[] = committed
 
   // F-48 批 1：alt-screen 全屏面板——output 系 overlay 时动态区整体替换为面板树
-  // （Static/InputStream 常驻不卸载，架构审阅 P0-2/P1-5）
-  const altActive = overlay?.kind === 'output-panel' || overlay?.kind === 'output-view'
+  // （Static/InputStream 常驻不卸载，架构审阅 P0-2/P1-5）。
+  // 审阅 P0-4：降级链（NO_ALT_SCREEN）下恒 false——altContent undefined 走嵌入式分支，
+  // <AltScreen/> 不挂载（否则其 useInsertionEffect 补写 ENTER，降级照样进 alt buffer）
+  const altActive = !NO_ALT_SCREEN && (overlay?.kind === 'output-panel' || overlay?.kind === 'output-view')
   const altContent: ReactNode = altActive ? (
     <>
       <AltScreen />
@@ -1161,7 +1189,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         />
       )}
       {overlay?.kind === 'output-view' && (
-        <OutputViewer title={overlay.title} source={overlay.source} onBack={() => setOverlay({ kind: 'output-panel' })} altMode />
+        <OutputViewer
+          title={overlay.title}
+          source={overlay.source}
+          onBack={() => setOverlay({ kind: 'output-panel' })}
+          // F-50：l 键进来源列表（审阅 T3：曾无调用点=死键但状态行恒提示）
+          onList={() => setOverlay({ kind: 'output-panel' })}
+          altMode
+        />
       )}
     </>
   ) : undefined
@@ -1174,10 +1209,28 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     }
   }
 
+  // 审阅 P0-2：todo 常驻面板入预算账——行数派生（useMemo 防逐 delta 全量 flatMap，审阅 P2）
+  // + 用与 Conversation 同一 allocateDynamic 纯函数自算 degraded（退化态 TodoPanel 整体隐藏，
+  // 两处口径同源；todoLines 同入 conditions 让 Conversation 的 content 预算给清单让位）
+  const { budget } = useViewport()
+  const todoEntries = useMemo(
+    () =>
+      deriveLatestTodos([
+        ...committed.flatMap((c) => (c.kind === 'tool-group' ? c.calls.map((call) => ({ name: call.use.name, use: call.use })) : [])),
+        ...active.tools.map((t) => ({ name: t.name, use: t.use })),
+      ]),
+    [committed, active.tools],
+  )
+  const todoLines =
+    todoEntries === null
+      ? 0
+      : Math.min(todoEntries.length, TODO_MAX_VISIBLE) + 1 + (todoEntries.length > TODO_MAX_VISIBLE ? 1 : 0)
+  const tuiAlloc = allocateDynamic(budget, { tasksBar: tasksActive, subagentBar: subagents.length > 0, todoLines })
+
   return (
     <App
       key={clearKey}
-      conditions={{ tasksBar: tasksActive, subagentBar: subagents.length > 0 }}
+      conditions={{ tasksBar: tasksActive, subagentBar: subagents.length > 0, todoLines }}
       model={config.current.model}
       banner={banner}
       committed={fullCommitted}
@@ -1222,9 +1275,15 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         })()
       }
     >
-      <SubagentBar agents={subagents} />
-      <TasksBar />
-      {error ? <ErrorBanner error={error} /> : null}
+      {/* 审阅 P0-1：条件段（子代理/任务条/错误横幅）计入帧高——alt 全屏模式一律收口，
+          否则 busy 中 Ctrl+T（SubagentBar 活着）帧高被顶过 rows 触发 win32 每帧全清 */}
+      {!altActive && (
+        <>
+          <SubagentBar agents={subagents} />
+          <TasksBar />
+          {error ? <ErrorBanner error={error} /> : null}
+        </>
+      )}
       {overlay?.kind === 'model-picker' && (
         <ModelPicker
           entries={entries}
@@ -1443,7 +1502,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           onCancel={() => overlay.resolve({ kind: 'cancel' })}
         />
       )}
-      {systemMsgs.length > 0 && (
+      {/* 审阅 P0-1：systemMsgs 同入帧账——alt 全屏模式收口（TTL 5s，退出面板即随重渲按
+          剩余 TTL 显示或消失，无信息永久丢失） */}
+      {!altActive && systemMsgs.length > 0 && (
         <Box flexDirection="column">
           {systemMsgs.map((m, i) => (
             <Text key={`sys${clearKey}_${i}`} color={m.level === 'warn' ? theme.warn : undefined} dimColor={m.level !== 'warn'}>
@@ -1456,11 +1517,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           最新整表显示在输入区上方、默认展开；数据源=最近一次 todo 调用（active 优先→committed） */}
       <TodoPanel
         altMode={altActive}
-        todos={deriveLatestTodos([
-          // 倒序取最新：committed 历史在前、active（进行中的最新 todo 替换）在后压轴
-          ...committed.flatMap((c) => (c.kind === 'tool-group' ? c.calls.map((call) => ({ name: call.use.name, use: call.use })) : [])),
-          ...active.tools.map((t) => ({ name: t.name, use: t.use })),
-        ])}
+        // 审阅 P0-2：退化态（budget 装不下清单）整体隐藏——宁可不见也不触发 3J
+        maxVisible={tuiAlloc.degraded ? 0 : TODO_MAX_VISIBLE}
+        todos={todoEntries}
       />
       {/* F-48：alt 全屏面板期间 InputStream 保持挂载（草稿/历史位不丢）但 height 0 折叠
           + inactive 让出按键——面板独占键盘（架构审阅 P1-5） */}
@@ -1641,7 +1700,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         }}
         placeholder={
           active.confirm !== null
-            ? '（审批中…打字进草稿，y/n/Esc 应答）'
+            ? '（审批中…打字进草稿，Y/N/Esc 应答）'
             : busy
               ? '（处理中，Ctrl+C 中断）...'
               : '输入消息，/help 查看命令...'

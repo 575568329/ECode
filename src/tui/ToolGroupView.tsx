@@ -5,6 +5,7 @@ import { DiffLine } from './DiffLine.js'
 import { theme } from './theme.js'
 import { symbols } from './symbols.js'
 import { clipWidth, foldLines, useViewport } from './viewport.js'
+import { stripUntrustedAnsi } from './sanitize.js'
 import { GAP, INDENT, WIDTH } from './layout.js'
 import type { ActiveTool } from './types.js'
 
@@ -67,6 +68,20 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
   const expandCap = Math.min(EXPAND_CAP, Math.max(3, Math.floor(budget / 2)))
   const expandWidth = WIDTH.toolOutput(columns)
   if (tools.length === 0) return <Box />
+  // 审阅 P2：degraded 分支曾渲出「● 0 个工具」空组头（maxTools=0 时 visible 为空仍出表头）
+  // ——maxTools=0 渲单行折叠提示即返回
+  if (maxTools === 0) {
+    return (
+      <Box flexDirection="column" marginTop={GAP.block}>
+        <Box>
+          <Box minWidth={INDENT.icon}>
+            <Text dimColor>{symbols.tool}</Text>
+          </Box>
+          <Text dimColor>{tools.length} 个工具已折叠（终端过小——Ctrl+T 查看全程）</Text>
+        </Box>
+      </Box>
+    )
+  }
   // M14-V5：可见上限截断（expanded 态同截——展开大输出本就有 expandCap，工具数也须收口）
   const capped = maxTools !== undefined && tools.length > maxTools
   const toolsShown = capped ? tools.slice(0, maxTools) : tools
@@ -102,17 +117,21 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
       </Box>
       {shown.map((t, i) => {
         const id = t.use?.id ?? `_${i}`
-        const digest = t.use ? inputDigest(t.use.input) : ''
+        // 审阅 S1：digest（模型生成的参数摘要）同过净化出口
+        const digest = t.use ? stripUntrustedAnsi(inputDigest(t.use.input)) : ''
         const tail =
           t.status === 'error'
             ? { sym: symbols.error, color: theme.error }
             : t.status === 'done'
               ? { sym: symbols.success, color: theme.success }
               : null // running：无 tail（等 done 才 ✓/✗）
-        const content = t.result?.content ?? ''
+        const contentRaw = t.result?.content ?? ''
+        // 审阅 S1：不可信内容净化在渲染出口（工具输出/diff 是读文件类注入的主通道——
+        // Ink 内置净化保留 OSC 全家族，OSC 52 覆写剪贴板/OSC 8 链接欺骗可直达终端）
+        const content = stripUntrustedAnsi(contentRaw)
         const mediaBlocks = t.result?.blocks ?? []
         const hasOutput = content.length > 0 || mediaBlocks.length > 0
-        const bytes = Buffer.byteLength(content, 'utf8')
+        const bytes = Buffer.byteLength(contentRaw, 'utf8')
         // 副作用工具（edit_file/write_file）默认展开输出（直接显示 diff/content），
         // 只读工具默认折叠（▸ preview）；Ctrl+O 全展开覆盖
         const isSideEffect = t.name === 'edit_file' || t.name === 'write_file'
@@ -122,6 +141,10 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
         // 完全不可见（V4 轮末即 commit，done=true 展开实际活不过一帧就被 Static 吞掉）。
         // 界面批 B1：expandedIds 命中的工具单选展开（Ctrl+E 循环，独立于组级 expanded）
         const showFull = expanded || (isSideEffect && done !== false) || (expandedIds !== undefined && t.use !== undefined && expandedIds.has(t.use.id))
+        // 审阅 T6：diff Infinity 全量只给 Static 固化路径（onToggle 缺省）——动态区 error 轮
+        // 无 completed 帧，整份 50KB diff 常驻动态区每帧重画必 overflow 3J；V4 轮末即 commit
+        // 下动态展开只活一帧，封顶无感知损失，全文 Ctrl+T 可看
+        const fullDiffUnlimited = isSideEffect && onToggle === undefined
         const preview = previewLine(content)
         // M11-P6 todo 特化：digest 显示完成度，展开态逐项 ASCII 状态符（[x]/[->]/[ ]——ambiguous 宽度教训只用 ASCII）
         const isTodo = t.name === 'todo'
@@ -153,12 +176,12 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
                 {showFull ? (
                   (() => {
                     // M14-V2：展开全文 head-tail 物理行折叠（头 3 定位 + 尾最新）——只读工具适用。
-                    // 2026-08-29 用户再拍板「diff 必须显示全」：副作用工具传 Infinity 不限行数
-                    // （同一条 wrapAnsi 硬折行路径保 ⎿ 悬挂缩进对齐；极端体积由上游 50KB 工具
-                    // 结果截断兜底，F-39 超限落盘 Ctrl+T 可回看），只读工具输出仍封顶。
+                    // 2026-08-29 用户再拍板「diff 必须显示全」：Static 固化路径副作用工具传 Infinity
+                    // 不限行数（同一条 wrapAnsi 硬折行路径保 ⎿ 悬挂缩进对齐；极端体积由上游 50KB 工具
+                    // 结果截断兜底，F-39 超限落盘 Ctrl+T 可回看），动态区走 expandCap（审阅 T6）
                     const fold = foldLines(
                       content,
-                      isSideEffect ? Number.POSITIVE_INFINITY : expandCap,
+                      fullDiffUnlimited ? Number.POSITIVE_INFINITY : expandCap,
                       expandWidth,
                       'head-tail',
                     )

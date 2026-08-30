@@ -44,8 +44,9 @@ interface AppProps {
   sandboxDanger?: boolean
   /** 运行时告警（重试/限流/压缩等）——底部独立第二行渲染并截断（防长消息挤碎状态行） */
   warning?: string
-  /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar——Conversation 总分配显式扣减） */
-  conditions?: { tasksBar?: boolean; subagentBar?: boolean }
+  /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar——Conversation 总分配显式扣减）；
+   *  审阅 P0-2：todoLines=常驻 todo 面板实占行数（同入扣减） */
+  conditions?: { tasksBar?: boolean; subagentBar?: boolean; todoLines?: number }
   /** 告警分级着色（M8②：error 红 / warn 黄 / info 蓝；缺省 warn） */
   warningLevel?: 'error' | 'warn' | 'info'
   /** 配置无效/不完整提示（顶部醒目，启动态；区别于 warning 进 StatusBar） */
@@ -106,7 +107,9 @@ export function App({
       activity === 'retry')
   return (
     <Box flexDirection="column">
-      {banner !== undefined && (
+      {/* 审阅 P0-1：banner/warning 均计入帧高——alt 全屏模式一并收口（面板独占帧账，
+          否则 busy 中 Ctrl+T 时 warning/横幅把帧高顶过 rows 触发 win32 每帧全清） */}
+      {!altMode && banner !== undefined && (
         <Box borderStyle="round" borderColor={theme.warn} paddingX={1}>
           <Text color={theme.warn}>⚠ {banner}</Text>
         </Box>
@@ -152,7 +155,7 @@ export function App({
             )}
           </Box>
           )}
-          {warning !== undefined && (
+          {!altMode && warning !== undefined && (
             <Text color={warningLevel === 'error' ? theme.error : warningLevel === 'info' ? theme.info : theme.warn}>
               {warning}
             </Text>

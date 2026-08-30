@@ -173,7 +173,10 @@ export const bashTool: Tool = {
         // 会话信息不可得（argv 单会话兜底/测试）或写失败 → 退化为纯中截，不阻断。
         let savedPath: string | undefined
         const sid = ctx.session?.getSessionId?.()
-        if (ctx.toolUseId !== undefined && sid !== undefined && Buffer.byteLength(raw, 'utf8') > limit) {
+        // 审阅 S4：toolUseId 来自 provider 流——拼进落盘路径前过白名单（`../../x` 形 id
+        // 即越界写原语）；不匹配退化纯中截（fail-safe，不阻断输出）
+        const toolUseIdSafe = ctx.toolUseId !== undefined && /^[\w.-]{1,128}$/.test(ctx.toolUseId)
+        if (toolUseIdSafe && sid !== undefined && Buffer.byteLength(raw, 'utf8') > limit) {
           try {
             const outDir = path.join(os.homedir(), '.ecode', 'sessions', `${sid}.outputs`)
             fs.mkdirSync(outDir, { recursive: true })

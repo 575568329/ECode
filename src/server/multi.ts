@@ -119,6 +119,21 @@ export function serveMulti(
       }
       return { error: `会话 ${sessionId} 不存在（冷会话仅 session/restore 可拉起）`, code: 404 }
     }
+    // 审阅 A3：会话元数据命令（archive/rename）不借道缺省会话承载——web 发信封不带 sessionId，
+    // 原路由落 ensureDefault(fresh)，帧信封=默认会话 id、真目标在 ev.sessionId 里：
+    // ?sessionId=X 过滤流永远收不到自己会话的 updated 帧。目标活会话时按目标路由（信封即目标 id）；
+    // 冷目标落缺省承载（meta 写不依赖会话态；过滤流不可达挂账 host 级广播随 R 线）
+    if (
+      (op.op === 'session/archive' || op.op === 'session/rename') &&
+      typeof (raw.op as { sessionId?: unknown }).sessionId === 'string'
+    ) {
+      const target = (raw.op as { sessionId: string }).sessionId
+      const live = host.conversation(target)
+      if (live !== undefined) {
+        host.touch(target)
+        return { conv: live, sessionId: target }
+      }
+    }
     // 缺省：默认会话或隐式新建（三态②③）
     const conv = host.ensureDefault(freshSessionId())
     const sid = host.currentSessionId
@@ -276,6 +291,10 @@ export function serveMulti(
         // M14-C1④ per-client 过滤管线：?sessionId= 声明只收该会话的 ev 帧（host 生命周期帧照发）。
         // 仅管线不构成安全边界（客户端自报；强制过滤自凭据派生，依赖 C2① 分级，R 线兑现）
         const wantSid = url.searchParams.get('sessionId')
+        // W-9（批 4）：断线游标——?sinceSeq= 声明该会话已收到的最大 seq，重连时重放缓冲帧
+        // （仅对 wantSid 会话生效；缓冲覆盖不到 → 订阅基线帧带 gap=true，客户端全量重同步）
+        const sinceSeqRaw = url.searchParams.get('sinceSeq')
+        const sinceSeq = sinceSeqRaw === null ? null : Number(sinceSeqRaw)
         const write = guardedSseWrite(res)
         const send = (frame: MuxFrame): void => {
           if (muxFilter !== undefined && !muxFilter(frame)) return
@@ -286,6 +305,15 @@ export function serveMulti(
         const unsubs: Array<() => void> = []
         const attachProject = (cwd: string, host: ProjectHost): void => {
           for (const [sid, conv] of host.conversationsSnapshot()) {
+            // W-9：游标重放（仅重连方声明的会话）——先补缓冲帧再挂活订阅，无缝续传
+            if (wantSid !== null && wantSid === sid && sinceSeq !== null && Number.isFinite(sinceSeq)) {
+              const { events, coveredFrom } = conv.replaySince(sinceSeq)
+              const gap = coveredFrom > sinceSeq + 1
+              send({ project: cwd, sessionId: sid, ev: { type: 'session/subscribed', seq: conv.lastSeq, sessionId: sid, lastSeq: conv.lastSeq, gap } })
+              if (!gap) {
+                for (const ev of events) send({ project: cwd, sessionId: sid, ev })
+              }
+            }
             unsubs.push(conv.subscribe((ev) => send({ project: cwd, sessionId: sid, ev }), { canAnswer }))
           }
           // 新会话动态补订 ev 流（审阅 P2-2：曾只发生命周期帧不订阅——新会话 delta/approval 全丢，
@@ -375,7 +403,12 @@ export function serveMulti(
             // （不 resolveHost→acquire，点过的项目不再全变常驻）；项目已活则照旧走宿主（running 态准确）
             const opPeek = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : {}) as { op?: string }
             if (opPeek.op === 'session/list' && credClass !== 'device' && !registry.listActive().some((e) => e.path === cwdOf(project))) {
-              const metas = FileHistoryStore.listMetas(opts.sessionsDir ?? join(homedir(), '.ecode', 'sessions'), cwdOf(project))
+              // 审阅 A2：冷路径与热路径（host/session.ts session/list）同过滤口径——默认滤归档、
+              // includeArchived 拉全量；原冷路径直返 metas，web 默认列表混入已归档会话
+              let metas = FileHistoryStore.listMetas(opts.sessionsDir ?? join(homedir(), '.ecode', 'sessions'), cwdOf(project))
+              if ((opPeek as { includeArchived?: unknown }).includeArchived !== true) {
+                metas = metas.filter((m) => m.archived !== true)
+              }
               return json(200, { ok: true, value: metas })
             }
             const h = await resolveHost(project, credClass)

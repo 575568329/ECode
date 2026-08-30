@@ -132,16 +132,18 @@ export interface LoopRunOptions {
   onSensitiveAccess?: (description: string) => Promise<boolean | string>
 }
 
+/** max_tokens 续写指令：CC "Resume directly — no apology, no recap" 同语义。
+ *  审阅 P2 修正：曾注释称「isMeta 形态 UI 不渲染」——全仓并无 isMeta 机制，实态是
+ *  裸 user 消息随会话落盘。UI 侧由 commit.ts 按本常量精确匹配过滤（不渲染成用户气泡），
+ *  模型侧照常可见（续写指令本身要进上下文）。导出供 commit.ts 消费。 */
+export const CONTINUE_PROMPT =
+  '输出已达 max_tokens 上限被截断。请从中断处直接继续输出：不要道歉、不要复述已写内容，必要时把剩余工作拆成更小的步骤分批输出。'
+
 /**
  * 跑一轮对话（可能内部多轮工具调用）。
  * @param messages 共享状态（会 mutate 并返回）
  * @param userInput 本轮用户输入
  */
-/** max_tokens 续写指令：CC "Resume directly — no apology, no recap" 同语义（isMeta 形态——
- *  随会话落盘但 UI 不渲染为用户气泡，与插话包装同层的合成指令） */
-const CONTINUE_PROMPT =
-  '输出已达 max_tokens 上限被截断。请从中断处直接继续输出：不要道歉、不要复述已写内容，必要时把剩余工作拆成更小的步骤分批输出。'
-
 export async function runLoop(messages: HistoryLine[], userInput: string, opts: LoopRunOptions): Promise<HistoryLine[]> {
   // 调用方可能已乐观 push user（TUI 立即显示）；检测避免重复
   const lastMsg = messages.at(-1)
@@ -428,7 +430,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
       opts.callbacks.onActivity?.('idle')
       // 耗尽=必须用户行动（调配置/拆任务），走常驻 error 通道（warn 12s 过期曾致用户无感知——报障实证）
       ;(opts.callbacks.onError ?? opts.callbacks.onWarn)?.(
-        `输出连续 ${MAX_CONTINUATIONS} 次被 max_tokens 截断，已停止自动续写——请调大 maxTokens 配置（建议 32000+）或拆分任务`,
+        `输出连续 ${MAX_CONTINUATIONS} 次被 max_tokens 截断，已停止自动续写——请调大 maxTokens 配置（建议 32768+）或拆分任务`,
       )
       opts.logger.warn('loop', 'max_tokens_continuations_exhausted', { iter, continuations: continuationCount }, iter)
       done = true

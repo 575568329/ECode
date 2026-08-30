@@ -180,6 +180,9 @@ export function toOpenaiMsgs(messages: Message[], system: string): unknown[] {
     } else if (m.role === 'assistant') {
       const toolUses = m.content.filter((b) => b.type === 'tool_use')
       const texts = m.content.filter((b) => b.type === 'text')
+      // 审阅 P2：texts/toolUses 均空（续写剥除后/异常历史）产出裸 `{role:'assistant'}`
+      // 严格 OpenAI 兼容端点会 400——与 anthropic 翻译层的空 content continue 同口径，跳过
+      if (texts.length === 0 && toolUses.length === 0) continue
       const msg: Record<string, unknown> = { role: 'assistant' }
       if (texts.length > 0) {
         msg.content = texts.map((b) => (b as { text: string }).text).join('')

@@ -9,6 +9,8 @@
  * findUse：从 messages 按 id 反查 tool_use（onToolResult 时配对 active.tools 用）。
  */
 import { isBoundary, isRewind, isMessageLine, type HistoryLine, type Message, type TextBlock, type ToolUseBlock, type ToolResultBlock } from '../core/types.js'
+import { CONTINUE_PROMPT } from '../core/loop.js'
+import { stripUntrustedAnsi } from './sanitize.js'
 import type { CommittedItem, CommittedToolCall } from './types.js'
 
 /** committed 层 user 文本截断（S4.4 v6）：手动 skill 展开全文可达数百行，静态区只保 ~10 行。 */
@@ -71,7 +73,9 @@ export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
         .filter((b) => b.type === 'text')
         .map((b) => (b as TextBlock).text)
         .join('')
-      if (text) {
+      // max_tokens 自动续写的合成指令（loop CONTINUE_PROMPT）：模型侧需要，UI 不渲染成
+      // 用户气泡（审阅 P2：曾以「isMeta 形态」注释虚构机制，实态落盘后在此精确过滤）
+      if (text && text !== CONTINUE_PROMPT) {
         flush()
         items.push({ kind: 'user', id: `u${i}`, text: truncateUserText(text) })
       }
@@ -80,7 +84,9 @@ export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
       for (const b of m.content) {
         if (b.type === 'text') {
           flush()
-          items.push({ kind: 'assistant-text', id: `a${i}_${n}`, text: (b as TextBlock).text })
+          // 审阅 S1：Static 固化口净化一次（模型文本可回显被读文件内容——OSC 52 覆写剪贴板/
+          // OSC 8 链接欺骗直达终端；动态区由 ToolGroupView 渲染口与折叠窗各自承担）
+          items.push({ kind: 'assistant-text', id: `a${i}_${n}`, text: stripUntrustedAnsi((b as TextBlock).text) })
         } else if (b.type === 'tool_use') {
           const tu = b as ToolUseBlock
           const r = results.get(tu.id)

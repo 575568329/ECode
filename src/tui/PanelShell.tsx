@@ -58,10 +58,12 @@ export function rowText(label: ReactNode): string {
 }
 
 /** F-48b：SGR 鼠标事件全形态识别（滚轮 64/65、按键 0-2、motion 32+；M 按下/m 释放）——
- * 鼠标跟踪开启期间这些序列经 Ink 透传为 useInput 的 input 字符串，若不识别会被
- * 搜索 catch-all 当可打印字符吃掉（真机实证：滚轮→搜索框出现 '[<65;21;8M'）。 */
-function isMouseInput(input: string): boolean {
-  return /^[<d+;d+;d+[Mm]$/.test(input)
+ *  鼠标跟踪开启期间这些序列经 Ink 透传为 useInput 的 input 字符串，若不识别会被
+ *  搜索 catch-all 当可打印字符吃掉（真机实证：滚轮→搜索框出现 '[<65;21;8M]'）。
+ *  审阅 T1：正则曾被写成 /^[<d+;d+;d+[Mm]$/（丢 \[\d 转义，实为单字符类）——左键/motion
+ *  全部漏过滤进搜索词。导出共享，OutputViewer 搜索分支同源消费。 */
+export function isMouseInput(input: string): boolean {
+  return /^\[<\d+;\d+;\d+[Mm]$/.test(input)
 }
 
 export function PanelShell<T>({
@@ -199,6 +201,10 @@ export function PanelShell<T>({
       else onCancel()
     } else if (key.ctrl && input === 'c') {
       onCancel() // T4：面板期间 Ctrl+C = 退出面板（不中断 loop）
+    } else if (input === 'q' && query === '') {
+      // 审阅 T2：列表页宣称「q 退出」（pager 惯例）但无分支——q 落进 catch-all 进搜索词。
+      // 仅未在搜索态时生效（搜索中 q 是普通字符）
+      onCancel()
     } else if (key.backspace || key.delete) {
       setQuery((q) => q.slice(0, -1))
     } else if (input !== '' && !key.ctrl && !key.meta && !key.return && !key.escape && !key.tab && !isMouseInput(input)) {

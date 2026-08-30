@@ -110,8 +110,9 @@ interface ConversationProps {
   /** 插话排队留痕（2026-08-29 用户点名）：queue/snapshot 驱动，动态区渲染排队用户行 */
   queuedInterjects?: string[]
   children?: ReactNode
-  /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar 各 ≤3 行——allocateDynamic 显式扣减） */
-  conditions?: { tasksBar?: boolean; subagentBar?: boolean }
+  /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar 各 ≤3 行——allocateDynamic 显式扣减）；
+   *  审阅 P0-2：todoLines=常驻 todo 面板实占行数（TuiApp 派生，同入扣减） */
+  conditions?: { tasksBar?: boolean; subagentBar?: boolean; todoLines?: number }
   /** F-48 批 1：alt-screen 全屏内容——非 null 时动态区/children 整体替换为它（Static
    *  骨架保持挂载：游标不归零即不会历史重放；数据由调用方冻结/补齐）。children 含
    *  ActivityBar/InputStream 骨架等，alt 下全部让位 */

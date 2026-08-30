@@ -56,7 +56,7 @@ export function buildContextMessages(lines: HistoryLine[]): Message[] {
 
   // 过滤出 Message[]（去掉标记行）——tailStartIndex 的参考系
   const msgs = subset.filter(isMessageLine)
-  if (!lastBoundary) return msgs
+  if (!lastBoundary) return repairOrphanToolUses(msgs)
 
   // 有 boundary → [summary 消息] + tailStartIndex 之后的 Message（tail 原文 + 新消息）
   const start = Math.max(0, Math.min(lastBoundary.tailStartIndex, msgs.length)) // P2-14: 双向钳（防负/越界）
@@ -67,8 +67,37 @@ export function buildContextMessages(lines: HistoryLine[]): Message[] {
     role: summaryRole,
     content: [{ type: 'text', text: `${SUMMARY_MSG_PREFIX}${lastBoundary.summary}` }],
   }
-  return [summaryMsg, ...tail]
+  return repairOrphanToolUses([summaryMsg, ...tail])
 }
 
 /** summary 消息的文本前缀（投影时构造；summarize 据此识别并剥掉旧 summary，避免滚动时双重表示）。 */
 export const SUMMARY_MSG_PREFIX = '[此前对话已压缩] '
+
+/**
+ * 孤儿 tool_use 修复（四角色审阅 A1，防御所有写入源）：assistant 的 tool_use 无任何后续
+ * tool_result 配对即协议非法——Anthropic 严格校验直接 400 且不可重试。典型写入源：
+ * max_tokens 续写（loop 剥除只改内存对象，history.append 已先落盘原文），restore 后每轮必炸。
+ * 在投影出口统一修复：未配对 tool_use 剥除；剥空的消息整条丢弃（空 assistant 同样协议非法，
+ * anthropic/openai 翻译层不再需要各自兜底）。
+ */
+export function repairOrphanToolUses(msgs: Message[]): Message[] {
+  const paired = new Set<string>()
+  for (const m of msgs) {
+    if (m.role !== 'user') continue
+    for (const b of m.content) {
+      if (b.type === 'tool_result') paired.add(b.tool_use_id)
+    }
+  }
+  let changed = false
+  const out: Message[] = []
+  for (const m of msgs) {
+    if (m.role === 'assistant' && m.content.some((b) => b.type === 'tool_use' && !paired.has(b.id))) {
+      changed = true
+      const content = m.content.filter((b) => !(b.type === 'tool_use' && !paired.has(b.id)))
+      if (content.length > 0) out.push({ ...m, content })
+      continue
+    }
+    out.push(m)
+  }
+  return changed ? out : msgs
+}

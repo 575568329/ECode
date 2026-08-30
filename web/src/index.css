@@ -5,6 +5,24 @@
   color-scheme: dark;
 }
 
+/* W-8（批 4）语义令牌层：组件只消费语义类（bg-surface/text-body/border-line…），
+   禁止新写裸 neutral-*。值与旧 neutral 色阶一一对应（零视觉变化）；亮色/主色切换
+   的演进位 = 在选择器里覆盖这组变量即可，不动组件。状态色（emerald/red/amber/sky）
+   语义自明，暂不收编。 */
+@theme {
+  --color-canvas: #0a0a0a; /* 页面底 */
+  --color-surface-deep: #0a0a0a; /* 代码块/危险条底（原 neutral-950） */
+  --color-surface: #171717; /* 卡片/输入底（原 neutral-900） */
+  --color-surface-raised: #262626; /* 用户气泡/选中行（原 neutral-800） */
+  --color-line: #262626; /* 常规描边（原 neutral-800） */
+  --color-line-strong: #404040; /* hover/强调描边（原 neutral-700） */
+  --color-bright: #e5e5e5; /* 助手正文（原 neutral-200） */
+  --color-body: #d4d4d4; /* 主要文字（原 neutral-300） */
+  --color-dim: #a3a3a3; /* 次要文字（原 neutral-400） */
+  --color-muted: #737373; /* 弱化文字（原 neutral-500） */
+  --color-faint: #525252; /* 提示/占位（原 neutral-600） */
+}
+
 html,
 body,
 #root {

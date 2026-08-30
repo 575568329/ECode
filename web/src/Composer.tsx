@@ -97,10 +97,10 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
           <div className="flex items-center gap-2 text-xs font-medium text-amber-400">
             <ShieldAlert size={14} />
             {sensitive ? '敏感操作确认（不可记住）' : '需要审批'}
-            <span className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] text-neutral-400">{a.tool}</span>
+            <span className="rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[11px] text-dim">{a.tool}</span>
             {a.claimedBy !== undefined && <span className="text-[11px] text-amber-600">（{a.claimedBy} 正在处理）</span>}
           </div>
-          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border border-neutral-800 bg-neutral-900/70 px-3 py-2 text-xs text-neutral-300">{a.preview}</pre>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border border-line bg-surface/70 px-3 py-2 text-xs text-body">{a.preview}</pre>
           <div className="flex flex-wrap gap-2">
             {a.decisions.includes('once') && (
               <button onClick={() => void answer('once')} className="flex min-h-11 items-center gap-1.5 rounded bg-emerald-700 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-600">
@@ -108,7 +108,7 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
               </button>
             )}
             {a.decisions.includes('always') && !sensitive && (
-              <button onClick={() => void answer('always')} className="flex min-h-11 items-center gap-1.5 rounded bg-neutral-700 px-4 py-2 text-xs text-neutral-300 hover:bg-neutral-600">
+              <button onClick={() => void answer('always')} className="flex min-h-11 items-center gap-1.5 rounded bg-neutral-700 px-4 py-2 text-xs text-body hover:bg-neutral-600">
                 <Check size={13} /> 本会话始终允许
               </button>
             )}
@@ -134,16 +134,16 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
       }
     }
     return (
-      <div className="border-t border-neutral-800 bg-neutral-900/50 px-4 py-3">
+      <div className="border-t border-line bg-surface/50 px-4 py-3">
         <div className="mx-auto max-w-3xl space-y-2">
-          <div className="text-xs font-medium text-neutral-300">{q.title}</div>
+          <div className="text-xs font-medium text-body">{q.title}</div>
           <div className="flex flex-wrap gap-2">
             {q.options.map((o) => (
-              <button key={o} onClick={() => void answer(o)} className="rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:border-neutral-500">
+              <button key={o} onClick={() => void answer(o)} className="rounded border border-line-strong px-3 py-1.5 text-xs text-body hover:border-line-strong">
                 {o}
               </button>
             ))}
-            <button onClick={() => void answer(null)} className="rounded px-3 py-1.5 text-xs text-neutral-600 hover:text-neutral-400">
+            <button onClick={() => void answer(null)} className="rounded px-3 py-1.5 text-xs text-faint hover:text-dim">
               取消
             </button>
           </div>
@@ -170,7 +170,7 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
   // —— 常态输入区（未选项目=禁用占位；hero 态=「输入即开新对话」） ——
   const noProject = project === null
   return (
-    <div className="border-t border-neutral-800 px-4 py-3">
+    <div className="border-t border-line px-4 py-3">
       {err !== '' && <div className="mx-auto mb-2 max-w-3xl text-xs text-red-400">⚠ {err}</div>}
       <div className="mx-auto flex max-w-3xl items-end gap-2">
         <textarea
@@ -190,7 +190,7 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
           }}
           rows={Math.min(6, Math.max(1, text.split('\n').length))}
           placeholder={noProject ? '先选择左侧项目，或点侧栏「+」添加…' : sessionId === null ? '输入即开新对话…（Shift+Enter 换行）' : running ? '运行中——输入将作为插话注入（Enter 排队）' : '输入你的问题…（Shift+Enter 换行）'}
-          className="min-w-0 flex-1 resize-none rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none placeholder:text-neutral-600 focus:border-neutral-500 disabled:opacity-50"
+          className="min-w-0 flex-1 resize-none rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm outline-none placeholder:text-faint focus:border-line-strong disabled:opacity-50"
         />
         {/* 按钮横向一排（主操作最右；次级停左）：此前纵向 flex-col——运行态「停止」把「插话」
             顶到输入框上沿之外，列高随状态跳变（2026-08-29 用户实测点名布局怪异） */}
@@ -198,7 +198,7 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
           {sessionId !== null && view !== undefined && view.queue.length > 0 && (
             <button
               onClick={() => void sendCommand('', project ?? '', sessionId, { op: 'interjection/clear' }).catch(() => {})}
-              className="flex items-center gap-1 rounded-lg border border-neutral-800 px-2 py-1 text-[11px] text-neutral-500 hover:text-neutral-300"
+              className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-[11px] text-muted hover:text-body"
               title="清空插话队列"
             >
               <Trash2 size={11} /> 清队列({view.queue.length})
@@ -217,7 +217,7 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
           <button
             onClick={() => void submit()}
             disabled={text.trim() === '' || sending || noProject}
-            className="rounded-lg bg-neutral-200 px-3.5 py-2 text-sm font-medium text-neutral-900 disabled:opacity-30"
+            className="rounded-lg bg-neutral-200 px-3.5 py-2 text-sm font-medium text-canvas disabled:opacity-30"
           >
             {sessionId !== null && running ? '插话' : '发送'}
           </button>
@@ -250,8 +250,8 @@ function AskUserForm({
         </div>
         {questions.map((q, i) => (
           <div key={i} className="space-y-1.5">
-            <div className="text-xs text-neutral-300">
-              {questions.length > 1 && <span className="mr-1 rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] text-neutral-400">{q.header !== '' ? q.header : `Q${i + 1}`}</span>}
+            <div className="text-xs text-body">
+              {questions.length > 1 && <span className="mr-1 rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[11px] text-dim">{q.header !== '' ? q.header : `Q${i + 1}`}</span>}
               {q.question}
             </div>
             {q.options.length > 0 && (
@@ -261,7 +261,7 @@ function AskUserForm({
                     key={o.label}
                     title={o.description ?? ''}
                     onClick={() => setInputs((prev) => prev.map((v, j) => (j === i ? (v === '' ? o.label : `${v}, ${o.label}`) : v)))}
-                    className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:border-sky-600"
+                    className="rounded border border-line-strong px-2 py-1 text-xs text-body hover:border-sky-600"
                   >
                     {o.label}
                   </button>
@@ -278,7 +278,7 @@ function AskUserForm({
                 }
               }}
               placeholder="输入回答（点上方选项可快速填入）…"
-              className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none placeholder:text-neutral-600 focus:border-sky-600"
+              className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm outline-none placeholder:text-faint focus:border-sky-600"
             />
           </div>
         ))}
@@ -286,7 +286,7 @@ function AskUserForm({
           <button onClick={() => finish(inputs)} className="flex min-h-11 items-center gap-1.5 rounded bg-sky-700 px-4 py-2 text-xs font-medium text-white hover:bg-sky-600">
             <Check size={13} /> 提交回答
           </button>
-          <button onClick={() => finish(questions.map(() => '（未作答）'))} className="rounded px-3 py-2 text-xs text-neutral-500 hover:text-neutral-300">
+          <button onClick={() => finish(questions.map(() => '（未作答）'))} className="rounded px-3 py-2 text-xs text-muted hover:text-body">
             跳过
           </button>
         </div>

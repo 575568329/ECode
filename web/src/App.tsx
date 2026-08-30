@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Archive, BarChart3, ChevronDown, Pencil, Plus, Search } from 'lucide-react'
 import { groupSessionsByTime, searchSessions, type SidebarSession } from './sessionList'
+import { lastSeqFor } from './store'
 import { addProject, connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
 import { toConfigView, useApp } from './store'
 import { makeHash, parseHash, type RoutePos } from './routing'
@@ -34,8 +35,8 @@ function TokenGate({ onReady, hint }: { onReady: () => void; hint?: string }): R
             .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
         }}
       >
-        <div className="text-sm text-neutral-400">连接 ECode daemon</div>
-        <div className="text-xs text-neutral-500">局域网访问输 serve 启动时设置的密码（ECODE_SERVER_PASSWORD）；本机访问见 ~/.ecode/server.json 的 token</div>
+        <div className="text-sm text-dim">连接 ECode daemon</div>
+        <div className="text-xs text-muted">局域网访问输 serve 启动时设置的密码（ECODE_SERVER_PASSWORD）；本机访问见 ~/.ecode/server.json 的 token</div>
         {hint !== undefined && hint !== '' && <div className="text-xs text-amber-400">⚠ {hint}</div>}
         <input
           type="password"
@@ -43,10 +44,10 @@ function TokenGate({ onReady, hint }: { onReady: () => void; hint?: string }): R
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder="token / 密码"
-          className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-500"
+          className="w-full rounded border border-line-strong bg-surface px-3 py-2 text-sm outline-none focus:border-line-strong"
         />
         {error !== '' && <div className="text-xs text-red-400">{error}</div>}
-        <button type="submit" className="w-full rounded bg-neutral-200 px-3 py-2 text-sm font-medium text-neutral-900">
+        <button type="submit" className="w-full rounded bg-neutral-200 px-3 py-2 text-sm font-medium text-canvas">
           连接
         </button>
       </form>
@@ -58,7 +59,7 @@ function ConnBadge(): React.JSX.Element {
   const connState = useApp((s) => s.connState)
   const color = connState === 'open' ? 'bg-emerald-500' : connState === 'connecting' ? 'bg-amber-400' : 'bg-red-500 animate-pulse'
   return (
-    <span className="flex items-center gap-1.5 text-xs text-neutral-500">
+    <span className="flex items-center gap-1.5 text-xs text-muted">
       <span className={`inline-block h-2 w-2 rounded-full ${color}`} />
       {connState === 'open' ? '已连接' : connState === 'connecting' ? '连接中' : '重连中'}
     </span>
@@ -101,24 +102,24 @@ function SessionRow({
             if (e.key === 'Escape') onRenameCancel?.()
           }}
           onBlur={() => onRenameCancel?.()}
-          className="w-full rounded border border-neutral-600 bg-neutral-900 px-2 py-1 text-sm outline-none focus:border-neutral-400"
+          className="w-full rounded border border-neutral-600 bg-surface px-2 py-1 text-sm outline-none focus:border-dim"
         />
       </div>
     )
   }
   const dotColor = brief.running ? 'bg-emerald-500 animate-pulse' : 'bg-neutral-600'
   return (
-    <div className={`group flex w-full items-center rounded ${active ? 'bg-neutral-800' : 'hover:bg-neutral-800/60'}`}>
+    <div className={`group flex w-full items-center rounded ${active ? 'bg-surface-raised' : 'hover:bg-surface-raised/60'}`}>
       <button onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm">
         <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotColor}`} />
-        <span className="truncate text-neutral-300">{brief.title === '' ? brief.sessionId.slice(-12) : brief.title}</span>
+        <span className="truncate text-body">{brief.title === '' ? brief.sessionId.slice(-12) : brief.title}</span>
       </button>
       <span className="mr-1 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
         {onRenameStart !== undefined && (
           <button
             onClick={onRenameStart}
             title="重命名（手动命名即固化标题）"
-            className="flex h-5 w-5 items-center justify-center rounded text-neutral-500 hover:bg-neutral-700 hover:text-neutral-300"
+            className="flex h-5 w-5 items-center justify-center rounded text-muted hover:bg-neutral-700 hover:text-body"
           >
             <Pencil size={11} />
           </button>
@@ -127,7 +128,7 @@ function SessionRow({
           <button
             onClick={onArchive}
             title="归档（列表隐藏，可从「已归档」恢复）"
-            className="flex h-5 w-5 items-center justify-center rounded text-neutral-500 hover:bg-neutral-700 hover:text-neutral-300"
+            className="flex h-5 w-5 items-center justify-center rounded text-muted hover:bg-neutral-700 hover:text-body"
           >
             <Archive size={11} />
           </button>
@@ -172,7 +173,7 @@ function ModelChip(): React.JSX.Element {
     <span className="relative">
       <button
         onClick={() => models.length > 0 && setOpen(!open)}
-        className="flex items-center gap-1 rounded border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:border-neutral-600 hover:text-neutral-200"
+        className="flex items-center gap-1 rounded border border-line px-2 py-0.5 text-[11px] text-dim hover:border-line-strong hover:text-bright"
         title={`provider: ${cv.currentName}`}
       >
         {cv.currentModel === '' ? '…' : cv.currentModel}
@@ -182,12 +183,12 @@ function ModelChip(): React.JSX.Element {
         <>
           {/* 点外面收起（透明遮罩层） */}
           <button aria-label="关闭" className="fixed inset-0 z-10 cursor-default" onClick={() => setOpen(false)} />
-          <span className="absolute right-0 z-20 mt-1 block max-h-64 overflow-y-auto rounded border border-neutral-700 bg-neutral-900 py-1 shadow-xl">
+          <span className="absolute right-0 z-20 mt-1 block max-h-64 overflow-y-auto rounded border border-line-strong bg-surface py-1 shadow-xl">
             {models.map((m) => (
               <button
                 key={m}
                 onClick={() => pick(m)}
-                className={`block w-full px-3 py-1.5 text-left text-xs whitespace-nowrap hover:bg-neutral-800 ${m === cv.currentModel ? 'text-emerald-400' : 'text-neutral-300'}`}
+                className={`block w-full px-3 py-1.5 text-left text-xs whitespace-nowrap hover:bg-surface-raised ${m === cv.currentModel ? 'text-emerald-400' : 'text-body'}`}
               >
                 {m}
               </button>
@@ -251,8 +252,11 @@ export function App(): React.JSX.Element {
     let conn: MuxConnection | undefined
     // 连接建立（含切会话重订/断线重连）即补拉：①会话列表——重订间隙丢 thread/status 帧
     // （新会话转正瞬间 busy 帧丢失卡"运行中"，G3 实测）；②当前会话全量 session/read——
-    // 断线/重订期间丢的 delta/turn 帧导致内容缺尾（W6b onReconnect 语义：不做增量补帧，
-    // 服务端权威全量重拉，loadHistory 同步清 streaming/items/queue）
+    // 断线/重订期间丢的 delta/turn 帧导致内容缺尾（W6b onReconnect 语义）。
+    // W-9（批 4）：重连基线——游标在连接建立时快照（有基线=本次 open 走 mux 重放补帧，
+    // 跳过全量 session/read；gap/seq 回绕由 session/subscribed→resync 全量重同步兜底）
+    const cursorAtConnect = selectedSessionRef.current !== null ? lastSeqFor(selectedSessionRef.current) : null
+    const replayed = cursorAtConnect !== null
     const refreshSessions = (): void => {
       fetchProjects(BASE).then((p) => setProjects([...new Set([...(p.registered ?? []).map((x) => x.path), ...(p.history ?? [])])])).catch(() => {})
       if (selectedProject !== null) {
@@ -266,7 +270,7 @@ export function App(): React.JSX.Element {
           })
           .catch(() => {})
       }
-      if (selectedSession !== null && selectedSession !== '') {
+      if (selectedSession !== null && selectedSession !== '' && !replayed) {
         sendCommand(BASE, selectedProject ?? '', selectedSession, { op: 'session/read', sessionId: selectedSession })
           .then((r) => {
             if (r.ok) loadHistory(selectedSession, r.value)
@@ -290,6 +294,8 @@ export function App(): React.JSX.Element {
         },
       },
       selectedSession ?? undefined,
+      // W-9：实时读游标——每次连接尝试（含内部重连）都携带最新基线
+      () => (selectedSessionRef.current !== null ? lastSeqFor(selectedSessionRef.current) : null),
     )
     fetchProjects(BASE)
       .then((p) => setProjects([...new Set([...(p.registered ?? []).map((x) => x.path), ...(p.history ?? [])])]))
@@ -449,7 +455,7 @@ export function App(): React.JSX.Element {
       .finally(() => setAddBusy(false))
   }
 
-  if (!checked) return <div className="flex h-full items-center justify-center text-sm text-neutral-600">…</div>
+  if (!checked) return <div className="flex h-full items-center justify-center text-sm text-faint">…</div>
   if (!ready)
     return (
       <TokenGate
@@ -467,14 +473,14 @@ export function App(): React.JSX.Element {
   return (
     <div className="flex h-full flex-col md:flex-row">
       {/* 侧栏（桌面常驻；移动=列表态显示） */}
-      <aside className={`flex w-full shrink-0 flex-col border-b border-neutral-800 md:flex md:w-72 md:border-b-0 md:border-r ${mobileDetail ? 'hidden' : 'flex'}`}>
+      <aside className={`flex w-full shrink-0 flex-col border-b border-line md:flex md:w-72 md:border-b-0 md:border-r ${mobileDetail ? 'hidden' : 'flex'}`}>
         <div className="flex items-center justify-between px-3 py-2.5">
           <span className="text-sm font-semibold tracking-wide">ECode</span>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setStatsOpen(true)}
               title="用量统计（近 7 天）"
-              className="flex h-6 w-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
+              className="flex h-6 w-6 items-center justify-center rounded text-muted hover:bg-surface-raised hover:text-body"
             >
               <BarChart3 size={13} />
             </button>
@@ -482,7 +488,7 @@ export function App(): React.JSX.Element {
           </div>
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-2">
-          <div className="flex items-center justify-between px-1 pb-1 pt-2 text-[11px] uppercase tracking-wider text-neutral-600">
+          <div className="flex items-center justify-between px-1 pb-1 pt-2 text-[11px] uppercase tracking-wider text-faint">
             项目
             <button
               onClick={() => {
@@ -490,7 +496,7 @@ export function App(): React.JSX.Element {
                 setAddErr('')
               }}
               title="添加项目（本机绝对路径）"
-              className="flex h-5 w-5 items-center justify-center rounded text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
+              className="flex h-5 w-5 items-center justify-center rounded text-muted hover:bg-surface-raised hover:text-body"
             >
               <Plus size={12} />
             </button>
@@ -511,11 +517,11 @@ export function App(): React.JSX.Element {
                   if (addErr !== '') setAddErr('')
                 }}
                 placeholder="本机项目绝对路径（D:/study/foo）"
-                className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-xs outline-none focus:border-neutral-500"
+                className="w-full rounded border border-line-strong bg-surface px-2 py-1.5 text-xs outline-none focus:border-line-strong"
               />
               {addErr !== '' && <div className="pt-1 text-[11px] text-red-400">{addErr}</div>}
               <div className="flex gap-1.5 pt-1.5">
-                <button type="submit" disabled={newPath.trim() === '' || addBusy} className="rounded bg-neutral-200 px-2 py-1 text-[11px] font-medium text-neutral-900 disabled:opacity-30">
+                <button type="submit" disabled={newPath.trim() === '' || addBusy} className="rounded bg-neutral-200 px-2 py-1 text-[11px] font-medium text-canvas disabled:opacity-30">
                   {addBusy ? '添加中…' : '添加'}
                 </button>
                 <button
@@ -525,7 +531,7 @@ export function App(): React.JSX.Element {
                     setNewPath('')
                     setAddErr('')
                   }}
-                  className="rounded px-2 py-1 text-[11px] text-neutral-500 hover:text-neutral-300"
+                  className="rounded px-2 py-1 text-[11px] text-muted hover:text-body"
                 >
                   取消
                 </button>
@@ -536,9 +542,9 @@ export function App(): React.JSX.Element {
             const short = p.split('/').filter(Boolean).slice(-2).join('/')
             const selected = selectedProject === p
             return (
-              <div key={p} className={`flex w-full items-center rounded ${selected ? 'bg-neutral-800' : 'hover:bg-neutral-800/60'}`}>
+              <div key={p} className={`flex w-full items-center rounded ${selected ? 'bg-surface-raised' : 'hover:bg-surface-raised/60'}`}>
                 <button onClick={() => select(p, null)} className="min-w-0 flex-1 px-2 py-1.5 text-left text-sm">
-                  <span className="truncate text-neutral-300" title={p}>
+                  <span className="truncate text-body" title={p}>
                     {short}
                   </span>
                 </button>
@@ -546,7 +552,7 @@ export function App(): React.JSX.Element {
                   <button
                     onClick={toggleShowArchived}
                     title="已归档会话"
-                    className={`mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded ${showArchived ? 'text-amber-400' : 'text-neutral-500'} hover:bg-neutral-700 hover:text-neutral-300`}
+                    className={`mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded ${showArchived ? 'text-amber-400' : 'text-muted'} hover:bg-neutral-700 hover:text-body`}
                   >
                     <Archive size={12} />
                   </button>
@@ -554,16 +560,16 @@ export function App(): React.JSX.Element {
               </div>
             )
           })}
-          {projects.length === 0 && <div className="px-2 py-3 text-xs text-neutral-600">暂无项目——点上方「+」添加，或在本机项目里跑一次 ecode</div>}
+          {projects.length === 0 && <div className="px-2 py-3 text-xs text-faint">暂无项目——点上方「+」添加，或在本机项目里跑一次 ecode</div>}
           {selectedProject !== null && (
             <>
               <div className="flex items-center gap-1.5 px-1 pb-1 pt-3">
-                <Search size={11} className="shrink-0 text-neutral-600" />
+                <Search size={11} className="shrink-0 text-faint" />
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="搜索会话…"
-                  className="w-full min-w-0 rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs outline-none placeholder:text-neutral-600 focus:border-neutral-600"
+                  className="w-full min-w-0 rounded border border-line bg-surface px-2 py-1 text-xs outline-none placeholder:text-faint focus:border-line-strong"
                 />
               </div>
               {query.trim() !== '' ? (
@@ -590,12 +596,12 @@ export function App(): React.JSX.Element {
                     />
                   ))
                 ) : (
-                  <div className="px-2 py-2 text-xs text-neutral-600">无匹配会话</div>
+                  <div className="px-2 py-2 text-xs text-faint">无匹配会话</div>
                 )
               ) : (
                 sessionGroups.map((g) => (
                   <div key={g.label}>
-                    <div className="px-1 pb-0.5 pt-2 text-[11px] text-neutral-600">{g.label}</div>
+                    <div className="px-1 pb-0.5 pt-2 text-[11px] text-faint">{g.label}</div>
                     {g.items.map((s) => (
                       <SessionRow
                         key={s.sessionId}
@@ -623,20 +629,20 @@ export function App(): React.JSX.Element {
               <button
                 onClick={startNewSession}
                 disabled={creating}
-                className="mt-1 w-full rounded border border-dashed border-neutral-700 px-2 py-1.5 text-xs text-neutral-500 hover:border-neutral-500 hover:text-neutral-300 disabled:opacity-40"
+                className="mt-1 w-full rounded border border-dashed border-line-strong px-2 py-1.5 text-xs text-muted hover:border-line-strong hover:text-body disabled:opacity-40"
               >
                 {creating ? '新建中…' : '+ 新对话'}
               </button>
               {showArchived && (
-                <div className="mt-1 rounded border border-neutral-800/80 px-1.5 py-1.5">
+                <div className="mt-1 rounded border border-line/80 px-1.5 py-1.5">
                   <div className="px-0.5 pb-1 text-[11px] text-amber-500/90">已归档会话</div>
-                  {archivedSessions.length === 0 && <div className="px-1 py-1 text-[11px] text-neutral-600">无归档会话</div>}
+                  {archivedSessions.length === 0 && <div className="px-1 py-1 text-[11px] text-faint">无归档会话</div>}
                   {archivedSessions.map((s) => (
-                    <div key={s.sessionId} className="flex w-full items-center rounded hover:bg-neutral-800/60">
-                      <button onClick={() => select(selectedProject, s.sessionId)} className="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-xs text-neutral-500" title="点击打开归档会话">
+                    <div key={s.sessionId} className="flex w-full items-center rounded hover:bg-surface-raised/60">
+                      <button onClick={() => select(selectedProject, s.sessionId)} className="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-xs text-muted" title="点击打开归档会话">
                         {s.title === '' ? s.sessionId.slice(-12) : s.title}
                       </button>
-                      <button onClick={() => setSessionArchived(s.sessionId, false)} title="恢复到主列表" className="mr-1 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-neutral-500 hover:bg-neutral-700 hover:text-neutral-300">
+                      <button onClick={() => setSessionArchived(s.sessionId, false)} title="恢复到主列表" className="mr-1 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-neutral-700 hover:text-body">
                         恢复
                       </button>
                     </div>
@@ -650,11 +656,11 @@ export function App(): React.JSX.Element {
       {/* 主列（移动=详情态占满+顶栏返回；桌面常驻）：滚动体（hero/对话）+ 常驻底部输入区 */}
       <main className={`flex min-h-0 flex-1 flex-col ${mobileDetail ? 'flex' : 'hidden md:flex'}`}>
         {mobileDetail && (
-          <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-2 md:hidden">
-            <button onClick={() => select(selectedProject, null)} className="flex items-center gap-1 rounded px-2 py-1 text-sm text-neutral-400 hover:text-neutral-200">
+          <div className="flex items-center gap-2 border-b border-line px-2 py-2 md:hidden">
+            <button onClick={() => select(selectedProject, null)} className="flex items-center gap-1 rounded px-2 py-1 text-sm text-dim hover:text-bright">
               <ArrowLeft size={16} /> 返回
             </button>
-            <span className="truncate text-sm text-neutral-500">{selectedProject?.split('/').filter(Boolean).slice(-2).join('/')}</span>
+            <span className="truncate text-sm text-muted">{selectedProject?.split('/').filter(Boolean).slice(-2).join('/')}</span>
             <span className="ml-auto">
               <ModelChip />
             </span>
@@ -662,8 +668,8 @@ export function App(): React.JSX.Element {
         )}
         {/* 桌面顶栏：项目路径 + 模型芯片（model/set 入口） */}
         {selectedProject !== null && (
-          <div className="hidden items-center justify-between border-b border-neutral-800 px-4 py-1.5 md:flex">
-            <span className="truncate text-xs text-neutral-500" title={selectedProject}>
+          <div className="hidden items-center justify-between border-b border-line px-4 py-1.5 md:flex">
+            <span className="truncate text-xs text-muted" title={selectedProject}>
               {selectedProject}
             </span>
             <ModelChip />
@@ -672,14 +678,14 @@ export function App(): React.JSX.Element {
         {selectedProject === null ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
             <div className="text-base font-semibold tracking-wide">ECode</div>
-            <div className="max-w-md text-sm text-neutral-600">选择左侧项目开始，或点侧栏「+」添加本机项目</div>
+            <div className="max-w-md text-sm text-faint">选择左侧项目开始，或点侧栏「+」添加本机项目</div>
           </div>
         ) : selectedSession === null ? (
           // hero 态：输入即开新对话（composer 常驻下方——harness 空 hero + 常驻 bar 同款）
           <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-10 text-center">
             <div className="text-lg font-semibold tracking-wide">新对话</div>
-            <div className="max-w-md text-sm text-neutral-500">在下方输入框输入即开新对话；或从左侧选择历史会话继续。</div>
-            <div className="max-w-md truncate rounded border border-neutral-800 px-2 py-1 font-mono text-[11px] text-neutral-600" title={selectedProject}>
+            <div className="max-w-md text-sm text-muted">在下方输入框输入即开新对话；或从左侧选择历史会话继续。</div>
+            <div className="max-w-md truncate rounded border border-line px-2 py-1 font-mono text-[11px] text-faint" title={selectedProject}>
               {selectedProject}
             </div>
           </div>

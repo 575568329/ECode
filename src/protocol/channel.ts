@@ -36,6 +36,9 @@ export class InMemoryChannel implements ClientTransport {
   private readonly passiveHandlers = new Set<EventHandler>()
   private dispatcher: CommandDispatcher | null = null
   private disposed = false
+  /** W-9（批 4）：重放环形缓冲——断线游标续传的数据面（harness session/subscribed 同思路） */
+  private readonly replayBuffer: ProtocolEvent[] = []
+  private static readonly REPLAY_LIMIT = 500
 
   /** 宿主侧：绑定命令分发器（HostSession 构造时，B1） */
   bind(dispatcher: CommandDispatcher): void {
@@ -47,11 +50,23 @@ export class InMemoryChannel implements ClientTransport {
    *  wire 序列化语义一致），且机械禁止函数/类引用进入协议（clone 直接抛错）。 */
   publish(ev: PublishableEvent): ProtocolEvent {
     const full = { ...structuredClone(ev), seq: ++this.seq } as ProtocolEvent
+    this.replayBuffer.push(full)
+    if (this.replayBuffer.length > InMemoryChannel.REPLAY_LIMIT) this.replayBuffer.shift()
     if (!this.disposed) {
       for (const h of this.handlers) h(full)
       for (const h of this.passiveHandlers) h(full)
     }
     return full
+  }
+
+  /** W-9（批 4）：重放 seq > since 的缓冲帧。coveredFrom=缓冲内最老帧 seq（空缓冲=当前 lastSeq）。
+   *  调用方判 gap：coveredFrom > since+1 ⇒ 断线窗口超出缓冲，须全量重同步。 */
+  replaySince(since: number): { events: ProtocolEvent[]; coveredFrom: number } {
+    if (this.replayBuffer.length === 0) return { events: [], coveredFrom: this.lastSeq }
+    return {
+      events: this.replayBuffer.filter((e) => e.seq > since),
+      coveredFrom: this.replayBuffer[0].seq,
+    }
   }
 
   /** 宿主侧：当前已分配到的 seq（订阅基线/历史分页游标用，B2/B5 消费） */

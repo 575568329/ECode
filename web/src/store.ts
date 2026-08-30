@@ -70,9 +70,12 @@ export interface SessionView {
   /** W6b：挂起单选（askSelect/requested 帧） */
   askSelect: { requestId: string; title: string; options: string[] } | null
   /** C4-③：挂起自由文本问答（askUser/requested 帧——表单 takeover） */
-  askUser: { requestId: string; questions: AskUserQuestionView[] } | null}
+  askUser: { requestId: string; questions: AskUserQuestionView[] } | null
+  /** W-9（批 4）：重连基线 gap/seq 回绕——Conversation 据此拉全量重同步（loadHistory 清除） */
+  resync?: boolean
+}
 
-export const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, loadError: '', approval: null, askSelect: null, askUser: null })
+export const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, loadError: '', approval: null, askSelect: null, askUser: null, resync: false })
 
 /** 模型视图（config/get 脱敏回执投影——顶栏只看 current + 各 provider 可选模型） */
 export interface ConfigView {
@@ -129,6 +132,14 @@ const patchView = (state: AppState, sessionId: string, patch: (v: SessionView) =
  *  轻量版）。非 delta 帧进入 applyFrame 时先同步冲洗缓冲（turn/completed 等读 streaming 的帧防穿越丢字）。
  *  调度器可注入（node 测试无 rAF，退路 setTimeout 16ms）；缓冲按 sessionId 分桶互不串台。 */
 const deltaBuffer = new Map<string, string>()
+/** W-9（批 4）：每会话已应用的最大事件 seq——重连带游标 + 旧帧去重的唯一来源。
+ *  loadHistory（全量快照基线）不清除：seq 会话级单调，快照后的新帧必然更大 */
+const lastSeqBySession = new Map<string, number>()
+
+/** W-9：会话已应用的最大事件 seq（null=无基线——首次加载/清空后）；connectMux 断线重连带 sinceSeq 用 */
+export function lastSeqFor(sessionId: string): number | null {
+  return lastSeqBySession.get(sessionId) ?? null
+}
 let deltaFlushScheduled = false
 let deltaScheduler: ((cb: () => void) => void) | null = null
 
@@ -154,10 +165,11 @@ export function __flushDeltaBuffer(): void {
   })
 }
 
-/** 测试：清空缓冲与调度标志（用例隔离——store 是模块单例，缓冲跨用例存活） */
+/** 测试：清空缓冲/调度标志/seq 游标（用例隔离——store 是模块单例，状态跨用例存活） */
 export function __resetDeltaState(): void {
   deltaBuffer.clear()
   deltaFlushScheduled = false
+  lastSeqBySession.clear()
 }
 
 const defaultDeltaScheduler = (cb: () => void): void => {
@@ -243,7 +255,7 @@ export const useApp = create<AppState>((set) => ({
         // 补拉落定与流式 delta 竞态（审阅 P1-10）：session/read 快照若早于已到的增量，
         // 直接清 streaming 会丢字——把缓冲并入 entries 尾部再清
         const tail = v.streaming !== '' ? [{ kind: 'assistant' as const, text: v.streaming }] : []
-        return { ...v, entries: [...entries, ...tail], loaded: true, loadError: '', streaming: '', items: [], queue: [] }
+        return { ...v, entries: [...entries, ...tail], loaded: true, loadError: '', streaming: '', items: [], queue: [], resync: false }
       })
     )
   },
@@ -292,6 +304,15 @@ export const useApp = create<AppState>((set) => ({
       }
     }),
   applyFrame: (f) => {
+    // W-9：旧帧去重 + 游标推进（seq 会话级单调；重放/正常流共用此闸）。
+    // session/subscribed 是控制帧（seq 可能回绕——通道重建），豁免去重以便 gap/回绕检测可达
+    if (f.ev.type !== 'session/subscribed') {
+      const evSeq = typeof f.ev.seq === 'number' ? f.ev.seq : null
+      if (evSeq !== null) {
+        if (evSeq <= (lastSeqBySession.get(f.sessionId) ?? -1)) return {}
+        lastSeqBySession.set(f.sessionId, evSeq)
+      }
+    }
     // W-1：delta 走缓冲合帧；非 delta 帧先同步冲洗缓冲再处理（switch 里多处读 streaming）
     if (f.ev.type === 'delta') {
       deltaBuffer.set(f.sessionId, (deltaBuffer.get(f.sessionId) ?? '') + String(f.ev.text ?? ''))
@@ -418,6 +439,20 @@ export const useApp = create<AppState>((set) => ({
                   }
                 : s,
             ),
+          }
+        case 'session/subscribed':
+          // W-9（批 4）：重连基线——gap（断线窗口超出服务端缓冲）或服务端 seq 回退（通道重建）
+          // → 清本端游标并标记 resync（Conversation 拉全量重同步）；正常基线仅推进游标
+          {
+            const clientLast = lastSeqBySession.get(f.sessionId) ?? null
+            const serverLast = typeof f.ev.lastSeq === 'number' ? f.ev.lastSeq : null
+            const needsResync = f.ev.gap === true || (clientLast !== null && serverLast !== null && serverLast < clientLast)
+            if (needsResync) {
+              lastSeqBySession.delete(f.sessionId)
+              return patchView(st, f.sessionId, (v) => ({ ...v, resync: true }))
+            }
+            if (serverLast !== null) lastSeqBySession.set(f.sessionId, serverLast)
+            return st
           }
         default:
           return st

@@ -3,7 +3,7 @@
  * store 只依赖类型层（connect 的 import type 编译期擦除）——node 环境直测，无 DOM/网络。
  */
 import { beforeEach, describe, expect, it } from 'vitest'
-import { __flushDeltaBuffer, __resetDeltaState, emptyView, toConfigView, useApp } from '../src/store'
+import { __flushDeltaBuffer, __resetDeltaState, emptyView, lastSeqFor, toConfigView, useApp } from '../src/store'
 
 const initial = useApp.getState()
 beforeEach(() => {
@@ -271,5 +271,42 @@ describe('批 2：session/updated 帧（归档/重命名多端同步）', () => 
     const s1 = useApp.getState().sessions.find((s) => s.sessionId === 's1')
     expect(s1?.title).toBe('保持')
     expect(s1?.archived).toBeUndefined()
+  })
+})
+
+describe('W-9：重连游标 + 旧帧去重（批 4）', () => {
+  /** 预置游标：模拟客户端已应用 seq<=N 的帧（一次带 seq 的 delta 即推进游标） */
+  function seedCursor(n: number): void {
+    frame('s1', { type: 'delta', seq: n, text: 'seed' })
+    __flushDeltaBuffer()
+  }
+  it('正常基线（serverLast >= clientLast）仅推进游标，不触发 resync', () => {
+    seedCursor(120)
+    frame('s1', { type: 'session/subscribed', seq: 150, sessionId: 's1', lastSeq: 150, gap: false })
+    const v = useApp.getState().views.s1
+    expect(v?.resync ?? false).toBe(false)
+    expect(lastSeqFor('s1')).toBe(150)
+  })
+  it('gap=true（断线窗口超出服务端缓冲）→ resync 标记 + 清游标（Conversation 据此全量重拉）', () => {
+    seedCursor(120)
+    frame('s1', { type: 'session/subscribed', seq: 90, sessionId: 's1', lastSeq: 90, gap: true })
+    const v = useApp.getState().views.s1
+    expect(v?.resync).toBe(true)
+    expect(lastSeqFor('s1')).toBeNull()
+  })
+  it('服务端 seq 回退（通道重建：serverLast < clientLast）→ resync', () => {
+    seedCursor(120)
+    frame('s1', { type: 'session/subscribed', seq: 10, sessionId: 's1', lastSeq: 10, gap: false })
+    const v = useApp.getState().views.s1
+    expect(v?.resync).toBe(true)
+  })
+  it('旧 delta 帧（seq <= 已应用游标）被去重丢弃——重放不产生重复文本', () => {
+    seedCursor(120)
+    frame('s1', { type: 'delta', seq: 121, text: '新' })
+    __flushDeltaBuffer()
+    frame('s1', { type: 'delta', seq: 121, text: '重复' })
+    frame('s1', { type: 'delta', seq: 99, text: '更旧' })
+    __flushDeltaBuffer()
+    expect(useApp.getState().views.s1?.streaming).toBe('seed新')
   })
 })

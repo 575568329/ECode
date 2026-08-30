@@ -19,7 +19,7 @@ import { useApp, type ChatEntry, type ChatImage, type ToolItem } from './store'
  *  流式 partial markdown 同渲（react-markdown 对不完整语法宽容降级）。 */
 function Markdown({ text }: { text: string }): JSX.Element {
   return (
-    <div className="break-words text-sm leading-relaxed [&_a]:text-sky-400 [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-neutral-700 [&_blockquote]:pl-2 [&_blockquote]:text-neutral-400 [&_code]:rounded [&_code]:bg-neutral-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[13px] [&_h1]:mb-2 [&_h1]:mt-3 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:font-semibold [&_h3]:mb-1 [&_h3]:mt-2 [&_h3]:font-medium [&_li]:my-0.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1.5 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-neutral-900 [&_pre]:p-2.5 [&_pre]:font-mono [&_pre]:text-[13px] [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-neutral-800 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-neutral-800 [&_th]:bg-neutral-900 [&_th]:px-2 [&_th]:py-1 [&_ul]:list-disc [&_ul]:pl-5">
+    <div className="break-words text-sm leading-relaxed [&_a]:text-sky-400 [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-line-strong [&_blockquote]:pl-2 [&_blockquote]:text-dim [&_code]:rounded [&_code]:bg-surface-raised [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[13px] [&_h1]:mb-2 [&_h1]:mt-3 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:font-semibold [&_h3]:mb-1 [&_h3]:mt-2 [&_h3]:font-medium [&_li]:my-0.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1.5 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-surface [&_pre]:p-2.5 [&_pre]:font-mono [&_pre]:text-[13px] [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-line [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-line [&_th]:bg-surface [&_th]:px-2 [&_th]:py-1 [&_ul]:list-disc [&_ul]:pl-5">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   )
@@ -30,7 +30,7 @@ function Images({ images }: { images: ChatImage[] }): JSX.Element {
     <div className="flex flex-wrap gap-1.5">
       {images.map((im, i) => (
         <a key={i} href={`data:${im.mediaType};base64,${im.data}`} target="_blank" rel="noreferrer">
-          <img src={`data:${im.mediaType};base64,${im.data}`} alt="" className="max-h-60 max-w-full rounded border border-neutral-700" />
+          <img src={`data:${im.mediaType};base64,${im.data}`} alt="" className="max-h-60 max-w-full rounded border border-line-strong" />
         </a>
       ))}
     </div>
@@ -54,13 +54,13 @@ function ToolCard({ project, sessionId, item }: { project: string; sessionId: st
   const color = item.status === 'running' ? 'text-amber-400' : item.status === 'error' ? 'text-red-400' : 'text-emerald-400'
   const mark = item.status === 'running' ? '…' : item.status === 'error' ? '✗' : '✓'
   return (
-    <div className="rounded border border-neutral-800 bg-neutral-900/60">
+    <div className="rounded border border-line bg-surface/60">
       <button className="flex w-full items-center gap-2 px-2 py-1.5 text-left" onClick={() => setOpen(!open)}>
-        {open ? <ChevronDown size={13} className="text-neutral-500" /> : <ChevronRight size={13} className="text-neutral-500" />}
-        <Terminal size={13} className="text-neutral-500" />
-        <span className="text-xs text-neutral-300">{item.name}</span>
+        {open ? <ChevronDown size={13} className="text-muted" /> : <ChevronRight size={13} className="text-muted" />}
+        <Terminal size={13} className="text-muted" />
+        <span className="text-xs text-body">{item.name}</span>
         <span className={`text-xs ${color}`}>{mark}</span>
-        {item.summary !== undefined && item.summary !== '' && <span className="truncate text-xs text-neutral-600">{item.summary}</span>}
+        {item.summary !== undefined && item.summary !== '' && <span className="truncate text-xs text-faint">{item.summary}</span>}
         {item.truncated === true && item.fullLoaded !== true && <span className="shrink-0 text-[10px] text-amber-600">已截断</span>}
       </button>
       {open && item.content !== undefined && <ToolOutput name={item.name} content={item.content} />}
@@ -73,26 +73,26 @@ function ToolOutput({ name, content }: { name: string; content: string }): JSX.E
   const isEdit = name === 'edit_file' || name === 'write_file'
   const view = useMemo(() => (isEdit ? parseDiffContent(content) : null), [isEdit, content])
   if (view === null) {
-    return <pre className="max-h-72 overflow-auto border-t border-neutral-800 px-3 py-2 text-xs leading-relaxed text-neutral-400">{content}</pre>
+    return <pre className="max-h-72 overflow-auto border-t border-line px-3 py-2 text-xs leading-relaxed text-dim">{content}</pre>
   }
   const kindClass: Record<string, string> = {
-    file: 'text-neutral-400 font-semibold',
+    file: 'text-dim font-semibold',
     hunk: 'text-sky-400',
     add: 'bg-emerald-950/60 text-emerald-300',
     del: 'bg-red-950/60 text-red-300',
-    ctx: 'text-neutral-500',
+    ctx: 'text-muted',
   }
   return (
-    <div className="border-t border-neutral-800">
-      {view.header !== '' && <div className="px-3 pt-2 text-xs text-neutral-500">{view.header}</div>}
+    <div className="border-t border-line">
+      {view.header !== '' && <div className="px-3 pt-2 text-xs text-muted">{view.header}</div>}
       <div className="max-h-72 overflow-auto px-3 py-2 font-mono text-xs leading-relaxed">
         {view.lines.map((l, i) => (
-          <div key={i} className={kindClass[l.kind] ?? 'text-neutral-500'}>
+          <div key={i} className={kindClass[l.kind] ?? 'text-muted'}>
             {l.text === '' ? ' ' : l.text}
           </div>
         ))}
         {view.truncated && (
-          <div className="pt-1 text-neutral-600">…已截断，省略 {view.omitted} 行（完整内容经 /output 查看）</div>
+          <div className="pt-1 text-faint">…已截断，省略 {view.omitted} 行（完整内容经 /output 查看）</div>
         )}
       </div>
     </div>
@@ -105,7 +105,7 @@ const EntryRow = memo(function EntryRow({ e, actionCtx }: { e: ChatEntry; action
   const actions = buildMessageActions(e, actionCtx)
   if (e.kind === 'user') {
     return (
-      <div className="group relative ml-auto max-w-[85%] space-y-1.5 rounded-lg bg-neutral-800 px-3 py-2">
+      <div className="group relative ml-auto max-w-[85%] space-y-1.5 rounded-lg bg-surface-raised px-3 py-2">
         {e.images !== undefined && e.images.length > 0 && <Images images={e.images} />}
         {e.text !== '' && <Markdown text={e.text} />}
         <ActionBar actions={actions} />
@@ -114,7 +114,7 @@ const EntryRow = memo(function EntryRow({ e, actionCtx }: { e: ChatEntry; action
   }
   if (e.kind === 'assistant') {
     return (
-      <div className="group relative max-w-[95%] text-neutral-200">
+      <div className="group relative max-w-[95%] text-bright">
         <Markdown text={e.text} />
         <ActionBar actions={actions} />
       </div>
@@ -124,7 +124,7 @@ const EntryRow = memo(function EntryRow({ e, actionCtx }: { e: ChatEntry; action
     return <ToolEntryRow e={e} actionCtx={actionCtx} />
   }
   return (
-    <div className={`rounded border px-2.5 py-1.5 text-xs ${e.error === true ? 'border-red-900/60 bg-red-950/20 text-red-400' : 'border-neutral-800 text-neutral-500'}`}>
+    <div className={`rounded border px-2.5 py-1.5 text-xs ${e.error === true ? 'border-red-900/60 bg-red-950/20 text-red-400' : 'border-line text-muted'}`}>
       {e.error === true ? '✗ ' : ''}
       {e.text}
     </div>
@@ -143,11 +143,11 @@ function ToolEntryRow({ e, actionCtx }: { e: ChatEntry; actionCtx: MessageAction
   const actions = buildMessageActions(e, actionCtx)
   return (
     <div className="space-y-1.5">
-      <div className="group flex items-center gap-2 rounded border border-neutral-800 px-2.5 py-1.5 text-xs text-neutral-500">
+      <div className="group flex items-center gap-2 rounded border border-line px-2.5 py-1.5 text-xs text-muted">
         <button onClick={() => setOpen(!open)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
-          {open ? <ChevronDown size={12} className="shrink-0 text-neutral-600" /> : <ChevronRight size={12} className="shrink-0 text-neutral-600" />}
-          <Terminal size={12} className="shrink-0 text-neutral-600" />
-          <span className="text-neutral-400">{e.name}</span>
+          {open ? <ChevronDown size={12} className="shrink-0 text-faint" /> : <ChevronRight size={12} className="shrink-0 text-faint" />}
+          <Terminal size={12} className="shrink-0 text-faint" />
+          <span className="text-dim">{e.name}</span>
           <span className={e.ok === false ? 'text-red-400' : 'text-emerald-500'}>{e.ok === false ? '✗' : '✓'}</span>
           {e.text !== '' && <span className="truncate">{e.text}</span>}
         </button>
@@ -156,7 +156,7 @@ function ToolEntryRow({ e, actionCtx }: { e: ChatEntry; actionCtx: MessageAction
       {open && e.detail !== undefined && (
         <div className="pl-4">
           {view !== null ? (
-            <div className="rounded border border-neutral-800">
+            <div className="rounded border border-line">
               <div className="max-h-80 overflow-auto px-3 py-2 font-mono text-xs leading-relaxed">
                 {view.lines.map((l, i) => (
                   <div
@@ -169,18 +169,18 @@ function ToolEntryRow({ e, actionCtx }: { e: ChatEntry; actionCtx: MessageAction
                           : l.kind === 'hunk'
                             ? 'text-sky-400'
                             : l.kind === 'file'
-                              ? 'text-neutral-400 font-semibold'
-                              : 'text-neutral-500'
+                              ? 'text-dim font-semibold'
+                              : 'text-muted'
                     }
                   >
                     {l.text === '' ? ' ' : l.text}
                   </div>
                 ))}
-                {view.truncated && <div className="pt-1 text-neutral-600">…已截断，省略 {view.omitted} 行</div>}
+                {view.truncated && <div className="pt-1 text-faint">…已截断，省略 {view.omitted} 行</div>}
               </div>
             </div>
           ) : (
-            <pre className="max-h-72 overflow-auto rounded border border-neutral-800 px-3 py-2 text-xs leading-relaxed text-neutral-400">{e.detail}</pre>
+            <pre className="max-h-72 overflow-auto rounded border border-line px-3 py-2 text-xs leading-relaxed text-dim">{e.detail}</pre>
           )}
         </div>
       )}
@@ -198,7 +198,7 @@ function ActionBar({ actions }: { actions: Array<{ key: string; label: string; t
           key={a.key}
           onClick={() => a.run()}
           title={a.title}
-          className="rounded border border-neutral-700 bg-neutral-900/90 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-neutral-200"
+          className="rounded border border-line-strong bg-surface/90 px-1.5 py-0.5 text-[10px] text-dim hover:text-bright"
         >
           {a.label}
         </button>
@@ -209,7 +209,7 @@ function ActionBar({ actions }: { actions: Array<{ key: string; label: string; t
 
 const TailMarkdown = function TailMarkdown({ text }: { text: string }): JSX.Element {
   return (
-    <div className="max-w-[95%] text-neutral-200">
+    <div className="max-w-[95%] text-bright">
       <Markdown text={text} />
       <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-neutral-400 align-text-bottom" />
     </div>
@@ -232,7 +232,8 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
   // base 恒传 ''（同源相对 URL）——曾把项目路径当 base 传，fetch 被浏览器解析成 file:// 直接拒
   // （"Not allowed to load local resource"），请求根本没到 serve
   useEffect(() => {
-    if (view?.loaded === true) return
+    // W-9：resync（重连基线 gap/seq 回绕）时无视 loaded 全量重拉——loadHistory 清标记
+    if (view?.loaded === true && view?.resync !== true) return
     sendCommand('', project, sessionId, { op: 'session/restore', sessionId })
       .then((r) => {
         if (!r.ok) {
@@ -245,7 +246,7 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
         })
       })
       .catch((e) => setLoadError(sessionId, e instanceof Error ? e.message : String(e)))
-  }, [project, sessionId, view?.loaded, loadHistory, setLoadError])
+  }, [project, sessionId, view?.loaded, view?.resync, loadHistory, setLoadError])
 
   const entries = view?.entries ?? []
   const items = view?.items ?? []
@@ -288,7 +289,7 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
     if (entries.length === 0 && items.length === 0 && streaming === '' && view?.loadError === '') {
       nodes.push({
         key: 'empty',
-        node: <div className="pt-16 text-center text-sm text-neutral-600">新对话——在下方输入第一句话</div>,
+        node: <div className="pt-16 text-center text-sm text-faint">新对话——在下方输入第一句话</div>,
       })
     }
     entries.forEach((e, i) => {
@@ -305,9 +306,9 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
       nodes.push({
         key: `q${i}`,
         node: (
-          <div className="ml-auto max-w-[85%] rounded-lg border border-dashed border-neutral-700 bg-neutral-800/50 px-3 py-2 text-sm text-neutral-400">
+          <div className="ml-auto max-w-[85%] rounded-lg border border-dashed border-line-strong bg-surface-raised/50 px-3 py-2 text-sm text-dim">
             {q}
-            <span className="ml-2 text-xs text-neutral-600">已排队</span>
+            <span className="ml-2 text-xs text-faint">已排队</span>
           </div>
         ),
       })
@@ -356,7 +357,7 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
       {!atBottom && (
         <button
           onClick={jumpToBottom}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-neutral-700 bg-neutral-900/90 px-3 py-1 text-xs text-neutral-300 shadow hover:border-neutral-500"
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-line-strong bg-surface/90 px-3 py-1 text-xs text-body shadow hover:border-line-strong"
         >
           ↓ 回到底部
         </button>

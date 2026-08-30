@@ -59,13 +59,19 @@ export function connectMux(
     onUnauthorized?: () => void
   },
   sessionId?: string,
+  /** W-9（批 4）：断线游标——每次连接尝试时读取；返回数字则 mux 重放该会话缓冲帧（seq>since） */
+  sinceSeq?: () => number | null,
 ): MuxConnection {
   let disposed = false
   let attempt = 0
-  const muxUrl =
-    sessionId !== undefined && sessionId !== ''
-      ? `${base}/api/events.mux?sessionId=${encodeURIComponent(sessionId)}&canAnswer=1`
-      : `${base}/api/events.mux?canAnswer=1`
+  const buildMuxUrl = (): string => {
+    const params = new URLSearchParams()
+    if (sessionId !== undefined && sessionId !== '') params.set('sessionId', sessionId)
+    params.set('canAnswer', '1')
+    const since = sinceSeq?.() ?? null
+    if (since !== null && Number.isFinite(since)) params.set('sinceSeq', String(since))
+    return `${base}/api/events.mux?${params.toString()}`
+  }
 
   // 每个 connectMux 实例一个 controller；loop 每次迭代重建（审阅 P0-2：曾整个循环共用
   // 一个——visibilityResume abort 一次后永久废弃，此后每次 fetch 立即 AbortError=
@@ -86,7 +92,7 @@ export function connectMux(
       try {
         handlers.onState?.('connecting')
         const openTimer = setTimeout(() => openAbort?.abort(), OPEN_TIMEOUT_MS)
-        const res = await fetch(muxUrl, {
+        const res = await fetch(buildMuxUrl(), {
           headers: { authorization: `Bearer ${getToken()}` },
           signal: openAbort.signal,
         })

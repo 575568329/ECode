@@ -57,6 +57,8 @@ export type ProtocolEvent =
   | { type: 'thread/status'; seq: number; busy: boolean; waitingOn: 'approval' | 'userInput' | null; iter: number; maxIter?: number }
   /** 批 2（2026-08-30）：会话元数据更新广播（归档/恢复/重命名）——多端列表同步 */
   | { type: 'session/updated'; seq: number; sessionId: string; title?: string; archived?: boolean }
+  /** 批 4（W-9）：断线重连订阅基线——lastSeq=通道当前 seq；gap=true=缓冲覆盖不到 sinceSeq，客户端须全量重同步 */
+  | { type: 'session/subscribed'; seq: number; sessionId: string; lastSeq: number; gap: boolean }
   | { type: 'approval/requested'; seq: number; requestId: string; kind: ApprovalKind; tool: string; preview: string; decisions: ApprovalDecision[] }
   | { type: 'approval/claimed'; seq: number; requestId: string; claimant: string }
   | { type: 'approval/resolved'; seq: number; requestId: string; outcome: ApprovalOutcome }

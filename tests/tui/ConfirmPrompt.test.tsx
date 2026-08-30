@@ -280,18 +280,11 @@ describe('ConfirmPrompt', () => {
     expect(lastFrame() ?? '').not.toContain('省略')
   })
 
-  it('previewMaxLines：视口感知 + 非 TTY 兜底 + 极矮保命线 + 展开态封顶（P0-1）', () => {
+  it('previewMaxLines：视口感知 + 非 TTY 兜底 + 极矮保命线（展开态随 v 键退役移除）', () => {
     expect(previewMaxLines(undefined)).toBe(7) // 非 TTY（测试 pipe）兜底 24-17（审阅 P1-1 实测预留）
     expect(previewMaxLines(20)).toBe(5) // 20-17=3 → 保命线
     expect(previewMaxLines(50)).toBe(33)
     expect(previewMaxLines(10)).toBe(5)
-    // 展开态（P0-1）：sectionBudget(budget, 9) 封顶——24 行终端 22-9=13 行（「多看几行」，
-    // 旧 (rows−2)×3=66 行必超屏）；恒 ≥ 收起态基线；大窗也只放宽到 budget−9
-    expect(previewMaxLines(undefined, true)).toBe(13)
-    expect(previewMaxLines(24, true)).toBe(13)
-    expect(previewMaxLines(50, true)).toBe(39)
-    expect(previewMaxLines(undefined, true)).toBeGreaterThanOrEqual(previewMaxLines(undefined, false))
-    expect(previewMaxLines(10, true)).toBe(5) // 极矮保命线兜底
   })
 
   it('clampPreviewLines：头 2/3 + 省略 + 尾 1/3；≤上限原样；极矮 max=5 拆分（头3+省略+尾1）', () => {

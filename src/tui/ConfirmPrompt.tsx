@@ -35,16 +35,10 @@ import { ROWS_FALLBACK, computeBudget, sectionBudget, useViewport } from './view
 const PREVIEW_RESERVE = 15
 /** 极矮终端保命线：preview 至少留 5 行 */
 const PREVIEW_MIN_LINES = 5
-/** F-10 展开态预留（审阅 P0-1 修复）：只放宽骨架+共存（≈9），经 sectionBudget 封顶——
- * 24 行终端展开态 ≈13 行。语义=「多看几行」而非「全屏铺开」（旧 (rows−2)×3 公式
- * rows=24 时 66 行+骨架 ≈8 行必超屏，触发 Ink fullscreen 清 scrollback） */
-const EXPAND_RESERVE = 9
 
-export function previewMaxLines(rows: number | undefined, expanded = false): number {
+export function previewMaxLines(rows: number | undefined): number {
   const budget = computeBudget(rows ?? ROWS_FALLBACK)
-  const base = Math.max(PREVIEW_MIN_LINES, sectionBudget(budget, PREVIEW_RESERVE))
-  if (!expanded) return base
-  return Math.max(base, sectionBudget(budget, EXPAND_RESERVE))
+  return Math.max(PREVIEW_MIN_LINES, sectionBudget(budget, PREVIEW_RESERVE))
 }
 
 /** 超高 preview 保头尾截断：头 2/3 + 省略计数 + 尾 1/3 */
@@ -72,7 +66,7 @@ export type ConfirmChoice = 'y' | 'n' | 'a'
  * - selected：默认 'y'（F-32——空草稿 Enter=批准）；←→/单字母后变为 y/n/a
  * - reasonMode：拒绝理由输入模式（Enter=提交拒绝+理由，Esc=退出理由模式不拒绝）
  * - 返回 action：'select'（更新选中）/ 'confirm'（应答 ok/always/message）/ 'draft'（字符进草稿）
- *   / 'reason-edit'（理由编辑）/ 'toggle-expand'（F-10）/ 'none' */
+ *   / 'reason-edit'（理由编辑）/ 'none' */
 export type ConfirmKeyAction =
   | { action: 'none' }
   | { action: 'select'; choice: ConfirmChoice }
@@ -81,7 +75,6 @@ export type ConfirmKeyAction =
   | { action: 'reason-edit'; next: CursorState }
   | { action: 'reason-enter' }
   | { action: 'reason-cancel' }
-  | { action: 'toggle-expand' }
 
 export interface ConfirmKeyCtx {
   hasDraft: boolean
@@ -89,8 +82,6 @@ export interface ConfirmKeyCtx {
   reasonMode: boolean
   reason: CursorState
   canAlways: boolean
-  canExpand: boolean
-  expanded: boolean
 }
 
 export function confirmKeyAction(input: string, key: {
@@ -155,8 +146,6 @@ export function confirmKeyAction(input: string, key: {
     // 旧语义与 Esc 同（只拒卡，loop 拿 is_error 继续下一迭代，观感「按了没停」）
     return { action: 'confirm', ok: false, interrupt: true }
   }
-  // F-10：v 切换看全文（草稿非空时同样让位——v 是常见单词字母）
-  if (letterHotkeys && input === 'v' && ctx.canExpand) return { action: 'toggle-expand' }
   // ① 其余字符进草稿（可见地进输入框，不吞）
   if (!key.ctrl && !key.meta && !key.tab && input !== '') return { action: 'draft' }
   if (key.backspace || key.delete || key.home || key.end) return { action: 'draft' }
@@ -188,14 +177,12 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
   const isMcp = rememberText !== undefined
   // F-32（用户拍板，翻案批2b ④）：默认选中 y——空草稿 Enter 直接批准（「直接回车」）
   const [selected, setSelected] = useState<ConfirmChoice | null>('y')
-  const [expanded, setExpanded] = useState(false)
   const [reasonMode, setReasonMode] = useState(false)
   const [reason, setReason] = useState<CursorState>(() => createCursor(''))
   const { rows } = useViewport()
   const allLines = state.preview.split('\n')
-  const maxLines = previewMaxLines(rows, expanded)
-  const canExpand = allLines.length > previewMaxLines(rows, false)
-  const previewLines = expanded ? clampPreviewLines(allLines, maxLines) : clampPreviewLines(allLines, previewMaxLines(rows, false))
+  const canExpand = allLines.length > previewMaxLines(rows)
+  const previewLines = clampPreviewLines(allLines, previewMaxLines(rows))
 
   // F-13：bash 审批敏感命令 advisory（isSensitivePath 现成判定——命令文本里出现的绝对/带~路径
   // 逐段检验；黄字提示不做硬门）。敏感读已有 sensitiveGate 硬门，此处只覆盖「写/bash 泄密面」提示。
@@ -222,8 +209,6 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
       reasonMode,
       reason,
       canAlways: isMcp,
-      canExpand,
-      expanded,
     })
     switch (act.action) {
       case 'select':
@@ -245,9 +230,6 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
         break
       case 'reason-cancel':
         setReasonMode(false)
-        break
-      case 'toggle-expand':
-        setExpanded((e) => !e)
         break
       default:
         break
@@ -275,7 +257,8 @@ export function ConfirmPrompt({ state, onConfirm, onCancel, onDraftKey, draft = 
               </Box>
             ))
           : <Text dimColor>{previewLines.join('\n')}</Text>}
-        {/* F-50：v 展开键删除——全文看 Ctrl+T（alt 面板显示完整 diff，Esc 回卡决策） */}
+        {/* F-50+审阅 P2：v 展开键连幽灵分支一并退役（注释称删了但 case 还在——现真删）。
+            全文看 Ctrl+T（alt 面板显示完整 diff，Esc 回卡决策） */}
         {canExpand && (
           <Text dimColor> Ctrl+T 全文（共 {allLines.length} 行）</Text>
         )}

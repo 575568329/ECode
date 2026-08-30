@@ -13,8 +13,6 @@ const baseCtx = (patch: Partial<ConfirmKeyCtx> = {}): ConfirmKeyCtx => ({
   reasonMode: false,
   reason: createCursor(''),
   canAlways: false,
-  canExpand: false,
-  expanded: false,
   ...patch,
 })
 
@@ -76,13 +74,9 @@ describe('confirmKeyAction：单字母快捷与草稿让位（批2b①②）', (
     }
   })
 
-  it('草稿非空时 v 让位进草稿（v 是常见单词字母）', () => {
-    expect(confirmKeyAction('v', {}, baseCtx({ hasDraft: true, canExpand: true }))).toEqual({ action: 'draft' })
-  })
-
-  it('空草稿 v（canExpand）= toggle-expand；不可展开时落 draft', () => {
-    expect(confirmKeyAction('v', {}, baseCtx({ canExpand: true }))).toEqual({ action: 'toggle-expand' })
-    expect(confirmKeyAction('v', {}, baseCtx({ canExpand: false }))).toEqual({ action: 'draft' })
+  it('v 键已退役（审阅 P2 幽灵分支拆除）：任何形态都落 draft', () => {
+    expect(confirmKeyAction('v', {}, baseCtx())).toEqual({ action: 'draft' })
+    expect(confirmKeyAction('v', {}, baseCtx({ hasDraft: true }))).toEqual({ action: 'draft' })
   })
 
   it('大写 Y 也是快捷（F-50：按钮 [Y] 大写标签，大小写都接受）', () => {

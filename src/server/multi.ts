@@ -14,7 +14,7 @@ import type { HostSession } from '../host/session.js'
 import { isValidSessionId } from '../host/session.js'
 import type { ProjectHost } from '../host/project.js'
 import { randomUUID } from 'node:crypto'
-import { LOOPBACK_ADDRS } from './loopback.js'
+import { isLoopbackBind, remoteDenied } from './loopback.js'
 import { CredentialStore } from './credentials.js'
 import { guardedSseWrite } from './sse.js'
 import type { MuxFrame, SessionBrief } from '../protocol/mux.js'
@@ -71,8 +71,8 @@ export function serveMulti(
   const { registry } = deps
   // M13-W3（三预留③绑定语义显式化）：默认 loopback；非 loopback 强制密码（cli 侧同款双保险）
   const bindHost = opts.host ?? '127.0.0.1'
-  const isLoopbackBind = bindHost === '127.0.0.1' || bindHost === '::1' || bindHost === 'localhost'
-  if (!isLoopbackBind && (opts.password === undefined || opts.password === '')) {
+  const isLoopback = isLoopbackBind(bindHost)
+  if (!isLoopback && (opts.password === undefined || opts.password === '')) {
     return Promise.reject(new Error('非 loopback 绑定必须设置密码（拒绝启动——防裸奔局域网）'))
   }
   // M13-W3（三预留①多凭据结构）+ M14-C2①（D13 凭据条目化）：token=primary、密码=lan-password
@@ -155,7 +155,11 @@ export function serveMulti(
         res.end(JSON.stringify(obj))
       }
       const remote = req.socket.remoteAddress ?? ''
-      if (!LOOPBACK_ADDRS.has(remote)) return json(403, { error: '非 loopback 连接被拒' })
+      // 来源门按绑定语义分流（2026-08-30 真机实证修复）：原实现无条件 LOOPBACK_ADDRS 白名单，
+      // LAN 绑定+强制密码的整条 M13 链路（lan-password 凭据/Mobile URL）被这道先于鉴权的门
+      // 全部拦死——手机固定 403「非 loopback 连接被拒」。现：绑定回环→门照旧（单机防线）；
+      // 绑定 0.0.0.0/具体 IP（启动期已强制密码）→放行交 Bearer 鉴权裁决。
+      if (remoteDenied(remote, isLoopback)) return json(403, { error: '非 loopback 连接被拒' })
       // M14-C2④：health 回显实例标识（serveStop kill 前比对——PID 回收复用防误杀）
       if (req.method === 'GET' && url.pathname === '/api/health') return json(200, { ok: true, id: opts.id ?? null })
 

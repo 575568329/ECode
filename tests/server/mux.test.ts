@@ -222,6 +222,33 @@ describe('M13-W3 mux 单流', () => {
     await srvP.close()
   })
 
+  it('来源门按绑定语义分流（2026-08-30 真机实证修复）：loopback 绑定拒外部来源；LAN 绑定放行交 Bearer', async () => {
+    // 抽函数直测：集成测试无法伪造非回环 remoteAddress（socket.remoteAddress 不可注入）——
+    // 判定逻辑抽纯函数后锁定语义，防 403 拦死 LAN 绑定的回归复发
+    const { remoteDenied, LOOPBACK_ADDRS } = await import('../../src/server/loopback.js')
+    // 绑定回环（默认部署）：非白名单来源一律拒——原有单机防线不变
+    expect(remoteDenied('192.168.31.16', true)).toBe(true)
+    expect(remoteDenied('10.0.0.8', true)).toBe(true)
+    expect(remoteDenied('::ffff:192.168.31.16', true)).toBe(true) // IPv6 映射的 LAN IPv4
+    expect(remoteDenied('127.0.0.1', true)).toBe(false)
+    expect(remoteDenied('::1', true)).toBe(false)
+    expect(remoteDenied('::ffff:127.0.0.1', true)).toBe(false)
+    // 绑定 0.0.0.0/具体 IP（启动期已强制 lan-password）：来源门放行——鉴权交给 Bearer 裁决
+    expect(remoteDenied('192.168.31.16', false)).toBe(false)
+    expect(remoteDenied('8.8.8.8', false)).toBe(false)
+    // LOOPBACK_ADDRS 本身不含公网/LAN 地址（原语义锚点保留）
+    expect(LOOPBACK_ADDRS.has('192.168.1.5')).toBe(false)
+    expect(LOOPBACK_ADDRS.has('8.8.8.8')).toBe(false)
+
+    // 集成面：0.0.0.0 绑定下，无凭据仍 401（鉴权层照常工作——未变成裸奔端口）
+    const srvL = await serveMulti({ registry, defaultCwd: dirA }, { host: '0.0.0.0', password: 'pw-lan' })
+    const noAuth = await fetch(`http://127.0.0.1:${srvL.port}/api/projects`)
+    expect(noAuth.status).toBe(401)
+    const ok = await fetch(`http://127.0.0.1:${srvL.port}/api/projects`, { headers: { authorization: 'Bearer pw-lan' } })
+    expect(ok.status).toBe(200)
+    await srvL.close()
+  })
+
   it('M14-C4④ /api/stats：Bearer 可用返回聚合（days 窗口裁剪 byDay）；无 token 401；缓存落注入路径不碰真实 home', async () => {
     const statsDir = mkdtempSync(join(tmpdir(), 'ecode-stats-'))
     const cachePath = join(statsDir, 'stats-cache.json')

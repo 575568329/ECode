@@ -33,14 +33,15 @@ function TokenGate({ onReady, hint }: { onReady: () => void; hint?: string }): R
             .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
         }}
       >
-        <div className="text-sm text-neutral-400">连接 ECode daemon（~/.ecode/server.json 的 token）</div>
+        <div className="text-sm text-neutral-400">连接 ECode daemon</div>
+        <div className="text-xs text-neutral-500">局域网访问输 serve 启动时设置的密码（ECODE_SERVER_PASSWORD）；本机访问见 ~/.ecode/server.json 的 token</div>
         {hint !== undefined && hint !== '' && <div className="text-xs text-amber-400">⚠ {hint}</div>}
         <input
           type="password"
           autoFocus
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          placeholder="token"
+          placeholder="token / 密码"
           className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-500"
         />
         {error !== '' && <div className="text-xs text-red-400">{error}</div>}

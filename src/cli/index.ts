@@ -315,6 +315,9 @@ function restartProcess(instance: { unmount(): void }, history: HistoryStore | n
   } catch {
     // unmount 竞态不阻塞重启
   }
+  // 光标守卫随旧 TUI 一起撤（attach 等待期间旧进程仍存活——心跳每 500ms 压 ?25l，
+  // 现阶段与新 TUI 藏光标意图一致无症状，但新进程一旦需要显示硬件光标即被压制）
+  stopCursorGuard()
   const argv = process.argv.slice(1)
   // /restart 重放 --history 时换成当前会话 id：restore 后是 fork 新 id（含最新状态），
   // 原样重放旧值会退回恢复前的快照；恢复后未发言就重启的，先播种落盘重放才有文件

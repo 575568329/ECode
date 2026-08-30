@@ -3,11 +3,16 @@ import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import './index.css'
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
+// 性能基准页（dev-only）：?perf=1 进入——生产构建 DEV=false 走死分支被裁剪
+if (import.meta.env.DEV && new URLSearchParams(location.search).has('perf')) {
+  void import('./perf/main-perf').then((m) => m.mountPerf())
+} else {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  )
+}
 
 // M13-W7：SW 注册（生产构建才注册——dev 模式的 HMR 与 SW 缓存互斥）
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {

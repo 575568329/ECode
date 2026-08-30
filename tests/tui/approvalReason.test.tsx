@@ -115,7 +115,7 @@ describe('P1-1④：拒绝理由接线（resolve 非空 reason 塞 message、空
     await flush()
     stdin.write('\r')
     await flush(500)
-    expect(lastFrame() ?? '').toContain('[y] 执行')
+    expect(lastFrame() ?? '').toContain('[Y] 执行')
     // r 进理由模式+打理由：负载下按键可能被吞——幂等重试（r 没生效可重发；
     // 理由没打全则 Esc 退回选择态整体重试，Esc 在理由模式=reason-cancel 不误拒）
     let inReason = false
@@ -145,7 +145,7 @@ describe('P1-1④：拒绝理由接线（resolve 非空 reason 塞 message、空
       if (!(lastFrame() ?? '').includes('[y] 执行')) break
     }
     // 拒绝路径：卡消。宿主收 tool_result（拒绝）→ mock 收尾
-    expect(lastFrame() ?? '').not.toContain('[y] 执行')
+    expect(lastFrame() ?? '').not.toContain('[Y] 执行')
     expect(lastFrame() ?? '').toContain('写入收尾')
     // 端到端断言（审阅 P1-缺口4 本体）：理由经 approval/respond.message → broker 反馈
     // → tool_result「用户拒绝了本次操作：{理由}」回喂模型（第二轮请求的 messages 里）
@@ -166,7 +166,7 @@ describe('P1-1④：拒绝理由接线（resolve 非空 reason 塞 message、空
     await flush()
     stdin.write('\r')
     await flush(500)
-    expect(lastFrame() ?? '').toContain('[y] 执行')
+    expect(lastFrame() ?? '').toContain('[Y] 执行')
     let inReason = false
     for (let attempt = 0; attempt < 12 && !inReason; attempt++) {
       stdin.write('r')
@@ -179,7 +179,7 @@ describe('P1-1④：拒绝理由接线（resolve 非空 reason 塞 message、空
       await flush(600)
       if (!(lastFrame() ?? '').includes('[y] 执行')) break
     }
-    expect(lastFrame() ?? '').not.toContain('[y] 执行')
+    expect(lastFrame() ?? '').not.toContain('[Y] 执行')
     expect(lastFrame() ?? '').toContain('写入收尾')
     // 空理由不塞 message：broker resolve(false) → loop 走「用户已取消」分支（非带理由拒绝语）
     const round2 = provider.lastMessages

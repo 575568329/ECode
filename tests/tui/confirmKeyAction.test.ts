@@ -85,8 +85,9 @@ describe('confirmKeyAction：单字母快捷与草稿让位（批2b①②）', (
     expect(confirmKeyAction('v', {}, baseCtx({ canExpand: false }))).toEqual({ action: 'draft' })
   })
 
-  it('大写 Y 进草稿（非快捷——快捷只认小写）', () => {
-    expect(confirmKeyAction('Y', {}, baseCtx())).toEqual({ action: 'draft' })
+  it('大写 Y 也是快捷（F-50：按钮 [Y] 大写标签，大小写都接受）', () => {
+    expect(confirmKeyAction('Y', {}, baseCtx())).toEqual({ action: 'confirm', ok: true })
+    expect(confirmKeyAction('N', {}, baseCtx())).toEqual({ action: 'confirm', ok: false })
   })
 
   it('Ctrl/Meta 组合键不触发快捷（y 带 ctrl=none：既不确认也不进草稿）', () => {

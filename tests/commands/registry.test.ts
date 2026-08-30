@@ -69,8 +69,8 @@ describe('内置命令', () => {
     expect(commandRegistry.get('clear')!.run().action).toBe('clear')
   })
 
-  it('/expand 返回 action=expand', () => {
-    expect(commandRegistry.get('expand')!.run().action).toBe('expand')
+  it('/expand 已退役（F-50 批 3：全量查看统一 Ctrl+T 面板）', () => {
+    expect(commandRegistry.get('expand')).toBeUndefined()
   })
 
   it('/model 返回 action=pick-model', () => {

@@ -26,8 +26,8 @@ describe('ConfirmPrompt', () => {
     const f = lastFrame() ?? ''
     expect(f).toContain('⚠ 执行 bash?')
     expect(f).toContain('npm test')
-    expect(f).toContain('[y]')
-    expect(f).toContain('[n]')
+    expect(f).toContain('[Y]')
+    expect(f).toContain('[N]')
   })
 
   it('edit_file：显示路径 + diff（-old / +new）', () => {
@@ -86,7 +86,7 @@ describe('ConfirmPrompt', () => {
     )
     await flush()
     // 默认 y 反色高亮（卡弹出即选中）
-    expect(lastFrame() ?? '').toContain('[y] 执行')
+    expect(lastFrame() ?? '').toContain('[Y] 执行')
     stdin.write('\r')
     await flush()
     expect(resolved).toBe(true) // 空草稿 Enter=批准（用户要的「直接回车」）
@@ -174,7 +174,7 @@ describe('ConfirmPrompt', () => {
     await flush()
     const f = lastFrame() ?? ''
     expect(resolved).toBeNull() // Esc 不拒绝（返回选择态，不是③的拒绝语义）
-    expect(f).toContain('[y] 执行') // 回到选择界面
+    expect(f).toContain('[Y] 执行') // 回到选择界面
     expect(f).not.toContain('拒绝理由') // 理由输入行已退场
   })
 
@@ -194,36 +194,28 @@ describe('ConfirmPrompt', () => {
     expect(resolved).toBeNull()
   })
 
-  it('F-10 看全文：截断 preview 显示 v 入口，v 展开更多行（P0-1 封顶后 24 行兜底窗 7→13）', async () => {
+  it('F-50（替代 F-10 看全文）：v 展开键删除——卡上提示 Ctrl+T 全文，preview 仍头尾截断', async () => {
     const content = Array.from({ length: 30 }, (_, i) => `line${i}`).join('\n')
     const s = makeState('write_file', { path: 'foo.ts' }, content)
-    const { stdin, lastFrame } = render(React.createElement(ConfirmPrompt, { state: s }))
+    const { lastFrame } = render(React.createElement(ConfirmPrompt, { state: s }))
     await flush()
     const f1 = lastFrame() ?? ''
-    expect(f1).toContain('看全文')
+    expect(f1).toContain('Ctrl+T 全文') // 全文入口收敛到 alt 面板
+    expect(f1).toContain('省略') // preview 仍头尾截断（保命线内）
     expect(f1).not.toContain('line15') // 默认截断（非 TTY 兜底 24 行 → 7 行）
-    stdin.write('v')
-    await flush()
-    const f2 = lastFrame() ?? ''
-    expect(f2).toContain('line5') // 展开后可见（expanded 上限 13 行：头 8 行进到 line5+）
-    expect(f2).toContain('收起')
-    expect(f2).toContain('省略') // 30 行 > 13：展开态仍头尾截断（「多看几行」而非「全屏铺开」）
-    expect(f2).not.toContain('line20') // 头尾窗口外的中段仍被截（13 行窗放不下 30 行全文）
+    expect(f1).not.toContain('看全文') // v 入口已删
   })
 
-  it('F-10 展开态封顶（P0-1）：>66 行样本展开后仍省略行（弹窗不超视口）', async () => {
+  it('F-50：超长样本（80 行）卡上仍头尾截断且帧不超视口（F-10 封顶精神延续，v 键已删）', async () => {
     // 旧公式 (rows−2)×3 在 24 行终端给 66 行——66+ 行样本若展开"全屏铺开"必触发 Ink fullscreen。
-    // 新公式 sectionBudget 封顶 ≈13 行（非 TTY 兜底窗）：66 行样本展开后必有省略行
+    // 新公式 sectionBudget 封顶 ≈13 行（非 TTY 兜底窗）：80 行样本卡上必有省略行
     const content = Array.from({ length: 80 }, (_, i) => `L${i}`).join('\n')
     const s = makeState('write_file', { path: 'big.ts' }, content)
-    const { stdin, lastFrame } = render(React.createElement(ConfirmPrompt, { state: s }))
+    const { lastFrame } = render(React.createElement(ConfirmPrompt, { state: s }))
     await flush()
-    stdin.write('v')
-    await flush()
-    const f2 = lastFrame() ?? ''
-    expect(f2).toContain('收起')
-    expect(f2).toContain('省略') // 展开态仍截断——封顶生效
-    expect(f2.split('\n').length).toBeLessThan(24) // 帧总行数 < 兜底视口（防 fullscreen 属性级断言）
+    const f = lastFrame() ?? ''
+    expect(f).toContain('省略') // 头尾截断生效
+    expect(f.split('\n').length).toBeLessThan(24) // 帧总行数 < 兜底视口（防 fullscreen 属性级断言）
   })
 
   it('F-13 bash 敏感命令 advisory：黄字提示（不阻断）', () => {

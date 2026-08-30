@@ -3,11 +3,12 @@
  * store 只依赖类型层（connect 的 import type 编译期擦除）——node 环境直测，无 DOM/网络。
  */
 import { beforeEach, describe, expect, it } from 'vitest'
-import { emptyView, toConfigView, useApp } from '../src/store'
+import { __flushDeltaBuffer, __resetDeltaState, emptyView, toConfigView, useApp } from '../src/store'
 
 const initial = useApp.getState()
 beforeEach(() => {
   useApp.setState(initial, true)
+  __resetDeltaState() // W-1：delta 缓冲是模块态——跨用例必须清（否则迟到冲洗污染下一用例）
 })
 
 const frame = (sessionId: string, ev: Record<string, unknown>): void => {
@@ -15,12 +16,28 @@ const frame = (sessionId: string, ev: Record<string, unknown>): void => {
 }
 
 describe('流式轮演进', () => {
-  it('delta 累积 → turn/completed 并入 entries 清空 streaming', () => {
+  it('W-1 合帧：delta 先入缓冲（streaming 不逐 token 变），冲洗后一次并入', () => {
+    frame('s1', { type: 'delta', text: '你' })
+    frame('s1', { type: 'delta', text: '好' })
+    // 缓冲期：streaming 尚未落账（视图可未创建）
+    expect(useApp.getState().views.s1?.streaming ?? '').toBe('')
+    __flushDeltaBuffer()
+    const v = useApp.getState().views.s1
+    expect(v?.streaming).toBe('你好')
+    expect(v?.entries).toEqual([])
+  })
+  it('flush 后多会话各自合并，互不串台', () => {
+    frame('s1', { type: 'delta', text: 'A' })
+    frame('s2', { type: 'delta', text: 'B' })
+    __flushDeltaBuffer()
+    expect(useApp.getState().views.s1?.streaming).toBe('A')
+    expect(useApp.getState().views.s2?.streaming).toBe('B')
+  })
+  it('delta 累积 → turn/completed 并入 entries 清空 streaming（冲洗先于帧，不丢字）', () => {
     frame('s1', { type: 'delta', text: '你' })
     frame('s1', { type: 'delta', text: '好' })
     let v = useApp.getState().views.s1
-    expect(v?.streaming).toBe('你好')
-    expect(v?.entries).toEqual([])
+    expect(v?.streaming ?? '').toBe('')
     frame('s1', { type: 'turn/completed' })
     v = useApp.getState().views.s1
     expect(v?.entries).toEqual([{ kind: 'assistant', text: '你好' }])
@@ -140,7 +157,7 @@ describe('loadHistory 历史投影', () => {
     expect(useApp.getState().views.s1?.entries).toEqual([])
   })
   it('审阅批：补拉落定时流式缓冲并入 entries 尾部（不再丢字）', () => {
-    frame('s1', { type: 'delta', text: '迟到的增量' }) // read 快照晚于 delta 到达的竞态窗口
+    frame('s1', { type: 'delta', text: '迟到的增量' }) // read 快照晚于 delta 到达的竞态窗口（W-1：缓冲在 loadHistory 内先冲洗）
     useApp.getState().loadHistory('s1', [{ role: 'user', content: [{ type: 'text', text: '问' }] }])
     const v = useApp.getState().views.s1
     expect(v?.entries).toEqual([

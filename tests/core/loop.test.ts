@@ -749,3 +749,30 @@ describe('runLoop：图片毒化出路指引（2026-08-29 P1 处置，CC/codex �
     expect(onWarn).not.toHaveBeenCalledWith(expect.stringContaining('/rewind'))
   })
 })
+
+describe('runLoop：空响应轮防御（2026-08-30 用户报障——端点断流静默收尾零提示）', () => {
+  it('合法空响应（零 delta 零 tool_use，stop_reason=end）→ onWarn 警告 + 轮正常结束不挂起', async () => {
+    const p = new MockProvider([[{ type: 'done', stop_reason: 'end' }]])
+    const onWarn = vi.fn()
+    await runLoop([], '问', { ...makeOpts(p, []), callbacks: { onText: vi.fn(), onWarn } })
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('空响应'))
+  })
+  it('正常轮（有 text）不误报', async () => {
+    const p = new MockProvider([[{ type: 'text', text: '你好' }, { type: 'done', stop_reason: 'end' }]])
+    const onWarn = vi.fn()
+    await runLoop([], '问', { ...makeOpts(p, []), callbacks: { onText: vi.fn(), onWarn } })
+    expect(onWarn).not.toHaveBeenCalled()
+  })
+  it('aborted 静默收尾不叠加空响应警告（专属路径已另有兜底）', async () => {
+    const ac = new AbortController()
+    ac.abort()
+    const p = new MockProvider([[{ type: 'done', stop_reason: 'end' }]])
+    const onWarn = vi.fn()
+    await runLoop([], '问', {
+      ...makeOpts(p, []),
+      callbacks: { onText: vi.fn(), onWarn },
+      toolCtx: { cwd: process.cwd(), signal: ac.signal },
+    })
+    expect(onWarn).not.toHaveBeenCalledWith(expect.stringContaining('空响应'))
+  })
+})

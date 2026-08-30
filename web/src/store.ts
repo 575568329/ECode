@@ -121,6 +121,46 @@ const patchView = (state: AppState, sessionId: string, patch: (v: SessionView) =
   views: { ...state.views, [sessionId]: patch(state.views[sessionId] ?? emptyView()) },
 })
 
+/** W-1（批 1）：delta rAF 合帧——SSE 每 token 一次 set → 每动画帧至多一次 set（opencode 合并-分帧模型的
+ *  轻量版）。非 delta 帧进入 applyFrame 时先同步冲洗缓冲（turn/completed 等读 streaming 的帧防穿越丢字）。
+ *  调度器可注入（node 测试无 rAF，退路 setTimeout 16ms）；缓冲按 sessionId 分桶互不串台。 */
+const deltaBuffer = new Map<string, string>()
+let deltaFlushScheduled = false
+let deltaScheduler: ((cb: () => void) => void) | null = null
+
+/** 测试注入：替换 delta 冲洗调度器（null=恢复默认 rAF/setTimeout 退路） */
+export function __setDeltaScheduler(s: ((cb: () => void) => void) | null): void {
+  deltaScheduler = s
+}
+
+/** 测试/同步冲洗：立即落账全部缓冲 delta（applyFrame 非 delta 帧前、loadHistory/appendUser 等
+ *  直改流式邻接态的操作前，都必须先走这步保证时序） */
+export function __flushDeltaBuffer(): void {
+  deltaFlushScheduled = false
+  if (deltaBuffer.size === 0) return
+  const buf = new Map(deltaBuffer)
+  deltaBuffer.clear()
+  useApp.setState((st) => {
+    let views = st.views
+    for (const [sessionId, text] of buf) {
+      const v = views[sessionId] ?? emptyView()
+      views = { ...views, [sessionId]: { ...v, streaming: v.streaming + text } }
+    }
+    return { views }
+  })
+}
+
+/** 测试：清空缓冲与调度标志（用例隔离——store 是模块单例，缓冲跨用例存活） */
+export function __resetDeltaState(): void {
+  deltaBuffer.clear()
+  deltaFlushScheduled = false
+}
+
+const defaultDeltaScheduler = (cb: () => void): void => {
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(cb)
+  else setTimeout(cb, 16)
+}
+
 /** 图片块提取（ImageBlock.source.base64 → ChatImage；非 image/非 base64 块跳过） */
 function pickImages(content: unknown): ChatImage[] {
   if (!Array.isArray(content)) return []
@@ -153,8 +193,9 @@ export const useApp = create<AppState>((set) => ({
       const sessions = i === -1 ? [...st.sessions, b] : st.sessions.map((s, j) => (j === i ? b : s))
       return { sessions }
     }),
-  loadHistory: (sessionId, lines) =>
-    set((st) =>
+  loadHistory: (sessionId, lines) => {
+    __flushDeltaBuffer() // 补拉与缓冲 delta 的竞态（审阅 P1-10）：先落账增量再投影快照（flush 不得嵌在 set 内——外层会拿旧状态覆盖）
+    return set((st) =>
       patchView(st, sessionId, (v) => {
         if (!Array.isArray(lines)) return { ...v, loaded: true }
         // 两遍投影：先收 tool_use_id → result（成败/摘要/附着图），再按序出 entry——历史轮的工具调用
@@ -191,16 +232,18 @@ export const useApp = create<AppState>((set) => ({
         // 直接清 streaming 会丢字——把缓冲并入 entries 尾部再清
         const tail = v.streaming !== '' ? [{ kind: 'assistant' as const, text: v.streaming }] : []
         return { ...v, entries: [...entries, ...tail], loaded: true, loadError: '', streaming: '', items: [], queue: [] }
-      }),
-    ),
+      })
+    )
+  },
   setLoadError: (sessionId, msg) => set((st) => patchView(st, sessionId, (v) => ({ ...v, loaded: true, loadError: msg }))),  retryLoad: (sessionId) => set((st) => patchView(st, sessionId, (v) => ({ ...v, loaded: false, loadError: '' }))),
   appendUser: (sessionId, text) =>
-    set((st) =>
-      patchView(st, sessionId, (v) => ({
+    set((st) => {
+      __flushDeltaBuffer() // 时序保证：缓冲中的上一轮尾增量先落账，再追加本轮 user 消息
+      return patchView(st, sessionId, (v) => ({
         ...v,
         entries: [...v.entries, { kind: 'user' as const, text }],
-      })),
-    ),
+      }))
+    }),
   completeTool: (sessionId, itemId, content) =>
     set((st) =>
       patchView(st, sessionId, (v) => ({
@@ -237,6 +280,19 @@ export const useApp = create<AppState>((set) => ({
       }
     }),
   applyFrame: (f) => {
+    // W-1：delta 走缓冲合帧；非 delta 帧先同步冲洗缓冲再处理（switch 里多处读 streaming）
+    if (f.ev.type === 'delta') {
+      deltaBuffer.set(f.sessionId, (deltaBuffer.get(f.sessionId) ?? '') + String(f.ev.text ?? ''))
+      if (!deltaFlushScheduled) {
+        deltaFlushScheduled = true
+        ;(deltaScheduler ?? defaultDeltaScheduler)(() => {
+          deltaFlushScheduled = false
+          __flushDeltaBuffer()
+        })
+      }
+      return
+    }
+    __flushDeltaBuffer()
     set((st) => {
       // 会话级 running 翻新
       if (f.ev.type === 'thread/status') {

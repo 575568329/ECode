@@ -78,41 +78,40 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
     if (view?.askUser == null) answeredRef.current = false
   }, [view?.approval, view?.askSelect, view?.askUser])
 
-  // —— 审批 takeover：挂起时替代输入区（一 shot；resolved 帧到达自动卸载） ——
-  if (view?.approval != null && sessionId !== null) {
-    const a = view.approval
-    const sensitive = a.kind === 'sensitive'
-    const answer = async (decision: string): Promise<void> => {
-      if (decidedRef.current) return
-      decidedRef.current = true
-      try {
-        await sendCommand('', project ?? '', sessionId, { op: 'approval/respond', requestId: a.requestId, decision })
-      } catch {
-        decidedRef.current = false // 网络失败复位一次性守卫（曾吞错后面板点击永久无效干等超时）
-      }
+  // —— 审批应答（一 shot；敏感=takeover 整卡替代输入区；非敏感=dock 卡钉输入框上方，
+  //     输入区保持可用——W-6 批 5：审批不再冻结输入，用户可边审边排下一条） ——
+  const approval = view?.approval ?? null
+  const approvalSensitive = approval?.kind === 'sensitive'
+  const answerApproval = async (decision: string): Promise<void> => {
+    if (decidedRef.current || approval === null || sessionId === null) return
+    decidedRef.current = true
+    try {
+      await sendCommand('', project ?? '', sessionId, { op: 'approval/respond', requestId: approval.requestId, decision })
+    } catch {
+      decidedRef.current = false // 网络失败复位一次性守卫（曾吞错后面板点击永久无效干等超时）
     }
+  }
+
+  // 敏感操作：takeover 整卡（不可记住、无 always——M14-D6 sensitive 永远交互不破）
+  if (approval != null && sessionId !== null && approvalSensitive) {
+    const a = approval
     return (
       <div className="border-t border-amber-900/50 bg-amber-950/20 px-4 py-3">
         <div className="mx-auto max-w-3xl space-y-2">
           <div className="flex items-center gap-2 text-xs font-medium text-amber-400">
             <ShieldAlert size={14} />
-            {sensitive ? '敏感操作确认（不可记住）' : '需要审批'}
+            敏感操作确认（不可记住）
             <span className="rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[11px] text-dim">{a.tool}</span>
             {a.claimedBy !== undefined && <span className="text-[11px] text-amber-600">（{a.claimedBy} 正在处理）</span>}
           </div>
           <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border border-line bg-surface/70 px-3 py-2 text-xs text-body">{a.preview}</pre>
           <div className="flex flex-wrap gap-2">
             {a.decisions.includes('once') && (
-              <button onClick={() => void answer('once')} className="flex min-h-11 items-center gap-1.5 rounded bg-emerald-700 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-600">
+              <button onClick={() => void answerApproval('once')} className="flex min-h-11 items-center gap-1.5 rounded bg-emerald-700 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-600">
                 <Check size={13} /> 允许
               </button>
             )}
-            {a.decisions.includes('always') && !sensitive && (
-              <button onClick={() => void answer('always')} className="flex min-h-11 items-center gap-1.5 rounded bg-neutral-700 px-4 py-2 text-xs text-body hover:bg-neutral-600">
-                <Check size={13} /> 本会话始终允许
-              </button>
-            )}
-            <button onClick={() => void answer('reject')} className="flex min-h-11 items-center gap-1.5 rounded bg-red-800 px-4 py-2 text-xs font-medium text-white hover:bg-red-700">
+            <button onClick={() => void answerApproval('reject')} className="flex min-h-11 items-center gap-1.5 rounded bg-red-800 px-4 py-2 text-xs font-medium text-white hover:bg-red-700">
               <Ban size={13} /> 拒绝
             </button>
           </div>
@@ -169,9 +168,50 @@ export function Composer({ project, sessionId }: { project: string | null; sessi
 
   // —— 常态输入区（未选项目=禁用占位；hero 态=「输入即开新对话」） ——
   const noProject = project === null
+  // W-6（批 5）：非敏感审批 dock——钉在输入框上方，输入区保持可用（不冻结；harness
+  // ApprovalPanel 蓝本：按钮行在滚动区外、一次性 latch）。sensitive 走上方 takeover 早退
+  const approvalDock =
+    approval !== null && sessionId !== null ? (
+      <div className="mx-auto mb-2 max-w-3xl rounded border border-amber-900/50 bg-amber-950/20 px-3 py-2">
+        <div className="flex items-center gap-2 text-xs font-medium text-amber-400">
+          <ShieldAlert size={13} />
+          需要审批
+          <span className="rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[11px] text-dim">{approval.tool}</span>
+          {approval.claimedBy !== undefined && <span className="text-[11px] text-amber-600">（{approval.claimedBy} 正在处理）</span>}
+        </div>
+        <pre className="mt-1.5 max-h-28 overflow-auto whitespace-pre-wrap break-all rounded border border-line bg-surface/70 px-2.5 py-1.5 text-xs text-body">{approval.preview}</pre>
+        <div className="mt-1.5 flex justify-end gap-1.5">
+          {approval.decisions.includes('reject') && (
+            <button
+              onClick={() => void answerApproval('reject')}
+              className="rounded border border-red-900/70 px-2.5 py-1 text-[11px] text-red-400 hover:border-red-700 hover:text-red-300"
+            >
+              <Ban size={10} className="mr-0.5 inline" /> 拒绝
+            </button>
+          )}
+          {approval.decisions.includes('always') && (
+            <button
+              onClick={() => void answerApproval('always')}
+              className="rounded border border-line-strong px-2.5 py-1 text-[11px] text-dim hover:text-body"
+            >
+              <Check size={10} className="mr-0.5 inline" /> 始终允许
+            </button>
+          )}
+          {approval.decisions.includes('once') && (
+            <button
+              onClick={() => void answerApproval('once')}
+              className="rounded bg-emerald-700 px-3 py-1 text-[11px] font-medium text-white hover:bg-emerald-600"
+            >
+              <Check size={10} className="mr-0.5 inline" /> 允许
+            </button>
+          )}
+        </div>
+      </div>
+    ) : null
   return (
     <div className="border-t border-line px-4 py-3">
       {err !== '' && <div className="mx-auto mb-2 max-w-3xl text-xs text-red-400">⚠ {err}</div>}
+      {approvalDock}
       <div className="mx-auto flex max-w-3xl items-end gap-2">
         <textarea
           value={text}

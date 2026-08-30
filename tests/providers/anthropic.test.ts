@@ -182,15 +182,15 @@ describe('thinkingToAnthropic', () => {
 })
 
 describe('resolveMaxTokens', () => {
-  it('thinking off/undefined → maxTokens 或默认 8192', () => {
-    expect(resolveMaxTokens(undefined, 'off')).toBe(8192)
-    expect(resolveMaxTokens(undefined, undefined)).toBe(8192)
+  it('thinking off/undefined → maxTokens 或默认 32000（2026-08-30 对标 CC/opencode）', () => {
+    expect(resolveMaxTokens(undefined, 'off')).toBe(32000)
+    expect(resolveMaxTokens(undefined, undefined)).toBe(32000)
     expect(resolveMaxTokens(1000, 'off')).toBe(1000)
   })
 
-  it('thinking medium + maxTokens 8192 → clamp 到 8193（budget+1，P0-2）', () => {
+  it('thinking medium + maxTokens 8192 → clamp 到 8193（budget+1，P0-2 下限保护——显式小值仍保证合法性）', () => {
     expect(resolveMaxTokens(8192, 'medium')).toBe(8193)
-    expect(resolveMaxTokens(undefined, 'medium')).toBe(8193)
+    expect(resolveMaxTokens(undefined, 'medium')).toBe(32000)
   })
 
   it('thinking high → clamp 到 16385', () => {

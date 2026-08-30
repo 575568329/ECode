@@ -86,6 +86,9 @@ export interface LoopCallbacks {
   onToolResult?: (id: string, name: string, result: ToolResult) => void
   onUsage?: (inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }) => void
   onWarn?: (msg: string) => void
+  /** error 级告警（UI 常驻不自动消失——「需要用户行动」的场景用这个，如续写耗尽）；
+   *  未桥接时消费方应回退 onWarn */
+  onError?: (msg: string) => void
   /** ActivityBar 状态同步（各阶段：thinking/tool/retry/idle/aborted） */
   onActivity?: (state: ActivityState, text?: string) => void
   /** 迭代轮数同步（StatusBar 显示 iter/maxIter） */
@@ -134,6 +137,11 @@ export interface LoopRunOptions {
  * @param messages 共享状态（会 mutate 并返回）
  * @param userInput 本轮用户输入
  */
+/** max_tokens 续写指令：CC "Resume directly — no apology, no recap" 同语义（isMeta 形态——
+ *  随会话落盘但 UI 不渲染为用户气泡，与插话包装同层的合成指令） */
+const CONTINUE_PROMPT =
+  '输出已达 max_tokens 上限被截断。请从中断处直接继续输出：不要道歉、不要复述已写内容，必要时把剩余工作拆成更小的步骤分批输出。'
+
 export async function runLoop(messages: HistoryLine[], userInput: string, opts: LoopRunOptions): Promise<HistoryLine[]> {
   // 调用方可能已乐观 push user（TUI 立即显示）；检测避免重复
   const lastMsg = messages.at(-1)
@@ -153,6 +161,10 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
   }
 
   let retryCount = 0
+  // max_tokens 自动续写（对标 CC：上限 3 次；CC MAX_OUTPUT_TOKENS_RECOVERY_LIMIT=3）
+  const MAX_CONTINUATIONS = 3
+  let continuationCount = 0
+  // 续写指令（CC "Resume directly — no apology, no recap" 同语义中文化）
   // F-21（审阅 P1-5 改判定基准）：耗尽 = 循环条件走完（iter > maxIterations）退出，而非
   // 任一 break。break 各处置 done=true；循环后 !done 才算耗尽——CONTEXT_TOO_LONG 压缩重试
   // 与 empty_tool_use 两个 continue 路径在最后一轮撞上限时不再漏报（此前 exhausted 赋值
@@ -362,6 +374,17 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     }
 
     // 停止判定
+    // 空响应轮防御（2026-08-30 用户报障实机复现）：provider 合法收尾但零 delta 零 tool_use
+    //（端点断流/网关截断/模型空 content）——曾静默当正常轮结束，TUI 无任何提示回 idle，
+    // 用户观感即「突然停止连思考都不显示」。警告后按轮结束处理：不自动重试（端点真坏会
+    // 重试风暴），重试由用户发起。aborted/错误流不在此列（各有专属路径）。
+    if (
+      stopReason === 'end' && streamError === null &&
+      textBuf === '' && newToolUses.length === 0
+    ) {
+      opts.callbacks.onWarn?.('模型返回了空响应（本轮零输出——可能是端点断流或网络异常），请重试')
+      opts.logger.warn('loop', 'empty_turn', { iter }, iter)
+    }
     // M11-P0：stop 谎报防御——部分 provider 报 done stop_reason:'end' 但本轮已有 tool_use
     //（opencode 实证），按 tool_use 继续执行（不终止）；aborted 不在此列（signal 已断，工具不该跑）
     if (stopReason === 'end' && newToolUses.length > 0) {
@@ -373,9 +396,41 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
       break
     }
     if (stopReason === 'length') {
+      // 自动续写（2026-08-30 对标调研后实施）：CC 同款——半截 assistant 已在 finally 固化，
+      // 追加 user meta 续写指令让模型从中断处接着写，上限 MAX_CONTINUATIONS 次；续写期间
+      // ActivityBar 保持 thinking（轮未结束）。截断的 tool_use 不执行不回传（harness 教训：
+      // 半截 JSON 不安全，且 assistant 的 tool_use 无配对 tool_result 会让下轮请求 400）。
+      const truncatedTools = newToolUses.length
+      if (truncatedTools > 0) {
+        // 从已固化的 assistant 消息里剥掉截断 tool_use 块（只留文本部分），防止下轮 400
+        const lastAssistant = [...messages].reverse().find((m): m is Message => 'role' in m && m.role === 'assistant')
+        if (lastAssistant !== undefined) {
+          ;(lastAssistant as { content: ContentBlock[] }).content = lastAssistant.content.filter(
+            (b) => b.type !== 'tool_use',
+          )
+        }
+        newToolUses.length = 0
+        opts.callbacks.onWarn?.(`输出被 max_tokens 截断，${truncatedTools} 个未完成的工具调用已丢弃（续写后请重新发起）`)
+        opts.logger.warn('loop', 'max_tokens_tool_use_dropped', { count: truncatedTools }, iter)
+      }
+      if (continuationCount < MAX_CONTINUATIONS) {
+        continuationCount += 1
+        const continueMsg: Message = {
+          role: 'user',
+          content: [{ type: 'text', text: CONTINUE_PROMPT }],
+        }
+        messages.push(continueMsg)
+        opts.history.append(continueMsg)
+        opts.callbacks.onWarn?.(`输出达到 max_tokens 上限，已自动续写（${continuationCount}/${MAX_CONTINUATIONS}）——建议调大 maxTokens 配置减少截断`)
+        opts.logger.warn('loop', 'max_tokens_continue', { iter, continuationCount }, iter)
+        continue // 不 done：ActivityBar 维持 thinking，进入下一迭代接着写
+      }
       opts.callbacks.onActivity?.('idle')
-      opts.callbacks.onWarn?.('输出被截断（达到 max_tokens），输入"继续"可续写')
-      opts.logger.warn('loop', 'max_tokens_truncated', { iter })
+      // 耗尽=必须用户行动（调配置/拆任务），走常驻 error 通道（warn 12s 过期曾致用户无感知——报障实证）
+      ;(opts.callbacks.onError ?? opts.callbacks.onWarn)?.(
+        `输出连续 ${MAX_CONTINUATIONS} 次被 max_tokens 截断，已停止自动续写——请调大 maxTokens 配置（建议 32000+）或拆分任务`,
+      )
+      opts.logger.warn('loop', 'max_tokens_continuations_exhausted', { iter, continuations: continuationCount }, iter)
       done = true
       break
     }

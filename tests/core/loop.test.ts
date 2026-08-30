@@ -303,16 +303,17 @@ describe('runLoop', () => {
     await expect(runLoop([], '问', makeOpts(p, []))).rejects.toThrow(/fatal/i)
   })
 
-  it('length → break + onWarn（保留半截回答）', async () => {
+  it('length → 自动续写（2026-08-30 行为变更：不再 break；半截回答保留+续写指令追加）', async () => {
     const onWarn = vi.fn()
     const p = new MockProvider([
       [{ type: 'text', text: 'partial...' }, { type: 'done', stop_reason: 'length' }],
+      [{ type: 'text', text: '...rest' }, { type: 'done', stop_reason: 'end' }],
     ])
     const opts = { ...makeOpts(p, []), callbacks: { onText: vi.fn(), onWarn } }
     const messages = await runLoop([], '问', opts)
-    expect(onWarn).toHaveBeenCalled()
-    expect(messages).toHaveLength(2)
-    expect(last(messages)).toMatchObject({ type: 'text', text: 'partial...' })
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('已自动续写（1/3）'))
+    expect(messages).toHaveLength(4)
+    expect(last(messages)).toMatchObject({ type: 'text', text: '...rest' })
   })
 
   it('空 tool_use 防护（stop=tool_use 但无工具块）→ continue 不空转', async () => {
@@ -771,8 +772,67 @@ describe('runLoop：空响应轮防御（2026-08-30 用户报障——端点断�
     await runLoop([], '问', {
       ...makeOpts(p, []),
       callbacks: { onText: vi.fn(), onWarn },
+      signal: ac.signal, // loop 的 abort 权威判据是 opts.signal（provider.run 与 252 行兜底都读它）
       toolCtx: { cwd: process.cwd(), signal: ac.signal },
     })
     expect(onWarn).not.toHaveBeenCalledWith(expect.stringContaining('空响应'))
+  })
+})
+
+describe('runLoop：max_tokens 自动续写（2026-08-30 对标 CC——meta 续写+3 次上限+截断 tool_use 丢弃）', () => {
+  it('length 截断 → 追加 user 续写指令接着写；续写成功后正常结束', async () => {
+    const p = new MockProvider([
+      [{ type: 'text', text: '前半段' }, { type: 'done', stop_reason: 'length' }],
+      [{ type: 'text', text: '后半段' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const onWarn = vi.fn()
+    const messages = await runLoop([], '问', { ...makeOpts(p, []), callbacks: { onText: vi.fn(), onWarn } })
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('已自动续写（1/3）'))
+    // messages 尾序：user(问) assistant(前半段) user(续写指令) assistant(后半段)
+    const roles = messages.map((m) => ('role' in m ? m.role : 'boundary'))
+    expect(roles).toEqual(['user', 'assistant', 'user', 'assistant'])
+    const continueMsg = messages[2] as Message
+    expect((continueMsg.content[0] as { text: string }).text).toContain('继续输出')
+    const lastAssistant = messages[3] as Message
+    expect((lastAssistant.content[0] as { text: string }).text).toBe('后半段')
+  })
+
+  it('截断轮里的 tool_use 不执行且从 messages 剥除（半截 JSON 不安全，无配对 result 防 400）', async () => {
+    let executed = false
+    const t: Tool = {
+      name: 'echo',
+      description: 'echo',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: true,
+      async execute() {
+        executed = true
+        return { content: 'should-not-happen' }
+      },
+    }
+    const p = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 't1', name: 'echo' },
+        { type: 'tool_use_delta', id: 't1', partial_json: '{"ms' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'length' },
+      ],
+      [{ type: 'text', text: '续写内容' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const onWarn = vi.fn()
+    const messages = await runLoop([], '问', { ...makeOpts(p, [t]), callbacks: { onText: vi.fn(), onWarn } })
+    expect(executed).toBe(false)
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('1 个未完成的工具调用已丢弃'))
+    const assistant = messages.find((m) => 'role' in m && m.role === 'assistant') as Message
+    expect(assistant.content.some((b) => b.type === 'tool_use')).toBe(false)
+  })
+
+  it('连续 3 次截断 → 耗尽走 onError 常驻通道并结束（不再无限续写）', async () => {
+    const lengthTurn: Delta[] = [{ type: 'text', text: 'x' }, { type: 'done', stop_reason: 'length' }]
+    const p = new MockProvider([lengthTurn, lengthTurn, lengthTurn, lengthTurn])
+    const onError = vi.fn()
+    const onWarn = vi.fn()
+    await runLoop([], '问', { ...makeOpts(p, []), callbacks: { onText: vi.fn(), onWarn, onError } })
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('已自动续写（3/3）'))
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('已停止自动续写'))
   })
 })

@@ -73,7 +73,7 @@ const run = async () => {
     : ['cmd.exe', ['/c', ...parts]]
   const proc = pty.spawn(file, args, {
     cwd: REPO,
-    env: { ...process.env, USERPROFILE: tmpHome, HOME: tmpHome, ECODE_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: 'dummy-key-for-pty-test', ECODE_MODEL: 'mock-model' },
+    env: { ...process.env, ECODE_FORCE_EMBEDDED: '1', USERPROFILE: tmpHome, HOME: tmpHome, ECODE_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: 'dummy-key-for-pty-test', ECODE_MODEL: 'mock-model' },
     cols: 110, rows: 32,
   })
   let out = ''

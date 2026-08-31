@@ -108,6 +108,15 @@ const NO_ALT_SCREEN =
 /** 批2d（§13.1 拍板-1 附）：BEL 终端铃字符（审批卡首次出现时写一次，终端自行决定响/闪标题栏） */
 const BEL_CHAR = '\x07'
 
+/** T 线 T4：形态无关的宿主客户端面——Embedded=HostSession 结构超集，附着=MultiTransport。
+ *  TuiApp 只依赖此接口（mountBridges 可选：Embedded 宿主内部桥，附着形态 daemon 侧自挂）。 */
+export interface TuiHost {
+  send: (cmd: import('../protocol/types.js').ProtocolCommand) => Promise<import('../protocol/types.js').CommandResult>
+  subscribe: (handler: (ev: import('../protocol/types.js').ProtocolEvent) => void, opts?: { canAnswer?: boolean }) => () => void
+  dispose: () => void
+  mountBridges?: () => void
+}
+
 export interface TuiAppDeps {
   providerRegistry: LLMProviderRegistry
   tools: ToolRegistry
@@ -163,7 +172,7 @@ function generalConfigItems(config: import('../services/config.js').Config): Con
  * - active：当前轮活跃状态（分区累积：userInput / tools / streamingText）
  * - 一轮一 commit：runLoop 结束 → messagesToCommitted → setCommitted；active 清空
  */
-export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initialHistorySessionId }: { deps: TuiAppDeps; banner?: string; onRestart?: () => void; onExit?: () => void; initialHistorySessionId?: string }): ReactElement {
+export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initialHistorySessionId, host: attachedHost }: { deps: TuiAppDeps; banner?: string; onRestart?: () => void; onExit?: () => void; initialHistorySessionId?: string; /** T 线 T4：附着形态由入口注入 MultiTransport（deps 换壳）；缺省=Embedded 内联装配 */ host?: TuiHost }): ReactElement {
   const abortRef = useRef<AbortController>(new AbortController())
   // M12-B3 中间态：客户端消息镜像（宿主 transcript 权威；轮末/压缩/恢复同步——B5 退役）
   const messagesRef = useRef<HistoryLine[]>([])
@@ -425,7 +434,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const onRestartRef = useRef(onRestart)
 
   // —— M12-B3：宿主会话（数据/执行/审批全权在宿主；TuiApp 只是协议客户端）——
-  const hostRef = useRef<HostSession | null>(null)
+  const hostRef = useRef<TuiHost | null>(null)
+  /** 附着形态的 MultiTransport（setSessionId 用；embedded 下恒 null） */
+  const transportRef = useRef<{ setSessionId?: (sid: string) => void } | null>(null)
+  if (attachedHost !== undefined && hostRef.current === null) {
+    hostRef.current = attachedHost
+    if ('setSessionId' in attachedHost) transportRef.current = attachedHost as { setSessionId?: (sid: string) => void }
+  }
   if (hostRef.current === null) {
     // M13-W1：宿主取自 ProjectHost（会话容器；首会话已由 makeDeps ensure——此处幂等取回）；
     // 测试 fake 无 project 走内联构造兜底（与 M12 等价）
@@ -456,9 +471,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             },
           })
     const hostInstance = inline as HostSession
+    // HostSession 结构超集兼容 TuiHost（附着形态同位替换为 MultiTransport）
     hostRef.current = hostInstance
   }
   const host = hostRef.current
+  /** T 线 T4：附着态标记（挂账项守卫——skill-create/PluginPanel 等直调面附着态禁用，D-T2） */
+  const attached = attachedHost !== undefined
 
   // T 线 T2：transcript 读面命令化——宿主 messages 镜像改走 session/read 无参全量（与
   // restoreFull 同源同形；Embedded=InMemoryChannel 内存拷贝，附着=HTTP）。原 12 处
@@ -467,6 +485,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     const r = await host.send({ op: 'session/read', sessionId: deps.history.currentSessionId() })
     if (!r.ok) return messagesRef.current
     return r.value as unknown as HistoryLine[]
+  }
+  /** T 线 T4：附着态当前会话 id（prompt 回执/restore 回执记录；embedded 走 deps.history） */
+  const attachedSidRef = useRef<string | undefined>(undefined)
+  const recordSessionId = (sid: string): void => {
+    attachedSidRef.current = sid
+    transportRef.current?.setSessionId?.(sid)
   }
   /** 拉取并同步渲染镜像（ref+committed 全量重建——事件回调内异步化） */
   const syncCommitted = (lines?: HistoryLine[]): void => {
@@ -504,7 +528,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
 
   // 事件→UI 映射（渲染/审批/插话/进度全事件驱动；回调直驱 setState 的旧路径退役）
   useEffect(() => {
-    host.mountBridges()
+    host.mountBridges?.()
     const unsub = host.subscribe((ev) => {
       switch (ev.type) {
         case 'delta':
@@ -775,7 +799,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       setActive((a) => ({ ...a, streaming: false }))
       setSystemMsgs([`发送失败：${r.error}`], 'warn')
       setActivity({ state: 'idle' })
+      return
     }
+    // T 线 T4：附着态隐式建会话——回执带 sessionId 记录为当前会话（后续命令信封路由）
+    if (r.sessionId !== undefined) recordSessionId(r.sessionId)
   }
 
   // P1 闪退面：doSubmit 前半段（图片组装/hook dispatch/getByType 等）在内部 try 之外，任一
@@ -905,6 +932,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
 
   /** M6 S-P7：/skill-create——读会话 → LLM 起草 → 预览 → 创建/升级（人审卡点两处） */
   const skillCreate = async (): Promise<void> => {
+    if (attached) {
+      setSystemMsgs(['附着模式下 /skill-create 暂不可用（需本地模式）——已挂账产品化线'])
+      return
+    }
     if (!config.providers[config.current.name]) return
     const msgs = buildContextMessages(messagesRef.current)
     if (msgs.length === 0) {
@@ -1687,7 +1718,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             return
           }
           if (result.action === 'pick-history') {
-            setHistoryMetas(deps.history.loadAll(process.cwd()))
+            void host.send({ op: 'session/list', includeArchived: true }).then((r) => {
+              if (r.ok) setHistoryMetas((r.value as unknown as SessionMeta[]))
+            }).catch(() => {})
             setOverlay({ kind: 'pick-history' })
             return
           }

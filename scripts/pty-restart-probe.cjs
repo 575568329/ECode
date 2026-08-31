@@ -48,7 +48,7 @@ const run = async () => {
   // R1: npm run dev 形态（与用户一致：cross-env FORCE_COLOR=1 tsx src/cli/index.ts）
   proc = pty.spawn('cmd.exe', ['/c', 'npm', 'run', 'dev'], {
     cwd: REPO,
-    env: { ...process.env, ANTHROPIC_API_KEY: 'dummy-key-for-pty-test', ECODE_MODEL: 'mock-model', ECODE_RESTART_DESTROY: undefined },
+    env: { ...process.env, ECODE_FORCE_EMBEDDED: '1', ANTHROPIC_API_KEY: 'dummy-key-for-pty-test', ECODE_MODEL: 'mock-model', ECODE_RESTART_DESTROY: undefined },
     cols: 110,
     rows: 32,
   })

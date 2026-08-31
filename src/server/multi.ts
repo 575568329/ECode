@@ -21,7 +21,7 @@ import type { MuxFrame, SessionBrief } from '../protocol/mux.js'
 import { FileHistoryStore, collectProjectCwds } from '../services/history.js'
 import { aggregateStats } from '../services/stats.js'
 import { homedir } from 'node:os'
-import { createReadStream, existsSync, statSync } from 'node:fs'
+import { appendFileSync, createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, join, normalize, sep } from 'node:path'
 import type { ServeResult } from './http.js'
 import type { ProjectRegistry } from './projects.js'
@@ -58,6 +58,10 @@ export function serveMulti(
     statsCachePath?: string
     /** M13-W5：web/dist 托管目录（存在即挂 / 静态路由 + SPA fallback；缺省不挂） */
     webDir?: string
+    /** T3：附着前版本比对（TUI 拒绝附着于版本不符的 daemon——保住跑着的任务） */
+    version?: string
+    /** T3：主机别名（多机区分——web/TUI 顶栏显示） */
+    name?: string
     /** M14-C2④：实例标识（/api/health 回显——serveStop kill 前比对防陈旧 PID 误杀） */
     id?: string
     /** M14-C2①/D13：追加凭据条目（device 级测试注入口；产品化线 R1 配对设备正式写入处） */
@@ -176,7 +180,7 @@ export function serveMulti(
       // 绑定 0.0.0.0/具体 IP（启动期已强制密码）→放行交 Bearer 鉴权裁决。
       if (remoteDenied(remote, isLoopback)) return json(403, { error: '非 loopback 连接被拒' })
       // M14-C2④：health 回显实例标识（serveStop kill 前比对——PID 回收复用防误杀）
-      if (req.method === 'GET' && url.pathname === '/api/health') return json(200, { ok: true, id: opts.id ?? null })
+      if (req.method === 'GET' && url.pathname === '/api/health') return json(200, { ok: true, id: opts.id ?? null, version: opts.version ?? null, name: opts.name ?? null })
 
       // M13-W5：静态托管（SPA 壳免鉴权——HTML/JS 无敏感内容，API 全鉴权；TokenGate 是应用层）
       if (opts.webDir !== undefined && req.method === 'GET' && !url.pathname.startsWith('/api/')) {
@@ -296,8 +300,10 @@ export function serveMulti(
         const sinceSeqRaw = url.searchParams.get('sinceSeq')
         const sinceSeq = sinceSeqRaw === null ? null : Number(sinceSeqRaw)
         const write = guardedSseWrite(res)
+        let sendCount = 0
+        void muxFilter // T4：per-device 过滤钩子（R1 消费；当前无调用方传入）
         const send = (frame: MuxFrame): void => {
-          if (muxFilter !== undefined && !muxFilter(frame)) return
+          sendCount++
           if (wantSid !== null && wantSid !== '' && 'ev' in frame && frame.sessionId !== wantSid) return
           const eventName = 'host' in frame ? frame.host.type : frame.ev.type
           write(`event: ${eventName}\n\ndata: ${JSON.stringify(frame)}\n\n`)
@@ -320,6 +326,8 @@ export function serveMulti(
           // 现网靠 web 切会话重订整条 SSE 的副作用兜住；补订后单连接自洽）
           unsubs.push(
             host.onSessionEvent((kind, info) => {
+              appendFileSync('D:/study/ECode/.ecode/mux-dbg.log', `sessionEvent ${kind} ${info.sessionId}
+`)
               if (kind === 'created') {
                 send({ host: { type: 'session/created', brief: info.brief ?? { project: cwd, sessionId: info.sessionId, running: false, title: '', updatedAt: Date.now() } } })
                 const conv = host.conversation(info.sessionId)
@@ -423,7 +431,11 @@ export function serveMulti(
               h.host.touch(sid)
               return json(200, { ok: true, sessionId: sid })
             }
+            appendFileSync('D:/study/ECode/.ecode/mux-dbg.log', `cmd op=${JSON.stringify(cmd.op).slice(0, 60)} envelopeSid=${String(cmd.sessionId)}
+`)
             const routed = await routeConversation(h.host, cmd)
+            appendFileSync('D:/study/ECode/.ecode/mux-dbg.log', `routed ${'error' in routed ? `err=${routed.error}` : `sid=${routed.sessionId}`}
+`)
             if ('error' in routed) return json(routed.code, { ok: false, error: routed.error })
             const inner = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : {}) as Parameters<HostSession['send']>[0]
             const result = await routed.conv.send(inner)

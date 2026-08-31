@@ -94,7 +94,7 @@ const run = async () => {
   console.log(`# mock SSE: 127.0.0.1:${port}`)
   proc = pty.spawn('cmd.exe', ['/c', 'npx', 'tsx', 'src/cli/index.ts'], {
     cwd: REPO,
-    env: { ...process.env, ECODE_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: 'dummy-key-for-pty-test', ECODE_MODEL: 'mock-model', USERPROFILE: tmpHome },
+    env: { ...process.env, ECODE_FORCE_EMBEDDED: '1', ECODE_BASE_URL: `http://127.0.0.1:${port}`, ANTHROPIC_API_KEY: 'dummy-key-for-pty-test', ECODE_MODEL: 'mock-model', USERPROFILE: tmpHome },
     cols: 110,
     rows: 32,
   })

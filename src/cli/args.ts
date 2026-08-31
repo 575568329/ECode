@@ -22,7 +22,7 @@ export type ArgvResult = ArgvUsage &
     | { mode: 'help' }
     | { mode: 'serve'; serveArgs: string[] }
     | { mode: 'error'; message: string }
-    | { mode: 'repl'; input: string; autoYes: boolean; historySessionId: string | undefined }
+    | { mode: 'repl'; input: string; autoYes: boolean; local: boolean; historySessionId: string | undefined }
   )
 
 export const USAGE = [
@@ -91,7 +91,7 @@ export function parseArgv(argv: string[]): ArgvResult {
   // 原实现 `arr[i-1] !== '--history'` 在重复 token 时会把第一个 --history 的判定
   // 挂在最后一个索引上；此处按 token 自身与前一个 token 判定，语义稳定）
   const positional = argv
-    .filter((a, i, arr) => a !== '--yes' && a !== '--history' && arr[i - 1] !== '--history')
+    .filter((a, i, arr) => a !== '--yes' && a !== '--local' && a !== '--history' && arr[i - 1] !== '--history')
     .join(' ')
     .trim()
 
@@ -105,7 +105,7 @@ export function parseArgv(argv: string[]): ArgvResult {
     const a = argv[i]
     if (a === '-v' || a === '--version') return { usage: USAGE, mode: 'version' }
     if (a === '-h' || a === '--help') return { usage: USAGE, mode: 'help' }
-    if (a.startsWith('-') && a !== '--yes' && a !== '--history' && argv[i - 1] !== '--history') {
+    if (a.startsWith('-') && a !== '--yes' && a !== '--local' && a !== '--history' && argv[i - 1] !== '--history') {
       return { usage: USAGE, mode: 'error', message: `未知参数: ${a}\n${USAGE}` }
     }
   }
@@ -115,6 +115,8 @@ export function parseArgv(argv: string[]): ArgvResult {
     mode: 'repl',
     input: positional,
     autoYes: argv.includes('--yes'),
+    /** T3：--local 跳过 daemon 直接 Embedded（附着失败自动降级语义见入口序） */
+    local: argv.includes('--local'),
     historySessionId,
   }
 }

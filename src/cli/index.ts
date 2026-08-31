@@ -20,7 +20,7 @@ import { LogStore } from '../services/logstore.js'
 import { taskRegistry } from '../services/tasks.js'
 import { makeGracefulShutdown } from '../services/gracefulShutdown.js'
 import { skillRegistry } from '../services/skill.js'
-import { commandRegistry } from '../commands/registry.js'
+import { commandRegistry, registerBuiltinCommands } from '../commands/registry.js'
 import { HostSession } from '../host/session.js'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -28,7 +28,9 @@ import { stripUntrustedAnsi } from '../tui/sanitize.js'
 import { installAltScreenExitHook } from '../tui/AltScreen.js'
 import { render } from 'ink'
 import React from 'react'
-import { TuiApp } from '../tui/TuiApp.js'
+import { TuiApp, type TuiAppDeps } from '../tui/TuiApp.js'
+import { ensureDaemonAttach } from './daemon.js'
+import { makeAttachShellDeps } from './assembly.js'
 import { makeDeps, type Deps } from './assembly.js'
 import { serveStop, serveMode } from './serveMain.js'
 import { parseArgv } from './args.js'
@@ -239,6 +241,44 @@ async function main(): Promise<void> {
   // M13-W1：--yes 前移（approvalPolicy 经 makeDeps opts 进会话 broker——原 runOnce 构造参数前移到装配点）
   // F-01：--history/互斥/缺参校验已前移 parseArgv（此处直接消费结果）
   const autoYes = parsed.mode === 'repl' && parsed.autoYes
+
+  // —— T 线 T3：交互 REPL 的 daemon 附着序（argv 单次模式不进 daemon——G-T3 豁免）——
+  // 附着成功=TuiApp 用 MultiTransport（同会话双客户端）；拉起失败=降级 Embedded（顶栏提示）；
+  // 版本不符=拒绝启动+提示（D-T1a：保住 daemon 里跑着的任务，绝不自动本地双开）
+  const initialHistorySessionId = parsed.mode === 'repl' ? parsed.historySessionId : undefined
+  if (parsed.mode === 'repl' && parsed.input === '') {
+    registerBuiltinCommands() // 附着分支不经 makeDeps（那边幂等注册全局单例）——提前补齐命令面
+    const outcome = await ensureDaemonAttach({
+      logger,
+      forceEmbedded: parsed.local || process.env.ECODE_FORCE_EMBEDDED === '1',
+    })
+    if (outcome.attached) {
+      const shellDeps = makeAttachShellDeps(logger, config)
+      historyRef = shellDeps.history as HistoryStore
+      logger.info('daemon', 'attached', { name: outcome.daemonName, project: process.cwd() })
+      hideTerminalCursor()
+      installAltScreenExitHook()
+      const instance = render(
+        React.createElement(TuiApp, {
+          deps: shellDeps as unknown as TuiAppDeps,
+          host: outcome.transport,
+          banner: `已附着后台服务（${outcome.daemonName}）——任务在后台持续运行，手机可继续操作`,
+          initialHistorySessionId,
+          onExit: () => gracefulShutdown(0),
+        }),
+        { exitOnCtrlC: false },
+      )
+      inkApp = instance
+      return
+    }
+    if (outcome.versionMismatch) {
+      process.stderr.write(`✗ ${outcome.reason}\n`)
+      process.exit(1)
+      return
+    }
+    if (outcome.reason !== '') banner = outcome.reason // 自动降级 Embedded——顶栏提示
+  }
+
   const deps = makeDeps(config, logger, sessionId, process.cwd(), { approvalPolicy: autoYes ? 'auto-approve' : 'ask' })
   historyRef = deps.history
   // M10-P3 终审 P1-6：后台任务完成钩子——走近修改集快照兜底（bash 同款语义；无 git 时 warn 跳过）
@@ -268,7 +308,6 @@ async function main(): Promise<void> {
   // D1（B2）：--yes 显式放行 tool-confirm 类审批（sensitive/mcp-permission 不豁免）；缺省 fail-closed
   // `--history <sessionId>`：REPL 启动即恢复指定会话（同 /history 语义——起新 sessionId 续写，D2），
   // 与位置参数（单次模式）互斥
-  const initialHistorySessionId = parsed.mode === 'repl' ? parsed.historySessionId : undefined
   const initialInput = parsed.mode === 'repl' ? parsed.input : ''
   if (initialInput) {
     for (const w of deps.instructionWarnings) process.stderr.write(`⚠ ${w}

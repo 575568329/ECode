@@ -10,7 +10,13 @@ import { parseArgv } from '../../src/cli/args.js'
 describe('F-01 parseArgv', () => {
   it('无参 → REPL', () => {
     const { usage: _u, ...rest } = parseArgv([])
-    expect(rest).toEqual({ mode: 'repl', input: '', autoYes: false, historySessionId: undefined })
+    expect(rest).toEqual({ mode: 'repl', input: '', autoYes: false, local: false, historySessionId: undefined })
+  })
+
+  it('T3：--local → REPL 附 local 标记（跳过 daemon 直接 Embedded）', () => {
+    const r = parseArgv(['--local'])
+    expect(r.mode).toBe('repl')
+    expect((r as { local?: boolean }).local).toBe(true)
   })
 
   it('-v / --version → 输出版本 exit 0', () => {

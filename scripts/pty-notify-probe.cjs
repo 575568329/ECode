@@ -120,7 +120,7 @@ const spawnTui = async (baseEnv) => {
   expectExit = false
   proc = pty.spawn('cmd.exe', ['/c', 'npx', 'tsx', 'src/cli/index.ts'], {
     cwd: REPO,
-    env: { ...process.env, ...baseEnv },
+    env: { ...process.env, ECODE_FORCE_EMBEDDED: '1', ...baseEnv },
     cols: 110,
     rows: 32,
   })

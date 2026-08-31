@@ -9,7 +9,7 @@ import { loadConfig, loadDotenvMap } from '../services/config.js'
 import { JsonlLogger } from '../services/logger.js'
 import { LogStore } from '../services/logstore.js'
 import { join } from 'node:path'
-import { writeFileSync, chmodSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { writeFileSync, chmodSync, readFileSync, rmSync, existsSync, renameSync } from 'node:fs'
 import * as os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { ProjectRegistry } from '../server/projects.js'
@@ -68,16 +68,47 @@ export async function serveStop(): Promise<void> {
 }
 
 export async function serveMode(): Promise<void> {
-  // 启动接管（调研结论 2）：旧 daemon 活着 → 身份核验（M14-C2④）→ SIGTERM 让位（版本升级/重复启动即换新）
+  // T3（架构席 P0-2）：接管语义收敛——健康且版本一致的 daemon 在跑 → 不接管、提示后退出 0
+  // （旧「无条件 SIGTERM 让位」与 daemon 常驻目标对撞：升级后重开会杀掉跑着的任务）。
+  // 接管仅保留给注册陈旧/health 不可达/版本不符（显式升级动作）情形。
   try {
     const regPath = join(os.homedir(), '.ecode', 'server.json')
-    const old = JSON.parse(readFileSync(regPath, 'utf8')) as { pid: number; port: number; id?: string }
-    const killed = await killServeByReg(old, 'serve takeover')
-    if (!killed) {
-      process.stderr.write('✗ 旧 serve 实例无法核验/让位——拒绝并发启动（可先 ecode serve stop 清理）\n')
-      process.exit(1)
+    const old = JSON.parse(readFileSync(regPath, 'utf8')) as { pid: number; port: number; id?: string; version?: string }
+    let pidAlive = true
+    try {
+      process.kill(old.pid, 0)
+    } catch {
+      pidAlive = false
     }
-    await new Promise((r) => setTimeout(r, 800)) // 等旧进程清锁退出
+    if (pidAlive) {
+      let healthy = false
+      let sameVersion = false
+      try {
+        const res = await fetch(`http://127.0.0.1:${old.port}/api/health`, { signal: AbortSignal.timeout(2000) })
+        if (res.ok) {
+          const h = (await res.json()) as { ok?: boolean; id?: string; version?: string }
+          healthy = h.ok === true && (h.id === undefined || h.id === old.id)
+          const myVer = (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }).version
+          sameVersion = h.version === undefined || h.version === myVer
+        }
+      } catch {
+        // health 不达
+      }
+      if (healthy && sameVersion) {
+        process.stdout.write('已有 daemon 服务中（健康且版本一致）——退出，不接管\n')
+        process.exit(0)
+      }
+      // 版本不符或 health 不达：保留显式升级接管（用户直接敲 serve 即视为升级动作）
+      const killed = await killServeByReg(old, 'serve takeover')
+      if (!killed) {
+        process.stderr.write('✗ 旧 serve 实例无法核验/让位——拒绝并发启动（可先 ecode serve stop 清理）\n')
+        process.exit(1)
+      }
+      await new Promise((r) => setTimeout(r, 800)) // 等旧进程清锁退出
+    } else {
+      // 陈旧注册（pid 不在）——清理后直接起
+      rmSync(regPath, { force: true })
+    }
   } catch {
     // 无旧实例/已死——直接起
   }
@@ -137,6 +168,9 @@ export async function serveMode(): Promise<void> {
   const webDirFromPkg = fileURLToPath(new URL('../../web/dist', import.meta.url))
   const webDirCandidate = webDirFromEnv !== undefined && webDirFromEnv !== '' ? webDirFromEnv : webDirFromPkg
   const webDir = existsSync(webDirCandidate) ? webDirCandidate : undefined
+  // T3：附着版本比对基准 + 主机别名（多机区分；顶栏/web 显示「当前连的是谁」）
+  const myVer = (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }).version
+  const daemonName = envOr('ECODE_SERVE_NAME') ?? os.hostname()
   // F-27：/api/cmd {op:'stop'} 优雅停机——与信号 handler 同一收敛路径（断 mux → registry
   // dispose（锁释放/审批收敛）→ 日志 LogStore 同步 flush → exit）。watchdog 兼容：shutdown 前删
   // 注册文件，防 watchdog 读到陈旧 id 误判「被接管」（其实是自己停）。本机 token 持有者即主人。
@@ -150,12 +184,19 @@ export async function serveMode(): Promise<void> {
   }
   const srv = await serveMulti(
     { registry, defaultCwd: process.cwd() },
-    { port: Number(envOr('ECODE_SERVE_PORT') ?? 0), host: serveHost, password: servePassword, id: sessionId, onStop: stopServe, ...(webDir !== undefined ? { webDir } : {}) },
+    { port: Number(envOr('ECODE_SERVE_PORT') ?? 0), host: serveHost, password: servePassword, id: sessionId, onStop: stopServe, version: myVer, name: daemonName, ...(webDir !== undefined ? { webDir } : {}) },
   )
-  // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读
+  // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读。
+  // T3：+version（附着前版本比对）+name（多机区分）；tmp+rename 原子写（防撕裂，架构席 P2-3）
   const regPath = join(os.homedir(), '.ecode', 'server.json')
-  writeFileSync(regPath, JSON.stringify({ id: sessionId, port: srv.port, token: srv.token, pid: process.pid }, null, 2), { mode: 0o600 })
-  chmodSync(regPath, 0o600)
+  const regTmp = `${regPath}.tmp-${process.pid}`
+  writeFileSync(regTmp, JSON.stringify({ id: sessionId, port: srv.port, token: srv.token, pid: process.pid, version: myVer, name: daemonName }, null, 2), { mode: 0o600 })
+  try {
+    chmodSync(regTmp, 0o600)
+  } catch {
+    /* 非 POSIX（win32）chmod 无强制力——文档披露不阻断 */
+  }
+  renameSync(regTmp, regPath)
   console.log(JSON.stringify({ type: 'ready', schemaVersion: 1, bound: `${serveHost}:${srv.port}`, register: regPath }))
   // 局域网形态打印手机可直接点击的访问 URL（半行代码消除"我该在手机输什么"的摩擦——审阅 P1）
   if (!isLoopbackServe) {

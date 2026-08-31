@@ -9,6 +9,8 @@
  * 独立模块（非 cli/index 内函数）后可被测试 import——入口文件的 main() 副作用不再
  * 阻断装配层测试（M14-C3⑤ serve 补加载的加载效果断言依赖此拆分）。
  */
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { buildProviderReq, loadDotenvMap, type Config } from '../services/config.js'
 import { AnthropicProvider } from '../providers/anthropic.js'
 import { OpenaiProvider } from '../providers/openai.js'
@@ -26,7 +28,7 @@ import { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import { makeTaskTool } from '../services/subagent.js'
 import { makeSkillTool } from '../tools/builtin/skill.js'
 import { SummarizeStrategy } from '../services/compaction/summarize.js'
-import { skillRegistry, createSkillRegistry } from '../services/skill.js'
+import { skillRegistry, createSkillRegistry, SkillRegistry } from '../services/skill.js'
 import { makeSkillHooksPort, globalExtensionHooks, type SkillHooksPort } from '../services/hooks/global.js'
 import { ExtensionHooksRegistry } from '../services/hooks/registry.js'
 import { ProjectHost } from '../host/project.js'
@@ -233,6 +235,39 @@ export function makeProjectParts(
     mcpWarnings: mcp.warnings,
     instructionWarnings,
     ...(mcp.pendingApproval !== undefined ? { mcpPendingApproval: mcp.pendingApproval } : {}),
+  }
+}
+
+/** T 线 T4：附着形态壳 deps——TuiAppDeps 必填字段的客户端面桩（附着态 TUI 的宿主面全走
+ *  MultiTransport 命令/帧，本对象的 provider/tools/orchestrator 恒不被触达；history 只用
+ *  currentSessionId/setSessionId 两个纯客户端会话 id 位——写路径全部命令化已由 T2 保证）。
+ *  skillRegistry 用真件（用户拍板：skill 数据归本地，同机 TUI 直读同一目录即同数据）。 */
+export function makeAttachShellDeps(
+  logger: Logger,
+  config: Config,
+): Pick<import('../tui/TuiApp.js').TuiAppDeps, 'logger' | 'history' | 'config' | 'orchestrator' | 'skillRegistry' | 'mcpManager'> & Record<string, unknown> {
+  let attachedSid: string | undefined
+  const shellHistory = {
+    append() {},
+    appendCompactBoundary() {},
+    appendRewind() {},
+    appendUsageStats() {},
+    patchSessionMeta() {},
+    loadAll() { return [] },
+    restore() { return [] },
+    restoreFull() { return [] },
+    setSessionId(id: string) { attachedSid = id },
+    forkSession() {},
+    flushPendingSeed() {},
+    currentSessionId() { return attachedSid },
+  }
+  return {
+    logger,
+    history: shellHistory as unknown as import('../services/history.js').HistoryStore,
+    config,
+    orchestrator: new CompactionOrchestrator(),
+    skillRegistry: new SkillRegistry({ userDir: join(homedir(), '.ecode', 'skills') }),
+    mcpManager: null,
   }
 }
 

@@ -253,7 +253,8 @@ export function ToolGroupView({ tools, expanded = false, expandedIds, done, onTo
       {capped && (
         <Box>
           <Gutter />
-          <Text dimColor>…还有 {hiddenTools} 个工具因终端预算折叠（Ctrl+O 展开 / Ctrl+T 查看全文）</Text>
+          {/* D7：Ctrl+O 已随 F-50 废除——全文入口只剩 /output（Ctrl+T 是空闲态全屏查看器） */}
+          <Text dimColor>…还有 {hiddenTools} 个工具因终端预算折叠（/output 查看全文）</Text>
         </Box>
       )}
     </Box>

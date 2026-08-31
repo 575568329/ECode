@@ -32,6 +32,23 @@ describe('FileHistoryStore', () => {
     expect(JSON.parse(lines[2]).role).toBe('assistant')
   })
 
+  it('D4 回归：listMetas 按项目过滤排除无 meta.cwd 的旧会话（lister cwd=过滤目标也不误命中）', () => {
+    const dir = path.join(tmp, `d4-${Date.now()}`)
+    // 复现误命中条件：normalizeProjectPath('') 经 realpathSync('') 解析到 lister 的
+    // process.cwd()——把过滤目标设为 lister cwd（vitest worker 的 cwd），旧代码下无主
+    // 会话会全部误命中（worker 不支持 process.chdir，故以测试进程自身 cwd 构造同条件）
+    const proj = process.cwd()
+    fs.mkdirSync(dir, { recursive: true })
+    // 有主会话：meta.cwd=proj
+    const owned = JSON.stringify({ meta: true, sessionId: 'owned', createdAt: '2026-08-30T10:00:00.000Z', model: 'm', firstUser: '有主', cwd: proj })
+    fs.writeFileSync(path.join(dir, 'owned.jsonl'), owned + '\n')
+    // 无主旧会话：meta 无 cwd 字段（旧版建档格式）
+    const orphan = JSON.stringify({ meta: true, sessionId: 'orphan', createdAt: '2026-08-16T04:14:32.000Z', model: 'm', firstUser: '无主' })
+    fs.writeFileSync(path.join(dir, 'orphan.jsonl'), orphan + '\n')
+    const metas = FileHistoryStore.listMetas(dir, proj)
+    expect(metas.map((m) => m.sessionId)).toEqual(['owned'])
+  })
+
   it('forkSession 延迟播种：跳转零落盘，首条写入才播种+续写（fork 自包含）', () => {
     const dir = path.join(tmp, `fork-${Date.now()}`)
     const store = new FileHistoryStore({ sessionId: 'seed', model: 'm', dir })

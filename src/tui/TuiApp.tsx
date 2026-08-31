@@ -1123,16 +1123,19 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // （InputStream slash 回填 Esc 自处理——本 handler 只在空闲态激活）、审批卡=拒绝（confirm
   // 非 null 时不激活）。守卫：busy 不接管（运行中 rewind 有竞态）、checkpoint 未启用不响应
   // 清账 III P2-1：@ 下拉开着与否的同步读（主输入框 atEntries 状态在 InputStream 内——
-  // 经 draft 端口同族的轻量探测：无端口代理时退化为 false）
-  const atEntriesOpenRef = useRef(false)
+  // 经 draft 端口同族的轻量探测：端口对象挂载期注册、read() 取活值；无端口时退化为 false）
+  // D2 回归修复（2026-08-31 走查）：此前消费端写 `port !== null`——而端口是挂载期注册的
+  // 常驻活对象（永非 null），致 escGuarded 恒真、双击 Esc 永久失效；改为持端口、事件时刻
+  // 调 read() 取活值（守卫求值挪进回调，消除渲染闭包陈旧性）。
+  const atOpenPortRef = useRef<{ read(): boolean } | null>(null)
   const lastEscRef = useRef(0)
-  // 清账 III P2-1：双击计时排除「输入框非空或 @ 下拉开着」态——用户关下拉/清回填的连击
-  // 不应误开 rewind（第一次 Esc 已被消费，第二次是另一意图）
-  const escGuarded = readMainDraft() !== '' || atEntriesOpenRef.current
   useInput(
     (_input, key) => {
       if (!key.escape) return
       const now = Date.now()
+      // 清账 III P2-1：双击计时排除「输入框非空或 @ 下拉开着」态——用户关下拉/清回填的连击
+      // 不应误开 rewind（第一次 Esc 已被消费，第二次是另一意图）
+      const escGuarded = readMainDraft() !== '' || (atOpenPortRef.current?.read() ?? false)
       if (!escGuarded && now - lastEscRef.current < 500 && deps.checkpoint != null) {
         lastEscRef.current = 0
         setOverlay({ kind: 'rewind-panel' })
@@ -1698,7 +1701,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         onRegisterDraft={registerPort}
         onDraftChange={setMainDraft}
         onRegisterAtOpen={(port) => {
-          atEntriesOpenRef.current = port !== null
+          atOpenPortRef.current = port
         }}
         placeholder={
           active.confirm !== null

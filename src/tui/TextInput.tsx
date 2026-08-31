@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useState } from 'react'
+import { useRef } from 'react'
 import { useInput, Text, Box } from 'ink'
 import wrapAnsi from 'wrap-ansi'
 import {
@@ -18,7 +18,7 @@ import {
 import { symbols } from './symbols.js'
 import { theme } from './theme.js'
 import { INDENT } from './layout.js'
-import { useViewport } from './viewport.js'
+import { shouldTokenize } from './pasteRefs.js'
 
 interface InputRenderProps {
   text: string
@@ -167,51 +167,19 @@ export function foldInputView(
 
 /** 输入渲染：F-36 栅格同款（2026-08-29 用户拍板：第一列 ❯ 图标槽、内容列从第 2 列起、
  *  折行/折叠行不占第 1 列——与对话区用户消息/助手消息同一栅格语言）+ 反色 caret 字素
- *  （设计理念 §7.2：反色不塞 ▋，跨字素不错位） */
-export function InputRender({ text, caret, placeholder, viewAnchor }: InputRenderProps): ReactElement {
-  const { columns } = useViewport()
-  const width = columns - 2 // ❯ 前缀槽占 2 列
-  const folded = physicalLineCount(text, width) > INPUT_FOLD_MAX_LINES
+ *  （设计理念 §7.2：反色不塞 ▋，跨字素不错位）。
+ *  输入体验批二期（2026-08-31 用户拍板「不要折叠了很丑」）：输入框**不再折叠**——
+ *  大粘贴由 token 化拦截（pasteRefs.ts，CC 同款），草稿高度天然受控；
+ *  旧折叠视图/查看窗（foldInputView/PgUp PgDn）退役为纯函数保留（测试锚）。 */
+export function InputRender({ text, caret, placeholder }: InputRenderProps): ReactElement {
   return (
     <Box flexDirection="row">
       <Box minWidth={INDENT.icon} flexShrink={0}>
         <Text color={theme.user}>{symbols.prompt}</Text>
       </Box>
       <Box flexShrink={1} flexGrow={1}>
-        {text === '' && placeholder !== undefined ? (
-          <Text dimColor>{placeholder}</Text>
-        ) : folded ? (
-          <FoldedCaretText text={text} caret={caret} width={width} anchor={viewAnchor} />
-        ) : (
-          <CaretText text={text} caret={caret} />
-        )}
+        {text === '' && placeholder !== undefined ? <Text dimColor>{placeholder}</Text> : <CaretText text={text} caret={caret} />}
       </Box>
-    </Box>
-  )
-}
-
-/** 折叠态输入：可见窗内 caret 行反色，折叠段用指示行替代（CC「+N lines」同款形态）。
- *  输入体验批：anchor 定义时进入查看窗（PgUp/PgDn 滚看），底部指示行带查看键提示 */
-function FoldedCaretText({ text, caret, width, anchor }: { text: string; caret: number; width: number; anchor?: number }): ReactElement {
-  const view = foldInputView(text, caret, INPUT_FOLD_MAX_LINES, width, anchor)
-  // 查看键提示挂在**最后一条折叠指示行**上（caret 尾行路径的最后一行是文本行，不能按 lastIdx 判）
-  let lastFoldedIdx = -1
-  view.rows.forEach((row, i) => {
-    if (row.kind === 'folded') lastFoldedIdx = i
-  })
-  return (
-    <Box flexDirection="column">
-      {view.rows.map((row, i) =>
-        row.kind === 'folded' ? (
-          <Text key={i} dimColor>
-            {`…已折叠 ${row.count} 行（共 ${view.totalPhysical} 行）${i === lastFoldedIdx ? '· PgUp/PgDn 查看' : ''}`}
-          </Text>
-        ) : i === view.caretRow ? (
-          <CaretText key={i} text={row.text} caret={view.caretCol} />
-        ) : (
-          <Text key={i}>{row.text === '' ? ' ' : row.text}</Text>
-        ),
-      )}
     </Box>
   )
 }
@@ -235,6 +203,9 @@ interface TextInputProps {
   onSubmit?: (text: string) => void
   /** 禁用按键（覆盖层显示时，避免按键漏进输入框） */
   inactive?: boolean
+  /** 粘贴 token 化（输入体验批二期，CC onTextPaste 同构）：大块插入（含换行或 ≥20 字符
+   *  单 chunk）经此判定——返回 token 文本则插入 token（内容存父级 map），null=原文直插 */
+  onPasteText?: (text: string) => string | null
 }
 
 /**
@@ -243,69 +214,99 @@ interface TextInputProps {
  * - 反色 caret（跨字素不错位，中文/emoji 友好）
  * - useInput 接键：字符 / Backspace / Delete / ← / → / Home / End / Enter
  * - value/caret 由父控制（InputStream 管 history / 补全）；停泊原生光标留后续
+ * - 输入体验批二期：大块插入（粘贴）交 onPasteText token 化——输入框不折叠
  */
-export function TextInput({ value, caret, placeholder, onInput, onSubmit, inactive }: TextInputProps): ReactElement {
+export function TextInput({ value, caret, placeholder, onInput, onSubmit, inactive, onPasteText }: TextInputProps): ReactElement {
   const cur: CursorState = { text: value, caret }
-  const { columns } = useViewport()
-  const viewWidth = columns - 2
-  // 输入体验批：查看窗锚（物理行）——PgUp/PgDn 滚看折叠草稿的中后段；value/caret 任意变化
-  // （键入/粘贴/回填/清空）即重置回吸 caret。滚轮不做：主屏未开鼠标跟踪（SGR 仅 alt-screen
-  // OutputViewer 开启），终端滚轮归原生 scrollback——挂账
-  const [viewAnchor, setViewAnchor] = useState<number | null>(null)
-  useEffect(() => {
-    setViewAnchor(null)
-  }, [value, caret])
-  const folded = physicalLineCount(value, viewWidth) > INPUT_FOLD_MAX_LINES
-  useInput((input, key) => {
-    // 查看窗滚动（输入体验批）：PgUp/PgDn 滚看折叠草稿——平铺态无窗可滚（不消费，透传）
-    if (key.pageUp || key.pageDown) {
-      if (!folded || inactive) return
-      setViewAnchor((a) => {
-        const base = a ?? 0
-        return Math.max(0, base + (key.pageUp ? -INPUT_FOLD_MAX_LINES : INPUT_FOLD_MAX_LINES))
+  const valueRef = useRef(value)
+  valueRef.current = value
+  const caretRef = useRef(caret)
+  caretRef.current = caret
+  // —— 粘贴 token 化（输入体验批二期，CC [Pasted text #N] 同构）——
+  // 架构：**先发射、后置换**。每次插入立即生效（数据=草稿文本，零丢字可能）；多字符
+  // 插入记录 recent 区间并调度 60ms 后的置换检查——区间文本未被编辑且 shouldTokenize
+  // 达标 → 原地替换为 [粘贴#N +M 行] token（全文存父级 pastedContents，提交时展开）。
+  // 置换是纯显示优化：未置换前提交=原文直发，同样正确。控制键不清 recent（slice 校验
+  // 自防编辑漂移）；手打单字符会不断重置 recent 起点但 60ms 窗内难积累到阈值。
+  const recentRef = useRef<{ start: number; text: string } | null>(null)
+  const recentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scheduleRetokenize = (): void => {
+    if (recentTimerRef.current !== null) clearTimeout(recentTimerRef.current)
+    recentTimerRef.current = setTimeout(() => {
+      const r = recentRef.current
+      recentRef.current = null
+      if (r === null || onPasteText === undefined) return
+      const curText = valueRef.current
+      if (curText.slice(r.start, r.start + r.text.length) !== r.text) return // 已被编辑，放弃置换
+      if (!shouldTokenize(r.text)) return
+      const token = onPasteText(r.text)
+      if (token === null) return
+      onInput?.({
+        text: curText.slice(0, r.start) + token + curText.slice(r.start + r.text.length),
+        caret: r.start + token.length,
       })
+    }, 60)
+  }
+  useInput((input, key) => {
+    // printable 含多行粘贴 chunk（含 \r/\n 的多字符块：ink 会标 key.return=true，
+    // 但它是待插入的粘贴内容而非提交键；裸单换行键仍走原换行/提交语义）
+    const multilineChunk = (input.includes('\r') || input.includes('\n')) && input !== '\r' && input !== '\n'
+    const printable = !key.ctrl && !key.meta && !key.escape && input !== '' && (!key.return || multilineChunk)
+    if (!printable) {
+      // 非打印键：控制键语义作用于当前草稿原文（数据层不受 token 影响）
+      if ((key.return && (key.shift || key.meta)) || (!key.return && input === '\n') || (key.ctrl && input === 'j')) {
+        onInput?.(insert(cur, '\n'))
+        return
+      }
+      if (key.return) {
+        onSubmit?.(value)
+        return
+      }
+      if (key.backspace) {
+        onInput?.(backspace(cur))
+        return
+      }
+      if (key.delete) {
+        onInput?.(deleteRight(cur))
+        return
+      }
+      if (key.leftArrow) {
+        onInput?.(moveLeft(cur))
+        return
+      }
+      if (key.rightArrow) {
+        onInput?.(moveRight(cur))
+        return
+      }
+      if (key.home) {
+        onInput?.(moveHome(cur))
+        return
+      }
+      if (key.end) {
+        onInput?.(moveEnd(cur))
+        return
+      }
       return
     }
-    // 手动换行三键位（legacy 终端 Shift+Enter 与 Enter 同字节 \r 不可区分——跨端稳妥组合）：
-    // - Shift+Enter / Alt+Enter：kitty 协议或 ESC \r 序列可区分修饰键
-    // - Ctrl+J：裸 \n（parse-keypress 归 name='enter'，input='\n'）或 kitty 形态 ctrl+'j'
-    if ((key.return && (key.shift || key.meta)) || (!key.return && input === '\n') || (key.ctrl && input === 'j')) {
-      onInput?.(insert(cur, '\n'))
+    // 行尾归一：xterm.js 系终端（VS Code / ZCode 集成终端）粘贴把换行统一转成裸 \r——
+    // 原样进渲染层会被终端当「回到行首」逐段覆盖，视觉上只剩最后一行（数据完整、显示被骗）
+    const normalized = input.replace(/\r\n?/g, '\n')
+    // 粘贴 token 化主路径：单 chunk 直接达标 → 立即 token 化（无需等待）
+    if (onPasteText !== undefined && shouldTokenize(normalized)) {
+      const token = onPasteText(normalized)
+      onInput?.(insert(cur, token ?? normalized))
       return
     }
-    if (key.return) {
-      onSubmit?.(value)
-      return
+    // 未达标：立即原样插入，同时记录/延续 recent 区间并调度置换检查
+    const r = recentRef.current
+    const continuesAppend = r !== null && cur.caret === r.start + r.text.length
+    if (continuesAppend && onPasteText !== undefined) {
+      r.text += normalized
+    } else if (onPasteText !== undefined) {
+      recentRef.current = { start: cur.caret, text: normalized }
     }
-    if (key.backspace) {
-      onInput?.(backspace(cur))
-      return
-    }
-    if (key.delete) {
-      onInput?.(deleteRight(cur))
-      return
-    }
-    if (key.leftArrow) {
-      onInput?.(moveLeft(cur))
-      return
-    }
-    if (key.rightArrow) {
-      onInput?.(moveRight(cur))
-      return
-    }
-    if (key.home) {
-      onInput?.(moveHome(cur))
-      return
-    }
-    if (key.end) {
-      onInput?.(moveEnd(cur))
-      return
-    }
-    if (!key.ctrl && !key.meta && !key.escape && input !== '') {
-      // 行尾归一：xterm.js 系终端（VS Code / ZCode 集成终端）粘贴把换行统一转成裸 \r——
-      // 原样进渲染层会被终端当「回到行首」逐段覆盖，视觉上只剩最后一行（数据完整、显示被骗）
-      onInput?.(insert(cur, input.replace(/\r\n?/g, '\n')))
-    }
+    scheduleRetokenize()
+    onInput?.(insert(cur, normalized))
   }, { isActive: !inactive })
-  return <InputRender text={value} caret={caret} placeholder={placeholder} viewAnchor={viewAnchor ?? undefined} />
+  return <InputRender text={value} caret={caret} placeholder={placeholder} />
 }

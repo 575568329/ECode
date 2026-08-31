@@ -6,6 +6,7 @@ import { deriveLatestTodos, TodoPanel, TODO_MAX_VISIBLE } from './TodoPanel.js'
 import { ErrorBanner } from './ErrorBanner.js'
 import { useInput, Text, Box } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
+import { formatPasteRef, shouldTokenize, expandPasteRefs, prunePasteRefs } from './pasteRefs.js'
 import { HostSession } from '../host/session.js'
 import type { ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
@@ -177,6 +178,19 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // 回调闭包提供稳定的同步读（渲染路径一律走 readMainDraft()，不走 state 镜像）
   const clearMainDraft = (): void => {
     setInputDraft({ text: '', seq: nextInsertSeq() })
+  }
+
+  // —— 输入体验批二期：粘贴 token 化（学 CC [Pasted text #N] 设计理念）——
+  // 大块插入存内存 map，草稿里放短 token；提交时 expandPasteRefs 展开回全文，
+  // 已发送的条目剪枝（删标签=删内容）。图片走 pendingImagesRef 同构机制。
+  const pastedStoreRef = useRef(new Map<number, string>())
+  const nextPasteIdRef = useRef(0)
+  const handlePasteText = (text: string): string | null => {
+    if (!shouldTokenize(text)) return null
+    nextPasteIdRef.current += 1
+    const id = nextPasteIdRef.current
+    pastedStoreRef.current.set(id, text)
+    return formatPasteRef(id, text)
   }
   const readMainDraft = (): string => draftPortRef.current?.read() ?? ''
   // M12-B3：插话预览由宿主 queue/snapshot 事件镜像（队列权威在宿主，D2）
@@ -718,6 +732,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // reject → void submit(...) 成 unhandledRejection → cli 顶层 handler exit(1) 杀掉整个 TUI。
   // 包装层整体兜底（含 runningRef 复位——hook dispatch 抛出时已置 true，不复位则 TUI 永久 busy）。
   const submit = async (input: string, display?: string, blocks?: ContentBlock[]): Promise<void> => {
+    // 输入体验批二期：粘贴 token 展开回全文再发（transcript 锁死语义=全文上屏）；
+    // 按提交前的草稿剪枝已发送条目（删标签=删内容，CC prune images 同款）
+    console.error('DBG-SUBMIT ' + JSON.stringify(input))
+    const expandedInput = expandPasteRefs(input, pastedStoreRef.current)
+    for (const deadId of prunePasteRefs(pastedStoreRef.current, input)) pastedStoreRef.current.delete(deadId)
+    input = expandedInput
     // 提交即清草稿镜像（P1-1 补丁：InputStream submit 内部清框的 onDraftChange('') 传播
     // 在重负载下可能滞后于下一张审批卡出现——hasDraft 假阳性会让 y/n/r 让位进草稿。此处
     // 显式同步，镜像以「提交必然清空」为不变量）
@@ -1580,6 +1600,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       <InputStream
         onSubmit={submit}
         onPasteImage={() => pasteImageFromClipboard()}
+        onPasteText={handlePasteText}
         onInterjectClear={() => {
           void host.send({ op: 'interjection/clear' })
         }}

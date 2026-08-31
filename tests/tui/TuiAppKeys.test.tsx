@@ -96,7 +96,7 @@ describe('回车提交 / 换行键位（TuiApp 全链路）', () => {
     const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(new OneShotProvider()) }))
     await flush()
     stdin.write('你好')
-    await flush()
+    await new Promise((r) => setTimeout(r, 150)) // burst 聚合窗闭合（输入体验批二期）
     stdin.write('\r')
     await flush(400)
     const f = lastFrame() ?? ''

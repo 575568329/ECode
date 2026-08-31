@@ -86,19 +86,16 @@ const run = async () => {
   proc.write('\x1b')
   await sleep(1200)
 
-  // C4：12 行粘贴 → 头窗 + caret 行；PgDn → 查看窗下移
+  // C4（输入体验批二期）：12 行粘贴 → token 化显示 `[粘贴#1 +11 行]`，原文不进输入框
   const lines = Array.from({ length: 12 }, (_, i) => `L${String(i + 1).padStart(2, '0')}`)
+  mark = out.length
   proc.write(lines.join('\r')) // \r 进 TextInput 归一为 \n（终端粘贴同路径）
   await sleep(1500)
-  mark = out.length
-  check('C4a 头窗含首行 L01', /L01/.test(strip(out.slice(mark - 6000))))
-  proc.write('\x1b[6~') // PgDn
-  await sleep(1000)
-  check('C4b PgDn 后查看窗下移（L06 进入窗口）', await waitFor(/L06/, mark, 3000))
-  proc.write('\x1b[6~') // 再 PgDn → anchor clamp 到尾窗 L08-L12
-  await sleep(1000)
-  mark = out.length
-  check('C4c 再 PgDn 到尾窗（L11 出现）', await waitFor(/L11/, mark - 4000, 3000))
+  check('C4a 大粘贴出 token（粘贴#1 +11 行）', await waitFor(/粘贴#1 \+11 行/, mark, 4000))
+  check('C4b 原文不进输入框（L06 缺席）', absentIn(/L06/, mark))
+  proc.write('\x1b[6~') // PgDn：折叠已退役，应无任何折叠/查看窗反应
+  await sleep(800)
+  check('C4c PgDn 不再产生折叠指示', absentIn(/已折叠/, mark))
 
   proc.kill()
   server.close()

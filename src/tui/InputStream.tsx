@@ -134,6 +134,9 @@ interface InputStreamProps {
   /** M10-P2b：Alt+V 粘贴剪贴板图片（图片数据不走 stdin，须专用键位主动读系统剪贴板）。
    * 返回插入输入框的短标签（[图片#N]，无图 null）——标签即引用，删标签=删图（两家同款内嵌形态） */
   onPasteImage?: () => Promise<string | null>
+  /** 输入体验批二期：大块插入（粘贴）token 化判定回调——返回 token 文本则插入 token
+   * （全文存父级 pastedContents，提交时展开），null=原文直插（CC onTextPaste 同构） */
+  onPasteText?: (text: string) => string | null
   /** M11-P7：Ctrl+U 清空插话队列（readline 清行习惯键位；防「排了又后悔」） */
   onInterjectClear?: () => void
   /** M11 审阅 P0-1：忙碌态（斜杠拦截必须在 InputStream 分流点——TuiApp.submit 里的守卫不可达，
@@ -166,6 +169,7 @@ export function InputStream({
   onTabSandbox,
   onInterjectClear,
   onPasteImage,
+  onPasteText,
   busy = false,
   onSlashBusy,
   cwd,
@@ -305,6 +309,7 @@ export function InputStream({
   // @ 补全态优先：回车=补全（Tab 同义）；命令名无空格 + 有匹配 → 回填 `/选中名 `（带尾随
   // 空格留参数位），不执行；再回车（此时文本含空格）或已带参数 → submit 全文走分流
   const handleTextSubmit = (text: string): void => {
+    if (process.env.ECODE_DEBUG_INPUT === '1') process.stderr.write('DBG-HTS ' + JSON.stringify(text) + '\n')
     if (tryAtComplete()) return
     if (text.startsWith('/') && !/\s/.test(text)) {
       const matches = matchSlashEntries(text.slice(1))
@@ -452,6 +457,7 @@ export function InputStream({
         onInput={setCur}
         onSubmit={handleTextSubmit}
         inactive={inactive || search !== null}
+        onPasteText={onPasteText}
       />
       {search !== null ? (
         // A2：搜索提示行（1 行，替换补全下拉位——同预算族）

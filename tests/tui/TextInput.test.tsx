@@ -51,7 +51,7 @@ describe('InputRender', () => {
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
 
-describe('输入大段粘贴折叠（>5 行替代显示，提交不受影响）', () => {
+describe('输入框不折叠（输入体验批二期：大粘贴走 token 化，渲染恒全量）', () => {
   it('≤5 行不折叠照常显示', () => {
     const text = ['一', '二', '三', '四', '五'].join('\n')
     const { lastFrame } = render(React.createElement(InputRender, { text, caret: 0 }))
@@ -60,45 +60,17 @@ describe('输入大段粘贴折叠（>5 行替代显示，提交不受影响）'
     expect(f).not.toContain('已折叠')
   })
 
-  it('8 行 caret 在末尾 → 头 5 行 + 折叠指示 + caret 行', () => {
+  it('8 行超旧折叠阈值 → 全量渲染（无折叠指示）', () => {
     const lines = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8']
     const text = lines.join('\n')
-    const caret = text.length
-    const { lastFrame } = render(React.createElement(InputRender, { text, caret }))
+    const { lastFrame } = render(React.createElement(InputRender, { text, caret: text.length }))
     const f = lastFrame() ?? ''
-    expect(f).toContain('已折叠 2 行（共 8 行）')
-    for (const w of ['L1', 'L2', 'L3', 'L4', 'L5', 'L8']) expect(f).toContain(w)
-    expect(f).not.toContain('L6')
-    expect(f).not.toContain('L7')
+    for (const w of lines) expect(f).toContain(w)
+    expect(f).not.toContain('已折叠')
   })
 
-  it('caret 在中部折叠区 → 头窗 + 上下双指示 + caret 行可见', () => {
-    const lines = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10']
-    const text = lines.join('\n')
-    const caret = text.indexOf('H8') // 第 8 行（0-based 7）
-    const { lastFrame } = render(React.createElement(InputRender, { text, caret }))
-    const f = lastFrame() ?? ''
-    expect(f).toContain('H1')
-    expect(f).toContain('H8') // caret 行亮出
-    expect(f).not.toContain('H6')
-    expect(f.split('已折叠').length - 1).toBe(2) // 上下两条指示
-  })
-
-  it('caret 移到头部区域 → 可见窗随 caret 移动', () => {
-    const lines = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10']
-    const text = lines.join('\n')
-    const caret = 3 // H1 换行后 = 第 2 行行首（H2）
-    const { lastFrame } = render(React.createElement(InputRender, { text, caret }))
-    const f = lastFrame() ?? ''
-    expect(f).toContain('H1')
-    expect(f).toContain('H2')
-    expect(f).toContain('H5')
-    expect(f).not.toContain('H6') // 下方折叠
-    expect(f).toContain('已折叠 5 行')
-  })
-
-  it('foldInputView：caret 落在换行边界 → 归下一行行首', () => {
-    const view = foldInputView('ab\ncd', 3) // 'ab'+'\n'(2)+1 → cd 行首
+  it('foldInputView：caret 落在换行边界 → 归下一行行首（退役纯函数仍保正确）', () => {
+    const view = foldInputView('ab\ncd', 3)
     expect(view.caretRow).toBe(1)
     expect(view.caretCol).toBe(0)
   })
@@ -145,6 +117,41 @@ describe('查看窗（输入体验批：foldInputView anchor 偏置——PgUp/Pg
     expect(v.rows[0].kind).toBe('folded')
     expect(v.rows[0].count).toBe(2)
     expect(v.totalPhysical).toBe(7)
+  })
+})
+
+describe('粘贴 token 化（输入体验批二期：大块插入交 onPasteText 判定）', () => {
+  it('多行 chunk（>2 行换行阈值）→ onPasteText 收归一全文，token 插入草稿', async () => {
+    const onInput = vi.fn()
+    const onPasteText = vi.fn(() => '[粘贴#1 +4 行]')
+    const { stdin } = render(React.createElement(TextInput, { value: '', caret: 0, onInput, onPasteText }))
+    await flush()
+    stdin.write('甲\r乙\r丙\r丁\r戊')
+    await flush()
+    expect(onPasteText).toHaveBeenCalledWith('甲\n乙\n丙\n丁\n戊')
+    expect(onInput).toHaveBeenCalledWith({ text: '[粘贴#1 +4 行]', caret: expect.any(Number) })
+  })
+
+  it('短 chunk（2 字符）不触发 token 判定（未达阈值原样直插）', async () => {
+    const onInput = vi.fn()
+    const onPasteText = vi.fn(() => null as string | null)
+    const { stdin } = render(React.createElement(TextInput, { value: '', caret: 0, onInput, onPasteText }))
+    await flush()
+    stdin.write('hi')
+    await new Promise((r) => setTimeout(r, 150)) // 越过 60ms 置换窗
+    expect(onPasteText).not.toHaveBeenCalled()
+    expect(onInput).toHaveBeenCalledWith({ text: 'hi', caret: expect.any(Number) })
+  })
+
+  it('onPasteText 返回 null → 归一原文直插（3 行低于阈值同理不判）', async () => {
+    const onInput = vi.fn()
+    const onPasteText = vi.fn(() => null)
+    const { stdin } = render(React.createElement(TextInput, { value: '', caret: 0, onInput, onPasteText }))
+    await flush()
+    stdin.write('甲\r乙\r丙\r丁\r戊')
+    await flush()
+    expect(onPasteText).toHaveBeenCalled()
+    expect(onInput).toHaveBeenCalledWith({ text: '甲\n乙\n丙\n丁\n戊', caret: expect.any(Number) })
   })
 })
 

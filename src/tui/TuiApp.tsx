@@ -12,7 +12,7 @@ import type { ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
 import type { AppError, ContentBlock, HistoryLine, ImageBlock, Message } from '../core/types.js'
 import type { ToolUseBlock } from '../core/types.js'
-import type { RewindListResult } from '../protocol/types.js'
+import type { McpPanelView, RewindListResult } from '../protocol/types.js'
 import type { CheckpointMeta } from '../services/checkpoint.js'
 import { tokensToCost } from '../services/pricing.js'
 import { buildContextMessages } from '../core/context.js'
@@ -71,7 +71,7 @@ import { allocateDynamic, useViewport } from './viewport.js'
 import type { ReactNode } from 'react'
 import type { AskUserQuestion, AskUserResult } from '../tools/builtin/ask_user.js'
 import { Select } from './Select.js'
-import type { McpManager, McpServerSnapshot } from '../services/mcp/manager.js'
+import type { McpManager } from '../services/mcp/manager.js'
 import type { SessionMeta } from '../services/history.js'
 import type { InputDraftPort } from './draftPort.js'
 
@@ -696,6 +696,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           })
           break
         }
+        case 'askSelect/requested':
+          // T 线 T2：宿主 askSelect 可答帧（.mcp.json 批准门等）——协议选项卡，应答经命令回宿主
+          setProtoSelect({ requestId: ev.requestId, title: ev.title, options: ev.options })
+          break
+        case 'askSelect/resolved':
+          setProtoSelect(null)
+          break
         case 'subagent/progress':
           setSubagents(ev.agents as SubagentStatus[])
           break
@@ -1060,25 +1067,19 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
 
 
 
-  // M6 M-P7：MCP 状态订阅（onEvent → setState → StatusBar/面板读快照）+ 启动警告
-  const [mcpSnapshots, setMcpSnapshots] = useState<McpServerSnapshot[]>(() => deps.mcpManager?.status() ?? [])
-  const [, setMcpApproving] = useState(false)
+  // T 线 T2：宿主 askSelect 可答帧（.mcp.json 批准门等）的协议选项卡态
+  const [protoSelect, setProtoSelect] = useState<{ requestId: string; title: string; options: string[] } | null>(null)
+  // M6 M-P7：MCP 状态（panel/data 拉取——附着态 McpManager 在 daemon；面板打开/动作后重拉）
+  const [mcpSnapshots, setMcpSnapshots] = useState<McpPanelView['servers']>([])
 
   useEffect(() => {
-    const mgr = deps.mcpManager
-    if (mgr == null) return // null/undefined 都视为未启用（防御内联 deps 漏传）
-    setMcpSnapshots(mgr.status())
-    const unsub = mgr.subscribe(() => setMcpSnapshots(mgr.status()))
-    return unsub
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- deps 不变（挂载期一次）
+    void host.send({ op: 'panel/data', panel: 'mcp' }).then((r) => {
+      if (r.ok) setMcpSnapshots((r.value as unknown as McpPanelView).servers)
+    }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（动作后由 mcpAction 重拉）
   }, [])
-  // MCP 启动警告 + M8 指令/记忆截断提示 → 告警中心（M8②：统一队列，底部行+/warnings 可见）
-  useEffect(() => {
-    for (const w of [...(deps.mcpWarnings ?? []), ...(deps.instructionWarnings ?? [])]) {
-      pushNoticeFn('warn', w)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
-  }, [])
+  // MCP 启动警告 + M8 指令/记忆截断提示 → 告警中心：T1⑪ 起由宿主 startupWarnings 随首次订阅
+  // 以 notice 帧送达（此处客户端直读 deps.mcpWarnings 的旧路径退役）
 
   // M7 P4.5：skill 同名冲突汇总（非阻断——计数只认 skill 间遮蔽，命令遮蔽不算；引导自然语言消解）。
   // F-38：系统发现的问题走底部告警行（/warnings 可回看）——不随 systemMsgs 5s 消失
@@ -1089,30 +1090,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
   }, [])
 
-  useEffect(() => {
-    const pending = deps.mcpPendingApproval
-    if (pending === undefined) return
-    setSystemMsgs([`检测到项目级 ${pending.file}，需要批准后才会连接 MCP server`])
-    setMcpApproving(true)
-    void (async () => {
-      const pick = await askSelect(`批准项目级 ${pending.file}？（含 MCP server 定义，可 spawn 子进程）`, [
-        '批准并连接',
-        '本次会话不连接',
-      ])
-      if (pick !== undefined && pick.startsWith('批准')) {
-        try {
-          await pending.approve()
-          setSystemMsgs(['✓ 已批准并接入项目级 MCP server'])
-        } catch (e) {
-          setSystemMsgs(['接入失败：' + (e instanceof Error ? e.message : String(e))])
-        }
-      } else {
-        setSystemMsgs(['（本次会话未连接项目级 MCP；下次启动会再询问）'])
-      }
-      setMcpApproving(false)
-    })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（二段启动，M4.1）
-  }, [])
+  // T 线 T2（D-T7）：项目 .mcp.json 批准门宿主协议化——宿主构造时发起 askSelect 可答帧
+  // （TuiApp 的 askSelect/requested 事件处理器照常弹卡），客户端直调 deps.mcpPendingApproval 退役
 
   // F-50 批 3：Ctrl+O/Ctrl+E 废除（用户拍板「会触碰超限问题，留着没用」）——全量查看
   // 统一走 Ctrl+T 全屏面板（时间线视图按执行顺序展示全部流程，虚拟窗口渲染不卡）。
@@ -1492,6 +1471,21 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             overlay.resolve(undefined)
             pickerRef.current = false
             setOverlay(null)
+          }}
+        />
+      )}
+      {protoSelect !== null && overlay === null && (
+        // T 线 T2：宿主 askSelect 可答帧（.mcp.json 批准门等）——协议选项卡，应答经命令回宿主
+        <Select
+          title={protoSelect.title}
+          items={protoSelect.options.map((o) => ({ label: o, value: o }))}
+          onSelect={(v) => {
+            void host.send({ op: 'askSelect/respond', requestId: protoSelect.requestId, choice: v })
+            setProtoSelect(null)
+          }}
+          onCancel={() => {
+            void host.send({ op: 'askSelect/respond', requestId: protoSelect.requestId, choice: null })
+            setProtoSelect(null)
           }}
         />
       )}

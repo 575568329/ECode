@@ -14,10 +14,10 @@ import { Box, Text, useInput } from 'ink'
 import { PanelShell, type PanelRow } from './PanelShell.js'
 import { Select } from './Select.js'
 import { theme } from './theme.js'
-import type { McpServerSnapshot } from '../services/mcp/manager.js'
+import type { McpPanelView } from '../protocol/types.js'
 
 interface McpPanelProps {
-  snapshots: McpServerSnapshot[]
+  snapshots: McpPanelView['servers']
   onReconnect: (name: string) => Promise<void>
   onDisconnect: (name: string) => Promise<void>
   onCancel: () => void
@@ -28,7 +28,7 @@ interface McpPanelProps {
 type View = { view: 'list' } | { view: 'detail'; server: string } | { view: 'tools'; server: string }
 
 /** 状态标签（T3 着色方案）。 */
-function StatusLabel({ s }: { s: McpServerSnapshot }): ReactElement {
+function StatusLabel({ s }: { s: McpPanelView['servers'][number] }): ReactElement {
   switch (s.status) {
     case 'connected':
       return (
@@ -93,7 +93,7 @@ export function McpPanel({ snapshots, onReconnect, onDisconnect, onCancel, tools
   }, [view.view, detailSnap])
 
   if (view.view === 'list') {
-    const rows: PanelRow<McpServerSnapshot>[] = snapshots.map((s) => ({
+    const rows: PanelRow<McpPanelView['servers'][number]>[] = snapshots.map((s) => ({
       type: 'item',
       value: s,
       disabled: s.status === 'disabled',

@@ -137,6 +137,7 @@ export interface McpPanelView {
     toolCount: number
     error?: string
     failedAgoSec?: number
+    lifecycle: string
   }>
   /** server 名 → 工具清单（面板展开与补全消费；description 缺省=server 未提供） */
   tools: Record<string, Array<{ name: string; description?: string }>>

@@ -125,6 +125,8 @@ export interface HostDeps {
   }
   /** T1⑪：装配期告警（mcp/instruction）——宿主构造时转 notice 帧（附着态客户端不直读 deps 对象） */
   startupWarnings?: string[]
+  /** T2（D-T7）：项目 .mcp.json 首用批准门——宿主构造时发起 askSelect 协议交互，approve() 二段接入 */
+  mcpPendingApproval?: { file: string; approve: () => Promise<void> }
 }
 
 interface QueueEntry {
@@ -166,6 +168,8 @@ export class HostSession {
   /** T1⑪：启动告警队列（首次订阅 flush——构造期无订阅者） */
   private pendingStartupWarnings: string[] = []
   private pendingStartupWarningsFlushed = false
+  /** T2：.mcp.json 批准门（首次订阅后发起——需有可应答订阅者才不会 fail-closed 秒回） */
+  private pendingMcpApprovalGate?: { file: string; approve: () => Promise<void> }
   /** M14-C3③（P1-12）：prompt 已判定开轮、startTurn 尚未置 running 的同步占位——堵 buildBlocks 的 await 窗口 */
   private starting = false
   private currentTurnId: string | null = null
@@ -202,6 +206,31 @@ export class HostSession {
     // T1⑪：装配期告警**不在构造时发布**——订阅者（附着客户端）在构造之后才挂上，即时发必丢；
     // 存队列随首次订阅 flush（pendingStartupWarningsFlushed 幂等）
     this.pendingStartupWarnings = deps.startupWarnings ?? []
+    // T 线 T2：项目 .mcp.json 首用批准门宿主协议化——askSelect 可答帧经协议下发（TUI/web 同构
+    // 弹选择），应答回宿主二段接入。原 TuiApp 直调 deps.mcpPendingApproval.approve() 的同进程
+    // 捷径退役（附着态 MCP manager 在 daemon，此门必须过协议——D-T7 拍板）。
+    // 发起延迟到首次订阅（构造期零订阅者时 askSelect 走 fail-closed 立即 null——时序同 T1⑪）
+    if (deps.mcpPendingApproval !== undefined) this.pendingMcpApprovalGate = deps.mcpPendingApproval
+  }
+
+  /** .mcp.json 批准门交互（宿主权威）：askSelect 挂起→应答→approve() 二段接入或拒绝留痕 */
+  private async runMcpApprovalGate(pending: { file: string; approve: () => Promise<void> }): Promise<void> {
+    const pick = await this.broker.askSelect(`批准项目级 ${pending.file}？（含 MCP server 定义，可 spawn 子进程）`, [
+      '批准并连接',
+      '本次会话不连接',
+    ])
+    if (pick !== null && pick.startsWith('批准')) {
+      try {
+        await pending.approve()
+        this.deps.logger.info('mcp', 'approve_gate', { file: pending.file, approved: true })
+        this.publish('systemMsg', { text: '✓ 已批准并接入项目级 MCP server' })
+      } catch (e) {
+        this.publish('systemMsg', { text: '接入失败：' + (e instanceof Error ? e.message : String(e)) })
+      }
+    } else {
+      this.deps.logger.info('mcp', 'approve_gate', { file: pending.file, approved: false })
+      this.publish('systemMsg', { text: '（本次会话未连接项目级 MCP；下次启动会再询问）' })
+    }
   }
 
   /** 客户端订阅事件流（B2：订阅即重放 pending 可答帧——重连/换端恢复确认上下文）。
@@ -213,6 +242,11 @@ export class HostSession {
     if (!this.pendingStartupWarningsFlushed) {
       this.pendingStartupWarningsFlushed = true
       for (const w of this.pendingStartupWarnings) handler({ type: 'notice', seq: -1, level: 'warn', text: w } as never)
+    }
+    if (this.pendingMcpApprovalGate !== undefined) {
+      const gate = this.pendingMcpApprovalGate
+      this.pendingMcpApprovalGate = undefined
+      void this.runMcpApprovalGate(gate)
     }
     return unsub
   }

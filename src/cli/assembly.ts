@@ -300,6 +300,7 @@ export function makeConversationDeps(
             toolCount: s.toolCount,
             ...(s.error !== undefined ? { error: s.error } : {}),
             ...(s.failedAgoSec !== undefined ? { failedAgoSec: s.failedAgoSec } : {}),
+            lifecycle: s.lifecycle,
           })),
           tools: Object.fromEntries(
             snaps.map((s) => [

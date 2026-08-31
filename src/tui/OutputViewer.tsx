@@ -24,6 +24,8 @@ import { clipWidth, sectionBudget, useViewport } from './viewport.js'
 import { taskRegistry } from '../services/tasks.js'
 import { isAgentActive } from '../services/subagent.js'
 import { stripUntrustedAnsi } from './sanitize.js'
+import { isBoundary, isRewind } from '../core/types.js'
+import { CONTINUE_PROMPT } from '../core/loop.js'
 
 // —— LineSource：查看器的数据面（§3.5）——
 
@@ -129,6 +131,9 @@ export function taskFileSource(taskId: string, getWidth: () => number): LineSour
 
   /** F-50：执行时间线——全部对话按执行顺序线性展示（用户消息/模型文本/工具调用+结果摘要，
    *  web 端对话页同构）。Ctrl+T 默认落地视图：看完整执行顺序与模型思考路径。
+   *  输入体验批（2026-08-31 用户反馈）：时间线格式与主对话流**同构**——用户消息 ❯ 前缀+
+   *  主题背景色（SGR 逐行绘制，净化白名单放行）+全文不截断+空行边距（旧实现 JSON.stringify
+   *  压平 preview 300 字符，用户"找不到自己输入的内容"）；assistant ◆→●（对话栅格同款）。
    *  虚拟化：OutputViewer 本身固定窗 slice（只渲 offset..height）——本源负责「格式化缓存」：
    *  审阅 P2 改逐消息缓存（WeakMap 按消息对象身份——transcript 只追加、历史消息引用稳定），
    *  新消息到达只格式化增量；滚动 offset 变化/按键重渲不触发任何重算。 */
@@ -142,12 +147,7 @@ export function timelineSource(getMessages: () => readonly unknown[], getWidth: 
       const hit = perMsg.get(m as object)
       if (hit !== undefined && hit.width === width) return hit.lines
     }
-    const lines: string[] = []
-    for (const logical of formatAgentLine(JSON.stringify(m), width)) {
-      for (const [i, w] of wrapAll(stripUntrustedAnsi(logical), Math.max(10, width - 2)).entries()) {
-        lines.push(i === 0 ? w : '  ' + w)
-      }
-    }
+    const lines = formatTimelineMessage(m, width)
     if (cacheable) perMsg.set(m as object, { width, lines })
     return lines
   }
@@ -172,6 +172,81 @@ export function timelineSource(getMessages: () => readonly unknown[], getWidth: 
       return () => clearInterval(timer)
     },
   }
+}
+
+// —— 时间线消息格式化（输入体验批：与主对话流同构）——
+
+const ESC = String.fromCharCode(27)
+/** 主题色 → SGR（净化白名单放行纯数字参数；hex '#RRGGBB' → 24bit 前景/背景） */
+const sgrFg = (hex: string): string => {
+  const n = parseInt(hex.slice(1), 16)
+  return `${ESC}[38;2;${(n >> 16) & 255};${(n >> 8) & 255};${n & 255}m`
+}
+const sgrBg = (hex: string): string => {
+  const n = parseInt(hex.slice(1), 16)
+  return `${ESC}[48;2;${(n >> 16) & 255};${(n >> 8) & 255};${n & 255}m`
+}
+const SGR_RESET = `${ESC}[0m`
+const SGR_DIM = `${ESC}[2m`
+
+/** 时间线单条消息 → 物理行（与主对话流同栅格语言：用户 ❯ 背景块、assistant ● markdown、
+ *  工具 ▸ 单行摘要；块间空行=对话 GAP.block 边距节奏）。行数安全：虚拟窗口按行滚。 */
+export function formatTimelineMessage(m: unknown, width: number): string[] {
+  const inner = Math.max(10, width - 2)
+  const preview = (s: unknown, n = 200): string => {
+    const text = String(s ?? '').replace(/\s+/g, ' ').trim()
+    return text.length > n ? text.slice(0, n) + '…' : text
+  }
+  if (m !== null && typeof m === 'object') {
+    const rec = m as Record<string, unknown>
+    // boundary/rewind 标记行（对话流同款语义提示）——用类型守卫（compact_boundary 字段名别猜）
+    if (isBoundary(m as never)) {
+      return ['', `${SGR_DIM}⋯ 已压缩对话（此处之上 ${String(rec.tailStartIndex ?? '')} 条已摘要进上下文）${SGR_RESET}`, '']
+    }
+    if (isRewind(m as never)) {
+      return ['', `${SGR_DIM}⇺ 已回退（快照 seq ${String(rec.seq ?? '')}），此点之后的对话不再进入上下文${SGR_RESET}`, '']
+    }
+    if (rec.role === 'user' && Array.isArray(rec.content)) {
+      const blocks = rec.content as Array<{ type?: string; text?: string; content?: unknown }>
+      const text = blocks.filter((b) => b.type === 'text').map((b) => String(b.text ?? '')).join('')
+      const results = blocks.filter((b) => b.type === 'tool_result')
+      const out: string[] = []
+      // 用户消息：❯ + 主题背景色逐行绘制 + 全文不截断（与主对话 UserMessage 同构）
+      if (text !== '' && text !== CONTINUE_PROMPT) {
+        out.push('')
+        const wrapped = wrapAll(stripUntrustedAnsi(text), inner)
+        const bg = sgrBg(theme.userBg)
+        const fg = sgrFg(theme.user)
+        const icon = `${sgrFg(theme.info)}❯ ${fg}`
+        wrapped.forEach((w, i) => {
+          const padded = `${w} `.padEnd(Math.max(10, width), ' ')
+          out.push(i === 0 ? `${bg}${icon}${padded}${SGR_RESET}` : `${bg}${fg}${padded}${SGR_RESET}`)
+        })
+        out.push('')
+      }
+      // 工具结果摘要（对话里折进工具组的部分——时间线保执行顺序可读性）
+      for (const r of results) {
+        const innerText = typeof r.content === 'string' ? r.content : JSON.stringify(r.content) ?? ''
+        out.push(`${SGR_DIM}  └ ${preview(innerText, 160)}${SGR_RESET}`)
+      }
+      return out
+    }
+    if (rec.role === 'assistant' && Array.isArray(rec.content)) {
+      const out: string[] = []
+      for (const b of rec.content as Array<{ type?: string; text?: string; name?: string }>) {
+        if (b.type === 'text') {
+          const raw = String(b.text ?? '')
+          const clipped = raw.length > 4000 ? raw.slice(0, 4000) : raw
+          out.push('', ...mdBlock(clipped).map((l, i) => (i === 0 ? `● ${l}` : `  ${l}`)), '')
+        } else if (b.type === 'tool_use') {
+          out.push(`  ${SGR_DIM}▸ ${String(b.name)}${SGR_RESET}`)
+        }
+      }
+      return out
+    }
+  }
+  // 非消息行（子代理事件等外来形态）退化为原行
+  return typeof m === 'string' ? [m.slice(0, width)] : [JSON.stringify(m).slice(0, width)]
 }
 
   /** ③ 子代理 transcript：~/.ecode/agents/<id>.jsonl（只读快照）。
@@ -275,14 +350,14 @@ export function formatAgentLine(line: string, width: number): string[] {
   if (role === 'assistant') {
     const c = j.content as Array<{ type?: string; text?: string; name?: string }> | undefined
     if (!Array.isArray(c)) return []
-    // 项 9：text 块走块级 markdown（◆ 前缀首行、续行缩进 2 对齐 ⚙ 层级）；
-    // 字符上限 4000（保留代码块/段落结构——旧 preview(300) 的空白压平会摧毁块结构）
-    return c.flatMap((b) => {
-      if (b.type === 'text') {
-        const raw = String(b.text ?? '')
-        const clipped = raw.length > 4000 ? raw.slice(0, 4000) : raw
-        return mdBlock(clipped).map((l, i) => (i === 0 ? `◆ ${l}` : `  ${l}`))
-      }
+      // 项 9：text 块走块级 markdown（● 前缀首行——对话栅格同款、续行缩进 2 对齐 ⚙ 层级）；
+      // 字符上限 4000（保留代码块/段落结构——旧 preview(300) 的空白压平会摧毁块结构）
+      return c.flatMap((b) => {
+        if (b.type === 'text') {
+          const raw = String(b.text ?? '')
+          const clipped = raw.length > 4000 ? raw.slice(0, 4000) : raw
+          return mdBlock(clipped).map((l, i) => (i === 0 ? `● ${l}` : `  ${l}`))
+        }
       if (b.type === 'tool_use') return [`  ⚙ ${String(b.name)}`]
       return [`  · ${String(b.type ?? '')}`]
     })

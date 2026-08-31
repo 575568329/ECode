@@ -252,30 +252,79 @@ describe('F-51/F-48b：滚轮与鼠标输入（四角色审阅 D4 补测）', ()
   })
 })
 
-describe('timelineSource 增量缓存（四角色审阅 D4/P2 补测）', () => {
-  it('未变化命中缓存（同引用）；追加只增不重排', () => {
-    let msgs: unknown[] = [{ role: 'user', content: '你好' }]
-    let width = 40
-    const src = timelineSource(() => msgs, () => width)
-    const first = src.lines()
-    expect(first).toHaveLength(1)
-    expect(first[0]).toContain('user: 你好')
-    expect(src.lines()).toBe(first) // 顶层缓存命中
-    msgs = [...msgs, { role: 'assistant', content: [{ type: 'text', text: '回复' }] }]
-    const second = src.lines()
-    expect(second).not.toBe(first)
-    expect(second[0]).toBe(first[0]) // 历史消息按对象身份缓存不重排
-    expect(second).toHaveLength(2)
-    // 注：width 是创建期快照（按值入闭包）——resize 不重建属既定口径（面板 width 快照挂账），
-    // 同 msgs 重调 lines() 恒命中缓存
-    expect(src.lines()).toBe(second)
+describe('timelineSource（输入体验批：与主对话流同构格式化 + 增量缓存）', () => {
+  it('用户消息：❯ 前缀 + 全文不截断 + 上下空行边距', () => {
+    const long = Array.from({ length: 30 }, (_, i) => `第${i + 1}段粘贴内容`).join('，')
+    const msgs: unknown[] = [{ role: 'user', content: [{ type: 'text', text: long }] }]
+    const src = timelineSource(() => msgs, () => 60)
+    const lines = src.lines()
+    expect(lines[0]).toBe('') // 上边距
+    expect(lines[1]).toContain('❯')
+    expect(lines.at(-1)).toBe('') // 下边距
+    // 全文不截断：剥 SGR/空白/换行后全文连续可比对（wrap 断行会拆 CJK 词，不能逐段子串断言）
+    const bare = lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '').replace(/[\s]/g, '')
+    expect(bare).toContain(long)
+    expect(bare).not.toContain('已截断')
   })
 
-  it('非对象消息（原始字符串）不进 WeakMap 直格式化（stringify 后为合法 JSON 即原样）', () => {
+  it('增量缓存：追加只格式化新消息（历史行按对象身份原样保留）', () => {
+    let msgs: unknown[] = [{ role: 'user', content: [{ type: 'text', text: '你好' }] }]
+    const src = timelineSource(() => msgs, () => 40)
+    const first = src.lines()
+    const userLines = first.filter((l) => l.includes('你好'))
+    expect(userLines.length).toBeGreaterThanOrEqual(1)
+    msgs = [...msgs, { role: 'assistant', content: [{ type: 'text', text: '回复' }] }]
+    const second = src.lines()
+    expect(second.slice(0, first.length)).toEqual(first) // 历史前缀不重排
+    expect(second.join('\n')).toContain('回复')
+  })
+
+  it('CONTINUE_PROMPT 合成指令不渲染；tool_result 出摘要行', () => {
+    const msgs: unknown[] = [
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '命令输出 42 行' }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '输出已达 max_tokens 上限被截断。请从中断处直接继续输出：不要道歉、不要复述已写内容，必要时把剩余工作拆成更小的步骤分批输出。' },
+        ],
+      },
+    ]
+    const all = timelineSource(() => msgs, () => 60).lines().join('\n')
+    expect(all).toContain('└')
+    expect(all).toContain('命令输出 42 行')
+    expect(all).not.toContain('不要道歉')
+  })
+
+  it('boundary/rewind 标记行渲染语义提示（compact_boundary 字段）', () => {
+    const msgs: unknown[] = [
+      { compact_boundary: true, tailStartIndex: 7 },
+      { rewind: true, seq: 12 },
+    ]
+    const all = timelineSource(() => msgs, () => 60).lines().join('\n')
+    expect(all).toContain('已压缩对话')
+    expect(all).toContain('7 条已摘要')
+    expect(all).toContain('⇺ 已回退')
+  })
+
+  it('assistant 文本走 ● + mdBlock；tool_use 出 ▸ 单行', () => {
+    const msgs: unknown[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '结论如下' },
+          { type: 'tool_use', id: 't1', name: 'bash', input: {} },
+        ],
+      },
+    ]
+    const all = timelineSource(() => msgs, () => 60).lines().join('\n')
+    expect(all).toContain('● 结论如下')
+    expect(all).toContain('▸ bash')
+  })
+
+  it('非对象消息（原始字符串）不进 WeakMap 原样透出', () => {
     const msgs: unknown[] = ['not-json-line']
     const src = timelineSource(() => msgs, () => 40)
-    // 源类型契约=对象消息；stringify('not-json-line') 是合法 JSON 字面量 → parse 成功原样透出
-    expect(src.lines()[0]).toBe('"not-json-line"')
+    expect(src.lines()[0]).toBe('not-json-line')
   })
 })
 
@@ -306,10 +355,10 @@ describe('mdBlock 块级 markdown（项 9，方案 A 二期）', () => {
     expect(lines[60]).toContain('还有 20 行')
   })
 
-  it('formatAgentLine assistant text 走块级（◆ 首行+续行缩进）', () => {
+  it('formatAgentLine assistant text 走块级（● 首行+续行缩进——对话栅格同款）', () => {
     const line = JSON.stringify({ role: 'assistant', content: [{ type: 'text', text: '总结如下：\n```\n代码内容\n```' }] })
     const out = formatAgentLine(line, 80)
-    expect(out[0]).toBe('◆ 总结如下：')
+    expect(out[0]).toBe('● 总结如下：')
     expect(out[1]).toBe('  ' + ESC + '[2m```' + ESC + '[22m')
     expect(out[2]).toBe('    ' + ESC + '[2m代码内容' + ESC + '[22m') // mdBlock 缩进 2+formatAgentLine 续行 2
   })

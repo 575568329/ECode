@@ -70,7 +70,7 @@ export function connectMux(
     params.set('canAnswer', '1')
     const since = sinceSeq?.() ?? null
     if (since !== null && Number.isFinite(since)) params.set('sinceSeq', String(since))
-    return `${base}/api/events.mux?${params.toString()}`
+    return `${base}api/events.mux?${params.toString()}`
   }
 
   // 每个 connectMux 实例一个 controller；loop 每次迭代重建（审阅 P0-2：曾整个循环共用
@@ -159,7 +159,7 @@ export async function sendCommand(
   if (sessionId !== undefined && sessionId !== '') body.sessionId = sessionId
   // confirm=true：web 每条命令都源自用户显式交互（点项目/发送）＝栅栏要求的二次确认语义
   // 本身；不带则历史反推项目首拉 428（命令静默失败——列表空死的根因）
-  const res = await fetch(`${base}/api/p/${encodeURIComponent(project)}/cmd?confirm=true`, {
+  const res = await fetch(`${base}api/p/${encodeURIComponent(project)}/cmd?confirm=true`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${getToken()}` },
     body: JSON.stringify(body),
@@ -175,7 +175,7 @@ export async function sendCommand(
 export async function fetchProjects(
   base: string,
 ): Promise<{ registered: Array<{ path: string }>; active: Array<{ path: string }>; history: string[] }> {
-  const res = await fetch(`${base}/api/projects`, { headers: { authorization: `Bearer ${getToken()}` } })
+  const res = await fetch(`${base}api/projects`, { headers: { authorization: `Bearer ${getToken()}` } })
   if (res.status === 401) {
     clearToken()
     throw new Error('未授权——token 已失效，请重新输入')
@@ -197,7 +197,7 @@ export interface StatsPayload {
   byProject: Array<{ project: string; input: number; output: number; costCny: number; mcpCalls: number }>
 }
 export async function fetchStats(base: string, days = 7): Promise<StatsPayload> {
-  const res = await fetch(`${base}/api/stats?days=${days}`, { headers: { authorization: `Bearer ${getToken()}` } })
+  const res = await fetch(`${base}api/stats?days=${days}`, { headers: { authorization: `Bearer ${getToken()}` } })
   if (res.status === 401) {
     clearToken()
     throw new Error('未授权——token 已失效，请重新输入')
@@ -209,7 +209,7 @@ export async function fetchStats(base: string, days = 7): Promise<StatsPayload> 
 }
 
 /** 添加项目（web 侧栏「+」）：注册入列表（不冷起宿主）；返回规范化路径（导航 /api/p/<path> 须用它）。 */export async function addProject(base: string, path: string): Promise<string> {
-  const res = await fetch(`${base}/api/projects`, {
+  const res = await fetch(`${base}api/projects`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${getToken()}` },
     body: JSON.stringify({ path }),

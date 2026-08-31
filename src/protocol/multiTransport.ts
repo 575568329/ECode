@@ -10,7 +10,6 @@
  * （SSE reader 循环外取一次；401 停泵不退避）。
  */
 
-import { appendFileSync } from 'node:fs'
 import type { ClientTransport, EventHandler } from './channel.js'
 import type { CommandResult, ProtocolCommand, ProtocolEvent } from './types.js'
 
@@ -115,7 +114,12 @@ export class MultiTransport implements ClientTransport {
         const params = new URLSearchParams()
         params.set('canAnswer', this.opts.canAnswer === false ? '0' : '1')
         const since = this.lastSeq
-        if (since !== null && Number.isFinite(since)) params.set('sinceSeq', String(since))
+        const sid = this.sessionId ?? this.opts.getSessionId()
+        if (since !== null && Number.isFinite(since)) {
+          // W-9：重连带游标——mux 端重放要求 wantSid（sessionId 参数）命中才发 subscribed+缓冲帧
+          params.set('sinceSeq', String(since))
+          if (sid !== undefined && sid !== '') params.set('sessionId', sid)
+        }
         // 3s open timeout（web 同款：防代理不回挂死）
         const openTimer = setTimeout(() => this.abort?.abort(), OPEN_TIMEOUT_MS)
         const res = await fetch(`${this.opts.baseUrl}/api/events.mux?${params.toString()}`, {
@@ -166,9 +170,6 @@ export class MultiTransport implements ClientTransport {
 
   /** mux 帧→客户端事件：只分发当前会话的 ev（全量广播本地过滤——切会话零重连） */
   private handleFrame(frame: MuxSseFrame, reconnected: boolean): void {
-    try { appendFileSync('D:/study/ECode/.ecode/mt-frames.log', `frame ${frame.sessionId} ${frame.ev?.type}
-`) } catch {}
-    if (process.env.ECODE_DBG) console.error('[DBG mt] raw frame sid=', frame.sessionId, 'mine=', frame.sessionId === (this.sessionId ?? this.opts.getSessionId()))
     if ('host' in frame && frame.host !== undefined) return // 宿主生命周期帧（列表变化走 session/list 主动拉）
     const sid = this.sessionId ?? this.opts.getSessionId()
     if (frame.sessionId !== sid) return

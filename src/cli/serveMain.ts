@@ -9,7 +9,7 @@ import { loadConfig, loadDotenvMap } from '../services/config.js'
 import { JsonlLogger } from '../services/logger.js'
 import { LogStore } from '../services/logstore.js'
 import { join } from 'node:path'
-import { writeFileSync, chmodSync, readFileSync, rmSync, existsSync, renameSync } from 'node:fs'
+import { writeFileSync, chmodSync, readFileSync, rmSync, existsSync, renameSync, mkdirSync } from 'node:fs'
 import * as os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { ProjectRegistry } from '../server/projects.js'
@@ -113,7 +113,10 @@ export async function serveMode(): Promise<void> {
     // 无旧实例/已死——直接起
   }
   const sessionId = new Date().toISOString().replace(/[:.]/g, '-')
-  const logger = new JsonlLogger(new LogStore(join(process.cwd(), '.ecode', 'logs', `serve-${sessionId}.jsonl`), sessionId))
+  // T3（架构席 P2-4）：daemon 日志固定用户级目录——detached 后 cwd 锚定在首次拉起目录会漂移
+  const serveLogDir = join(os.homedir(), '.ecode', 'logs', 'serve')
+  mkdirSync(serveLogDir, { recursive: true })
+  const logger = new JsonlLogger(new LogStore(join(serveLogDir, `serve-${sessionId}.jsonl`), sessionId))
   const config = loadConfig()
   const registry = new ProjectRegistry({
     createSession: async (cwd) => {
@@ -152,7 +155,16 @@ export async function serveMode(): Promise<void> {
   // 因 F-18 根修不再提升进 process.env，此前会静默失效（永远 127.0.0.1）。优先级不变：
   // 外部注入（shell export/spawn env）> .env 文件
   const dotenvMap = loadDotenvMap(process.cwd())
-  const envOr = (k: string): string | undefined => process.env[k] ?? dotenvMap[k]
+  // T3 安全（§4.5.2）：auto-spawn 拉起的 daemon 对 serve 绑定三元组（HOST/PORT/SERVER_PASSWORD）
+  // 只认外部环境变量、不回退项目 .env——否则恶意仓库 .env 可经日常 ecode 静默制造局域网常驻暴露
+  const autoSpawn = process.env.ECODE_AUTO_SPAWN === '1'
+  const envOr = (k: string): string | undefined => {
+    const fromEnv = process.env[k]
+    if (autoSpawn && (k === 'ECODE_SERVE_HOST' || k === 'ECODE_SERVE_PORT' || k === 'ECODE_SERVER_PASSWORD')) {
+      return fromEnv
+    }
+    return fromEnv ?? dotenvMap[k]
+  }
   const serveHost = envOr('ECODE_SERVE_HOST') ?? '127.0.0.1'
   const servePassword = envOr('ECODE_SERVER_PASSWORD') ?? ''
   const isLoopbackServe = serveHost === '127.0.0.1' || serveHost === '::1' || serveHost === 'localhost'

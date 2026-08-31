@@ -254,6 +254,11 @@ async function main(): Promise<void> {
     })
     if (outcome.attached) {
       const shellDeps = makeAttachShellDeps(logger, config)
+      // P1-4：附着态 skillRegistry 真件补 load（用户拍板：skill 数据归本地，同机直读同一目录——
+      // 不 load 则 @ 补全/手动触发/SkillPanel 全空）
+      await shellDeps.skillRegistry
+        .load({ builtinCommandNames: commandRegistry.list().map((c) => c.name) })
+        .catch(() => {})
       historyRef = shellDeps.history as HistoryStore
       logger.info('daemon', 'attached', { name: outcome.daemonName, project: process.cwd() })
       hideTerminalCursor()

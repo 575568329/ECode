@@ -441,7 +441,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const transportRef = useRef<{ setSessionId?: (sid: string) => void } | null>(null)
   if (attachedHost !== undefined && hostRef.current === null) {
     hostRef.current = attachedHost
-    if ('setSessionId' in attachedHost) transportRef.current = attachedHost as { setSessionId?: (sid: string) => void }
+    if ('setSessionId' in attachedHost) {
+      transportRef.current = attachedHost as { setSessionId?: (sid: string) => void }
+      // T5（P1-2 接线）：mux 重连 gap=true（重放缓冲覆盖不到）→ transcript 全量补拉自愈
+      ;(attachedHost as { onReconnect?: (gap: boolean) => void }).onReconnect = (gap) => { if (gap) syncCommitted() }
+      ;(attachedHost as { onUnauthorized?: () => void }).onUnauthorized = () => {
+        setSystemMsgs(['⚠ 后台服务凭据失效——请重新认证或重启 daemon'], 'warn')
+      }
+    }
   }
   if (hostRef.current === null) {
     // M13-W1：宿主取自 ProjectHost（会话容器；首会话已由 makeDeps ensure——此处幂等取回）；
@@ -1058,8 +1065,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       setSystemMsgs([`⚠ 恢复失败：${r.error}，未切换`])
       return
     }
+    // P0 修复（审阅）：消费回执的新 sessionId（宿主 fork 播种的新 id）——后续命令信封
+    // 与事件帧过滤都以它为准；附着态由 MultiTransport.setSessionId 更新分发基线
+    const value = r.value as { sessionId?: string } | undefined
+    if (value?.sessionId !== undefined) recordSessionId(value.sessionId)
     resetTransient()
-    // 回执新 sessionId 续写（宿主已切 history currentSessionId——pullTranscript 读新会话）
     const lines = await pullTranscript()
     messagesRef.current = lines
     setCommitted(messagesToCommitted(lines))
@@ -1116,10 +1126,15 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const [protoSelect, setProtoSelect] = useState<{ requestId: string; title: string; options: string[] } | null>(null)
   // M6 M-P7：MCP 状态（panel/data 拉取——附着态 McpManager 在 daemon；面板打开/动作后重拉）
   const [mcpSnapshots, setMcpSnapshots] = useState<McpPanelView['servers']>([])
+  const mcpToolsRef = useRef<McpPanelView['tools']>({})
 
   useEffect(() => {
     void host.send({ op: 'panel/data', panel: 'mcp' }).then((r) => {
-      if (r.ok) setMcpSnapshots((r.value as unknown as McpPanelView).servers)
+      if (r.ok) {
+        const view = r.value as unknown as McpPanelView
+        setMcpSnapshots(view.servers)
+        mcpToolsRef.current = view.tools
+      }
     }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（动作后由 mcpAction 重拉）
   }, [])
@@ -1482,17 +1497,25 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       {overlay?.kind === 'mcp-panel' && (
         <McpPanel
           snapshots={mcpSnapshots}
+          // T 线 T2（P1-3）：MCP 动作走 mcp/action 命令（附着态 McpManager 在 daemon）；
+          // 动作完成后重拉 panel/data 快照
           onReconnect={async (n) => {
-            await deps.mcpManager?.reconnect(n)
+            await host.send({ op: 'mcp/action', action: 'reconnect', server: n })
+            void host.send({ op: 'panel/data', panel: 'mcp' }).then((r) => {
+              if (r.ok) setMcpSnapshots((r.value as unknown as McpPanelView).servers)
+            })
           }}
           onDisconnect={async (n) => {
-            await deps.mcpManager?.close(n)
+            await host.send({ op: 'mcp/action', action: 'close', server: n })
+            void host.send({ op: 'panel/data', panel: 'mcp' }).then((r) => {
+              if (r.ok) setMcpSnapshots((r.value as unknown as McpPanelView).servers)
+            })
           }}
           onCancel={() => {
             pickerRef.current = false
             setOverlay(null)
           }}
-          toolsOf={(n) => deps.mcpManager?.toolsOf(n) ?? []}
+          toolsOf={(n) => mcpToolsRef.current[n] ?? []}
         />
       )}
       {overlay?.kind === 'plugin-panel' && deps.pluginLoader != null && (

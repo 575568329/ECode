@@ -9,7 +9,7 @@
  * 版本不符/health 不达：拒绝附着+提示，绝不 spawn（保住跑着的任务——D-T1a）。
  */
 
-import { readFileSync, rmSync, openSync, closeSync, unlinkSync, renameSync, writeFileSync, chmodSync } from 'node:fs'
+import { readFileSync, rmSync, statSync, openSync, closeSync, unlinkSync, renameSync, writeFileSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, hostname } from 'node:os'
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -108,8 +108,11 @@ async function verifyAndAttach(reg: ServerReg, logger: DaemonLogger): Promise<At
   const health = await probeHealth(reg.port)
   if (health === null || health.ok !== true) return null
   if (health.id !== undefined && health.id !== reg.id) return null // 陈旧/预置注册文件误附（安全席 P1-2）
-  if (reg.version !== undefined && health.version !== undefined && reg.version !== myVersion()) {
-    logger.warn('daemon', 'version_mismatch', { daemon: health.version, cli: myVersion() })
+  // P1-7：版本比对统一以 health.version（daemon 实际运行版本）为准；任一侧缺失=视为不符
+  //（旧注册文件/旧 daemon 无 version → 拒绝附着走提示路径——§4.4，不许静默放过）
+  const daemonVer = health.version
+  if (daemonVer === undefined || daemonVer !== myVersion()) {
+    logger.warn('daemon', 'version_mismatch', { daemon: daemonVer, cli: myVersion() })
     return null
   }
   const transport = new MultiTransport({
@@ -141,12 +144,19 @@ function spawnEnv(): NodeJS.ProcessEnv {
   }
   const key = process.env.ANTHROPIC_API_KEY
   if (key !== undefined) env.ANTHROPIC_API_KEY = key
+  // T3 安全（§4.5.2）：auto-spawn 标记——serveMode 据此对 serve 绑定三元组跳过项目 .env 回退
+  //（恶意仓库 .env 写 HOST=0.0.0.0+密码→日常 ecode 静默制造局域网常驻暴露的注入面封死）
+  env.ECODE_AUTO_SPAWN = '1'
   return env as NodeJS.ProcessEnv
 }
 
 function spawnDetachedServe(logger: DaemonLogger): ChildProcess | null {
-  // 从当前进程形态重建 serve 命令（execArgv 显式拼进 argv——tsx loader 不自动继承，restartProcess 同款）
-  const argv = [...process.execArgv, ...process.argv.slice(1), 'serve']
+  // 从当前进程形态重建 serve 命令（execArgv 显式拼进 argv——tsx loader 不自动继承，restartProcess 同款）。
+  // 'serve' 必须插在脚本路径之后、用户参数之前——parseArgv 只认 argv[0]（尾部追加会把
+  // `ecode --history X` 的子进程解析成「单次模式 prompt=serve」烧 token——P1-1 实证）
+  const scriptIdx = Math.max(0, process.argv.length - process.argv.slice(2).length - (process.execArgv.length > 0 ? 1 : 0))
+  const userArgs = process.argv.slice(2)
+  const argv = [...process.execArgv, process.argv[scriptIdx] ?? process.argv[1], 'serve', ...userArgs]
   const child = spawn(process.execPath, argv, {
     detached: true,
     stdio: 'ignore', // TUI 退出后 pipe 断裂会让继承 stdio 的 daemon EPIPE 崩溃（架构席 P0-1）
@@ -172,19 +182,21 @@ export async function ensureDaemonAttach(opts: {
   if (existing !== null) {
     const attached = await verifyAndAttach(existing, opts.logger)
     if (attached !== null) return attached
-    // 区分「健康但版本不符」（拒绝附着+提示，绝不 spawn——D-T1a）与「陈旧注册」（清理重拉）
+    // 区分「健康但版本不符」（拒绝附着+提示，绝不 spawn/删注册——D-T1a）与「陈旧注册」（清理重拉）
     if (pidAlive(existing.pid)) {
       const health = await probeHealth(existing.port)
       if (health !== null && health.ok === true && (health.id === undefined || health.id === existing.id)) {
-        const daemonVer = existing.version ?? health.version
+        // P1-5：健康的活 daemon——无论版本是否匹配都**不删注册**（删了它存活期内永久降级）
+        const daemonVer = health.version ?? existing.version
         if (daemonVer === undefined || daemonVer !== myVer) {
           return {
             attached: false,
             versionMismatch: true,
-            reason: `daemon 版本${daemonVer !== undefined ? `（${daemonVer}）` : ''}与当前 CLI（${myVer}）不一致——任务保留在后台运行。可运行 ecode serve stop 升级后台，或 ecode --local 本地模式`,
+            reason: `daemon 版本（${daemonVer ?? '未知'}）与当前 CLI（${myVer}）不一致——任务保留在后台运行。可运行 ecode serve stop 升级后台，或 ecode --local 本地模式`,
           }
         }
       }
+      return { attached: false, reason: 'daemon 健康检查未通过（可能正在启动）——可 ecode --local 或稍后重试' }
     }
     try {
       rmSync(REG_PATH, { force: true })
@@ -200,7 +212,18 @@ export async function ensureDaemonAttach(opts: {
     closeSync(fd)
     haveLock = true
   } catch {
-    // 已有进程在拉起——只等待不重复 spawn
+    // 已有进程在拉起——锁龄超过 READY_TIMEOUT 视为持锁进程死亡（kill -9/断电），抢删重试一次
+    try {
+      const age = Date.now() - statSync(SPAWN_LOCK_PATH).mtimeMs
+      if (age > READY_TIMEOUT_MS) {
+        unlinkSync(SPAWN_LOCK_PATH)
+        const fd = openSync(SPAWN_LOCK_PATH, 'wx')
+        closeSync(fd)
+        haveLock = true
+      }
+    } catch {
+      /* 抢锁仍失败/已消失——按无锁等待 */
+    }
   }
   try {
     if (haveLock) {

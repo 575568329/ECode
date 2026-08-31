@@ -21,7 +21,7 @@ import type { MuxFrame, SessionBrief } from '../protocol/mux.js'
 import { FileHistoryStore, collectProjectCwds } from '../services/history.js'
 import { aggregateStats } from '../services/stats.js'
 import { homedir } from 'node:os'
-import { appendFileSync, createReadStream, existsSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, join, normalize, sep } from 'node:path'
 import type { ServeResult } from './http.js'
 import type { ProjectRegistry } from './projects.js'
@@ -326,8 +326,6 @@ export function serveMulti(
           // 现网靠 web 切会话重订整条 SSE 的副作用兜住；补订后单连接自洽）
           unsubs.push(
             host.onSessionEvent((kind, info) => {
-              appendFileSync('D:/study/ECode/.ecode/mux-dbg.log', `sessionEvent ${kind} ${info.sessionId}
-`)
               if (kind === 'created') {
                 send({ host: { type: 'session/created', brief: info.brief ?? { project: cwd, sessionId: info.sessionId, running: false, title: '', updatedAt: Date.now() } } })
                 const conv = host.conversation(info.sessionId)
@@ -431,11 +429,7 @@ export function serveMulti(
               h.host.touch(sid)
               return json(200, { ok: true, sessionId: sid })
             }
-            appendFileSync('D:/study/ECode/.ecode/mux-dbg.log', `cmd op=${JSON.stringify(cmd.op).slice(0, 60)} envelopeSid=${String(cmd.sessionId)}
-`)
             const routed = await routeConversation(h.host, cmd)
-            appendFileSync('D:/study/ECode/.ecode/mux-dbg.log', `routed ${'error' in routed ? `err=${routed.error}` : `sid=${routed.sessionId}`}
-`)
             if ('error' in routed) return json(routed.code, { ok: false, error: routed.error })
             const inner = (typeof cmd.op === 'object' && cmd.op !== null ? cmd.op : {}) as Parameters<HostSession['send']>[0]
             const result = await routed.conv.send(inner)

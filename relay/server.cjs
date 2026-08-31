@@ -23,7 +23,15 @@
 const http = require('node:http')
 const net = require('node:net')
 const fs = require('node:fs')
+const crypto = require('node:crypto')
 const { WebSocketServer } = require('ws')
+
+/** 常量时 token 比较（防逐字节 timing 探测；对齐 src/server/credentials.ts 范式） */
+function tokenMatches(a, b) {
+  const ha = crypto.createHash('sha256').update(String(a)).digest()
+  const hb = crypto.createHash('sha256').update(String(b)).digest()
+  return crypto.timingSafeEqual(ha, hb)
+}
 
 const WEB_PORT = Number(process.env.RELAY_WEB_PORT ?? 7081)
 const TUNNEL_PORT = Number(process.env.RELAY_TUNNEL_PORT ?? 7082)
@@ -50,8 +58,8 @@ const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false })
 
 tunnelHttp.on('upgrade', (req, socket, head) => {
   const m = String(req.url).match(/^\/tunnel\/([A-Za-z0-9._-]+)/)
-  const token = new URL(req.url, 'http://x').searchParams.get('token')
-  if (m === null || REG_TOKEN === '' || token !== REG_TOKEN) {
+  const token = String(req.headers.authorization ?? '').replace(/^Bearer /, '') || new URL(req.url, 'http://x').searchParams.get('token')
+  if (m === null || REG_TOKEN === '' || !tokenMatches(token, REG_TOKEN)) {
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
     socket.destroy()
     return
@@ -62,6 +70,21 @@ tunnelHttp.on('upgrade', (req, socket, head) => {
     if (prev !== undefined && prev.readyState === 1) prev.close(4000, 'replaced')
     hosts.set(hostId, ws)
     log(`tunnel up: ${hostId}`)
+    // WS 心跳：30s ping 防 nginx 空闲断链；pong 超时视为死链
+    ws.isAlive = true
+    ws.on('pong', () => {
+      ws.isAlive = true
+    })
+    const ping = setInterval(() => {
+      if (ws.isAlive === false) {
+        ws.terminate()
+        return
+      }
+      ws.isAlive = false
+      if (ws.readyState === 1) ws.ping()
+    }, 30_000)
+    ping.unref()
+    ws.on('close', () => clearInterval(ping))
     /** connId → 电脑侧的 daemon socket */
     const socks = new Map()
     ws.on('message', (raw) => {

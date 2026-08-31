@@ -44,8 +44,9 @@ if (!daemonPort) {
 const daemonAddr = `127.0.0.1:${daemonPort}`
 
 function connect() {
-  const url = `${server.replace(/\/$/, '')}/tunnel/${encodeURIComponent(hostId)}?token=${encodeURIComponent(regToken)}`
-  const ws = new WebSocket(url)
+  const url = `${server.replace(/\/$/, '')}/tunnel/${encodeURIComponent(hostId)}`
+  // token 走 header（对齐 web 端「token 落 URL query 属 OWASP 风险」决策——不进代理日志）
+  const ws = new WebSocket(url, { headers: { authorization: `Bearer ${regToken}` } })
   /** connId → daemon socket */
   const socks = new Map()
 

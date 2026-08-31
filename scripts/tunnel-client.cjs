@@ -44,7 +44,9 @@ if (!daemonPort) {
 const daemonAddr = `127.0.0.1:${daemonPort}`
 
 function connect() {
-  const url = `${server.replace(/\/$/, '')}/tunnel/${encodeURIComponent(hostId)}`
+  // 默认经 nginx /ecode-tunnel/ 前缀（剥后 relay 收到 /tunnel/<hostId>）；--path 可覆盖
+  const wsPath = arg('path', '/ecode-tunnel/tunnel')
+  const url = `${server.replace(/\/$/, '')}${wsPath}/${encodeURIComponent(hostId)}`
   // token 走 header（对齐 web 端「token 落 URL query 属 OWASP 风险」决策——不进代理日志）
   const ws = new WebSocket(url, { headers: { authorization: `Bearer ${regToken}` } })
   /** connId → daemon socket */

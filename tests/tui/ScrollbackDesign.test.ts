@@ -1,18 +1,18 @@
 /**
- * 界面批 B2：transcript 写 scrollback——设计验证用例。
+ * 界面批 B2 + 输入体验批（2026-08-31）：transcript 写 scrollback——设计验证用例。
  *
- * 设计结论（5 行，见任务汇报）：Ink Static 输出即写原生 scrollback（与 CC classic 等效），
- * V4 轮末 commit 已把 assistant 全文 markdown 渲染进 Static；assistant-text 无截断
- * （messagesToCommitted 只截 user，10 行上限）。本文件钉这两个不变量：
- * 长文 assistant-text 原样进 committed；user 截断仅作用于 user。
+ * 设计结论：assistant 与 user 文本均全文进 Static（Ink Static 输出即写原生 scrollback，
+ * append-only 天然无超屏）。输入体验批拍板「用户消息锁死」——去掉 user 10 行截断
+ * （旧 truncateUserText 会在固化时数据级丢弃 7 行以后内容且无恢复入口，用户回看不到
+ * 自己发送的全文）。本文件钉：长文 assistant 与 user 均原样进 committed。
  */
 import { describe, it, expect } from 'vitest'
-import { messagesToCommitted, truncateUserText } from '../../src/tui/commit.js'
+import { messagesToCommitted } from '../../src/tui/commit.js'
 import type { Message } from '../../src/core/types.js'
 
 const longText = Array.from({ length: 200 }, (_, i) => `第 ${i + 1} 行内容`).join('\n')
 
-describe('B2 设计验证：assistant 全文进 Static（= 写 scrollback）', () => {
+describe('B2 + 输入体验批：全文进 Static（= 写 scrollback）', () => {
   it('长 assistant 文本不截断（200 行原样进 committed）', () => {
     const lines: Message[] = [
       { role: 'user', content: [{ type: 'text', text: '问' }] },
@@ -23,17 +23,27 @@ describe('B2 设计验证：assistant 全文进 Static（= 写 scrollback）', (
     expect(at !== undefined && at.kind === 'assistant-text' && at.text === longText).toBe(true)
   })
 
-  it('user 截断仅作用于 user（10 行上限，assistant 不受影响）', () => {
-    const u = truncateUserText(longText)
-    expect(u).toContain('已截断')
-    expect(u.split('\n').length).toBeLessThanOrEqual(11)
+  it('用户消息全文进 committed（锁死不截断——输入体验批）', () => {
+    const lines: Message[] = [{ role: 'user', content: [{ type: 'text', text: longText }] }]
+    const items = messagesToCommitted(lines)
+    const u = items.find((i) => i.kind === 'user')
+    expect(u !== undefined && u.kind === 'user' && u.text === longText).toBe(true)
+    expect(u?.text).not.toContain('已截断')
+  })
+
+  it('CONTINUE_PROMPT 合成指令仍不渲染成用户气泡', () => {
     const lines: Message[] = [
-      { role: 'user', content: [{ type: 'text', text: longText }] },
-      { role: 'assistant', content: [{ type: 'text', text: longText }] },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: '输出已达 max_tokens 上限被截断。请从中断处直接继续输出：不要道歉、不要复述已写内容，必要时把剩余工作拆成更小的步骤分批输出。',
+          },
+        ],
+      },
     ]
     const items = messagesToCommitted(lines)
-    const at = items.find((i) => i.kind === 'assistant-text')
-    // assistant 侧不受 user 截断影响
-    expect(at !== undefined && at.kind === 'assistant-text' && at.text === longText).toBe(true)
+    expect(items.find((i) => i.kind === 'user')).toBeUndefined()
   })
 })

@@ -69,13 +69,13 @@ const run = async () => {
   await sleep(1000)
   check('E4 Esc 关面板', !/回退到哪个改动之前/.test(strip(out.slice(mark))))
 
-  // E3 草稿非空守卫：输入文本后双击不误开
+  // E3 草稿非空守卫：输入文本后双击不误开 rewind——输入体验批后语义=armed 清空草稿
   mark = out.length
   proc.write('草稿占位')
   await sleep(400)
   doubleEsc()
   await sleep(1500)
-  check('E3 草稿非空双击不误开', !/回退到哪个改动之前/.test(strip(out.slice(mark))))
+  check('E3 草稿非空双击=清空且不开 rewind', !/回退到哪个改动之前/.test(strip(out.slice(mark))) && await waitFor(/输入消息，\/help 查看命令/, mark, 2000))
 
   // 清草稿（手打草稿非回填态，Esc 不清——用间隔退格逐字清）后双击恢复可用
   for (let i = 0; i < 8; i++) { proc.write('\x7f'); await sleep(120) }

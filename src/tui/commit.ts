@@ -13,14 +13,6 @@ import { CONTINUE_PROMPT } from '../core/loop.js'
 import { stripUntrustedAnsi } from './sanitize.js'
 import type { CommittedItem, CommittedToolCall } from './types.js'
 
-/** committed 层 user 文本截断（S4.4 v6）：手动 skill 展开全文可达数百行，静态区只保 ~10 行。 */
-const USER_TEXT_MAX_LINES = 10
-export function truncateUserText(text: string): string {
-  const lines = text.split('\n')
-  if (lines.length <= USER_TEXT_MAX_LINES) return text
-  return [...lines.slice(0, USER_TEXT_MAX_LINES), `…（共 ${lines.length} 行，已截断）`].join('\n')
-}
-
 export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
   const messages = lines.filter((l): l is Message => !isBoundary(l) && !isRewind(l))
   // boundary → 压缩标记插入点（key=boundary 前的 Message 数；value=被摘要条数 tailStartIndex）。
@@ -77,7 +69,10 @@ export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
       // 用户气泡（审阅 P2：曾以「isMeta 形态」注释虚构机制，实态落盘后在此精确过滤）
       if (text && text !== CONTINUE_PROMPT) {
         flush()
-        items.push({ kind: 'user', id: `u${i}`, text: truncateUserText(text) })
+        // 输入体验批（2026-08-31）：user 文本全文固化（「锁死」——旧 truncateUserText 10 行
+        // 截断会在固化时数据级丢内容且无恢复入口；Static append-only 天然无超屏，
+        // skill 手动展开的数百行也全量固化，动态区 2 行折叠仍由 Conversation 层承担）
+        items.push({ kind: 'user', id: `u${i}`, text })
       }
       // tool_result 不生成 item（已配对进 tool-group）
     } else if (m.role === 'assistant') {

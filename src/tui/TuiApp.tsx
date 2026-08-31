@@ -1129,19 +1129,53 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // 调 read() 取活值（守卫求值挪进回调，消除渲染闭包陈旧性）。
   const atOpenPortRef = useRef<{ read(): boolean } | null>(null)
   const lastEscRef = useRef(0)
+  // 输入体验批（2026-08-31）：草稿非空时双击 Esc = 清空输入（armed 确认式）。第一次 Esc 进入
+  // 待清态（输入区上方提示行「再按 Esc 清空输入」），1500ms 内第二次 Esc 才真清（对齐
+  // useInterrupt 双击退出的 1500ms 窗）；任意草稿编辑/超时自动解除。@ 下拉开着时不 arm
+  // （第一次 Esc 只关下拉，防长草稿中带 @ 误清）。空草稿双击维持开 /rewind 面板（<500ms）。
+  const ESC_ARM_WINDOW_MS = 1500
+  const [escArm, setEscArm] = useState<{ chars: number } | null>(null)
+  const escArmAtRef = useRef(0)
+  const escArmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const disarmEscArm = useCallback((): void => {
+    escArmAtRef.current = 0
+    if (escArmTimerRef.current !== null) {
+      clearTimeout(escArmTimerRef.current)
+      escArmTimerRef.current = null
+    }
+    setEscArm(null)
+  }, [])
   useInput(
     (_input, key) => {
       if (!key.escape) return
       const now = Date.now()
-      // 清账 III P2-1：双击计时排除「输入框非空或 @ 下拉开着」态——用户关下拉/清回填的连击
-      // 不应误开 rewind（第一次 Esc 已被消费，第二次是另一意图）
-      const escGuarded = readMainDraft() !== '' || (atOpenPortRef.current?.read() ?? false)
-      if (!escGuarded && now - lastEscRef.current < 500 && deps.checkpoint != null) {
+      // 清账 III P2-1：@ 下拉开着与否的同步读（端口活对象，事件时刻 read() 取活值）
+      const atOpen = atOpenPortRef.current?.read() ?? false
+      const draft = readMainDraft()
+      // 分流一：草稿非空（且非 @ 下拉态）→ armed 清空流程
+      if (draft !== '' && !atOpen) {
+        if (escArmAtRef.current !== 0 && now - escArmAtRef.current < ESC_ARM_WINDOW_MS) {
+          disarmEscArm()
+          clearMainDraft()
+          lastEscRef.current = 0 // 清空后不与后续 Esc 配对成 rewind
+          return
+        }
+        escArmAtRef.current = now
+        setEscArm({ chars: draft.length })
+        if (escArmTimerRef.current !== null) clearTimeout(escArmTimerRef.current)
+        escArmTimerRef.current = setTimeout(() => disarmEscArm(), ESC_ARM_WINDOW_MS)
+        lastEscRef.current = 0
+        return
+      }
+      // 空草稿的 Esc 打断待清态（回填清空等让草稿变空的连击场景）
+      disarmEscArm()
+      // 分流二（现状）：空草稿双击 <500ms 开 /rewind；@ 下拉开着只重置计时
+      if (!atOpen && now - lastEscRef.current < 500 && deps.checkpoint != null) {
         lastEscRef.current = 0
         setOverlay({ kind: 'rewind-panel' })
         return
       }
-      lastEscRef.current = escGuarded ? 0 : now
+      lastEscRef.current = atOpen ? 0 : now
     },
     { isActive: overlay === null && active.confirm === null && !running },
   )
@@ -1526,6 +1560,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         maxVisible={tuiAlloc.degraded ? 0 : TODO_MAX_VISIBLE}
         todos={todoEntries}
       />
+      {/* 输入体验批：双击 Esc 待清态提示（仅空闲态显示；任意草稿编辑/1500ms 超时自动解除） */}
+      {escArm !== null && overlay === null && active.confirm === null && !running && !altActive && (
+        <Text dimColor>再按 Esc 清空输入（{escArm.chars} 字符）· 任意键取消</Text>
+      )}
       {/* F-48：alt 全屏面板期间 InputStream 保持挂载（草稿/历史位不丢）但 height 0 折叠
           + inactive 让出按键——面板独占键盘（架构审阅 P1-5） */}
       <Box height={altActive ? 0 : undefined}>
@@ -1699,7 +1737,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         inactive={overlay !== null || active.confirm !== null || altActive}
         insert={insert}
         onRegisterDraft={registerPort}
-        onDraftChange={setMainDraft}
+        onDraftChange={(t) => {
+          setMainDraft(t)
+          // 输入体验批：任意草稿编辑解除待清态（清空动作自身触发的变更此时已解除，幂等）
+          if (escArmAtRef.current !== 0) disarmEscArm()
+        }}
         onRegisterAtOpen={(port) => {
           atOpenPortRef.current = port
         }}

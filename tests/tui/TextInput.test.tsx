@@ -104,6 +104,50 @@ describe('输入大段粘贴折叠（>5 行替代显示，提交不受影响）'
   })
 })
 
+describe('查看窗（输入体验批：foldInputView anchor 偏置——PgUp/PgDn 滚看全文）', () => {
+  const text10 = Array.from({ length: 10 }, (_, i) => `V${i + 1}`).join('\n')
+
+  it('anchor=0 等价默认头窗', () => {
+    const a = foldInputView(text10, 0, 5, undefined, 0)
+    const d = foldInputView(text10, 0, 5)
+    expect(a.rows.map((r) => r.text)).toEqual(d.rows.map((r) => r.text))
+  })
+
+  it('anchor=3 → 窗口平移到物理行 3-7，上下指示 3/2', () => {
+    const v = foldInputView(text10, 0, 5, undefined, 3)
+    const texts = v.rows.filter((r) => r.kind === 'text').map((r) => r.text)
+    expect(texts).toEqual(['V4', 'V5', 'V6', 'V7', 'V8'])
+    const folded = v.rows.filter((r) => r.kind === 'folded')
+    expect(folded.map((r) => r.count)).toEqual([3, 2])
+    expect(v.caretRow).toBe(-1) // caret 不在窗内（caret=0 在 V1）
+  })
+
+  it('caret 在窗内 → caretRow 为窗内相对行且反色定位正确', () => {
+    const caret = text10.indexOf('V6')
+    const v = foldInputView(text10, caret, 5, undefined, 3)
+    expect(v.caretRow).toBe(3) // 窗口渲染行序：上指示(0) + V4(1) V5(2) V6(3)——caret 在 V6
+    expect(v.caretCol).toBe(0)
+  })
+
+  it('anchor 超界 clamp 到 total-maxLines', () => {
+    const v = foldInputView(text10, 0, 5, undefined, 99)
+    const texts = v.rows.filter((r) => r.kind === 'text').map((r) => r.text)
+    expect(texts).toEqual(['V6', 'V7', 'V8', 'V9', 'V10'])
+    expect(v.rows[0].kind).toBe('folded')
+  })
+
+  it('物理行路径（width）同样支持 anchor（超长单行 wrap 场景）', () => {
+    // 单逻辑行 wrap 成 7 物理行（每行 2 列宽），anchor=2 → 窗口看物理行 2-6
+    const long = 'abcdefghijklmn'
+    const v = foldInputView(long, 0, 5, 2, 2)
+    const texts = v.rows.filter((r) => r.kind === 'text').map((r) => r.text)
+    expect(texts).toEqual(['ef', 'gh', 'ij', 'kl', 'mn'])
+    expect(v.rows[0].kind).toBe('folded')
+    expect(v.rows[0].count).toBe(2)
+    expect(v.totalPhysical).toBe(7)
+  })
+})
+
 describe('粘贴行尾归一（xterm.js 系终端粘贴把换行转裸 \\r）', () => {
   it('裸 \\r 粘贴 → 归一为 \\n（渲染层不再被终端当回到行首覆盖）', async () => {
     const onInput = vi.fn()

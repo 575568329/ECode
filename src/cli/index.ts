@@ -63,6 +63,9 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
         })
   // B3：三桥宿主侧挂载（argv 无订阅者 → ask_user/权限/子代理副作用全 fail-closed——D1 语义；幂等）
   host.mountBridges()
+  // D1 回归修复（2026-08-31 走查）：stdout 适配器是观察型订阅（canAnswer:false）——
+  // 它只打印不应答。此前默认可应答订阅使 broker 的「零订阅者」判定永假：--yes 快速放行
+  // 与 ask fail-closed 拒绝双双不可达，审批挂起至事件循环清空进程静默 exit 0。
   host.subscribe((ev) => {
     switch (ev.type) {
       // F-47：print 模式直写 stdout 完全绕过 Ink 净化层——不可信内容（LLM 文本/工具
@@ -101,7 +104,7 @@ async function runOnce(input: string, deps: Deps, approvalPolicy: 'ask' | 'auto-
       default:
         break
     }
-  })
+  }, { canAnswer: false })
   const r = await host.send({ op: 'prompt', text: input, mode: 'StartOrSteer' })
   if (!r.ok) {
     throw new Error(r.error)

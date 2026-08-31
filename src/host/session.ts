@@ -959,8 +959,9 @@ export class HostSession {
         onBeforeRequest,
         onCompacted: () => this.publish('compacted', {}),
         // B2：审批经 Broker（doConfirm 的 full-access 跳过/read-only MCP 拒绝/预览生成在宿主侧策略）
-        confirm: (use) => this.hostConfirm(use),
-        onSensitiveAccess: (description: string) => this.broker.sensitive('read_file', description),
+        // D9：signal 透传——中断即收敛挂起卡（审批不再拖住 Ctrl+C）
+        confirm: (use) => this.hostConfirm(use, this.abort.signal),
+        onSensitiveAccess: (description: string) => this.enqueueConfirm(() => this.broker.sensitive('read_file', description, this.abort.signal)),
         ...(blocks !== undefined ? { userBlocks: blocks } : {}),
         afterTools: this.makeAfterTools(),
         signal: this.abort.signal,
@@ -999,7 +1000,21 @@ export class HostSession {
   /** B2 宿主侧确认策略（doConfirm 语义迁入：full-access 跳过 / read-only MCP 拒绝 / 其余过 Broker）。
    *  界面批 C1 accept-edits：纯编辑类（edit_file/write_file）免审批直放——CC acceptEdits 对位；
    *  sensitivePath 硬门例外：编辑 .ecode/settings* 等敏感路径仍照卡（安全敏感操作不随档位降级） */
-  private async hostConfirm(use: import('../core/types.js').ToolUseBlock): Promise<boolean | string> {
+  /** D9 修复（2026-08-31 走查）：审批卡串行队列——并行只读批次里多张 sensitive 卡同时挂起时，
+   *  TUI 审批卡是单槽（后帧顶掉前帧且不再渲染），未应答挂起悬空至审批超时（默认 900s），
+   *  表现为「整轮假死」。宿主级串行化：同一时刻至多一张卡在桌面上（M11 子代理桥 confirm
+   *  串行队列同款先例）；中断的排队项经 aborted 快拒不落卡。 */
+  private confirmChain: Promise<unknown> = Promise.resolve()
+  private enqueueConfirm<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.confirmChain.then(task, task) // 前序拒绝不阻断后续
+    this.confirmChain = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async hostConfirm(use: import('../core/types.js').ToolUseBlock, signal?: AbortSignal): Promise<boolean | string> {
     if (this.sandboxMode === 'full-access') return true
     // F-07 档A：会话级 remember 白名单命中直放（a 键放行过 edit/write）。sensitive 硬门
     // 前置再比对（双保险：敏感卡当时无第三键不可能入集合，此处再挡一次路径判定）
@@ -1033,7 +1048,8 @@ export class HostSession {
       const abs = target === '' ? null : resolve(this.deps.cwd ?? process.cwd(), target)
       canAlways = abs !== null && !isSensitivePath(abs) && !isProjectEcodeSettings(abs)
     }
-    return this.broker.confirm(use, preview, canAlways)
+    if (signal?.aborted === true) return false // 中断后排队的确认不再落卡（fail-closed）
+    return this.enqueueConfirm(() => this.broker.confirm(use, preview, canAlways, signal))
   }
 
   private finishTurn(turnId: string): void {

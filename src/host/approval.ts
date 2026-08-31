@@ -103,8 +103,9 @@ export class ApprovalBroker {
   /** 工具副作用确认（tool-confirm）。preview 由宿主生成（buildPreview；此处出口再消毒兜底）。
    *  返回 false=无名拒绝；返回 string=拒绝反馈（喂回模型——对标 A1：模型不再瞎猜取消原因）
    *  F-07 档A：canAlways=true（宿主已判 edit/write 且非敏感路径）时卡带 always 第三键；
-   *  rememberTools 命中直放（会话级白名单——sensitive 硬门在宿主 canAlways 判定处，命中者不入此路径） */
-  confirm(use: ToolUseBlock, preview: string, canAlways = false): Promise<boolean | string> {
+   *  rememberTools 命中直放（会话级白名单——sensitive 硬门在宿主 canAlways 判定处，命中者不入此路径）
+   *  D9：signal=当轮 abort 信号——中断即收敛挂起（不等审批超时），循环得以随 abort 解开。 */
+  confirm(use: ToolUseBlock, preview: string, canAlways = false, signal?: AbortSignal): Promise<boolean | string> {
     const mcpPrefix = use.name.startsWith('mcp__') ? use.name.split('__').slice(0, 2).join('__') : null
     if (mcpPrefix !== null && this.confirmAlways.has(mcpPrefix)) return Promise.resolve(true)
     // F-07 档A：remember 集合的**直放判定不在 broker**（此处不知 path 敏感性）——宿主
@@ -127,11 +128,11 @@ export class ApprovalBroker {
       this.publish({ type: 'approval/resolved', requestId, outcome: 'cancelled' })
       return Promise.resolve(false)
     }
-    return this.suspendOnce(frame, (v) => (typeof v === 'string' && v !== '' ? v : v === true))
+    return this.suspendOnce(frame, (v) => (typeof v === 'string' && v !== '' ? v : v === true), signal)
   }
 
   /** 敏感路径读取确认（sensitive）：永远要求交互，auto-approve 不豁免（D6）。 */
-  sensitive(tool: string, description: string): Promise<boolean | string> {
+  sensitive(tool: string, description: string, signal?: AbortSignal): Promise<boolean | string> {
     const requestId = randomUUID()
     const frame: AnswerableFrame = {
       type: 'approval/requested',
@@ -146,7 +147,7 @@ export class ApprovalBroker {
       this.publish({ type: 'approval/resolved', requestId, outcome: 'cancelled' })
       return Promise.resolve(false)
     }
-    return this.suspendOnce(frame, (v) => (typeof v === 'string' && v !== '' ? v : v === true))
+    return this.suspendOnce(frame, (v) => (typeof v === 'string' && v !== '' ? v : v === true), signal)
   }
 
   /** 扩展 hook 首次执行授权（mcp-permission）：auto-approve 不豁免（第三方面不可控）。 */
@@ -193,8 +194,10 @@ export class ApprovalBroker {
   }
 
   /** 挂起并登记（respond 侧触发 resolve）：**先登记后广播**——订阅者可能在同步回调里立刻
-   *  respond，登记晚一步就会 not-pending 丢失应答（集成测试实测死锁教训） */
-  private suspendOnce<T>(frame: AnswerableFrame, adapt: (v: unknown) => T): Promise<T> {
+   *  respond，登记晚一步就会 not-pending 丢失应答（集成测试实测死锁教训）。
+   *  D9：signal（当轮 abort）中止即收敛本条挂起——fail-closed 解析 + resolved('cancelled')，
+   *  Ctrl+C 不再被「无人应答的卡」拖住（此前只能等审批超时）。 */
+  private suspendOnce<T>(frame: AnswerableFrame, adapt: (v: unknown) => T, signal?: AbortSignal): Promise<T> {
     const requestId = frame.requestId
     return new Promise<T>((resolve) => {
       const entry: PendingEntry = {
@@ -228,7 +231,36 @@ export class ApprovalBroker {
         }, this.notifyDelayMs)
         entry.notifyTimer.unref?.()
       }
+      // D9：轮中断收敛（signal 由宿主按当轮传入——controller 每轮新建，挂起随轮存活）
+      if (signal !== undefined) {
+        if (signal.aborted) {
+          this.cancelPending(requestId)
+          return
+        }
+        signal.addEventListener('abort', () => this.cancelPending(requestId), { once: true })
+      }
     })
+  }
+
+  /** D9：单条挂起的取消收敛（中断/dispose 面）——清定时器、fail-closed 解析、
+   *  resolved('cancelled') 广播 + 审计。语义与超时收敛同构，仅 outcome 不同。 */
+  private cancelPending(requestId: string): void {
+    const entry = this.pending.get(requestId)
+    if (entry === undefined) return
+    this.pending.delete(requestId)
+    if (entry.timer !== undefined) clearTimeout(entry.timer)
+    if (entry.notifyTimer !== undefined) clearTimeout(entry.notifyTimer)
+    if (entry.kind === 'mcp-permission') entry.resolve({ allow: false, remember: false })
+    else if (entry.kind === 'ask-select' || entry.kind === 'ask-user') entry.resolve(null)
+    else entry.resolve(false)
+    this.audit?.('decided', { requestId, kind: entry.kind, outcome: 'cancelled' })
+    if (entry.kind === 'tool-confirm' || entry.kind === 'sensitive' || entry.kind === 'mcp-permission') {
+      this.publish({ type: 'approval/resolved', requestId, outcome: 'cancelled' })
+    } else if (entry.kind === 'ask-user') {
+      this.publish({ type: 'askUser/resolved', requestId, answers: null })
+    } else {
+      this.publish({ type: 'askSelect/resolved', requestId, choice: null })
+    }
   }
 
   /** M14-C2⑤ 认领（D12 advisory）：登记租约并广播 claimed 帧。不改权威语义——

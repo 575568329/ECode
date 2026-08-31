@@ -16,9 +16,9 @@ describe('Folded 折叠展示件', () => {
 
   it('tail 折叠：提示行在顶部，带计数与 hint', () => {
     const fold = foldLines('1\n2\n3\n4\n5', 2, 40)
-    const { lastFrame } = render(<Folded fold={fold} hint="Ctrl+O 展开" />)
+    const { lastFrame } = render(<Folded fold={fold} hint="/output 查看全文" />)
     const frame = lastFrame() ?? ''
-    expect(frame).toContain('↑ 3 行已折叠（共 5 行） · Ctrl+O 展开')
+    expect(frame).toContain('↑ 3 行已折叠（共 5 行） · /output 查看全文')
     expect(frame).toContain('4')
     expect(frame.indexOf('已折叠')).toBeLessThan(frame.lastIndexOf('4'))
   })

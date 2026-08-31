@@ -24,7 +24,9 @@ import { SummarizeStrategy } from '../../src/services/compaction/summarize.js'
 class MockProvider implements LLMProvider {
   private call = 0
   constructor(private readonly script: Delta[][]) {}
-  async *run(_req: LLMProviderRunRequest): AsyncIterable<Delta> {
+  async *run(req: LLMProviderRunRequest): AsyncIterable<Delta> {
+    // 保真：真实 provider 流在 signal 中止时终止——mock 同样不再产 delta
+    if (req.signal?.aborted === true) return
     const deltas = this.script[this.call++] ?? [{ type: 'done', stop_reason: 'end' }]
     for (const d of deltas) yield d
   }
@@ -130,9 +132,59 @@ describe('D9 敏感卡串行化与中断收敛', () => {
     expect(await waitFor(() => events.some((e) => e.type === 'approval/requested'))).toBe(true)
     const r = await host.send({ op: 'interrupt' })
     expect(r.ok).toBe(true)
-    // 中断后轮必须终止（不依赖审批超时）——whenIdle 在 3s 内解决
-    await Promise.race([host.whenIdle(), new Promise((_, rej) => setTimeout(() => rej(new Error('interrupt 未收敛')), 3000))])
+    // 中断后轮必须终止（不依赖审批超时）——whenIdle 在 3s 内解决；
+    // race 输家的 reject 须清定时器防 unhandledRejection（审阅批卫生项）
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        host.whenIdle(),
+        new Promise((_resolve, rej) => {
+          timer = setTimeout(() => rej(new Error('interrupt 未收敛')), 3000)
+        }),
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
     const resolved = events.find((e) => e.type === 'approval/resolved') as { outcome: string }
+    expect(resolved).toBeDefined()
     expect(resolved.outcome).toBe('cancelled')
+  }, 8000)
+
+  it('排队卡中断不落卡：第二张敏感卡随中断收敛（requested 必有配对 resolved，无孤儿挂起）', async () => {
+    const { host, events } = makeHost([
+      [
+        { type: 'tool_use_start', id: 'a1', name: 'readA' },
+        { type: 'tool_use_end', id: 'a1' },
+        { type: 'tool_use_start', id: 'b1', name: 'readB' },
+        { type: 'tool_use_end', id: 'b1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: '完成' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    await host.send({ op: 'prompt', text: '查', mode: 'StartOrSteer' })
+    expect(await waitFor(() => events.some((e) => e.type === 'approval/requested'))).toBe(true)
+    // 不应答第一张，直接中断——第二张在队列中，收敛面二选一：出队时 aborted 快拒或挂起即收敛
+    const r = await host.send({ op: 'interrupt' })
+    expect(r.ok).toBe(true)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        host.whenIdle(),
+        new Promise((_resolve, rej) => {
+          timer = setTimeout(() => rej(new Error('interrupt 未收敛（排队卡悬空）')), 3000)
+        }),
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
+    // 无孤儿挂起：每个 requested 都有配对 resolved（无「顶掉后永不渲染也不收敛」形态）
+    const requested = events.filter((e) => e.type === 'approval/requested')
+    for (const req of requested) {
+      const id = (req as { requestId: string }).requestId
+      expect(events.some((e) => e.type === 'approval/resolved' && (e as { requestId: string }).requestId === id)).toBe(true)
+    }
+    // 中断后轮直接 unwind（不会进 mock 第二轮）——round-2 文本不得出现；工具级完成帧
+    // 在中断路径无 isError 标记，不作断言（避免钉死帧形态）
+    expect(events.some((e) => e.type === 'delta' && e.text === '完成')).toBe(false)
   }, 8000)
 })

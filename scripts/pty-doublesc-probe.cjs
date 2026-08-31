@@ -85,9 +85,30 @@ const run = async () => {
   const reopened = await waitFor(/回退到哪个改动之前/, mark, 4000)
   check('E5 清草稿后双击恢复', reopened)
 
+  // E6 @ 下拉守卫分支（D2 回归肇因端口的另一半：read()===true 时不得误开）
+  proc.write('\x1b') // 关 E5 面板
+  await sleep(1000)
+  mark = out.length
+  proc.write('@') // 行首 @ → 路径下拉打开
+  await waitFor(/Tab\/回车 补全/, mark, 4000)
+  doubleEsc()
+  await sleep(1500)
+  check('E6 @ 下拉开着双击不误开', !/回退到哪个改动之前/.test(strip(out.slice(mark))))
+  proc.write('\x1b') // 关下拉
+  await sleep(600)
+  proc.write('\x7f') // 关不清已输入的 @（草稿仍非空，守卫应拦）——退格清掉
+  await sleep(500)
+  mark = out.length
+  doubleEsc()
+  check('E7 关下拉清字符后双击恢复', await waitFor(/回退到哪个改动之前/, mark, 4000))
+
   proc.kill()
   server.close()
   const pass = checks.every(([, ok]) => ok)
+  if (!pass) {
+    console.log('---- 屏幕现场（strip 末 30 行）----')
+    console.log(strip(out).split('\n').map((l) => l.replace(/\r/g, '').trimEnd()).filter(Boolean).slice(-30).join('\n'))
+  }
   console.log(pass ? '# 结论：双击 Esc 全过' : '# 结论：存在失败项')
   process.exit(pass ? 0 : 1)
 }

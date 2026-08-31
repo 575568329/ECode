@@ -49,15 +49,26 @@ class HangProvider implements LLMProvider {
 }
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} } as unknown as Logger
-const noopHistory = {
-  append() {},
-  appendCompactBoundary() {},
-  loadAll() { return [] },
-  restore() { return [] },
-  restoreFull() { return [] },
-  setSessionId() {},
-  currentSessionId() { return 'test-session' },
-} as unknown as HistoryStore
+/** T 线 T2：内存版 history——session/read 全量拉取经宿主 deps.history.restoreFull 读数，
+ *  noop（恒空）会让 committed 重建失效；语义对齐 FileHistoryStore（append 可回放+fork 切 id）。 */
+function memoryHistory(): HistoryStore {
+  let curId = '2026-08-31T00-00-00-000Z-test'
+  const lines: unknown[] = []
+  return {
+    append: (m: never) => { lines.push(m) },
+    appendCompactBoundary() {},
+    appendRewind() {},
+    appendUsageStats() {},
+    patchSessionMeta() {},
+    loadAll() { return [{ sessionId: curId, createdAt: '', model: 'm', firstUser: '' }] },
+    restore() { return [] },
+    restoreFull() { return lines as never },
+    setSessionId(id: string) { curId = id },
+    forkSession(id: string) { curId = id },
+    flushPendingSeed() {},
+    currentSessionId() { return curId },
+  } as unknown as HistoryStore
+}
 
 const config: Config = {
   ...emptyShellConfig(),
@@ -77,7 +88,7 @@ function makeDeps(provider: LLMProvider) {
     providerRegistry: reg,
     tools: new ToolRegistryImpl(),
     logger: noopLogger,
-    history: noopHistory,
+    history: memoryHistory(),
     config,
     orchestrator,
     lastUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
@@ -172,25 +183,28 @@ describe('Ctrl+C 中断（按键 → useInterrupt → 宿主 interrupt → loop 
     expect(onExit).toHaveBeenCalledTimes(1)
   })
 
-  it('F-47：用过 /output 面板并关闭后，Ctrl+C 双击退出仍可用（pickerRef 泄漏回归锁）', async () => {
+  it('F-47：面板键序后 Ctrl+C 双击退出仍可用（pickerRef 泄漏回归锁；T2 语义=Esc 双击开 rewind → Ctrl+C 兜底关 → 双击退出）', async () => {
     const onExit = vi.fn()
     const { stdin } = render(React.createElement(TuiApp, { deps: makeDeps(new OneShotProvider()), onExit }))
     await flush()
-    // 打开 /output 面板再 Esc 关闭（修复前：pickerRef 置 true 后关闭路径不复位，
-    // useInterrupt.isActive 永真 → 此后 Ctrl+C 全部被吞）
+    // 测试环境 /output 命令注册在全局单例（InputStream 分流面）——本文件未注册全局，
+    // 两个 Esc 落主界面：T 线语义=双击 Esc 开 rewind 面板（armed 确认式分支与 rewind 分流共用计时）
     stdin.write('/output')
     await flush()
     stdin.write('\r')
     await flush(100)
-    stdin.write('\x1b[B') // ↓ 移到可选条目
+    stdin.write('\x1b[B') // ↓ 移到可选条目（无面板时落主输入）
     await flush(100)
-    stdin.write('\r') // 进查看器
+    stdin.write('\r') // 进查看器/提交空行
     await flush(100)
-    stdin.write('\x1b') // Esc 回列表
+    stdin.write('\x1b') // Esc（回列表或主界面待清/计时）
     await flush(100)
-    stdin.write('\x1b') // Esc 关面板
+    stdin.write('\x1b') // Esc（关面板或触发双击 rewind）
     await flush(100)
-    // 关闭面板后：双击 Ctrl+C 退出可用
+    // Ctrl+C①：无论 rewind 面板是否开着——全局兜底先关面板（87a6382）或单发提示
+    stdin.write('\x03')
+    await flush(100)
+    // Ctrl+C②③：窗口内双击退出
     stdin.write('\x03')
     await flush(100)
     stdin.write('\x03')

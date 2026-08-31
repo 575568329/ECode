@@ -7,14 +7,15 @@ import { ErrorBanner } from './ErrorBanner.js'
 import { useInput, Text, Box } from 'ink'
 import { useInterrupt } from './useInterrupt.js'
 import { formatPasteRef, shouldTokenize, expandPasteRefs, prunePasteRefs } from './pasteRefs.js'
-import { HostSession } from '../host/session.js'
+import { HostSession, isValidSessionId } from '../host/session.js'
 import type { ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
-import type { AppError, ContentBlock, HistoryLine, ImageBlock, Message, RewindLine } from '../core/types.js' 
+import type { AppError, ContentBlock, HistoryLine, ImageBlock, Message } from '../core/types.js'
 import type { ToolUseBlock } from '../core/types.js'
+import type { RewindListResult } from '../protocol/types.js'
+import type { CheckpointMeta } from '../services/checkpoint.js'
 import { tokensToCost } from '../services/pricing.js'
 import { buildContextMessages } from '../core/context.js'
-import { estimateContextTokens } from '../services/tokenizer.js'
 import { resolveContextWindow } from '../services/contextWindow.js'
 import type { CompactionOrchestrator } from '../services/compaction/orchestrator.js'
 import type { LLMProviderRegistry } from '../providers/interface.js'
@@ -23,7 +24,6 @@ import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
 import { createActive, type CommittedItem, type ActiveState } from './types.js'
 import { messagesToCommitted } from './commit.js'
-import { buildSystemPrompt } from '../core/system.js'
 import { expandSkill, type SkillRegistry } from '../services/skill.js'
 import { globalSkillHooks } from '../services/hooks/global.js'
 import type { HookRunner } from '../services/hooks/runner.js'
@@ -115,7 +115,7 @@ export interface TuiAppDeps {
   history: HistoryStore
   config: Config
   orchestrator: CompactionOrchestrator
-  lastUsage: { input: number; output: number; cacheRead: number; cacheCreation: number }
+  /** T 线 T2：lastUsage 客户端本地化（usage 帧驱动——附着态 deps 对象在宿主进程不可直写） */
   /** M6：skill 注册表（清单注入 + 手动触发展开） */
   skillRegistry: SkillRegistry
   /** M6：MCP 管理器（null = 未初始化，如 argv 单次模式简化路径） */
@@ -214,10 +214,11 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
 
   /** usage 记录（submit 与子代理桥共用——成本归并；「本轮」语义被并发稀释为最后到达者，文档化） */
   const recordUsage = (inp: number, out: number, cache?: { read?: number; creation?: number }) => {
-    deps.lastUsage.input = inp
-    deps.lastUsage.output = out
-    deps.lastUsage.cacheRead = cache?.read ?? 0
-    deps.lastUsage.cacheCreation = cache?.creation ?? 0
+    const u = lastUsageRef.current
+    u.input = inp
+    u.output = out
+    u.cacheRead = cache?.read ?? 0
+    u.cacheCreation = cache?.creation ?? 0
     setTokens((n) => n + inp + out)
     // P0 连带：定价读 configRef——本函数被挂载期子代理桥长期持有，闭包捕获的 config 是首次
     // 渲染值（/model 切换后仍按旧模型计价）
@@ -235,8 +236,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const bellRungRef = useRef(new Set<string>())
   // ctxWindow 缓存（S-P4：submit 热路径同步用，启动解析一次 + 切模型刷新；默认 200k 兜底）
   const ctxWindowRef = useRef(200_000)
-  // SessionStart 的 additionalContext 暂存（M9-P0）：注入启动/恢复后首轮 user 消息，一次性消费
-  const pendingSessionCtxRef = useRef<string[]>([])
+  // T 线 T2：本轮 usage 缓存本地化（usage 帧驱动 recordUsage 写入——原 deps.lastUsage 退役）
+  const lastUsageRef = useRef({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 })
+  // T 线⑥：SessionStart additionalContext 暂存由宿主 pendingSessionContext 接管（原客户端 ref 退役）
   // M9-P6：本轮编辑文件集（onBeforeWrite 收集；autoCommit 开启时轮末提交+清空）
   // M10-P2b：待发送的粘贴图片（Alt+V 落盘后的路径；submit 时按文本引用组装 blocks 并清空）。
   // 真机修复批 v2（两家同款内嵌形态）：粘贴把短标签 [图片#N] 插入输入框文本，标签即引用——
@@ -331,6 +333,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // F-44：上下文占用/窗口（usage 帧 API 真值：占用=本轮 prompt 全量 input+cacheRead；
   // 窗口=宿主 resolveContextWindow 解析缓存）——StatusBar ctx 段显示占用与余量
   const [ctxUsed, setCtxUsed] = useState<number | undefined>(undefined)
+  // ctxUsed 的镜像 ref（checkModelWindow 等闭包读最新值免依赖数组）
+  const lastCtxUsedRef = useRef<number | undefined>(undefined)
   const [ctxWindow, setCtxWindow] = useState<number | undefined>(undefined)
   // F-38：即时系统提示（命令反馈/状态提示）——保留输入框上方多行渲染（/cost 等命令输出
   // 需要完整多行，塞底部行会被截断），但加两点秩序：①TTL 5s 自动消失（不再常驻占屏）；
@@ -425,7 +429,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   if (hostRef.current === null) {
     // M13-W1：宿主取自 ProjectHost（会话容器；首会话已由 makeDeps ensure——此处幂等取回）；
     // 测试 fake 无 project 走内联构造兜底（与 M12 等价）
-    hostRef.current =
+    const inline =
       deps.project !== undefined
         ? deps.project.ensureDefault(deps.history.currentSessionId())
         : new HostSession({
@@ -441,9 +445,62 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             ...(deps.quality != null && deps.quality !== undefined ? { quality: deps.quality } : {}),
             ctxWindowHint: () => ctxWindowRef.current,
             cwd: process.cwd(),
+            // T 线 T2：session/restore(fork) 命令的 Embedded 端口——宿主即会话宿主，载入=restoreFrom
+            // 自身（无 ProjectHost 间接）；历史由 deps.history 真读（fake store 空会话返回 NOT_FOUND）
+            ensureConversation: (sid) => {
+              if (!isValidSessionId(sid)) return Promise.resolve({ ok: false as const, error: `会话 id 非法：${sid}`, code: 'BAD_SESSION_ID' })
+              const lines = deps.history.restoreFull(sid)
+              if (lines.length === 0) return Promise.resolve({ ok: false as const, error: '会话不存在或为空', code: 'SESSION_NOT_FOUND' })
+              hostInstance.restoreFrom(lines)
+              return Promise.resolve({ ok: true as const, value: { sessionId: sid } })
+            },
           })
+    const hostInstance = inline as HostSession
+    hostRef.current = hostInstance
   }
   const host = hostRef.current
+
+  // T 线 T2：transcript 读面命令化——宿主 messages 镜像改走 session/read 无参全量（与
+  // restoreFull 同源同形；Embedded=InMemoryChannel 内存拷贝，附着=HTTP）。原 12 处
+  // `host.transcript` 直调的协议通道等价物；失败保留旧镜像（不闪空）
+  const pullTranscript = async (): Promise<HistoryLine[]> => {
+    const r = await host.send({ op: 'session/read', sessionId: deps.history.currentSessionId() })
+    if (!r.ok) return messagesRef.current
+    return r.value as unknown as HistoryLine[]
+  }
+  /** 拉取并同步渲染镜像（ref+committed 全量重建——事件回调内异步化） */
+  const syncCommitted = (lines?: HistoryLine[]): void => {
+    void (lines !== undefined ? Promise.resolve(lines) : pullTranscript()).then((l) => {
+      messagesRef.current = l
+      setCommitted(messagesToCommitted(l))
+    }).catch(() => {})
+  }
+  /** 仅同步时间线/上下文读源 ref（不动 committed——动态区还在流式） */
+  const syncRefOnly = (): void => {
+    void pullTranscript().then((l) => { messagesRef.current = l }).catch(() => {})
+  }
+
+  // T 线 T2：rewind 协议适配器（RewindStore 窄接口的协议实现）——list 回执已带各点
+  // externallyChanged 预计算，detectExternalChanges 直查缓存；revert 走 rewind/exec。
+  // 原直调 CheckpointStore 真件的路径退役（附着态同构）。
+  const rewindListCacheRef = useRef<RewindListResult | null>(null)
+  const rewindProtocolStore = {
+    list: async (_sessionId: string): Promise<CheckpointMeta[]> => {
+      const r = await host.send({ op: 'rewind/list' })
+      if (!r.ok) return []
+      const v = r.value as unknown as RewindListResult
+      rewindListCacheRef.current = v
+      return v.snapshots.map(({ externallyChanged: _ec, ...m }) => m)
+    },
+    detectExternalChanges: async (_sessionId: string, seq: number): Promise<string[]> => {
+      return rewindListCacheRef.current?.snapshots.find((s) => s.seq === seq)?.externallyChanged ?? []
+    },
+    revert: async (_sessionId: string, seq: number): Promise<{ restored: string[]; externalChanged: string[] }> => {
+      const r = await host.send({ op: 'rewind/exec', target: seq })
+      if (!r.ok) throw new Error(r.error)
+      return r.value as unknown as { restored: string[]; externalChanged: string[] }
+    },
+  }
 
   // 事件→UI 映射（渲染/审批/插话/进度全事件驱动；回调直驱 setState 的旧路径退役）
   useEffect(() => {
@@ -456,12 +513,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         case 'item/started':
           // 审阅 P2：时间线源（Ctrl+T）读 messagesRef——仅轮末同步时 busy 中看不到当前轮；
           // 工具事件粒度同步（逐 delta 太热），transcript 此时已含本轮已发生条目
-          messagesRef.current = [...host.transcript]
+          syncRefOnly()
           setActive((a) => ({ ...a, tools: [...a.tools, { name: ev.name, status: 'running', at: Date.now() }] }))
           setActivity({ state: 'tool', text: ev.name })
           break
         case 'item/completed': {
-          messagesRef.current = [...host.transcript]
+          syncRefOnly()
           // M14-V3：环形缓冲记录（/output 查看器数据源；前台 bash 有工具层 30KB 截断边界）
           setRecentTools((prev) => {
             const next = [{ itemId: ev.itemId, name: ev.name, content: ev.content, isError: ev.isError, at: Date.now(), ...(ev.truncated === true ? { truncated: true } : {}) }, ...prev]
@@ -505,7 +562,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         case 'usage':
           recordUsage(ev.input, ev.output, { read: ev.cacheRead, creation: ev.cacheCreation })
           // F-44：上下文占用/余量（帧缺省=旧宿主/非 LLM 轮，保留上次值）
-          if (ev.contextUsed !== undefined) setCtxUsed(ev.contextUsed)
+          if (ev.contextUsed !== undefined) {
+            setCtxUsed(ev.contextUsed)
+            lastCtxUsedRef.current = ev.contextUsed
+          }
           if (ev.contextWindow !== undefined) setCtxWindow(ev.contextWindow)
           break
         case 'thread/status':
@@ -521,20 +581,22 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           setActivity({ state: ev.state as ActivityState, text: ev.text })
           break
         case 'turn/completed':
-          messagesRef.current = [...host.transcript]
-          setActivity((cur) => (cur.state === 'aborted' ? cur : { state: 'idle' }))
           // M14-V4（§3.3 查因后拍板方案一）：轮末即 commit——本轮 transcript 在 completed 时已
           // 终局（afterTools 是轮间回喂、跨 turn 通知是下轮注入，无漏消息风险），全量送 Static
           // 后动态区清零（空闲态只剩输入+状态栏，永不超限——轮末 markdown 滞留是最大溢出源）。
           // M2 的延迟 commit（下次 submit 才收）是「留动态区可 Ctrl+O 展开」的交互决策；
           // Static 的工具组本就展开（M3 §7.5），滚轮回看语义更优。error 轮无 completed 帧，
           // submit 开头的兑现兜底保留
-          if (host.transcript.length > 0) {
-            setCommitted(messagesToCommitted([...host.transcript]))
-            setActive(createActive())
-          } else {
-            setActive((a) => ({ ...a, streaming: false }))
-          }
+          void pullTranscript().then((l) => {
+            setActivity((cur) => (cur.state === 'aborted' ? cur : { state: 'idle' }))
+            if (l.length > 0) {
+              messagesRef.current = l
+              setCommitted(messagesToCommitted(l))
+              setActive(createActive())
+            } else {
+              setActive((a) => ({ ...a, streaming: false }))
+            }
+          }).catch(() => setActivity((cur) => (cur.state === 'aborted' ? cur : { state: 'idle' })))
           break
         case 'warn':
           pushNoticeFn('warn', ev.text)
@@ -551,8 +613,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           setActivity({ state: 'idle' })
           break
         case 'compacted':
-          messagesRef.current = [...host.transcript]
-          setCommitted(messagesToCommitted([...host.transcript]))
+          syncCommitted()
           setSystemMsgs(['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）'])
           break
         case 'compacting':
@@ -687,14 +748,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     }
     // error 轮兜底 commit（正常轮在 turn/completed 已进 Static——V4；error 轮无 completed 帧，
     // transcript 里的本轮内容在这里收进 Static 再开新轮）
-    if (host.transcript.length > 0) {
-      setCommitted(messagesToCommitted([...host.transcript]))
-    }
-    // SessionStart additionalContext（客户端持有状态）随首轮注入
-    if (pendingSessionCtxRef.current.length > 0) {
-      input = `${input}\n\n[hook context]\n${pendingSessionCtxRef.current.join('\n')}`
-      pendingSessionCtxRef.current = []
-    }
+    syncCommitted()
+    // T 线⑥：SessionStart additionalContext 宿主暂存随首轮注入（startTurn 内）——
+    // 原 pendingSessionCtxRef 客户端机制退役（附着态注入点同样在宿主，web/TUI 一致）
     // 消息确认发送：粘贴暂存此刻清空（早退路径均不清——图片不丢）
     pendingImagesRef.current = []
     setPendingImages([])
@@ -916,19 +972,16 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     }
   }
 
-  /** M5：手动 /compact——宿主执行强制压缩（boundary 追加宿主 messages）+ 镜像同步 + 重建 committed */
+  /** M5：手动 /compact——T 线 T2 命令化：session/compact 宿主权威执行（压缩链+守卫在宿主），
+   *  完成信号经 systemMsg 帧送达（宿主侧发出）；客户端只刷视图 */
   const compactManual = async (): Promise<void> => {
-    if (host.transcript.length === 0) {
-      setSystemMsgs(['（无可压缩对话）'])
-      return
-    }
     if (!config.providers[config.current.name]) return
     setSystemMsgs(['正在压缩对话...'])
     try {
-      const r = await host.compactManual()
-      messagesRef.current = [...host.transcript]
-      setCommitted(messagesToCommitted([...host.transcript]))
-      setSystemMsgs([r.ok ? '✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）' : `（压缩未完成——${r.reason ?? '对话太短或摘要失败'}）`])
+      const r = await host.send({ op: 'session/compact' })
+      // 受理成功≠压缩成功——成败由宿主 systemMsg 帧（「压缩完成」/「压缩失败：…」）呈现；
+      // compacted 帧（onCompacted）驱动 committed 重建（事件处理器内 syncCommitted）
+      if (!r.ok) setSystemMsgs([`（压缩未开始——${r.error}）`])
     } catch (e) {
       setSystemMsgs([`压缩异常：${e instanceof Error ? e.message : String(e)}`])
     }
@@ -936,14 +989,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
 
   /** M5：切换 model 后检测 context 是否超新窗口（只提示风险，不自动压缩；用户主动 /compact） */
   const checkModelWindow = async (model: string, providerName: string): Promise<void> => {
-    // P1：整体兜底——resolveContextWindow 联网查 models.dev 可能 reject，而调用点是
-    // void checkModelWindow(...)，不兜会成 unhandledRejection 杀 TUI（与 submit 同款闪退面）
+    // T 线 T2：本地 estimateContextTokens 估算退役（skillListForPrompt/tools.specs 宿主面）——
+    // usage 帧已带宿主权威 ctxUsed/contextWindow（F-44 同源真值），切模型后仅按新窗口比对提示
     try {
-      const ctxTokens = estimateContextTokens(
-        buildSystemPrompt(deps.skillRegistry.listForPrompt(), ctxWindowRef.current),
-        buildContextMessages(messagesRef.current),
-        deps.tools.specs(), // MCP 工具 schema 同样计入（v6 修复记录「两个调用点」的第二处，审阅补漏）
-      )
+      const ctxTokens = lastCtxUsedRef.current ?? 0 // 无 usage 帧前=0（无对话无占用，不触发提示）
       const newWindow = await resolveContextWindow(model, config.providers[providerName]?.contextWindow)
       ctxWindowRef.current = newWindow // S-P4：切模型刷新缓存（后续 submit 的 skill 清单预算随之适配）
       const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(0)}k`)
@@ -961,42 +1010,19 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   }
 
   const restoreSession = async (sessionId: string) => {
-    // M14-C5①：载入经 ProjectHost.ensureRestore（与 web/飞书 session/restore 命令同一条载入
-    // 路径——损坏降级空会话/并发单飞/活复用单源化）；TUI 保持 fork 续写语义（灌当前 host +
-    // 起新 id）。测试 fake 无 project 走直调兜底（与 M12 等价）
-    const messages =
-      deps.project !== undefined
-        ? [...(await deps.project.ensureRestore(sessionId)).transcript]
-        : deps.history.restoreFull(sessionId)
-    // P1-10：restore 返回空（文件缺失/损坏/真空会话）→ 保留当前会话 + 提示，不静默清空
-    if (messages.length === 0) {
-      setSystemMsgs(['⚠ 恢复失败：该会话为空或已损坏（文件缺失/无消息），未切换'])
+    // T 线 T2：恢复命令化——session/restore fork:true 宿主权威执行（载入 ensureRestore+起新 id
+    // 播种+快照目录跟随+SessionStart(resume) 宿主 dispatch 全在宿主侧，T1②）；客户端只刷新视图。
+    // 原 deps.project.ensureRestore/restoreFrom/forkSession/copyForResume 客户端手搓三连退役。
+    const r = await host.send({ op: 'session/restore', sessionId, fork: true })
+    if (!r.ok) {
+      setSystemMsgs([`⚠ 恢复失败：${r.error}，未切换`])
       return
     }
-    host.restoreFrom(messages)
-    messagesRef.current = [...host.transcript]
-    setCommitted(messagesToCommitted(messages))
     resetTransient()
-    // 续写进新文件（起新 sessionId）；model 用当前 config（用户可能已 /model 切过）
-    const newId = new Date().toISOString().replace(/[:.]/g, '-')
-    // M9-P2：快照目录拷贝跟随（起新 id 后旧快照仍可用——否则「跨重启可回退」落空，CC copyFileHistoryForResume 同款）
-    const oldId = deps.history.currentSessionId()
-    // D2 补全：恢复行全量播种进新文件（fork 自包含——重开不丢前文；loop.ts 只增量 append 不双写）
-    deps.history.forkSession(newId, messages, config.current.model)
-    deps.checkpoint
-      ?.copyForResume(oldId, newId)
-      .catch((e: unknown) =>
-        pushNoticeFn('warn', `快照跟随失败（恢复会话后旧快照不可用）：${e instanceof Error ? e.message : String(e)}`),
-      )
-    // SessionStart hook（H-P4）：恢复会话 = resume
-    void deps.hookRunner
-      ?.dispatch('SessionStart', { event: 'SessionStart', session_id: '', source: 'resume' })
-      .then((v) => {
-        if (v.systemMessages.length > 0) setSystemMsgs(v.systemMessages)
-        // M9-P0：additionalContext 暂存，恢复后首轮 user 消息注入（典型用途：会话环境信息）
-        if (v.additionalContext.length > 0) pendingSessionCtxRef.current = v.additionalContext
-      })
-      .catch(() => {})
+    // 回执新 sessionId 续写（宿主已切 history currentSessionId——pullTranscript 读新会话）
+    const lines = await pullTranscript()
+    messagesRef.current = lines
+    setCommitted(messagesToCommitted(lines))
   }
   // CLI `ecode --history <id>` 启动恢复：复用 /history 的 restoreSession（起新 sessionId 续写，D2）。
   // host 由 hostRef 渲染期惰性构造，effect 执行时已就绪；restoreSession 每渲染重建不列依赖，
@@ -1194,7 +1220,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       // 空草稿的 Esc 打断待清态（回填清空等让草稿变空的连击场景）
       disarmEscArm()
       // 分流二（现状）：空草稿双击 <500ms 开 /rewind；@ 下拉/搜索态只重置计时
-      if (!atOpen && !searchOpen && now - lastEscRef.current < 500 && deps.checkpoint != null) {
+      if (process.env.ECODE_DBG) console.error('[DBG esc-main]', { atOpen, searchOpen, since: now - lastEscRef.current })
+      if (!atOpen && !searchOpen && now - lastEscRef.current < 500) {
+        if (process.env.ECODE_DBG) console.error('[DBG rewind-open]')
         lastEscRef.current = 0
         setOverlay({ kind: 'rewind-panel' })
         return
@@ -1541,18 +1569,16 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       )}
       {overlay?.kind === 'rewind-panel' && (
         <RewindPanel
-          store={deps.checkpoint ?? null}
+          store={rewindProtocolStore}
           sessionId={deps.history.currentSessionId()}
           disabled={runningRef.current}
           onDone={(r) => {
             pickerRef.current = false
             setOverlay(null)
             if (r === null) return
-            const line: RewindLine = { rewind: true, seq: r.seq, toolUseId: r.toolUseId, time: new Date().toISOString() }
-            host.appendRewind(line) // 宿主权威（审阅 P0-3：只写客户端镜像时回退不进 LLM 上下文）
-            messagesRef.current = [...host.transcript]
-            deps.history.appendRewind(line)
-            setCommitted(messagesToCommitted(messagesRef.current))
+            // T 线 T2：回退执行已宿主化（rewind/exec——文件还原+transcript 留痕+history 落盘+
+            // applied 帧全在宿主）——客户端只刷新视图与提示
+            syncCommitted()
             setSystemMsgs([`⇺ 已回退至快照点 ${r.seq}（还原 ${r.restoredCount} 个文件；该点之后的对话不再进入上下文，原文仍可回看）`])
           }}
         />
@@ -1719,10 +1745,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             return
           }
           if (result.action === 'open-rewind-panel') {
-            if (deps.checkpoint == null) {
-              setSystemMsgs(['快照系统未启用（argv 模式）'])
-              return
-            }
+            // T 线 T2：rewind 走协议（rewind/list+exec），未装配由宿主回 NOT_IMPLEMENTED——客户端不再判 checkpoint
             setOverlay({ kind: 'rewind-panel' })
             return
           }
@@ -1746,7 +1769,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
             return
           }
           if (result.action === 'cost') {
-            const u = deps.lastUsage
+            const u = lastUsageRef.current
             const lineCost = tokensToCost(config.current.model, {
               input: u.input, output: u.output, cacheRead: u.cacheRead, cacheCreation: u.cacheCreation,
             }, config.providers[config.current.name]?.pricing)

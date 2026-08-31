@@ -233,22 +233,27 @@ describe('TuiApp /model', () => {
     expect(f).toContain('帮我写函数')
   })
 
-  it('选中 → restore 注入 + forkSession 播种续写 + committed 重建', async () => {
+  it('选中 → session/restore(fork) 命令恢复 + 新 id 播种 + committed 重建', async () => {
     const restored: Message[] = [
       { role: 'user', content: [{ type: 'text', text: '之前问的问题' }] },
       { role: 'assistant', content: [{ type: 'text', text: '之前的回答' }] },
     ]
     const restoreFull = vi.fn(() => restored)
     const forkSession = vi.fn()
-    const currentSessionId = vi.fn(() => 'old-session')
+    // T 线 T2：宿主 fork 后 currentSessionId 切新 id、session/read 的 ownsSession 按 loadAll 判——
+    // fake 跟随真实 FileHistoryStore 语义（forkSession 换 id + loadAll 含当前 id）
+    let curId = '2026-08-13T10-00-00-000Z-old'
     const history = {
       ...noopHistory,
       loadAll: () => [
-        { sessionId: 's1', createdAt: '2026-08-13T10:00:00.000Z', model: 'glm-5.2', firstUser: '之前问的问题' },
+        { sessionId: curId === '2026-08-13T10-00-00-000Z-old' ? '2026-08-13T10-00-00-000Z-s1' : curId, createdAt: '2026-08-13T10:00:00.000Z', model: 'glm-5.2', firstUser: '之前问的问题' },
       ],
       restoreFull,
-      forkSession,
-      currentSessionId,
+      forkSession: (id: string, lines: never, model: never) => {
+        forkSession(id, lines, model)
+        curId = id
+      },
+      currentSessionId: () => curId,
     } as unknown as HistoryStore
     const { stdin, lastFrame } = render(
       React.createElement(TuiApp, {
@@ -263,9 +268,10 @@ describe('TuiApp /model', () => {
     await flush()
     stdin.write('\r') // 选中第一项恢复
     await flush()
-    expect(restoreFull).toHaveBeenCalledWith('s1')
-    expect(forkSession).toHaveBeenCalled() // 播种式续写：新 id + 全量恢复行（fork 自包含）
-    // committed 重建：含恢复的 assistant 文本（messagesToCommitted）
+    await flush() // T 线 T2：恢复走 session/restore(fork:true) 命令（异步链）——宿主 ensureConversation 真读历史
+    expect(restoreFull).toHaveBeenCalledWith('2026-08-13T10-00-00-000Z-s1')
+    expect(forkSession).toHaveBeenCalled() // 宿主 fork 播种：新 id + 全量恢复行（fork 自包含）
+    // committed 重建：含恢复的 assistant 文本（session/read 全量拉取后 messagesToCommitted）
     expect(lastFrame() ?? '').toContain('之前的回答')
   })
 
@@ -275,21 +281,27 @@ describe('TuiApp /model', () => {
       { role: 'assistant', content: [{ type: 'text', text: '启动前的回答' }] },
     ]
     const forkSession = vi.fn()
+    let curId = '2026-08-13T10-00-00-000Z-old'
     const history = {
       ...noopHistory,
+      loadAll: () => [{ sessionId: curId === '2026-08-13T10-00-00-000Z-old' ? '2026-08-13T10-00-00-000Z-s1' : curId, createdAt: '2026-08-13T10:00:00.000Z', model: 'glm-5.2', firstUser: '启动前问的' }],
       restoreFull: () => restored,
-      forkSession,
-      currentSessionId: () => 'old-session',
+      forkSession: (id: string, lines: never, model: never) => {
+        forkSession(id, lines, model)
+        curId = id
+      },
+      currentSessionId: () => curId,
     } as unknown as HistoryStore
     const { lastFrame } = render(
       React.createElement(TuiApp, {
         deps: { providerRegistry: new LLMProviderRegistryImpl(), tools: new ToolRegistryImpl(), logger: noopLogger, history, config, skillRegistry: makeDeps().skillRegistry, mcpManager: null },
-        initialHistorySessionId: 's1',
+        initialHistorySessionId: '2026-08-13T10-00-00-000Z-s1',
       }),
     )
     await flush()
+    await flush() // 恢复命令异步链
     expect(lastFrame() ?? '').toContain('启动前的回答') // committed 重建
-    expect(forkSession).toHaveBeenCalled()
+    expect(forkSession).toHaveBeenCalled() // 宿主 fork 播种
   })
 
   it('空历史 → 显示「无历史会话」', async () => {

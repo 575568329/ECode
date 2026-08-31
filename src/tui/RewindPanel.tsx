@@ -14,7 +14,15 @@ import type { ReactElement } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { PanelShell } from './PanelShell.js'
 import { theme } from './theme.js'
-import type { CheckpointMeta, CheckpointStore } from '../services/checkpoint.js'
+import type { CheckpointMeta } from '../services/checkpoint.js'
+
+/** T 线 T2：面板数据面窄接口——CheckpointStore 真件与协议适配器（rewind/list+exec）同构实现，
+ *  面板不再绑定存储实现（附着态走协议，Embedded 走真件或适配器）。 */
+export interface RewindStore {
+  list(sessionId: string): Promise<CheckpointMeta[]>
+  detectExternalChanges(sessionId: string, seq: number): Promise<string[]>
+  revert(sessionId: string, seq: number): Promise<{ restored: string[]; externalChanged: string[] }>
+}
 
 /** 文件摘要最多列 3 个（多则 +N） */
 const FILES_MAX = 3
@@ -27,7 +35,7 @@ export interface RewindResultLite {
 }
 
 interface RewindPanelProps {
-  store: CheckpointStore | null
+  store: RewindStore | null
   sessionId: string
   /** 本轮运行中（runningRef）——确认禁用（可看可选） */
   disabled: boolean

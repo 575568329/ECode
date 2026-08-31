@@ -137,6 +137,12 @@ interface InputStreamProps {
   /** 输入体验批二期：大块插入（粘贴）token 化判定回调——返回 token 文本则插入 token
    * （全文存父级 pastedContents，提交时展开），null=原文直插（CC onTextPaste 同构） */
   onPasteText?: (text: string) => string | null
+  /** 输入体验批二期审阅 P1：提交入口的粘贴 token 展开回调——历史记录（input-history.json
+   * 持久化）必须记展开后全文：若把 token 形态记进历史，store 剪枝后按 ↑ 召回即产孤儿
+   * token，粘贴全文永久丢失。在历史落盘**之前**展开。 */
+  onExpandPaste?: (text: string) => string
+  /** 审阅 P2：Ctrl+R 搜索态同步读挂口（TuiApp 双击 Esc armed 守卫用；同 atOpen 端口族） */
+  onRegisterSearchOpen?: (port: { read(): boolean } | null) => void
   /** M11-P7：Ctrl+U 清空插话队列（readline 清行习惯键位；防「排了又后悔」） */
   onInterjectClear?: () => void
   /** M11 审阅 P0-1：忙碌态（斜杠拦截必须在 InputStream 分流点——TuiApp.submit 里的守卫不可达，
@@ -170,6 +176,9 @@ export function InputStream({
   onInterjectClear,
   onPasteImage,
   onPasteText,
+  onExpandPaste,
+  onRegisterSearchOpen,
+
   busy = false,
   onSlashBusy,
   cwd,
@@ -195,6 +204,14 @@ export function InputStream({
   curRef.current = cur
 
   // 草稿权威注册（挂载注册 / 卸载注销；身份回调由父保证稳定）
+  // 审阅 P2：搜索态活值端口（挂载期注册；TuiApp escArm 守卫读）
+  const searchOpenRef = useRef(false)
+  searchOpenRef.current = search !== null
+  useEffect(() => {
+    onRegisterSearchOpen?.({ read: () => searchOpenRef.current })
+    return () => onRegisterSearchOpen?.(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次
+  }, [])
   useEffect(() => {
     onRegisterDraft?.({ read: () => curRef.current.text })
     return () => onRegisterDraft?.(null)
@@ -308,8 +325,9 @@ export function InputStream({
   // Enter：统一两段式（与 SkillPanel 回填一致，用户拍板）——
   // @ 补全态优先：回车=补全（Tab 同义）；命令名无空格 + 有匹配 → 回填 `/选中名 `（带尾随
   // 空格留参数位），不执行；再回车（此时文本含空格）或已带参数 → submit 全文走分流
-  const handleTextSubmit = (text: string): void => {
-    if (process.env.ECODE_DEBUG_INPUT === '1') process.stderr.write('DBG-HTS ' + JSON.stringify(text) + '\n')
+  const handleTextSubmit = (rawText: string): void => {
+    // 审阅 P1：先展开粘贴 token 再进历史/分流——历史与命令实参拿到的都是全文
+    const text = onExpandPaste !== undefined ? onExpandPaste(rawText) : rawText
     if (tryAtComplete()) return
     if (text.startsWith('/') && !/\s/.test(text)) {
       const matches = matchSlashEntries(text.slice(1))

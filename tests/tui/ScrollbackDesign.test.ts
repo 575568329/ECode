@@ -10,7 +10,12 @@ import { describe, it, expect } from 'vitest'
 import { messagesToCommitted } from '../../src/tui/commit.js'
 import type { Message } from '../../src/core/types.js'
 
-const longText = Array.from({ length: 200 }, (_, i) => `第 ${i + 1} 行内容`).join('\n')
+// fixture 加长（审阅 1b）：单行混入足量字符使总长 >1000——低于历史 preview(300)/任何新
+// 截断阈值的 fixture 会让「全文不截断」断言假绿
+const longText = Array.from(
+  { length: 200 },
+  (_, i) => `第 ${i + 1} 行内容，附足够长度使任何截断阈值都无所遁形，尾部校验串 ${String(i + 1).padStart(3, '0')}END`,
+).join('\n')
 
 describe('B2 + 输入体验批：全文进 Static（= 写 scrollback）', () => {
   it('长 assistant 文本不截断（200 行原样进 committed）', () => {

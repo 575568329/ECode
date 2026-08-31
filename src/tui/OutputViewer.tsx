@@ -227,7 +227,7 @@ export function formatTimelineMessage(m: unknown, width: number): string[] {
       // 工具结果摘要（对话里折进工具组的部分——时间线保执行顺序可读性）
       for (const r of results) {
         const innerText = typeof r.content === 'string' ? r.content : JSON.stringify(r.content) ?? ''
-        out.push(`${SGR_DIM}  └ ${preview(innerText, 160)}${SGR_RESET}`)
+        out.push(`${SGR_DIM}  └ ${preview(stripUntrustedAnsi(innerText), 160)}${SGR_RESET}`)
       }
       return out
     }
@@ -237,7 +237,15 @@ export function formatTimelineMessage(m: unknown, width: number): string[] {
         if (b.type === 'text') {
           const raw = String(b.text ?? '')
           const clipped = raw.length > 4000 ? raw.slice(0, 4000) : raw
-          out.push('', ...mdBlock(clipped).map((l, i) => (i === 0 ? `● ${l}` : `  ${l}`)), '')
+          // 审阅 P1（2026-08-31）：模型文本=不可信面（可回显被读文件内容），OSC 全族 Ink
+          // 净化层特意保留——mdBlock 前必须 strip（与 commit.ts:84 assistant 路径同契约）；
+          // 且 mdBlock 逻辑行须 wrapAll（viewer 渲染 wrap="truncate" 不折行会截断不可见）
+          out.push('')
+          mdBlock(stripUntrustedAnsi(clipped)).forEach((l, i) => {
+            const prefix = i === 0 ? '● ' : '  '
+            wrapAll(prefix + l, inner).forEach((w, j) => out.push(j === 0 ? w : '  ' + w))
+          })
+          out.push('')
         } else if (b.type === 'tool_use') {
           out.push(`  ${SGR_DIM}▸ ${String(b.name)}${SGR_RESET}`)
         }
@@ -246,7 +254,7 @@ export function formatTimelineMessage(m: unknown, width: number): string[] {
     }
   }
   // 非消息行（子代理事件等外来形态）退化为原行
-  return typeof m === 'string' ? [m.slice(0, width)] : [JSON.stringify(m).slice(0, width)]
+  return typeof m === 'string' ? [stripUntrustedAnsi(m).slice(0, width)] : [stripUntrustedAnsi(JSON.stringify(m)).slice(0, width)]
 }
 
   /** ③ 子代理 transcript：~/.ecode/agents/<id>.jsonl（只读快照）。

@@ -106,6 +106,23 @@ describe('回车提交 / 换行键位（TuiApp 全链路）', () => {
     expect(f).not.toContain('处理中')
   })
 
+  it('粘贴 token：草稿显 token、提交展开全文进对话（输入体验批二期集成）', async () => {
+    const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(new OneShotProvider()) }))
+    await flush()
+    const lines = Array.from({ length: 12 }, (_, i) => `粘贴行${String(i + 1).padStart(2, '0')}`)
+    stdin.write(lines.join('\r'))
+    await flush()
+    // 草稿显 token（多行粘贴整块达 shouldTokenize 阈值 → 立即 token 化）
+    expect(lastFrame() ?? '').toContain('[粘贴#1 +11 行]')
+    stdin.write('\r')
+    await flush(400)
+    const f = lastFrame() ?? ''
+    // 提交展开：transcript user 消息=粘贴全文（尾行在），token 形态不残留
+    expect(f).toContain('粘贴行12')
+    expect(f).not.toContain('[粘贴#1')
+    expect(f).toContain('收到，这是回复')
+  })
+
   it('Ctrl+J 换行 + Enter 提交：多行输入整体进对话（不拆轮不丢行）', async () => {
     const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(new OneShotProvider()) }))
     await flush()

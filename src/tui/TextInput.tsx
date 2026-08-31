@@ -237,13 +237,19 @@ export function TextInput({ value, caret, placeholder, onInput, onSubmit, inacti
       recentRef.current = null
       if (r === null || onPasteText === undefined) return
       const curText = valueRef.current
-      if (curText.slice(r.start, r.start + r.text.length) !== r.text) return // 已被编辑，放弃置换
+      // 审阅 P2：caret/start 是**字素索引**（cursor.ts），slice 是 UTF-16 码元——emoji 等
+      // 多码元字素会让两口径错位（假失败=优雅降级；构造性假成功=草稿破坏）。统一走字素。
+      const gs = graphemes(curText)
+      const gLen = graphemes(r.text).length
+      if (gs.slice(r.start, r.start + gLen).join('') !== r.text) return // 已被编辑，放弃置换
+      // 审阅 P2：caret 漂移守卫——60ms 内方向键挪走光标（文本未变）不置换，不拽回光标
+      if (caretRef.current !== r.start + gLen) return
       if (!shouldTokenize(r.text)) return
       const token = onPasteText(r.text)
       if (token === null) return
       onInput?.({
-        text: curText.slice(0, r.start) + token + curText.slice(r.start + r.text.length),
-        caret: r.start + token.length,
+        text: gs.slice(0, r.start).join('') + token + gs.slice(r.start + gLen).join(''),
+        caret: r.start + graphemes(token).length,
       })
     }, 60)
   }
@@ -299,7 +305,8 @@ export function TextInput({ value, caret, placeholder, onInput, onSubmit, inacti
     }
     // 未达标：立即原样插入，同时记录/延续 recent 区间并调度置换检查
     const r = recentRef.current
-    const continuesAppend = r !== null && cur.caret === r.start + r.text.length
+    // 延续判定同走字素口径（r.text.length 是码元，与字素 caret 混用会让多码元粘贴断聚合）
+    const continuesAppend = r !== null && cur.caret === r.start + graphemes(r.text).length
     if (continuesAppend && onPasteText !== undefined) {
       r.text += normalized
     } else if (onPasteText !== undefined) {

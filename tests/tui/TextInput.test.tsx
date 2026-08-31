@@ -153,6 +153,42 @@ describe('粘贴 token 化（输入体验批二期：大块插入交 onPasteText
     expect(onPasteText).toHaveBeenCalled()
     expect(onInput).toHaveBeenCalledWith({ text: '甲\n乙\n丙\n丁\n戊', caret: expect.any(Number) })
   })
+
+  it('recent-span 置换：conpty 拆块两拍聚合（首拍未达阈值入 span，次拍续接）→ 60ms 后 onPasteText 以拼接全文调用一次', async () => {
+    const onInput = vi.fn()
+    const onPasteText = vi.fn((t: string) => '[粘贴#1]')
+    function Harness(): React.ReactElement {
+      const [cur, setCur] = React.useState({ text: '', caret: 0 })
+      return React.createElement(TextInput, {
+        value: cur.text, caret: cur.caret, onInput: (n: { text: string; caret: number }) => { onInput(n); setCur(n) }, onPasteText,
+      })
+    }
+    const { stdin } = render(React.createElement(Harness))
+    await flush()
+    // 模拟 conpty 拆块：首拍 500 字符（未达 800 阈值→进 span 不立即 token 化）
+    stdin.write('x'.repeat(500))
+    await new Promise((r) => setTimeout(r, 20)) // < 60ms 窗：同 span 续接（value 已回灌，caret 前进）
+    stdin.write('x'.repeat(400)) // 拼接后 900 ≥ 800
+    await new Promise((r) => setTimeout(r, 200)) // 越过 60ms 置换窗
+    expect(onPasteText).toHaveBeenCalledTimes(1)
+    expect(onPasteText).toHaveBeenCalledWith('x'.repeat(900))
+    const applied = onInput.mock.calls.map((c) => c[0] as { text: string })
+    expect(applied.at(-1)?.text).toBe('[粘贴#1]')
+  })
+
+  it('recent-span 放弃：置换前草稿被编辑（父级覆写）→ slice 失配不置换', async () => {
+    const onInput = vi.fn()
+    const onPasteText = vi.fn(() => '[粘贴#1]')
+    const { stdin, rerender } = render(React.createElement(TextInput, { value: '', caret: 0, onInput, onPasteText }))
+    await flush()
+    stdin.write('x'.repeat(500))
+    await new Promise((r) => setTimeout(r, 20))
+    // 置换窗内父级覆写草稿（如 insert 通道/清空）
+    rerender(React.createElement(TextInput, { value: '被覆写', caret: 3, onInput, onPasteText }))
+    await new Promise((r) => setTimeout(r, 200))
+    expect(onPasteText).not.toHaveBeenCalled()
+    expect(onInput.mock.calls.every((c) => (c[0] as { text: string }).text !== '[粘贴#1]')).toBe(true)
+  })
 })
 
 describe('粘贴行尾归一（xterm.js 系终端粘贴把换行转裸 \\r）', () => {

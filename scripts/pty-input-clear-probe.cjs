@@ -80,11 +80,19 @@ const run = async () => {
   mark = out.length
   check('C2a 其他键解除待清且不清空', absentIn(/输入消息，\/help 查看命令/, mark))
   check('C2b 草稿保留编辑结果（keepmex）', /keepmex/.test(strip(out.slice(mark - 4000))))
-  // 清场（顺带复验 armed 清空）：Esc Esc
+
+  // C5 armed 超时（审阅 2a）：arm 后 1.7s 超时（>1.5s 窗）→ Esc 重新 arm 不得清空
   proc.write('\x1b')
-  await sleep(200)
+  await sleep(1700)
+  mark = out.length
   proc.write('\x1b')
-  await sleep(1200)
+  check('C5a 超时后 Esc 重新 arm（提示再现，草稿未清）', await waitFor(/再按 Esc 清空输入/, mark, 3000))
+  await sleep(300)
+  mark = out.length
+  proc.write('\x1b')
+  await sleep(1500)
+  check('C5b 窗内第二次 Esc 清空', await waitFor(/输入消息，\/help 查看命令/, mark, 3000))
+
 
   // C4（输入体验批二期）：12 行粘贴 → token 化显示 `[粘贴#1 +11 行]`，原文不进输入框
   const lines = Array.from({ length: 12 }, (_, i) => `L${String(i + 1).padStart(2, '0')}`)

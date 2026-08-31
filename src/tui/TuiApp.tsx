@@ -734,7 +734,6 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const submit = async (input: string, display?: string, blocks?: ContentBlock[]): Promise<void> => {
     // 输入体验批二期：粘贴 token 展开回全文再发（transcript 锁死语义=全文上屏）；
     // 按提交前的草稿剪枝已发送条目（删标签=删内容，CC prune images 同款）
-    console.error('DBG-SUBMIT ' + JSON.stringify(input))
     const expandedInput = expandPasteRefs(input, pastedStoreRef.current)
     for (const deadId of prunePasteRefs(pastedStoreRef.current, input)) pastedStoreRef.current.delete(deadId)
     input = expandedInput
@@ -795,6 +794,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     setActive(createActive())
     setSystemMsgs([])
     pendingImagesRef.current = [] // M10 修复批：换会话不带旧会话的待发送附件
+    pastedStoreRef.current.clear() // 审阅 P3：换会话不带旧会话的粘贴 token 全文
     setPendingImages([])
     setTokens(0)
     setSessionCost(0)
@@ -1142,12 +1142,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   )
 
   // —— Ctrl+C 全局兜底（用户拍板「这次就该生效」）——
-  // 9 个面板（rewind/sandbox/config/warnings/skill/mcp/plugin/question/select）自身无
-  // Ctrl+C 处理，面板开着时按键黑洞（useInterrupt 又被 pickerRef 让位）——「按了没反应、
-  // 连提示都不显示」的根因。本 handler 始终激活、注册在最后（子组件先收到并自行处理的
-  // 场景不受影响）：有覆盖层 → 至少关掉它（question/select 先 resolve 取消，不留悬挂
-  // Promise）；无覆盖层 → 不干预（中断/双击退出仍归 useInterrupt）。output 系面板有
-  // 自己的 Ctrl+C 退出（teardown 三件套），此处不代劳。
+  // 裁决矩阵的最后一层：PanelShell 系面板/question/select 自有 Ctrl+C 退出（幂等，双重
+  // 关闭无害）；真正无自处理的覆盖层（如 Wizard）由这里兜住。始终激活、收尾执行——
+  // 中断/双击退出语义仍归 useInterrupt（pickerRef/confirmRef 让位矩阵不变），output 系
+  // 面板走自己的 teardown 三件套，此处均不代劳。
   useInput(
     (input, key) => {
       if (!(key.ctrl && input === 'c')) return
@@ -1171,6 +1169,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // 常驻活对象（永非 null），致 escGuarded 恒真、双击 Esc 永久失效；改为持端口、事件时刻
   // 调 read() 取活值（守卫求值挪进回调，消除渲染闭包陈旧性）。
   const atOpenPortRef = useRef<{ read(): boolean } | null>(null)
+  // 审阅 P2：Ctrl+R 搜索态活值端口（同 atOpen 端口族）——armed 守卫排除搜索态
+  const searchOpenPortRef = useRef<{ read(): boolean } | null>(null)
   const lastEscRef = useRef(0)
   // 输入体验批（2026-08-31）：草稿非空时双击 Esc = 清空输入（armed 确认式）。第一次 Esc 进入
   // 待清态（输入区上方提示行「再按 Esc 清空输入」），1500ms 内第二次 Esc 才真清（对齐
@@ -1194,9 +1194,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       const now = Date.now()
       // 清账 III P2-1：@ 下拉开着与否的同步读（端口活对象，事件时刻 read() 取活值）
       const atOpen = atOpenPortRef.current?.read() ?? false
+      const searchOpen = searchOpenPortRef.current?.read() ?? false
       const draft = readMainDraft()
-      // 分流一：草稿非空（且非 @ 下拉态）→ armed 清空流程
-      if (draft !== '' && !atOpen) {
+      // 分流一：草稿非空（且非 @ 下拉/搜索态）→ armed 清空流程
+      if (draft !== '' && !atOpen && !searchOpen) {
         if (escArmAtRef.current !== 0 && now - escArmAtRef.current < ESC_ARM_WINDOW_MS) {
           disarmEscArm()
           clearMainDraft()
@@ -1212,13 +1213,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       }
       // 空草稿的 Esc 打断待清态（回填清空等让草稿变空的连击场景）
       disarmEscArm()
-      // 分流二（现状）：空草稿双击 <500ms 开 /rewind；@ 下拉开着只重置计时
-      if (!atOpen && now - lastEscRef.current < 500 && deps.checkpoint != null) {
+      // 分流二（现状）：空草稿双击 <500ms 开 /rewind；@ 下拉/搜索态只重置计时
+      if (!atOpen && !searchOpen && now - lastEscRef.current < 500 && deps.checkpoint != null) {
         lastEscRef.current = 0
         setOverlay({ kind: 'rewind-panel' })
         return
       }
-      lastEscRef.current = atOpen ? 0 : now
+      lastEscRef.current = atOpen || searchOpen ? 0 : now
     },
     { isActive: overlay === null && active.confirm === null && !running },
   )
@@ -1513,7 +1514,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         />
       )}
       {overlay?.kind === 'output-view' && altContent === undefined && (
-        <OutputViewer title={overlay.title} source={overlay.source} onBack={() => setOverlay({ kind: 'output-panel' })} />
+        <OutputViewer
+          title={overlay.title}
+          source={overlay.source}
+          onBack={() =>
+            overlay.backToList === true ? setOverlay({ kind: 'output-panel' }) : closeOutputPanel()
+          }
+        />
       )}
       {overlay?.kind === 'config-panel' && (
         <ConfigPanel
@@ -1612,7 +1619,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       />
       {/* 输入体验批：双击 Esc 待清态提示（仅空闲态显示；任意草稿编辑/1500ms 超时自动解除） */}
       {escArm !== null && overlay === null && active.confirm === null && !running && !altActive && (
-        <Text dimColor>再按 Esc 清空输入（{escArm.chars} 字符）· 任意键取消</Text>
+        <Text dimColor>再按 Esc 清空输入（{escArm.chars} 字符）· 编辑或超时取消</Text>
       )}
       {/* F-48：alt 全屏面板期间 InputStream 保持挂载（草稿/历史位不丢）但 height 0 折叠
           + inactive 让出按键——面板独占键盘（架构审阅 P1-5） */}
@@ -1621,6 +1628,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         onSubmit={submit}
         onPasteImage={() => pasteImageFromClipboard()}
         onPasteText={handlePasteText}
+        onExpandPaste={(t) => expandPasteRefs(t, pastedStoreRef.current)}
+        onRegisterSearchOpen={(port) => {
+          searchOpenPortRef.current = port
+        }}
         onInterjectClear={() => {
           void host.send({ op: 'interjection/clear' })
         }}

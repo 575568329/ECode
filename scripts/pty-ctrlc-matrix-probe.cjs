@@ -1,6 +1,6 @@
 /**
  * Ctrl+C 状态矩阵探针（用户报告「Ctrl+C 不生效连提示都不显示」的诊断）：
- * 五个状态逐态实测按键归属——任何一态「按了没反应」即复现用户症状。
+ * 八个状态逐态实测按键归属（S7=覆盖层兜底）——任何一态「按了没反应」即复现用户症状。
  *   S1 空闲单发 → 「再按一次 Ctrl+C 退出」提示出现
  *   S2 空闲双发（>窗口间隔模拟：单发后等 2s 再单发不退出；紧接双发退出进程）
  *   S3 忙碌流式单发 → 轮中断 + 提示出现（abort 生效）
@@ -102,7 +102,10 @@ const run = async () => {
   check('S7a rewind 面板出现', await waitFor(/回退到哪个改动之前/, 0, 5000))
   mark = out.length
   proc.write('\x03')
-  check('S7b 面板内 Ctrl+C 关闭面板（全局兜底）', await waitFor(/输入消息，\/help 查看命令/, mark, 4000))
+  const closed = await waitFor(/输入消息，\/help 查看命令/, mark, 4000)
+  proc.write('Z') // 面板已关 → 落主输入行；仍开着 → 进面板搜索框（无 ❯ Z 行）
+  await sleep(800)
+  check('S7b 面板内 Ctrl+C 关闭面板（全局兜底）', closed && /❯ Z/.test(strip(out.slice(mark))))
   await sleep(800)
 
   // S2 空闲双发（窗口内）→ 优雅退出——放到最后跑（会杀进程），此处先跳过

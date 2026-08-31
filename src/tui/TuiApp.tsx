@@ -375,7 +375,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     | { kind: 'sandbox-panel' }
     | { kind: 'config-panel' }
     | { kind: 'output-panel' }
-    | { kind: 'output-view'; source: import('./OutputViewer.js').LineSource; title: string }
+    // backToList（输入体验批 Ctrl+C 矩阵探针抓出）：视图层 Esc/q/Ctrl+C 的 onBack 语义按入口
+    // 分流——/output 列表进入=回列表；Ctrl+T 直达（缺省 false）=关闭整面板回主界面。
+    // 旧实现一律回列表，Ctrl+T 用户按 Ctrl+C 落在列表页再被「输入即搜索」吞键=按键黑洞
+    | { kind: 'output-view'; source: import('./OutputViewer.js').LineSource; title: string; backToList?: boolean }
     | { kind: 'select'; title: string; options: string[]; resolve: (v: string | undefined) => void }
     // M8 ask_user：工具发起的提问面板（Promise 桥——resolve 回工具 execute）
     | { kind: 'question-panel'; questions: AskUserQuestion[]; resolve: (r: AskUserResult) => void }
@@ -1212,6 +1215,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
                 kind: 'output-view',
                 title: `${entry.tool.name}（${entry.tool.itemId}）${entry.tool.truncated === true ? ' 〔截断，补全中〕' : ''}`,
                 source: toolResultSource(() => recentToolsRef.current.find((t) => t.itemId === entry.tool.itemId), panelWidth),
+                  backToList: true,
               })
             } else if (entry.kind === 'task') {
               const snap = taskRegistry.snapshot().find((t) => t.id === entry.id)
@@ -1219,9 +1223,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
                 kind: 'output-view',
                 title: `task ${entry.id}：${snap?.command.slice(0, 50) ?? ''}（${snap?.status ?? '?'}）`,
                 source: taskFileSource(entry.id, panelWidth),
+                  backToList: true,
               })
             } else {
-              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, panelWidth) })
+              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, panelWidth), backToList: true })
             }
           }}
           onExit={() => closeOutputPanel()}
@@ -1233,9 +1238,12 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         <OutputViewer
           title={overlay.title}
           source={overlay.source}
-          onBack={() => setOverlay({ kind: 'output-panel' })}
+          // onBack 按入口分流（backToList）：列表进入=回列表；Ctrl+T 直达=关整面板回主界面
+          onBack={() =>
+            overlay.backToList === true ? setOverlay({ kind: 'output-panel' }) : closeOutputPanel()
+          }
           // F-50：l 键进来源列表（审阅 T3：曾无调用点=死键但状态行恒提示）
-          onList={() => setOverlay({ kind: 'output-panel' })}
+          onList={() => setOverlay({ kind: 'output-panel', })}
           altMode
         />
       )}
@@ -1447,6 +1455,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
                 kind: 'output-view',
                 title: `${entry.tool.name}（${entry.tool.itemId}）${entry.tool.truncated === true ? ' 〔截断，补全中〕' : ''}`,
                 source: toolResultSource(() => recentToolsRef.current.find((t) => t.itemId === entry.tool.itemId), panelWidth),
+                  backToList: true,
               })
             } else if (entry.kind === 'task') {
               const snap = taskRegistry.snapshot().find((t) => t.id === entry.id)
@@ -1454,9 +1463,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
                 kind: 'output-view',
                 title: `task ${entry.id}：${snap?.command.slice(0, 50) ?? ''}（${snap?.status ?? '?'}）`,
                 source: taskFileSource(entry.id, panelWidth),
+                  backToList: true,
               })
             } else {
-              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, panelWidth) })
+              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, panelWidth), backToList: true })
             }
           }}
           onExit={() => setOverlay(null)}

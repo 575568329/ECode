@@ -1,6 +1,6 @@
 # M14 T 线（TUI 附着 daemon：同会话双客户端）实施方案
 
-> 状态：**待审核（v1.1——四角色审阅修复吸收：架构/资深开发/安全/测试四席，报告见 `docs/解析/2026-08-31_T线方案四角色审阅_已完成.md`）**
+> 状态：**已拍板（v1.2，2026-08-31 用户拍板 D-T1~T8），实施中**——四角色审阅修复吸收：架构/资深开发/安全/测试四席，报告见 `docs/解析/2026-08-31_T线方案四角色审阅_已完成.md`
 > 定调（2026-08-31 用户拍板）：**TUI 的内容在手机上也能继续操作，跟本地操作一样**——TUI 会话归常驻 daemon 托管，电脑 TUI 与手机 Web 是同一会话的两个客户端；daemon detached 常驻；连不上 daemon 降级回同进程直连（Embedded 保留）；**立即实施，插队于 R1 配对之前**（原「R 线整体置 M15 前」排期由本线插入，其余不变）。
 > 前置：M14 V+C 线全部完成（`9d95fd7`→`7f8af5a`）；本线是「异地手机控制」需求拆出的第一环——没有它，R1/R2 中继修通后手机连上的只是空 daemon（TUI 会话全不在）。
 
@@ -210,13 +210,13 @@ Deps 拆为**客户端面**（transport/本地偏好/logger/剪贴板/客户端 
 
 | 批 | 内容 | 估时 | 验收 |
 |---|---|---|---|
-| T1 协议补齐 | ① rewind 协议面重设计+接线（list 回执 CheckpointMeta[]+external 标注；exec 回执 restored[]；**shape 契约冻结测试先行**）② fork 续写宿主化（session/restore 扩展）③ panel/data 三面板（skill/mcp/plugin）回执 shape 契约+接线 ④ 新 op `mcp/action`（reconnect/close）⑤ .mcp.json 批准门协议面（#14）⑥ hook 宿主化四件（§4.3，cwd 修正含 Embedded）⑦ session/compact 命令 ⑧ 协议清理（删 command/exec；config/patch 删或接随 D-T 拍板）⑨ mcpWarnings/instructionWarnings 转 notice 帧 | 3-3.5 天 | 命令集成测试（MockProvider 驱动 rewind 全流程断言集：空列表/N 点 metas 契约冻结/exec restored+留痕/busy 守卫/篡改 ok:false/Embedded 行为对拍六件）|
+| T1 协议补齐 | ① rewind 协议面重设计+接线（list 回执 CheckpointMeta[]+external 标注；exec 回执 restored[]；**shape 契约冻结测试先行**）② fork 续写宿主化（session/restore 扩展）③ panel/data 三面板（skill/mcp/plugin）回执 shape 契约+接线 ④ 新 op `mcp/action`（reconnect/close）⑤ .mcp.json 批准门协议面（#14）⑥ hook 宿主化四件（§4.3，cwd 修正含 Embedded）⑦ session/compact 命令 ⑧ **skill/install 宿主命令**（D-T2 拍板：远程安装装到电脑本地）⑨ **审批超时语义改造**（D-T8：默认 1h+ECODE 可配；超时如实反馈「无人应答」并引导模型决策/记录，不再谎称拒绝）⑩ 协议清理（删 command/exec；config/patch 删或接）⑪ mcpWarnings/instructionWarnings 转 notice 帧 | 3.5-4 天 | 命令集成测试（MockProvider 驱动 rewind 全流程断言集+install/超时语义新增面）|
 | T2 TuiApp 单路径切换 | §3.3 A 面逐点+B 面（transcript 混合管线为主体）；Deps 宿主面删除由编译器兜底；5 个测试文件装配重建+4 面板组件测试重接+SkillPanel 单例暗道修 | 2.5-3 天 | 全量 vitest 绿（含重建测试）+tsc 净+Embedded pty 哨兵全绿 |
 | T3 入口 daemon 化 | §4.1 入口序全件：拉起锁/stdio+windowsHide/execArgv/env 白名单/原子写/version schema/health.id 四验/serve 接管改造（健康+版本一致→退出）/日志目录/`--local`+自动降级/探针形态开关统一注入（ECODE_FORCE_EMBEDDED=1）+探针聚合 runner（`npm run probes`） | 2-2.5 天 | pty-attach-probe 断言 1/2/6/7/9/10/11/12 |
 | T4 MultiTransport+per-client | 新写 MultiTransport（multi 信封+project 路由+可变 sid+游标 sinceSeq/gap 补同步——web connect.ts 蓝本）；clientID 分配+帧 origin 标记（本地 UI 动作不广播）；canAnswer:true+credClass 加固（§4.5.1 可选项） | 1.5 天 | L2 双客户端集成测试（delta 双达/插话可见/审批 claim-respond 收敛/origin 不回环/canAnswer 计入 fail-closed） |
 | T5 断连与真机门 | 附着态 daemon 死亡横幅；undici reader/SSE 断连两坑复查；G-T 真机验收 | 1-1.5 天 | G-T 全门 |
 
-合计 **10.5-12 人天**（v1.0 估 6.5-8，四席一致上调：T1 死命令+协议新面比预想厚、T2 host.* 面与测试重建、T3 生命周期件、测试金字塔 L1/L2/L3 建设费）。
+合计 **11-12.5 人天**（v1.2 拍板增补：skill/install 协议化+审批超时语义改造+顶栏 daemon 状态标识）。
 
 依赖：T1→T2→T3→T4→T5 串行为主（T4 可与 T2 尾部并行）。R1（配对）以 T3/T4 为前置（设备凭据绑定 multi 信封连接）。
 
@@ -251,22 +251,25 @@ Deps 拆为**客户端面**（transport/本地偏好/logger/剪贴板/客户端 
 
 **回归门**：全量 vitest+tsc 净+25 个 pty 探针经聚合 runner 全绿（形态开关注入 Embedded 变体；attach 变体随 pty-attach-probe 覆盖）。
 
-## 8. 决策点（D-T，待用户拍板；v1.0 的 D-T1~T4 按审阅修订重述）
+## 8. 决策点（D-T，2026-08-31 用户已全部拍板）
 
-| # | 决策 | 选项与倾向 |
+| # | 决策 | 拍板结果 |
 |---|---|---|
-| D-T1 | daemon 版本不匹配策略 | a) **拒绝附着+提示**（倾向：保任务；流程图已按 a 修正——版本不符绝不 spawn）b) semver patch 兼容容忍 c) 杀旧重建（opencode 反例，不取） |
-| D-T2 | skill/install、/skill-create、PluginPanel 首版范围 | a) 全部协议化（+1-1.5 天：install+skill-create 的 LLM 面走宿主命令+plugin 数据动作两面）b) **首版附着态禁用+挂账**（倾向：UI 明示「切本地模式可用」；PluginPanel 的 loader 对象面最重，挂账性价比高） |
-| D-T3 | 附着态 TUI 退出提示 | a) **轻提示一次**「任务仍在后台运行，手机可继续操作」（倾向）b) 无提示 c) 每次提示 |
-| D-T4 | Embedded 进入方式 | a) 自动（daemon 不可达即降级）+ `--local` 显式（倾向，用户已拍「可以的」）b) 仅 `--local` |
-| D-T5 | 插话是否触发 UserPromptSubmit hook（v1.1 新增） | a) **触发**（插话注入宿主路径接 dispatch，两形态语义对齐、web 插话与 TUI 插话行为一致）b) 不触发（维持 Embedded 动态区旧行为，删 TuiApp 203-214 客户端 dispatch——注意现状 Embedded 插话**会**触发，选 b 是行为变更） |
-| D-T6 | --yes/approvalPolicy 附着态传播（v1.1 新增） | a) **会话级声明**（附着握手带策略，宿主按会话生效，broker per-session 策略面已有）b) 附着态忽略 --yes（静默失效，安全但反直觉）c) daemon 全局生效（旁路，禁取） |
-| D-T7 | .mcp.json 批准门协议面（v1.1 新增） | a) **本线协议化**（panel/data 或独立 op，附着态完整对等）b) 附着态挂账（提示「本地模式确认」，与 D-T2b 同批） |
-| D-T8 | 附着态审批超时（v1.1 新增） | a) **无人值守调大/可配**（现 15min 自动拒——手机晚到即丢审批；daemon 形态建议默认 1h+可配）b) 维持 15min |
+| D-T1 | daemon 版本不匹配策略 | **a) 拒绝附着+提示**（保住跑着的任务；版本不符绝不 spawn） |
+| D-T2 | skill/MCP/Plugin 远程能力范围 | **远程「用」与「装」本线协议化**（用户定调：远程安装也是装到用户本地——skill/install 走宿主命令、panel/data 全量；**/skill-create 与 PluginPanel 挂账**）——数据归属澄清见下 |
+| D-T3 | 附着态 TUI 退出提示 | **a) 轻提示一次 + 增补：TUI 顶栏常驻 daemon 运行状态标识**（附着中/本地模式，用户要求「前台上要能够看到后台是否在运行」） |
+| D-T4 | Embedded 进入方式 | **a) 自动降级 + `--local` 显式** |
+| D-T5 | 插话触发 UserPromptSubmit hook | **a) 触发**（插话注入宿主路径接 dispatch，全端行为一致） |
+| D-T6 | --yes 附着态传播 | **a) 会话级声明**（与 D-T2 数据原则无冲突：策略非数据；sensitive 门不豁免的既有语义不变） |
+| D-T7 | .mcp.json 批准门 | **a) 本线协议化** |
+| D-T8 | 附着态审批超时 | **放宽默认 1h+可配，且超时反馈语义改造**（用户增补：超时后**如实告知模型「超时无人应答」**——不得谎称「用户拒绝」；让模型自主决策：换方案/先跳过并记录待办） |
 
-附带记录（后续增强，不在本线）：开机自启（daemon 注册系统服务）、托盘常驻、server.json Windows ACL 校验、安全配置热重载（blockedCommands/sandbox 快照陈旧窗口随常驻拉长——安全席 P2-3，文档声明+热重载随需）。
+**数据归属澄清（D-T2 用户定调的架构对齐）**：daemon 常驻在**用户电脑上**（非云端），skill/MCP/会话历史/配置全部是**电脑本地文件**；手机等远程设备自身不携带任何数据，只是 daemon 的遥控端——「远程安装 skill」= 装到电脑本地，回到电脑 TUI 看到的是同一份。多客户端（TUI/web/飞书）共享的正是同一台电脑的同一批本地资源，**无任何数据进 daemon 私有存储或云端**。
+
+附带记录（后续增强，不在本线）：开机自启（daemon 注册系统服务）、托盘常驻、server.json Windows ACL 校验、安全配置热重载（blockedCommands/sandbox 快照陈旧窗口随常驻拉长——安全席 P2-3，文档声明+热重载随需）、/skill-create 与 PluginPanel 的协议化（D-T2 挂账部分）。
 
 ## 9. 变更记录
 
 - v1.0（2026-08-31）：起草。三路调研回填（opencode v2 daemon 全链/codex 三态+resume 即 attach/orca 生命周期三层+重放 epoch）；ECode 直调面 18 点映射+死命令 5 个实锤；批次 T1-T5 估 6.5-8 人天；决策点 D-T1~T4。
-- v1.1（2026-08-31）：四角色审阅修复吸收——**架构席**：P0-1 spawn stdio/windowsHide/EPIPE、P0-2 serve 接管语义改造+拉起锁+竞态断言、P1-1 HttpTransport 移出零改动表（T4 新写 MultiTransport）、P1-3 §4.4 与 G-T4 统一口径、P1-4 version schema 现状、P1-5 单路径全协议化机制（§4.6）、P1-6 W-9 游标入 T4、muxFilter 术语修正（全量收+本地过滤）、argv 豁免/tsx execArgv/日志目录/原子写入文；**开发席**：P0 host.* 直调面补表（B1-B5）、P0 #14 改写（.mcp.json 批准门无帧可走）、P1 fork 归位 restoreSession 流程（§4.2 宿主化）、P1 rewind 回执三面重设计、P1 session/list includeArchived 行为差、17 非 18/doctor 非面板/SkillPanel 暗道；**安全席**：P0 §4.5 新增节（凭据语义+env 白名单+身份双验+T8 披露）、P1 流程图版本不符改不拉起、P1 hook cwd 修正、P1 --yes 传播（D-T6）、安全断言 6 条入 G-T；**测试席**：P0 hook 现状基线重写（§4.3）、P0 探针形态开关+聚合 runner、P0 测试破面入 T2、pty-attach-probe 12 断言入 §7、估时重排 10.5-12 人天、D-T5/D-T7/D-T8 新增。
+- v1.1（2026-08-31）：四角色审阅修复吸收——**架构席**：P0-1 spawn stdio/windowsHide/EPIPE、P0-2 serve 接管语义改造+拉起锁+竞态断言、P1-1 HttpTransport 移出零改动表（T4 新写 MultiTransport）、P1-3 §4.4 与 G-T4 统一口径、P1-4 version schema 现状、P1-5 单路径全协议化机制（§4.6）、P1-6 W-9 游标入 T4、muxFilter 术语修正（全量收+本地过滤）、argv 豁免/tsx execArgv/日志目录/原子写入文；**开发席**：P0 host.* 直调面补表（B1-B5）、P0 #14 改写（.mcp.json 批准门无帧可走）、P1 fork 归位 restoreSession 流程（§4.2 宿主化）、P1 rewind 回执三面重设计、P1 session/list includeArchived 行为差、17 非 18/doctor 非面板/SkillPanel 暗道；**安全席**：P0 §4.5 新增节（凭据语义+env 白名单+身份双验+T8 披露）、P1 流程图版本不符改不拉起、P1 hook cwd 修正、P1 --yes 传播（D-T6）、安全断言 6 条入 G-T；**测试席**：P0 hook 现状基线重写（§4.3）、P0 探针形态开关+聚合 runner、P0 测试破面入 T2、pty-attach-probe 12 断言入 §7、估时重排、D-T5/D-T7/D-T8 新增。
+- v1.2（2026-08-31）：**D-T1~T8 用户全部拍板**——D-T2 按「数据归属本地、daemon 非云端」定调细化为 skill/MCP 用+装本线协议化（/skill-create 与 PluginPanel 挂账）；D-T3 增补顶栏 daemon 运行状态标识；D-T8 增补审批超时反馈语义改造（如实告知+模型自主决策）；T1 批相应扩至 3.5-4 天，总量 11-12.5 人天。状态转实施中。

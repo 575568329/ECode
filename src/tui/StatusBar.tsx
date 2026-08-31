@@ -17,6 +17,9 @@ interface StatusBarProps {
   sandbox?: string
   /** full-access 危险色（M9-D12） */
   sandboxDanger?: boolean
+  /** T5（D-T3 增补）：daemon 运行段（附着态常驻——「后台运行中/重连中」；undefined 不显示） */
+  daemon?: string
+  daemonDanger?: boolean
 }
 
 /** token 数人类可读（智能进位省宽，2026-08-29 用户点名「1000.0k 该用 1m」）：
@@ -57,7 +60,7 @@ export function sandboxArrows(mode: string): string {
  * warning 不在此渲染——运行时告警由 App 层渲染为底部独立第二行（长消息截断，
  * 防止 429 等含 JSON body 的错误把本行与快捷键提示挤碎）。
  */
-export function StatusBar({ model, iter, maxIter, tokens, ctxUsed, ctxWindow, cost, mcp, sandbox, sandboxDanger }: StatusBarProps): ReactElement {
+export function StatusBar({ model, iter, maxIter, tokens, ctxUsed, ctxWindow, cost, mcp, sandbox, sandboxDanger, daemon, daemonDanger }: StatusBarProps): ReactElement {
   const arrows = sandbox !== undefined ? sandboxArrows(sandbox) : ''
   // F-44：ctx 段（占用/窗口，如 45k/200k）——占用取 usage 帧 API 真值（input+cacheRead）；
   // ≥90% 窗口（压缩触发阈值 0.9，compaction/strategy.ts）转 warn 色：余量将尽、下轮即压
@@ -87,6 +90,11 @@ export function StatusBar({ model, iter, maxIter, tokens, ctxUsed, ctxWindow, co
           : <Text dimColor> · {arrows !== '' ? `${arrows} · ` : ''}{sandbox}</Text>
       )}
       {cost !== undefined && <Text dimColor> · {cost}</Text>}
+      {daemon !== undefined && (
+        daemonDanger
+          ? <Text color={theme.warn} bold> · {daemon}</Text>
+          : <Text dimColor> · {daemon}</Text>
+      )}
     </Box>
   )
 }

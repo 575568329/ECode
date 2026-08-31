@@ -115,6 +115,8 @@ export interface TuiHost {
   subscribe: (handler: (ev: import('../protocol/types.js').ProtocolEvent) => void, opts?: { canAnswer?: boolean }) => () => void
   dispose: () => void
   mountBridges?: () => void
+  /** T5（D-T3 增补）：daemon 连接状态（顶栏「后台运行中/重连中」标识；Embedded 无此面） */
+  daemonState?: () => 'connecting' | 'open' | 'backoff'
 }
 
 export interface TuiAppDeps {
@@ -1098,6 +1100,18 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
 
 
 
+  // T5（D-T3 增补）：daemon 运行状态标识（附着态顶栏常驻——「前台上要能够看到后台是否在运行」）
+  const [daemonState, setDaemonState] = useState<'open' | 'connecting' | 'backoff' | undefined>(
+    attachedHost !== undefined ? 'open' : undefined,
+  )
+  useEffect(() => {
+    if (attachedHost === undefined || host.daemonState === undefined) return
+    const timer = setInterval(() => setDaemonState(host.daemonState?.()), 2000)
+    timer.unref?.()
+    return () => clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（host 稳定）
+  }, [])
+
   // T 线 T2：宿主 askSelect 可答帧（.mcp.json 批准门等）的协议选项卡态
   const [protoSelect, setProtoSelect] = useState<{ requestId: string; title: string; options: string[] } | null>(null)
   // M6 M-P7：MCP 状态（panel/data 拉取——附着态 McpManager 在 daemon；面板打开/动作后重拉）
@@ -1364,6 +1378,13 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       })()}
       running={running}
       queuedInterjects={queuedInterjects}
+      daemon={(() => {
+        if (daemonState === undefined) return undefined
+        if (daemonState === 'open') return '后台运行中'
+        if (daemonState === 'backoff') return '后台重连中…'
+        return '后台连接中…'
+      })()}
+      daemonDanger={daemonState === 'backoff'}
       mcp={mcpSegment}
       sandbox={sandboxMode === 'default' ? undefined : sandboxMode}
       sandboxDanger={sandboxMode === 'full-access'}

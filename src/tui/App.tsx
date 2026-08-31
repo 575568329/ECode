@@ -42,6 +42,9 @@ interface AppProps {
   sandbox?: string
   /** full-access 危险色 */
   sandboxDanger?: boolean
+  /** T5（D-T3 增补）：daemon 运行段（附着态顶栏常驻） */
+  daemon?: string
+  daemonDanger?: boolean
   /** 运行时告警（重试/限流/压缩等）——底部独立第二行渲染并截断（防长消息挤碎状态行） */
   warning?: string
   /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar——Conversation 总分配显式扣减）；
@@ -90,6 +93,8 @@ export function App({
   mcp,
   sandbox,
   sandboxDanger,
+  daemon,
+  daemonDanger,
   warning,
   warningLevel,
   conditions,
@@ -144,6 +149,8 @@ export function App({
               mcp={mcp}
               sandbox={sandbox}
               sandboxDanger={sandboxDanger}
+              daemon={daemon}
+              daemonDanger={daemonDanger}
             />
             {/* F-45：idle 态快捷键教学提示去除（用户点名「⏎ 发送 / 命令 ↑↓ 历史这些都不用显示」）——
                 busy 态保留 Ctrl+C 中断（运行中怎么打断是关键信息）；分隔符随 hint 存在性条件渲染 */}

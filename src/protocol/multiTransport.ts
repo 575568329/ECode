@@ -50,6 +50,7 @@ export class MultiTransport implements ClientTransport {
   private abort: AbortController | null = null
   private pumpStarted = false
   private sessionId: string | undefined
+  private state: 'connecting' | 'open' | 'backoff' = 'connecting'
 
   constructor(private readonly opts: MultiTransportOpts) {}
 
@@ -57,6 +58,11 @@ export class MultiTransport implements ClientTransport {
   setSessionId(sid: string): void {
     this.sessionId = sid
     this.lastSeq = null // 新会话无游标——gap 判定重来
+  }
+
+  /** T5（D-T3 增补）：连接状态（TUI 顶栏「后台运行中/重连中」标识的数据源） */
+  daemonState(): 'connecting' | 'open' | 'backoff' {
+    return this.state
   }
 
   async send(cmd: ProtocolCommand): Promise<CommandResult> {
@@ -102,6 +108,7 @@ export class MultiTransport implements ClientTransport {
   private async pump(): Promise<void> {
     let backoff = BACKOFF_BASE_MS
     while (!this.aborted && this.handlers.size > 0) {
+      this.state = 'connecting'
       this.opts.onState?.('connecting')
       this.abort = new AbortController()
       try {
@@ -122,6 +129,7 @@ export class MultiTransport implements ClientTransport {
           return
         }
         if (!res.ok || res.body === null) throw new Error(`mux SSE ${res.status}`)
+        this.state = 'open'
         this.opts.onState?.('open')
         const gap = this.everConnected // 重连=补拉旗标（是否 gap 由 subscribed 帧精确判定，此为保守估计）
         this.everConnected = true
@@ -149,6 +157,7 @@ export class MultiTransport implements ClientTransport {
         // 断线——退避重连（abort 静默）
       }
       if (this.aborted || this.handlers.size === 0) return
+      this.state = 'backoff'
       this.opts.onState?.('backoff')
       await new Promise((r) => setTimeout(r, backoff * (0.5 + Math.random())))
       backoff = Math.min(backoff * 2, BACKOFF_MAX_MS)

@@ -301,9 +301,12 @@ export class FileHistoryStore implements HistoryStore {
     // 三态混杂下同机同目录的会话在 web 列表消失
     // D4 回归修复（2026-08-31 走查）：m.cwd 缺失**不得**以 '' 进归一化——normalizeProjectPath
     // 内部 realpathSync('') 会解析到 lister 的 process.cwd()，恰好等于过滤目标时全部无主
-    // 会话误命中（旧会话跨项目混列的根因）；先显式排除再比较。
+    // 会话误命中（旧会话跨项目混列的根因）；审阅批收紧为真值判定，空串同挡（与
+    // collectProjectCwds 口径拉齐）。先显式排除再比较。
     const visible =
-      cwd !== undefined ? metas.filter((m) => m.cwd !== undefined && normalizeProjectPath(m.cwd) === normalizeProjectPath(cwd)) : metas
+      cwd !== undefined
+        ? metas.filter((m) => m.cwd !== undefined && m.cwd !== '' && normalizeProjectPath(m.cwd) === normalizeProjectPath(cwd))
+        : metas
     return visible.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   }
 

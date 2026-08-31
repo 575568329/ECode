@@ -151,7 +151,7 @@ export class ApprovalBroker {
   }
 
   /** 扩展 hook 首次执行授权（mcp-permission）：auto-approve 不豁免（第三方面不可控）。 */
-  permission(owner: string, event: string): Promise<PermissionAnswer> {
+  permission(owner: string, event: string, signal?: AbortSignal): Promise<PermissionAnswer> {
     const requestId = randomUUID()
     const frame: AnswerableFrame = {
       type: 'approval/requested',
@@ -166,7 +166,7 @@ export class ApprovalBroker {
       this.publish({ type: 'approval/resolved', requestId, outcome: 'cancelled' })
       return Promise.resolve({ allow: false, remember: false })
     }
-    return this.suspendOnce(frame, (v) => v as PermissionAnswer)
+    return this.suspendOnce(frame, (v) => v as PermissionAnswer, signal)
   }
 
   /** ask_user 问询（B3b 接线）：无订阅者回 null（工具侧已有非交互守卫文案） */

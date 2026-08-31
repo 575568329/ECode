@@ -10,7 +10,7 @@
  *   - 独立压缩链（独立 orchestrator：熔断计数不与父互扰；CONTEXT_TOO_LONG catch 双保险）
  *   - afterTools 由装配方注入剥离 autoCommit 的版本（quality 回喂进子 messages，提交只归父轮末）
  *
- * confirm 走 deps.confirm——装配方必须传串行队列包装后的父回调（方案 §1.3）。
+ * confirm 走 deps.confirm——协议化后串行化由宿主 hostConfirm 统一承担（enqueueConfirm，见 session.ts），装配方直接传 hostConfirm。
  */
 
 import { appendFile, mkdir, writeFile } from 'node:fs/promises'
@@ -89,7 +89,7 @@ export interface SubagentDeps {
 // —— UI 桥（confirm/warn/usage 三合一）：cli 装配工具、TuiApp 挂回调（setPermissionAsker 同款）。
 // confirm 缺省 false（argv/未挂载 fail-closed——子代理副作用无 UI 即拒）；warn/usage 缺省丢弃。
 export interface SubagentBridge {
-  /** 父 confirm——TuiApp 必须挂串行队列包装版（makeConfirmQueue，方案 §1.3） */
+  /** 父 confirm——串行化由宿主 hostConfirm（enqueueConfirm）统一承担，桥层无需再包装 */
   confirm: (use: ToolUseBlock) => Promise<boolean | string>
   warn?: (msg: string) => void
   usage?: (inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }) => void

@@ -205,7 +205,9 @@ export class HostSession {
   mountBridges(): void {
     if (this.bridgesMounted) return
     this.bridgesMounted = true
-    this.installedAsker = async (owner, event) => this.broker.permission(owner, event)
+    // 审阅修复批（2026-08-31 四角色）：提档卡/权限卡入串行队列+接当轮 signal——
+    // 否则与工具卡并存时仍会顶掉 TUI 单槽卡（D9 残余路径），中断也不收敛
+    this.installedAsker = (owner, event) => this.enqueueConfirm(() => this.broker.permission(owner, event, this.abort.signal))
     setPermissionAsker(this.deps.history.currentSessionId(), this.installedAsker)
     this.installedAskUser = (async (questions: Parameters<AskUserHandler>[0]) => {
       const r = await this.broker.askUser(questions)
@@ -213,7 +215,9 @@ export class HostSession {
     }) as AskUserHandler
     setAskUserHandler(this.installedAskUser)
     this.installedBridge = {
-      confirm: (use) => this.hostConfirm(use),
+      // 审阅修复批（2026-08-31 四角色）：子代理 confirm 透传当轮 signal——中断后子代理卡
+      // 同样立即收敛（此前悬空至 900s 审批超时成僵尸卡）
+      confirm: (use) => this.hostConfirm(use, this.abort.signal),
       warn: (m) => this.publish('notice', { level: 'warn', text: m }),
       usage: (inp, out, cache) => this.recordUsage(inp, out, cache), // 子代理成本归并（M12-P0 统一收口）
       onBeforeWrite: async (paths, tool, toolUseId) => {
@@ -749,9 +753,14 @@ export class HostSession {
           if (this.channel.subscriberCount === 0) {
             return { ok: false, error: '提档 full-access 需要客户端确认（当前无订阅者）', code: 'NEED_CLIENT' }
           }
-          const ok = await this.broker.confirm(
-            { type: 'tool_use', id: `sandbox-set-${Date.now()}`, name: 'sandbox/set', input: { mode: cmd.mode } },
-            `沙箱提档 → full-access（确认后本会话副作用工具免确认）`,
+          // 审阅修复批（2026-08-31 四角色）：提档卡入串行队列+接当轮 signal（D9 残余路径闭合）
+          const ok = await this.enqueueConfirm(() =>
+            this.broker.confirm(
+              { type: 'tool_use', id: `sandbox-set-${Date.now()}`, name: 'sandbox/set', input: { mode: cmd.mode } },
+              `沙箱提档 → full-access（确认后本会话副作用工具免确认）`,
+              false,
+              this.abort.signal,
+            ),
           )
           if (!ok) return { ok: false, error: '用户拒绝提档', code: 'REJECTED' }
         }
@@ -913,7 +922,7 @@ export class HostSession {
             tasks: this.tasks,
             updateSubagent: (st) => this.updateSubagent(st),
             removeSubagent: (id) => this.removeSubagent(id),
-            confirmTool: (use) => this.hostConfirm(use),
+            confirmTool: (use) => this.hostConfirm(use, this.abort.signal),
             askUser: async (qs) => {
               const r = await this.broker.askUser(qs)
               return (r ?? null) as unknown
@@ -1006,7 +1015,8 @@ export class HostSession {
    *  串行队列同款先例）；中断的排队项经 aborted 快拒不落卡。 */
   private confirmChain: Promise<unknown> = Promise.resolve()
   private enqueueConfirm<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.confirmChain.then(task, task) // 前序拒绝不阻断后续
+    // 链尾吞错重赋值保证 confirmChain 恒 fulfilled——前序 task 抛错不阻断后续（调用方仍拿到原 rejection）
+    const run = this.confirmChain.then(task)
     this.confirmChain = run.then(
       () => undefined,
       () => undefined,

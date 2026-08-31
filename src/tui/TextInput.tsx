@@ -194,13 +194,17 @@ export function InputRender({ text, caret, placeholder, viewAnchor }: InputRende
  *  输入体验批：anchor 定义时进入查看窗（PgUp/PgDn 滚看），底部指示行带查看键提示 */
 function FoldedCaretText({ text, caret, width, anchor }: { text: string; caret: number; width: number; anchor?: number }): ReactElement {
   const view = foldInputView(text, caret, INPUT_FOLD_MAX_LINES, width, anchor)
-  const lastIdx = view.rows.length - 1
+  // 查看键提示挂在**最后一条折叠指示行**上（caret 尾行路径的最后一行是文本行，不能按 lastIdx 判）
+  let lastFoldedIdx = -1
+  view.rows.forEach((row, i) => {
+    if (row.kind === 'folded') lastFoldedIdx = i
+  })
   return (
     <Box flexDirection="column">
       {view.rows.map((row, i) =>
         row.kind === 'folded' ? (
           <Text key={i} dimColor>
-            {`…已折叠 ${row.count} 行（共 ${view.totalPhysical} 行）${i === lastIdx ? '· PgUp/PgDn 查看' : ''}`}
+            {`…已折叠 ${row.count} 行（共 ${view.totalPhysical} 行）${i === lastFoldedIdx ? '· PgUp/PgDn 查看' : ''}`}
           </Text>
         ) : i === view.caretRow ? (
           <CaretText key={i} text={row.text} caret={view.caretCol} />

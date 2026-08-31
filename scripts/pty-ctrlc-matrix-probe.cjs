@@ -93,6 +93,18 @@ const run = async () => {
   check('S1 空闲单发出提示', await waitFor(/再按一次 Ctrl\+C 退出/, mark, 3000))
   await sleep(2000) // 提示超时自清（恢复单次语义）
 
+  // S7 覆盖层兜底：/rewind 面板（自身无 Ctrl+C 处理）开着时 Ctrl+C 关闭面板
+  proc.write('/rewind')
+  await sleep(300)
+  proc.write('\r')
+  await sleep(400)
+  proc.write('\r')
+  check('S7a rewind 面板出现', await waitFor(/回退到哪个改动之前/, 0, 5000))
+  mark = out.length
+  proc.write('\x03')
+  check('S7b 面板内 Ctrl+C 关闭面板（全局兜底）', await waitFor(/输入消息，\/help 查看命令/, mark, 4000))
+  await sleep(800)
+
   // S2 空闲双发（窗口内）→ 优雅退出——放到最后跑（会杀进程），此处先跳过
   // S3 忙碌流式单发 → 中断 + 提示
   proc.write('开始慢流任务')

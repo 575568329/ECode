@@ -1141,6 +1141,26 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     { isActive: active.confirm === null && (overlay === null || overlay.kind === 'output-panel' || overlay.kind === 'output-view') },
   )
 
+  // —— Ctrl+C 全局兜底（用户拍板「这次就该生效」）——
+  // 9 个面板（rewind/sandbox/config/warnings/skill/mcp/plugin/question/select）自身无
+  // Ctrl+C 处理，面板开着时按键黑洞（useInterrupt 又被 pickerRef 让位）——「按了没反应、
+  // 连提示都不显示」的根因。本 handler 始终激活、注册在最后（子组件先收到并自行处理的
+  // 场景不受影响）：有覆盖层 → 至少关掉它（question/select 先 resolve 取消，不留悬挂
+  // Promise）；无覆盖层 → 不干预（中断/双击退出仍归 useInterrupt）。output 系面板有
+  // 自己的 Ctrl+C 退出（teardown 三件套），此处不代劳。
+  useInput(
+    (input, key) => {
+      if (!(key.ctrl && input === 'c')) return
+      if (overlay === null) return
+      if (overlay.kind === 'output-panel' || overlay.kind === 'output-view') return
+      if (overlay.kind === 'question-panel') overlay.resolve({ kind: 'cancel' })
+      if (overlay.kind === 'select') overlay.resolve(undefined)
+      pickerRef.current = false
+      setOverlay(null)
+    },
+    { isActive: true },
+  )
+
   // 界面批 C3：空闲态双击 Esc（间隔 <500ms）直达 /rewind 面板（CC 双击 Esc 零成本入口对位）。
   // Esc 三态语义不破坏：面板开=关面板（overlay!==null 时不激活本 handler）、回填态=清空
   // （InputStream slash 回填 Esc 自处理——本 handler 只在空闲态激活）、审批卡=拒绝（confirm

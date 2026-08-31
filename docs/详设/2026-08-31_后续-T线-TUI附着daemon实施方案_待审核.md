@@ -212,7 +212,7 @@ Deps 拆为**客户端面**（transport/本地偏好/logger/剪贴板/客户端 
 |---|---|---|---|
 | T1 协议补齐 | ① rewind 协议面重设计+接线（list 回执 CheckpointMeta[]+external 标注；exec 回执 restored[]；**shape 契约冻结测试先行**）② fork 续写宿主化（session/restore 扩展）③ panel/data 三面板（skill/mcp/plugin）回执 shape 契约+接线 ④ 新 op `mcp/action`（reconnect/close）⑤ .mcp.json 批准门协议面（#14）⑥ hook 宿主化四件（§4.3，cwd 修正含 Embedded）⑦ session/compact 命令 ⑧ **skill/install 宿主命令**（D-T2 拍板：远程安装装到电脑本地）⑨ **审批超时语义改造**（D-T8：默认 1h+ECODE 可配；超时如实反馈「无人应答」并引导模型决策/记录，不再谎称拒绝）⑩ 协议清理（删 command/exec；config/patch 删或接）⑪ mcpWarnings/instructionWarnings 转 notice 帧 | 3.5-4 天 | 命令集成测试（MockProvider 驱动 rewind 全流程断言集+install/超时语义新增面）|
 | T2 TuiApp 单路径切换 | §3.3 A 面逐点+B 面（transcript 混合管线为主体）；Deps 宿主面删除由编译器兜底；5 个测试文件装配重建+4 面板组件测试重接+SkillPanel 单例暗道修 | 2.5-3 天 | 全量 vitest 绿（含重建测试）+tsc 净+Embedded pty 哨兵全绿 |
-| T3 入口 daemon 化 | §4.1 入口序全件：拉起锁/stdio+windowsHide/execArgv/env 白名单/原子写/version schema/health.id 四验/serve 接管改造（健康+版本一致→退出）/日志目录/`--local`+自动降级/探针形态开关统一注入（ECODE_FORCE_EMBEDDED=1）+探针聚合 runner（`npm run probes`） | 2-2.5 天 | pty-attach-probe 断言 1/2/6/7/9/10/11/12 |
+| T3 入口 daemon 化 | §4.1 入口序全件：拉起锁/stdio+windowsHide/execArgv/env 白名单/原子写/version schema/health.id 四验/serve 接管改造（健康+版本一致→退出）/日志目录/`--local`+自动降级/探针形态开关统一注入（ECODE_FORCE_EMBEDDED=1）+探针聚合 runner（`npm run probes`）；**主机别名上报+双端顶栏显示**（多机区分，2026-08-31 用户补：`ECODE_SERVE_NAME ?? os.hostname()` 入 server.json+config/get，web/TUI 顶栏常驻显示「当前连的是谁」——多台电脑各自 serve 时标签页一眼分清） | 2-2.5 天 | pty-attach-probe 断言 1/2/6/7/9/10/11/12 + 别名显示断言 |
 | T4 MultiTransport+per-client | 新写 MultiTransport（multi 信封+project 路由+可变 sid+游标 sinceSeq/gap 补同步——web connect.ts 蓝本）；clientID 分配+帧 origin 标记（本地 UI 动作不广播）；canAnswer:true+credClass 加固（§4.5.1 可选项） | 1.5 天 | L2 双客户端集成测试（delta 双达/插话可见/审批 claim-respond 收敛/origin 不回环/canAnswer 计入 fail-closed） |
 | T5 断连与真机门 | 附着态 daemon 死亡横幅；undici reader/SSE 断连两坑复查；G-T 真机验收 | 1-1.5 天 | G-T 全门 |
 
@@ -267,6 +267,8 @@ Deps 拆为**客户端面**（transport/本地偏好/logger/剪贴板/客户端 
 **数据归属澄清（D-T2 用户定调的架构对齐）**：daemon 常驻在**用户电脑上**（非云端），skill/MCP/会话历史/配置全部是**电脑本地文件**；手机等远程设备自身不携带任何数据，只是 daemon 的遥控端——「远程安装 skill」= 装到电脑本地，回到电脑 TUI 看到的是同一份。多客户端（TUI/web/飞书）共享的正是同一台电脑的同一批本地资源，**无任何数据进 daemon 私有存储或云端**。
 
 附带记录（后续增强，不在本线）：开机自启（daemon 注册系统服务）、托盘常驻、server.json Windows ACL 校验、安全配置热重载（blockedCommands/sandbox 快照陈旧窗口随常驻拉长——安全席 P2-3，文档声明+热重载随需）、/skill-create 与 PluginPanel 的协议化（D-T2 挂账部分）。
+
+**多机场景记录（2026-08-31 用户提出：两台电脑各自跑 ECode，手机如何区分）**：每台电脑=独立 daemon=独立地址，数据天然隔离；T3 的主机别名+顶栏显示解决「分不清哪个标签页是谁」；「手机一个入口管理多台电脑」（配对命名+设备列表+在线状态+点谁进谁）是 R1（配对 offer 带主机别名）+R2（relay 汇聚多 daemon）的交付面，已同步补进 R 方案（见该方案变更记录 v1.1）。
 
 ## 9. 变更记录
 

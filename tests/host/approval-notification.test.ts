@@ -22,7 +22,7 @@ import { emptyShellConfig, type Config } from '../../src/services/config.js'
 import { CompactionOrchestrator } from '../../src/services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../../src/services/compaction/summarize.js'
 import type { HookRunner } from '../../src/services/hooks/runner.js'
-import { ApprovalBroker } from '../../src/host/approval.js'
+import { ApprovalBroker, APPROVAL_TIMEOUT_FEEDBACK } from '../../src/host/approval.js'
 import { InMemoryChannel } from '../../src/protocol/channel.js'
 import { parseHookSpecs } from '../../src/services/hooks/validate.js'
 
@@ -263,7 +263,7 @@ describe('Notification hook：批2d-fix 补覆盖（审阅测试面收口）', (
       500, // 通知阈值 500ms > 超时——超时必先收敛
     )
     const p = broker.confirm({ type: 'tool_use', id: 'u1', name: 'write_file', input: {} }, 'p')
-    expect(await p).toBe(false) // 超时自动拒绝收敛
+    expect(await p).toBe(APPROVAL_TIMEOUT_FEEDBACK) // D-T8：超时收敛为如实反馈串（非 false 谎称拒绝）
     await sleep(700) // 通知阈值已过——若 notifyTimer 漏清必触发
     expect(notifiedKinds).toHaveLength(0)
   }, 15_000)

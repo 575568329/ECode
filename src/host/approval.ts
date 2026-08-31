@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto'
 import type { InMemoryChannel } from '../protocol/channel.js'
 import { sanitizePreview } from '../services/preview.js'
 import type { ApprovalDecision, ApprovalKind, ProtocolEvent, PublishableEvent } from '../protocol/types.js'
-import type { ToolUseBlock } from '../core/types.js'
+import { APPROVAL_TIMEOUT_FEEDBACK, type ToolUseBlock } from '../core/types.js'
 
 /** argv 审批策略（D1）：ask=默认（无订阅者 fail-closed）；auto-approve=--yes（仅 tool-confirm 豁免） */
 export type ApprovalPolicy = 'ask' | 'auto-approve'
@@ -44,6 +44,9 @@ export type ApprovalPendingNotifier = (info: { requestId: string; kind: string; 
 
 /** claim 租约时长（D12：CC 300s 租约先例取半——认领端崩溃后最多 2 分钟可被重新认领/他人应答提示恢复） */
 const CLAIM_TTL_MS = 120_000
+
+/** D-T8：审批超时的模型侧反馈（定义在 core/types——loop 消费层同源识别；此处 re-export 供测试/宿主引用）。 */
+export { APPROVAL_TIMEOUT_FEEDBACK } from '../core/types.js'
 
 export interface PermissionAnswer {
   allow: boolean
@@ -289,7 +292,8 @@ export class ApprovalBroker {
     if (entry.kind === 'mcp-permission') entry.resolve({ allow: false, remember: false })
     else if (entry.kind === 'ask-select') entry.resolve(null)
     else if (entry.kind === 'ask-user') entry.resolve(null)
-    else entry.resolve(false)
+    // D-T8：tool-confirm/sensitive 超时返回专用如实反馈串（false 会被 loop 冠「用户已取消」——谎称拒绝）
+    else entry.resolve(APPROVAL_TIMEOUT_FEEDBACK)
     this.audit?.('decided', { requestId, kind: entry.kind, outcome: 'timeout' })
     if (entry.kind === 'tool-confirm' || entry.kind === 'sensitive' || entry.kind === 'mcp-permission') {
       this.publish({ type: 'approval/resolved', requestId, outcome: 'timeout' })

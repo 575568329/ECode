@@ -54,7 +54,7 @@ ECode 自身的权威配置指南。修改配置前先读本手册；不确定�
 | notificationIdleSeconds | number | 60 | 审批/等待输入持续 N 秒触发通知（0=关，批2d） |
 | bellOnApproval | boolean | true | 审批卡首次出现响终端 BEL（批2d） |
 | sessionIdleMinutes | number | 120 | serve 会话空闲回收分钟（0=不收；M13 serve 场景） |
-| approvalTimeoutMs | number | 900000 | 审批挂起超时 ms（0=不限；超时自动拒绝，M13） |
+| approvalTimeoutMs | number | 3600000 | 审批挂起超时 ms（0=不限；D-T8 默认 1h，超时如实告知模型「无人应答」并引导其决策/记录待办） |
 | feishu | {appId, appSecret, allowUsers?} | — | 飞书 IM 网关（M13）：配了凭据 serve 自动激活，长连接免公网；allowUsers=open_id 白名单，**缺省/空=拒绝所有** |
 | webSearch | {provider?, apiKey?, engine?, preferMcp?} | bing | 联网搜索（M10）：bing RSS 免费；可切 zhipu（配 apiKey/engine）；preferMcp 声明搜索 MCP server 名 |
 | roles | {summary?: {provider, model}} | — | 角色分流（M13）：summary=压缩摘要专用便宜模型；provider 名必须存在于 providers |

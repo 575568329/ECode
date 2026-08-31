@@ -197,7 +197,7 @@ export const CONFIG_TEMPLATE = `{
   // "bellOnApproval": true,
   // M13 serve 常驻（ecode serve 手机/Web 访问；缺省不配=纯本机 127.0.0.1）：
   // "sessionIdleMinutes": 120,            // serve 会话空闲回收分钟（0=不收）
-  // "approvalTimeoutMs": 900000,          // 审批挂起超时 ms（0=不限；超时自动拒绝）
+  // "approvalTimeoutMs": 3600000,         // 审批挂起超时 ms（0=不限；D-T8：默认 1h，超时如实告知模型「无人应答」并引导其决策）
   // "feishu": {                           // 飞书 IM 网关（配了凭据 serve 自动激活；长连接免公网）
   //   "appId": "cli_xxx", "appSecret": "\${FEISHU_SECRET}",
   //   "allowUsers": ["ou_xxx"]            // open_id 白名单——缺省/空=拒绝所有（安全默认，必配）

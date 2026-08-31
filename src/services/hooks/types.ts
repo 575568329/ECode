@@ -86,9 +86,11 @@ export interface HookVerdict {
   systemMessages: string[]
 }
 
-/** 执行器抽象（H-P2 实现；注入便于测试）。返回 null = 无 stdout JSON（纯通知）。 */
+/** 执行器抽象（H-P2 实现；注入便于测试）。返回 null = 无 stdout JSON（纯通知）。
+ *  cwd：hook 子进程工作目录（T 线⑥——宿主形态 daemon cwd≠项目 cwd，守卫类 hook 必须跑在会话目录；
+ *  缺省回退 process.cwd() 兼容旧调用方）。 */
 export type HookExecutor = (
   spec: HookSpec,
   input: HookInput,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; cwd?: string },
 ) => Promise<HookOutput | null>

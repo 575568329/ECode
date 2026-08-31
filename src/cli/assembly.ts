@@ -276,6 +276,65 @@ export function makeConversationDeps(
     },
     // M13-W4：session/list 冷热合并（活会话 running 态注入 meta 列表）
     conversationStates: () => projectRef.current?.runningMap() ?? new Map(),
+    // T1 面板数据窄口（View 契约冻结 protocol/types——从项目级真件映射；宿主不 import 注册表类型）
+    panelData: {
+      skill: () => ({
+        skills: parts.skills.listForCompletion().map((s) => ({
+          name: s.name,
+          description: s.description,
+          source: s.source,
+          userInvocable: s.userInvocable,
+          disableModelInvocation: s.disableModelInvocation,
+          ...(s.whenToUse !== undefined ? { whenToUse: s.whenToUse } : {}),
+        })),
+        shadowedCount: parts.skills.shadowedEntries.length,
+      }),
+      mcp: () => {
+        const snaps = parts.mcpManager?.status() ?? []
+        return {
+          servers: snaps.map((s) => ({
+            name: s.name,
+            status: s.status,
+            source: s.source,
+            type: s.type,
+            toolCount: s.toolCount,
+            ...(s.error !== undefined ? { error: s.error } : {}),
+            ...(s.failedAgoSec !== undefined ? { failedAgoSec: s.failedAgoSec } : {}),
+          })),
+          tools: Object.fromEntries(
+            snaps.map((s) => [
+              s.name,
+              (parts.mcpManager?.toolsOf(s.name) ?? []).map((t) => ({ name: t.name, description: t.description })),
+            ]),
+          ),
+        }
+      },
+      ...(parts.mcpManager != null
+        ? {
+            mcpAction: async (action: 'reconnect' | 'close', server: string) => {
+              const mgr = parts.mcpManager
+              if (mgr == null) return { ok: false, error: 'MCP 未装配' }
+              if (action === 'close') {
+                await mgr.close(server)
+                return { ok: true, output: `已关闭：${server}` }
+              }
+              const r = await mgr.reconnect(server)
+              if (r.failed.length > 0) return { ok: false, error: r.failed.map((f) => `${f.name}: ${f.error}`).join('；') }
+              return { ok: true, output: r.ok.length > 0 ? `已重连：${r.ok.join('、')}` : `无变更：${server}` }
+            },
+          }
+        : {}),
+      ...(parts.mcpPendingApproval != null
+        ? {
+            approveMcp: async (file: string, approved: boolean) => {
+              const pa = parts.mcpPendingApproval
+              if (pa != null && approved && pa.file === file) await pa.approve()
+            },
+          }
+        : {}),
+    },
+    // T1⑪：装配期告警（mcp/instruction）经宿主构造转 notice 帧
+    startupWarnings: [...parts.mcpWarnings, ...parts.instructionWarnings],
     // F-23：命令面注入（serve/web 端 / 命令分流——/help 等不再落入 LLM）
     ...(commands !== undefined ? { commands } : {}),
     ...(approvalPolicy !== undefined ? { approvalPolicy } : {}),

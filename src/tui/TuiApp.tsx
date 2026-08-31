@@ -197,22 +197,9 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   // 插话排队列表（queue/snapshot 全量同步 + injected 即时摘除）——对话区动态渲染留痕
   const [queuedInterjects, setQueuedInterjects] = useState<string[]>([])
   const enqueueInterject = async (text: string, images?: { path: string; mime: string; label?: string }[]): Promise<void> => {
-    // 斜杠拦截不在此（InputStream 分流点已拦）；F2：入队时过 UserPromptSubmit hook
-    // （宿主仅新轮 dispatch——插话注入不走宿主 hook，此处保留客户端 dispatch 维持旧行为）
-    let finalText = text
-    if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
-      const verdict = await deps.hookRunner.dispatch(
-        'UserPromptSubmit',
-        { event: 'UserPromptSubmit', session_id: deps.history.currentSessionId(), prompt: text },
-        { signal: abortRef.current.signal },
-      )
-      if (verdict.block) {
-        setSystemMsgs([`✋ 插话被 hook 拦截${verdict.reason !== undefined && verdict.reason !== '' ? `：${verdict.reason}` : ''}`])
-        return
-      }
-      if (verdict.additionalContext.length > 0) finalText = `${finalText}\n\n[hook context]\n${verdict.additionalContext.join('\n')}`
-    }
-    const r = await host.send({ op: 'prompt', text: finalText, mode: 'StartOrSteer', ...(images !== undefined && images.length > 0 ? { images } : {}) })
+    // T 线⑥（D-T5a）：插话 hook 宿主化——busy 输入经 prompt(StartOrSteer) 入队时宿主 dispatch
+    // UserPromptSubmit（block 拒绝入队/context 注入），客户端不再二次 dispatch（原同进程捷径退役）
+    const r = await host.send({ op: 'prompt', text, mode: 'StartOrSteer', ...(images !== undefined && images.length > 0 ? { images } : {}) })
     if (!r.ok) setSystemMsgs([`插话失败：${r.error}`], 'warn')
   }
   // M11-P4：运行中子代理快照（进度事件驱动）
@@ -1039,15 +1026,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
         ctxWindowRef.current = w
       })
       .catch(() => {})
-    // SessionStart hook（H-P4）：挂载即 startup
-    void deps.hookRunner
-      ?.dispatch('SessionStart', { event: 'SessionStart', session_id: '', source: 'startup' })
-      .then((v) => {
-        if (v.systemMessages.length > 0) setSystemMsgs(v.systemMessages)
-        // M9-P0：additionalContext 暂存，启动后首轮 user 消息注入
-        if (v.additionalContext.length > 0) pendingSessionCtxRef.current = v.additionalContext
-      })
-      .catch(() => {})
+    // T 线⑥：SessionStart(startup) 宿主化——宿主构造时 dispatch（原挂载 effect 客户端 dispatch
+    // 删除防双跑）；resume 路径随 restoreSession 命令化在 T2 一并迁移
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅启动一次
   }, [])
 

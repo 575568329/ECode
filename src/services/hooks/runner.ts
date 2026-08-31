@@ -65,7 +65,7 @@ export class HookRunner {
    * - additionalContext / systemMessage：收集全部
    * - async:true 的 hook：fire-and-forget，不参与裁决
    */
-  async dispatch(event: HookEvent, input: HookInput, opts?: { signal?: AbortSignal }): Promise<HookVerdict> {
+  async dispatch(event: HookEvent, input: HookInput, opts?: { signal?: AbortSignal; cwd?: string }): Promise<HookVerdict> {
     const filled: HookInput =
       input.session_id === '' ? { ...input, session_id: this.deps.getSessionId?.() ?? '' } : input
     const specs = this.specsFor(event, filled.tool_name)
@@ -106,7 +106,7 @@ export class HookRunner {
   }
 
   /** 单条执行 + fail-open 兜底（执行失败返回 null，只 warn）。 */
-  private async runOne(spec: HookSpec, input: HookInput, opts?: { signal?: AbortSignal }): Promise<ReturnType<HookExecutor> | null> {
+  private async runOne(spec: HookSpec, input: HookInput, opts?: { signal?: AbortSignal; cwd?: string }): Promise<ReturnType<HookExecutor> | null> {
     try {
       return await this.deps.execute(spec, input, opts)
     } catch (e) {

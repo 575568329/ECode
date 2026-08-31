@@ -154,3 +154,9 @@ export function isMessageLine(line: HistoryLine): line is Message {
  *  对标定值（2026-08-30 调研）：CC/opencode 均 32k；8192 在 thinking medium（budget 计入
  *  max_tokens）下可见文本可被思考吃光（真机报障实证）。 */
 export const DEFAULT_MAX_TOKENS = 32768
+
+/** D-T8（2026-08-31 拍板）：审批超时的模型侧反馈——如实「无人应答」而非谎称「用户拒绝」，
+ *  并引导模型自主决策（替代方案/跳过+记录待办）。定义在 core（loop 消费层识别它走专用文案，
+ *  不冠「用户拒绝」前缀）；host/approval re-export（broker 超时收敛 resolve 此串）。 */
+export const APPROVAL_TIMEOUT_FEEDBACK =
+  '审批超时：用户当前不在电脑或手机前，未能在时限内应答（并非拒绝）。请自行决策：优先改用无需确认的只读或安全替代方案；确无替代则跳过本操作，并在最终回复中明确记录该待办，等用户回来处理。'

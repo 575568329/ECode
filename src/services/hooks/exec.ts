@@ -70,7 +70,9 @@ export const runCommandHook: HookExecutor = async (spec, input, opts) => {
   )
 
   return await new Promise<HookOutput | null>((resolve, reject) => {
-    const child = spawnShellCommand(command, process.cwd())
+    // T 线⑥：cwd 显式透传（宿主形态 daemon cwd≠会话项目目录——lint/守卫类 hook 必须跑在会话树；
+    // 缺省回退 process.cwd() 兼容 TUI 直构 runner 的旧路径）
+    const child = spawnShellCommand(command, opts?.cwd ?? process.cwd())
     let stdout = ''
     let stderr = ''
     let settled = false

@@ -70,6 +70,8 @@ export type ProtocolEvent =
   | { type: 'interjection/injected'; seq: number; text: string }
   | { type: 'queue/snapshot'; seq: number; items: string[] }
   | { type: 'session/clear'; seq: number } // 清账 III P1-3：宿主权威清空广播（serve 端 /clear 分流时发——web 视图与 TUI 对齐）
+  /** T1：rewind 已在宿主执行完毕（留痕+文件还原）——客户端收到后以 session/read 全量重拉重建视图 */
+  | { type: 'rewind/applied'; seq: number; toolUseId?: string; time: string }
   | { type: 'notice'; seq: number; level: 'info' | 'warn' | 'error'; text: string }
   | { type: 'systemMsg'; seq: number; text: string } // 输入框上方反馈（read-only 拒绝提示等），与 notice（告警中心）双通道
   | { type: 'subagent/progress'; seq: number; agents: SubagentStatusView[] }
@@ -94,6 +96,52 @@ export type PromptMode = 'StartOrSteer' | 'StartIfIdle' | { Steer: { expectedTur
 
 export type PromptRouted = 'Started' | 'Steered' | 'Queued' | 'Rejected' | 'Command'
 
+/** T1 rewind 协议面回执契约（shape 冻结——RewindPanel 协议适配器与 web 端共同消费）。
+ *  externallyChanged 在宿主侧预计算（list 即带，客户端免 detectExternalChanges 二次往返）。 */
+export interface RewindSnapshotView {
+  seq: number
+  time: string
+  tool: string
+  messageId?: string
+  files: Array<{ path: string; hash: string }>
+  externallyChanged: string[]
+}
+export interface RewindListResult {
+  sessionId: string
+  snapshots: RewindSnapshotView[]
+}
+export interface RewindExecResult {
+  restored: string[]
+  externalChanged: string[]
+}
+
+/** T1 panel/data 回执契约（D-T2：plugin 挂账——读面只覆盖 skill/mcp；shape 冻结，装配层映射真件） */
+export interface SkillPanelView {
+  skills: Array<{
+    name: string
+    description: string
+    source: 'user' | 'project' | 'plugin' | 'builtin'
+    userInvocable: boolean
+    disableModelInvocation: boolean
+    whenToUse?: string
+  }>
+  /** 同名遮蔽（路径/来源 shadow）条数——面板警示行 */
+  shadowedCount: number
+}
+export interface McpPanelView {
+  servers: Array<{
+    name: string
+    status: string
+    source: string
+    type: string
+    toolCount: number
+    error?: string
+    failedAgoSec?: number
+  }>
+  /** server 名 → 工具清单（面板展开与补全消费；description 缺省=server 未提供） */
+  tools: Record<string, Array<{ name: string; description?: string }>>
+}
+
 export type ProtocolCommand =
   | { op: 'prompt'; text: string; mode: PromptMode; images?: ImagePayload[] }
   | { op: 'approval/respond'; requestId: string; decision: ApprovalDecision; message?: string }
@@ -102,7 +150,6 @@ export type ProtocolCommand =
   | { op: 'askSelect/respond'; requestId: string; choice: string | null }
   | { op: 'interrupt' }
   | { op: 'interjection/clear' }
-  | { op: 'command/exec'; name: string; args?: string }
   | { op: 'session/list'; includeArchived?: boolean }
   | { op: 'session/read'; sessionId: string; fromLine?: number; limit?: number }
   /** 批 2（2026-08-30）：归档/恢复会话（meta sidecar 标记；session/list 默认过滤 archived） */
@@ -111,18 +158,27 @@ export type ProtocolCommand =
   | { op: 'session/rename'; sessionId: string; title: string }
   /** M14-C1⑤ 工具全文按需读取（帧内 content 已截断 4KB——summary+read 分野；上限 1MB） */
   | { op: 'item/read'; itemId: string }
-  | { op: 'session/restore'; sessionId: string }
+  /** T 线②：fork 续写宿主化——true 时宿主完成「起新 id 播种+快照目录跟随+SessionStart(resume)」，
+   *  回执 value 带新 sessionId（原 TUI 客户端 restoreSession 手搓三步移入，附着/本地两形态行为一致） */
+  | { op: 'session/restore'; sessionId: string; fork?: boolean }
   /** 真新建会话（web「+新对话」）——项目级命令，serve 信封层（multi.ts）直接拦截不走会话
    *  dispatch：经会话承载会让冷项目为承载命令多起一个空默认会话；回执 sessionId。 */
   | { op: 'session/new' }
   | { op: 'session/clear' }
   | { op: 'rewind/list' }
-  | { op: 'rewind/exec'; target: number }
-  | { op: 'panel/data'; panel: 'skill' | 'mcp' | 'plugin' | 'doctor' }
+  /** T1 契约（2026-08-31）：回执 value=RewindListResult（快照列表+各点外部修改标注）；
+   *  exec 回执 value=RewindExecResult（restored 文件列表）；busy 守卫拒绝运行中执行 */
+  | { op: 'rewind/exec'; target: number }  /** T1：面板数据（plugin 挂账 D-T2；doctor 是 prompt 注入命令非面板） */
+  | { op: 'panel/data'; panel: 'skill' | 'mcp' }
+  /** T1：MCP 面板写动作（reconnect/close 单 server） */
+  | { op: 'mcp/action'; action: 'reconnect' | 'close'; server: string }
+  /** T1：项目 .mcp.json 首用批准门（附着态 MCP manager 在 daemon，此门必须过协议） */
+  | { op: 'mcp/approve'; file: string; approved: boolean }
+  /** T1：压缩链宿主权威触发（与 /compact 分流同路径） */
+  | { op: 'session/compact' }
   | { op: 'model/set'; provider: string; model: string }
   | { op: 'sandbox/set'; mode: 'default' | 'accept-edits' | 'read-only' | 'workspace-write' | 'full-access' }
   | { op: 'config/get' }
-  | { op: 'config/patch'; patch: Record<string, unknown> }
 
 /** 命令回执：宿主永不 throw 到客户端（错误收敛为 ok:false——与 approval/respond 的
  *  receipt 语义一致，权威状态走事件）。B1 起各命令的 value 形态逐批收紧。 */

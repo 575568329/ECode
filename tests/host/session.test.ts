@@ -4,13 +4,14 @@
  */
 import { describe, expect, it } from 'vitest'
 import { HostSession, type HostDeps } from '../../src/host/session.js'
-import type { ProtocolEvent } from '../../src/protocol/types.js'
+import type { ProtocolEvent, RewindExecResult, RewindListResult } from '../../src/protocol/types.js'
 import type { LLMProvider, LLMProviderRunRequest } from '../../src/providers/interface.js'
-import type { Delta } from '../../src/core/types.js'
+import type { Delta, RewindLine } from '../../src/core/types.js'
+import { CheckpointStore } from '../../src/services/checkpoint.js'
 import { ToolRegistryImpl } from '../../src/tools/registry.js'
 import type { Tool } from '../../src/tools/interface.js'
 import type { Logger } from '../../src/services/logger.js'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileHistoryStore, NoopHistoryStore, type HistoryStore } from '../../src/services/history.js'
@@ -161,10 +162,20 @@ describe('HostSession（B1 宿主会话）', () => {
     expect(events.some((e) => e.type === 'thread/status' && e.busy === false)).toBe(true)
   })
 
-  it('未接线命令回执 NOT_IMPLEMENTED（B2/B5 接线前不装死）', async () => {
+  it('未接线命令回执 NOT_IMPLEMENTED（接线前不装死）', async () => {
     const host = new HostSession(makeDeps(new MockProvider([])))
-    const r = await host.send({ op: 'command/exec', name: '不存在' })
+    const r = await host.send({ op: 'no/such-op' } as never)
     expect(r).toMatchObject({ ok: false, code: 'NOT_IMPLEMENTED' })
+  })
+
+  it('T1：session/compact 触发压缩链，完成后 systemMsg 通知（空会话=失败分支接线验证）', async () => {
+    const host = new HostSession(makeDeps(new MockProvider([])))
+    const events = collect(host)
+    const r = await host.send({ op: 'session/compact' })
+    expect(r).toMatchObject({ ok: true, output: expect.stringContaining('压缩已开始') })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // 空会话 → compactManual 快速失败 → systemMsg「压缩失败：无可压缩对话」（真压缩链自有测试覆盖）
+    expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('压缩失败'))).toBe(true)
   })
 
   it('B2 集成：非 readonly 工具经 Broker——订阅者 respond once 放行；零订阅者 fail-closed 拒绝', async () => {
@@ -218,6 +229,184 @@ describe('HostSession（B1 宿主会话）', () => {
       host.dispose()
     }
     // 零订阅者 fail-closed 的 Broker 单元语义已由 approval.test 覆盖（confirm → false）
+  })
+
+  it('D-T8 集成：审批超时 → tool_result 如实「审批超时」引导模型决策（不得谎称用户拒绝）', async () => {
+    const writeTool: Tool = {
+      name: 'write_file',
+      description: 'write',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: false,
+      async execute() {
+        return { content: 'wrote' }
+      },
+    }
+    const script: Delta[][] = [
+      [
+        { type: 'tool_use_start', id: 't1', name: 'write_file' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: '已记录待办' }, { type: 'done', stop_reason: 'end' }],
+    ]
+    const reg = new ToolRegistryImpl()
+    reg.register(writeTool)
+    const config = makeDeps(new MockProvider(script))
+    // 短超时触发 timeoutResolve（宿主注入 config.approvalTimeoutMs → broker）
+    const host = new HostSession({
+      ...config,
+      tools: reg,
+      getConfig: () => ({ ...config.getConfig(), approvalTimeoutMs: 40 }),
+    })
+    const events: ProtocolEvent[] = []
+    host.subscribe((e) => events.push(e)) // 有订阅者（否则 fail-closed 先收敛，测不到超时）
+    await host.send({ op: 'prompt', text: '写', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    const done = events.find((e) => e.type === 'item/completed' && e.name === 'write_file')
+    expect(done).toMatchObject({ isError: true })
+    expect(done?.summary).toContain('审批超时')
+    expect(done?.summary).not.toContain('用户拒绝')
+    expect(done?.summary).not.toContain('用户已取消')
+    host.dispose()
+  })
+
+  it('T1 契约：rewind/list+exec 宿主接线——列表预计算/文件还原/留痕/applied 帧/BUSY 守卫', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'ecode-rewind-'))
+    const work = join(tmp, 'work')
+    mkdirSync(work, { recursive: true })
+    const file = join(work, 'a.txt')
+    writeFileSync(file, 'v1')
+    const cp = new CheckpointStore(work, { rootDir: join(tmp, 'cps') })
+    const SID = 'rew-test'
+    const rewindLines: RewindLine[] = []
+    const history: HistoryStore = {
+      ...new NoopHistoryStore(),
+      currentSessionId: () => SID,
+      appendRewind: (l) => rewindLines.push(l),
+    }
+    await cp.snapshot(SID, [file], { tool: 'write_file', messageId: 'm1' })
+    writeFileSync(file, 'v2') // 外部修改（快照基线之后）
+
+    const host = new HostSession({ ...makeDeps(new MockProvider([])), checkpoint: cp, history })
+    const events: ProtocolEvent[] = []
+    host.subscribe((e) => events.push(e))
+
+    // list：快照 + 外部修改宿主预计算（externallyChanged 免客户端二次往返）
+    const lr = await host.send({ op: 'rewind/list' })
+    expect(lr.ok).toBe(true)
+    const list = lr.value as unknown as RewindListResult
+    expect(list.sessionId).toBe(SID)
+    expect(list.snapshots).toHaveLength(1)
+    expect(list.snapshots[0]).toMatchObject({ seq: 1, tool: 'write_file', messageId: 'm1', externallyChanged: [file] })
+
+    // exec：文件还原 v1 + 宿主留痕（transcript 镜像+history）+ applied 帧
+    const er = await host.send({ op: 'rewind/exec', target: 1 })
+    expect(er.ok).toBe(true)
+    expect(er.value as unknown as RewindExecResult).toMatchObject({ restored: [file] })
+    expect(readFileSync(file, 'utf8')).toBe('v1')
+    expect(rewindLines).toHaveLength(1)
+    expect(host.transcript.at(-1)).toMatchObject({ rewind: true, seq: 1, toolUseId: 'm1' })
+    expect(events.some((e) => e.type === 'rewind/applied' && e.seq === 1 && e.toolUseId === 'm1')).toBe(true)
+
+    // BUSY：轮运行中 exec 被拒
+    const gate = Promise.withResolvers<void>()
+    const host2 = new HostSession({
+      ...makeDeps(new MockProvider([[{ type: 'text', text: '挂着' }, { type: 'done', stop_reason: 'end' }]], [gate.promise])),
+      checkpoint: cp,
+      history,
+    })
+    await host2.send({ op: 'prompt', text: '长任务', mode: 'StartOrSteer' })
+    const br = await host2.send({ op: 'rewind/exec', target: 1 })
+    expect(br).toMatchObject({ ok: false, code: 'BUSY' })
+    gate.resolve()
+    await host2.whenIdle()
+    host.dispose()
+    host2.dispose()
+  })
+
+  it('T 线②：session/restore fork:true 宿主化——回执新 sid/新文件播种/SessionStart(resume) 宿主 dispatch', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ecode-fork-'))
+    const oldId = '2026-08-31T00-00-00-000Z-fork-old'
+    const history = new FileHistoryStore({ sessionId: oldId, model: 'm', cwd: '/tmp', dir })
+    history.append({ role: 'user', content: [{ type: 'text', text: '旧会话内容' }] })
+
+    const host = new HostSession({
+      ...makeDeps(new MockProvider([])),
+      history,
+      cwd: '/tmp',
+      ensureConversation: (sid) => Promise.resolve({ ok: true, value: { sessionId: sid } }),
+    })
+    // 模拟 ensure 载入（stub 不真正 restoreFrom——宿主内手动载入，测 fork 分支本身）
+    host.restoreFrom(history.restoreFull(oldId))
+    const events: ProtocolEvent[] = []
+    host.subscribe((e) => events.push(e))
+
+    const r = await host.send({ op: 'session/restore', sessionId: oldId, fork: true })
+    expect(r.ok).toBe(true)
+    const newId = (r.value as { sessionId: string }).sessionId
+    expect(newId).not.toBe(oldId)
+    expect(history.currentSessionId()).toBe(newId)
+    // 播种：flush 后新文件含旧会话内容（fork 自包含——重开不丢前文）
+    history.flushPendingSeed()
+    const seeded = new FileHistoryStore({ sessionId: newId, model: 'm', cwd: '/tmp', dir }).restoreFull(newId)
+    expect(seeded.some((l) => !('rewind' in l) && !('compact_boundary' in l) && JSON.stringify(l).includes('旧会话内容'))).toBe(true)
+    host.dispose()
+  })
+
+  it('T1：panel/data skill+mcp 回执 / mcp/action 写动作 / mcp/approve 批准门 / startupWarnings 转 notice', async () => {
+    const approvedFiles: string[] = []
+    let closedServers: string[] = []
+    const host = new HostSession({
+      ...makeDeps(new MockProvider([])),
+      startupWarnings: ['mcp 配置告警甲', '指令文件告警乙'],
+      panelData: {
+        skill: () => ({
+          skills: [{ name: 'demo', description: '演示', source: 'user', userInvocable: true, disableModelInvocation: false }],
+          shadowedCount: 1,
+        }),
+        mcp: () => ({
+          servers: [{ name: 'srv1', status: 'ready', source: 'user', type: 'stdio', toolCount: 2 }],
+          tools: { srv1: [{ name: 'srv1_t1', description: '工具一' }] },
+        }),
+        mcpAction: async (action, server) => {
+          if (action === 'close') {
+            closedServers.push(server)
+            return { ok: true, output: `已关闭：${server}` }
+          }
+          return { ok: false, error: '连接失败' }
+        },
+        approveMcp: async (file, approved) => {
+          if (approved) approvedFiles.push(file)
+        },
+      },
+    })
+    const events: ProtocolEvent[] = []
+    host.subscribe((e) => events.push(e))
+
+    // ⑪ 构造告警 → notice 帧
+    expect(events.some((e) => e.type === 'notice' && e.text === 'mcp 配置告警甲')).toBe(true)
+
+    // panel/data 两面板 View
+    const sk = await host.send({ op: 'panel/data', panel: 'skill' })
+    expect(sk.value).toMatchObject({ shadowedCount: 1, skills: [{ name: 'demo' }] })
+    const mc = await host.send({ op: 'panel/data', panel: 'mcp' })
+    expect(mc.value).toMatchObject({ servers: [{ name: 'srv1', status: 'ready' }] })
+
+    // mcp/action：close 成功带 output；reconnect 失败收敛 ok:false
+    const closed = await host.send({ op: 'mcp/action', action: 'close', server: 'srv1' })
+    expect(closed).toMatchObject({ ok: true, output: '已关闭：srv1' })
+    expect(closedServers).toEqual(['srv1'])
+    const fail = await host.send({ op: 'mcp/action', action: 'reconnect', server: 'srv1' })
+    expect(fail).toMatchObject({ ok: false, code: 'MCP_ACTION_FAILED' })
+
+    // mcp/approve：批准二段接入 + 拒绝不接入，均 ok 回执
+    const ap = await host.send({ op: 'mcp/approve', file: '/p/.mcp.json', approved: true })
+    expect(ap).toMatchObject({ ok: true })
+    expect(approvedFiles).toEqual(['/p/.mcp.json'])
+    const rj = await host.send({ op: 'mcp/approve', file: '/p/.mcp.json', approved: false })
+    expect(rj).toMatchObject({ ok: true })
+    expect(approvedFiles).toHaveLength(1)
+    host.dispose()
   })
 })
 

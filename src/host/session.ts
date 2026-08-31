@@ -19,7 +19,8 @@ import { randomUUID, createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
-import type { HistoryLine, ImageBlock, Message } from '../core/types.js'
+import type { HistoryLine, ImageBlock, Message, RewindLine } from '../core/types.js'
+import type { RewindExecResult, RewindListResult, SkillPanelView, McpPanelView } from '../protocol/types.js'
 import { buildProviderReq, buildProviderReqFor, DEFAULT_NOTIFICATION_IDLE_SECONDS, type Config } from '../services/config.js'
 import { makeOnBeforeRequest, type SummaryRole } from '../services/compaction/hook.js'
 import { SUMMARY_WINDOW_FLOOR } from '../services/compaction/summarize.js'
@@ -83,7 +84,17 @@ export interface HostDeps {
   orchestrator: CompactionOrchestrator
   skillListForPrompt: () => SkillPromptSource
   hookRunner?: HookRunner | null
-  checkpoint?: { snapshot(sessionId: string, paths: string[], meta: { tool: string; messageId?: string }): Promise<unknown> } | null
+  checkpoint?: {
+    snapshot(sessionId: string, paths: string[], meta: { tool: string; messageId?: string }): Promise<unknown>
+    /** T1 rewind 宿主接线（协议面 list/exec）——结构兼容 CheckpointStore，装配层传真件 */
+    list(sessionId: string): Promise<
+      Array<{ seq: number; time: string; tool: string; messageId?: string; files: Array<{ path: string; hash: string }> }>
+    >
+    detectExternalChanges(sessionId: string, seq: number): Promise<string[]>
+    revert(sessionId: string, seq: number): Promise<{ restored: string[]; externalChanged: string[] }>
+    /** T 线②：fork 续写的快照目录跟随（起新 id 后旧快照仍可用——CC copyFileHistoryForResume 同款） */
+    copyForResume(oldSessionId: string, newSessionId: string): Promise<void>
+  } | null
   quality?: { afterRound(tools: { name: string; isError: boolean }[]): Promise<string | undefined>; lastRoundFailed?: boolean; tripped?: boolean } | null
   /** B1 过渡 confirm（B2 换 ApprovalBroker 后移除）——argv 不传=broker 策略接管 */
   cwd?: string
@@ -103,6 +114,17 @@ export interface HostDeps {
   commands?: import('../commands/registry.js').CommandRegistry
   /** F-23：/cost 宿主侧会话累计（TUI 由 usage 帧累计；serve 端命令分流本地累计） */
   costAccumulator?: () => number
+  /** T1 面板数据窄口（panel/data + mcp/action + mcp/approve 的宿主侧能力面；
+   *  View 契约冻结在 protocol/types——装配层从真件映射，宿主不 import 具体注册表类型） */
+  panelData?: {
+    skill: () => Promise<SkillPanelView> | SkillPanelView
+    mcp: () => Promise<McpPanelView> | McpPanelView
+    mcpAction?: (action: 'reconnect' | 'close', server: string) => Promise<{ ok: boolean; output?: string; error?: string }>
+    /** .mcp.json 批准门二段接入（approved=true 才实际注册工具；拒绝=仅记录） */
+    approveMcp?: (file: string, approved: boolean) => Promise<void>
+  }
+  /** T1⑪：装配期告警（mcp/instruction）——宿主构造时转 notice 帧（附着态客户端不直读 deps 对象） */
+  startupWarnings?: string[]
 }
 
 interface QueueEntry {
@@ -139,6 +161,11 @@ export class HostSession {
   private roundUses: string[] = []
   private readonly queue: QueueEntry[] = []
   private running = false
+  /** T 线⑥：SessionStart hook 的 additionalContext 宿主暂存（startTurn 首轮注入后清空） */
+  private pendingSessionContext: string[] = []
+  /** T1⑪：启动告警队列（首次订阅 flush——构造期无订阅者） */
+  private pendingStartupWarnings: string[] = []
+  private pendingStartupWarningsFlushed = false
   /** M14-C3③（P1-12）：prompt 已判定开轮、startTurn 尚未置 running 的同步占位——堵 buildBlocks 的 await 窗口 */
   private starting = false
   private currentTurnId: string | null = null
@@ -160,14 +187,21 @@ export class HostSession {
     this.channel.bind((cmd) => this.dispatch(cmd))
     // M14-C2⑥ 审批审计：asked/decided 落 LogStore（asked 含 kind/tool；decided 含 outcome——产品化线设备审批留痕前置）
     // 批2d（§13.1 拍板-1）：审批挂起 N 秒未应答 → Notification hook（第七事件）触发一次
+    // D-T8（2026-08-31 拍板）：默认 15min→1h（手机端晚到应答是附着态核心场景）；超时反馈改如实语义（approval.ts）
     const notifySeconds = deps.getConfig().notificationIdleSeconds ?? DEFAULT_NOTIFICATION_IDLE_SECONDS
-    this.broker = new ApprovalBroker(this.channel, deps.approvalPolicy ?? 'ask', deps.getConfig().approvalTimeoutMs ?? 900_000, (event, info) => {
+    this.broker = new ApprovalBroker(this.channel, deps.approvalPolicy ?? 'ask', deps.getConfig().approvalTimeoutMs ?? 3_600_000, (event, info) => {
       deps.logger.info('approval', event, info)
     },
     (info) => { void this.dispatchNotification('approval-pending', info.kind, info.tool) },
     notifySeconds > 0 ? notifySeconds * 1000 : 0)
     this.sandboxMode =
       (this.cfg().sandbox?.defaultMode as SandboxMode) ?? 'default'
+    // T 线⑥：SessionStart(startup) 宿主化——宿主构造=会话宿主首次诞生（原 TUI 挂载 effect 的
+    // 客户端 dispatch 移入；fork 恢复路径的 resume 走 session/restore fork 分支的 dispatchSessionStart）
+    this.dispatchSessionStart('startup', deps.history.currentSessionId())
+    // T1⑪：装配期告警**不在构造时发布**——订阅者（附着客户端）在构造之后才挂上，即时发必丢；
+    // 存队列随首次订阅 flush（pendingStartupWarningsFlushed 幂等）
+    this.pendingStartupWarnings = deps.startupWarnings ?? []
   }
 
   /** 客户端订阅事件流（B2：订阅即重放 pending 可答帧——重连/换端恢复确认上下文）。
@@ -175,6 +209,11 @@ export class HostSession {
   subscribe(handler: (ev: ProtocolEvent) => void, opts: { canAnswer?: boolean } = {}): () => void {
     const unsub = this.channel.subscribe(handler, opts)
     this.broker.replayPending(handler)
+    // T1⑪：启动告警随首次订阅补发（构造期无订阅者，即时发必丢——dogfood e2e D 组同款时序坑）
+    if (!this.pendingStartupWarningsFlushed) {
+      this.pendingStartupWarningsFlushed = true
+      for (const w of this.pendingStartupWarnings) handler({ type: 'notice', seq: -1, level: 'warn', text: w } as never)
+    }
     return unsub
   }
 
@@ -310,6 +349,21 @@ export class HostSession {
    *  客户端只写镜像时回退对 LLM 上下文不生效且下轮镜像覆盖丢失） */
   appendRewind(line: HistoryLine): void {
     this.messages.push(line)
+  }
+
+  /** T 线⑥：SessionStart hook 宿主化——resume（fork 续写恢复）/startup（首会话）两路统一入口。
+   *  systemMessages 转 systemMsg 帧；additionalContext 宿主暂存（startTurn 首轮注入）。
+   *  fire-and-forget：hook 失败不阻塞恢复/建会话主流程（对齐原 TUI 客户端 .catch(() => {}) 语义）。 */
+  private dispatchSessionStart(source: 'startup' | 'resume', sessionId: string): void {
+    const deps = this.deps
+    if (deps.hookRunner == null || !deps.hookRunner.hasHandlers('SessionStart')) return
+    void deps.hookRunner
+      .dispatch('SessionStart', { event: 'SessionStart', session_id: sessionId, source }, { cwd: this.deps.cwd })
+      .then((v) => {
+        for (const m of v.systemMessages) this.publish('systemMsg', { text: m })
+        if (v.additionalContext.length > 0) this.pendingSessionContext.push(...v.additionalContext)
+      })
+      .catch(() => {})
   }
 
   /** B3：客户端恢复历史会话（宿主 messages 替换为载入内容；history 由调用方先行切 sessionId） */
@@ -585,6 +639,7 @@ export class HostSession {
         const idle = !this.running && !this.starting
         if (idle) this.starting = true
         const blocks = cmd.images !== undefined && cmd.images.length > 0 ? await this.buildBlocks(cmd.images) : undefined
+        let text = cmd.text
         if (!idle) {
           // 复查：await 窗口内轮可能已结束（入口判定过时）——此刻已空闲则直接开轮，
           // 防插话入队后滞留无人 drain（whenIdle 死等；原被双开轮 bug 遮蔽的伴生竞态）
@@ -603,8 +658,25 @@ export class HostSession {
           if (typeof cmd.mode === 'object' && cmd.mode.Steer.expectedTurnId !== this.currentTurnId) {
             return { ok: true, routed: 'Rejected' }
           }
+          // T 线⑥（D-T5a 拍板）：插话同样触发 UserPromptSubmit——本地与附着、TUI 与 web 行为一致
+          // （插话注入当前轮不经过 startTurn，故入队时 dispatch；StartIfIdle 排队不在此触发——
+          // 轮末兜底起轮时 startTurn 会触发，入队再触发即双计）。block=拒绝入队，context 拼进插话文本。
+          if (this.deps.hookRunner != null && this.deps.hookRunner.hasHandlers('UserPromptSubmit')) {
+            this.deps.logger.info('hooks', 'dispatch', { event: 'UserPromptSubmit', interjection: true })
+            const verdict = await this.deps.hookRunner.dispatch('UserPromptSubmit', {
+              event: 'UserPromptSubmit',
+              session_id: this.deps.history.currentSessionId(),
+              prompt: cmd.text,
+            }, { cwd: this.deps.cwd })
+            if (verdict.block) {
+              const msg = `✋ 插话被 hook 拦截${verdict.reason !== undefined && verdict.reason !== '' ? `：${verdict.reason}` : ''}`
+              this.publish('systemMsg', { text: msg })
+              return { ok: false, error: msg, code: 'HOOK_BLOCKED' }
+            }
+            if (verdict.additionalContext.length > 0) text = `${text}\n\n[hook context]\n${verdict.additionalContext.join('\n')}`
+          }
           // StartOrSteer：busy 输入=插话（host 权威队列，D2）
-          this.queue.push({ text: cmd.text, blocks, midTurn: true })
+          this.queue.push({ text, blocks, midTurn: true })
           this.publish('interjection/enqueued', { text: cmd.text })
           this.publish('queue/snapshot', { items: this.queue.map((q) => q.text) })
           return { ok: true, routed: 'Steered' }
@@ -658,7 +730,26 @@ export class HostSession {
         if (this.deps.ensureConversation === undefined) {
           return { ok: false, error: '命令 session/restore 尚未接线（无 ProjectHost）', code: 'NOT_IMPLEMENTED' }
         }
-        return this.deps.ensureConversation(cmd.sessionId)
+        {
+          const r = await this.deps.ensureConversation(cmd.sessionId)
+          if (!r.ok || cmd.fork !== true) return r
+          // T 线②（D 拍板 2026-08-31）：fork 续写宿主化——原 TuiApp restoreSession 的手搓三步
+          // （起新 id 播种/快照目录跟随/SessionStart(resume)）移入宿主，附着与本地两形态行为一致。
+          // 回执 value 覆盖为新 sessionId（客户端以新 id 为当前会话续写）。
+          const messages = [...this.transcript]
+          if (messages.length === 0) {
+            return { ok: false, error: '恢复失败：该会话为空或已损坏（文件缺失/无消息），未切换', code: 'EMPTY_SESSION' }
+          }
+          const newId = new Date().toISOString().replace(/[:.]/g, '-')
+          this.deps.history.forkSession(newId, messages, this.cfg().current.model)
+          await this.deps.checkpoint
+            ?.copyForResume(cmd.sessionId, newId)
+            .catch((e: unknown) =>
+              this.publish('notice', { level: 'warn', text: `快照跟随失败（恢复会话后旧快照不可用）：${e instanceof Error ? e.message : String(e)}` }),
+            )
+          void this.dispatchSessionStart('resume', newId)
+          return { ok: true, value: { sessionId: newId } }
+        }
       case 'session/list': {
         // M13-W4 冷热合并：历史 meta（冷）∪ 活会话 running 态（热）——前端一份列表两端状态。
         // cwd 过滤（审阅 P0-3②）：history 目录用户级全局，无过滤会把本机所有项目的会话
@@ -744,6 +835,74 @@ export class HostSession {
       case 'config/get':
         // 脱敏视图（web 顶栏读 current/models；apiKey 永不出 serve 通道——5.2 铁律）
         return { ok: true, value: redact(this.cfg()) }
+      case 'session/compact':
+        // T1：压缩链宿主权威触发（与 interceptSlashCommand 的 /compact 同路径复用——
+        // 附着态 TUI/web 都经此命令；busy 语义与 /compact 一致：压缩链自带守卫）
+        void this.compactManual().then((r) => {
+          this.publish('systemMsg', { text: r.ok ? '压缩完成' : `压缩失败：${r.reason ?? '未知'}` })
+        })
+        return { ok: true, output: '压缩已开始（完成后有 systemMsg 通知）' }
+      case 'rewind/list': {
+        // T1：快照列表 + 外部修改宿主预计算（契约 RewindListResult——客户端免二次往返；
+        // 旧 TUI 直调 CheckpointStore.list/detectExternalChanges 的双调用在协议面合一）
+        const cp = this.deps.checkpoint
+        if (cp == null) return { ok: false, error: 'checkpoint 未装配', code: 'NOT_IMPLEMENTED' }
+        const sid = this.deps.history.currentSessionId()
+        const metas = await cp.list(sid)
+        const snapshots = []
+        for (const m of metas) {
+          const externallyChanged = await cp.detectExternalChanges(sid, m.seq).catch(() => [] as string[])
+          snapshots.push({ ...m, externallyChanged })
+        }
+        return { ok: true, value: { sessionId: sid, snapshots } satisfies RewindListResult }
+      }
+      case 'rewind/exec': {
+        // T1：回退执行宿主权威化——文件还原 + transcript 镜像留痕 + history 落盘（原 TuiApp onDone
+        // 手搓三步全数移入）；busy 守卫拒绝运行中执行；rewind/applied 帧驱动客户端 session/read 重拉
+        const cp = this.deps.checkpoint
+        if (cp == null) return { ok: false, error: 'checkpoint 未装配', code: 'NOT_IMPLEMENTED' }
+        if (this.isBusy) return { ok: false, error: '轮运行中不可回退，请先中断', code: 'BUSY' }
+        const sid = this.deps.history.currentSessionId()
+        const r = await cp.revert(sid, cmd.target)
+        const meta = (await cp.list(sid)).find((m) => m.seq === cmd.target)
+        const line: RewindLine = {
+          rewind: true,
+          seq: cmd.target,
+          ...(meta?.messageId !== undefined ? { toolUseId: meta.messageId } : {}),
+          time: new Date().toISOString(),
+        }
+        this.appendRewind(line)
+        this.deps.history.appendRewind(line)
+        this.publish('rewind/applied', {
+          seq: cmd.target,
+          ...(line.toolUseId !== undefined ? { toolUseId: line.toolUseId } : {}),
+          time: line.time,
+        })
+        return { ok: true, value: { restored: r.restored, externalChanged: r.externalChanged } satisfies RewindExecResult }
+      }
+      case 'panel/data': {
+        // T1：面板读面（View 契约冻结 protocol/types；plugin 挂账 D-T2，doctor 非面板）
+        const pd = this.deps.panelData
+        if (pd === undefined) return { ok: false, error: '面板数据未装配', code: 'NOT_IMPLEMENTED' }
+        return cmd.panel === 'skill' ? { ok: true, value: await pd.skill() } : { ok: true, value: await pd.mcp() }
+      }
+      case 'mcp/action': {
+        // T1：MCP 面板写动作（reconnect/close 单 server）
+        const pd = this.deps.panelData
+        if (pd?.mcpAction === undefined) return { ok: false, error: 'MCP 动作未装配', code: 'NOT_IMPLEMENTED' }
+        const r = await pd.mcpAction(cmd.action, cmd.server)
+        return r.ok ? { ok: true, output: r.output } : { ok: false, error: r.error ?? `${cmd.action} 失败`, code: 'MCP_ACTION_FAILED' }
+      }
+      case 'mcp/approve': {
+        // T1：项目 .mcp.json 首用批准门过协议（附着态 MCP manager 在 daemon——原 TuiApp overlay
+        // 直调 approve() 的同进程捷径退役）。拒绝=不注册（setup 已按未批准处理），仅审计留痕。
+        const pa = this.deps.panelData?.approveMcp
+        if (pa === undefined) return { ok: false, error: 'MCP 批准门未装配', code: 'NOT_IMPLEMENTED' }
+        await pa(cmd.file, cmd.approved)
+        this.deps.logger.info('mcp', 'approve_gate', { file: cmd.file, approved: cmd.approved })
+        this.publish('systemMsg', { text: cmd.approved ? '已批准项目 .mcp.json（工具已接入）' : '已拒绝项目 .mcp.json' })
+        return { ok: true }
+      }
       case 'sandbox/set':
         // F-33（用户拍板，翻案清账 III P1-2 的 BUSY 拒绝）：运行中 Tab 切档立即生效——
         // 口径统一靠 getter 化（toolCtx.checkWrite 经 session.getSandbox 读实时档，
@@ -816,17 +975,25 @@ export class HostSession {
     const turnId = this.currentTurnId
     // UserPromptSubmit hook（session_id 用真实会话 id——顺手修 TuiApp 侧硬编码 '' 的同源问题）
     if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
+      this.deps.logger.info('hooks', 'dispatch', { event: 'UserPromptSubmit' })
       const verdict = await deps.hookRunner.dispatch('UserPromptSubmit', {
         event: 'UserPromptSubmit',
         session_id: deps.history.currentSessionId(),
         prompt: input,
-      }, { signal: this.abort.signal })
+      }, { signal: this.abort.signal, cwd: this.deps.cwd })
       if (verdict.block) {
         this.publish('systemMsg', { text: `✋ 输入被 hook 拦截${verdict.reason !== undefined && verdict.reason !== '' ? `：${verdict.reason}` : ''}` })
         this.finishTurn(turnId)
         return
       }
       if (verdict.additionalContext.length > 0) input = `${input}\n\n[hook context]\n${verdict.additionalContext.join('\n')}`
+    }
+    // T 线⑥：SessionStart 产出的 additionalContext 宿主暂存，拼进恢复/新建后首轮输入
+    // （原 TUI pendingSessionCtxRef 客户端机制的宿主等价物——附着态 web/TUI 同样生效；
+    // 前缀与 UserPromptSubmit 同款 [hook context]——同源 hook 产物，模型视角一致）
+    if (this.pendingSessionContext.length > 0) {
+      input = `${input}\n\n[hook context]\n${this.pendingSessionContext.join('\n')}`
+      this.pendingSessionContext = []
     }
     // M10-P3 双时点之二：跨 turn 后台任务通知随首轮输入注入
     for (const n of this.tasks.collectNotifications()) input = `${input}\n${n}`
@@ -997,7 +1164,7 @@ export class HostSession {
             event: 'Stop',
             session_id: deps.history.currentSessionId(),
             stop_reason: this.abort.signal.aborted ? 'aborted' : 'turn-complete',
-          })
+          }, { cwd: this.deps.cwd })
         }
       } catch {
         // Stop hook 失败不掩盖主结果（与 TuiApp 同款 fail-open 语义）

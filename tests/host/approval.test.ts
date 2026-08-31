@@ -3,7 +3,7 @@
  * spike 场景 3/4/5（可答帧双端收敛、拒绝路径、断线重放）在此转正。
  */
 import { describe, expect, it, vi } from 'vitest'
-import { ApprovalBroker } from '../../src/host/approval.js'
+import { ApprovalBroker, APPROVAL_TIMEOUT_FEEDBACK } from '../../src/host/approval.js'
 import { InMemoryChannel } from '../../src/protocol/channel.js'
 import type { ProtocolEvent } from '../../src/protocol/types.js'
 
@@ -179,5 +179,15 @@ describe('ApprovalBroker（M14-C2⑤⑥ claim/审计）', () => {
     expect(audit.map((a) => a.event)).toEqual(['asked', 'decided'])
     expect(asked.info).toMatchObject({ kind: 'tool-confirm', tool: 'write_file' })
     expect(audit[1]?.info).toMatchObject({ outcome: 'reject', message: '不要动这个文件' })
+  })
+
+  it('D-T8：超时收敛 → confirm resolve 专用如实反馈串（非 false——用户没拒绝，是无人应答）', async () => {
+    const ch = new InMemoryChannel()
+    ch.subscribe(() => {})
+    const broker = new ApprovalBroker(ch, 'ask', 30)
+    const p = broker.confirm(use('bash'), 'rm -rf tmp')
+    await new Promise((r) => setTimeout(r, 150))
+    expect(await p).toBe(APPROVAL_TIMEOUT_FEEDBACK)
+    expect(broker.pendingCount).toBe(0)
   })
 })

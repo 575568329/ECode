@@ -104,13 +104,14 @@ describe('TuiApp hooks 事件（H-P4）', () => {
     registerBuiltinCommands()
   })
 
-  it('挂载触发 SessionStart(startup)', async () => {
+  it('挂载触发 SessionStart(startup)（T 线⑥：宿主构造 dispatch，三参带 opts）', async () => {
     const runner = makeHookRunner(() => noVerdict)
     render(React.createElement(TuiApp, { deps: makeDeps(runner) }))
     await flush()
     expect((runner as unknown as { dispatch: ReturnType<typeof vi.fn> }).dispatch).toHaveBeenCalledWith(
       'SessionStart',
       expect.objectContaining({ source: 'startup' }),
+      expect.objectContaining({}),
     )
   })
 
@@ -158,11 +159,13 @@ describe('TuiApp hooks 事件（H-P4）', () => {
     await flush()
     stdin.write('\r')
     await flush()
-    // stub provider 空 Delta 流：runLoop 正常走完，Stop 在 finally 触发（异步链，轮询等待）
+    // stub provider 空 Delta 流：runLoop 正常走完，Stop 在 finally 触发（异步链，轮询等待；
+    // T 线⑥宿主 dispatch 三参带 opts——第三参 objectContaining({}) 兼容）
     await vi.waitFor(() => {
       expect((runner as unknown as { dispatch: ReturnType<typeof vi.fn> }).dispatch).toHaveBeenCalledWith(
         'Stop',
         expect.objectContaining({ stop_reason: 'turn-complete' }),
+        expect.objectContaining({}),
       )
     })
   })
@@ -213,7 +216,7 @@ describe('TuiApp hooks 事件（H-P4）', () => {
     await flush()
     const dispatch = (runner as unknown as { dispatch: ReturnType<typeof vi.fn> }).dispatch
     await vi.waitFor(() => {
-      expect(dispatch).toHaveBeenCalledWith('Stop', expect.objectContaining({ stop_reason: 'aborted' }))
+      expect(dispatch).toHaveBeenCalledWith('Stop', expect.objectContaining({ stop_reason: 'aborted' }), expect.objectContaining({}))
     })
   })
 

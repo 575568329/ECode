@@ -26,7 +26,7 @@ export interface DeviceEntry {
   pairedAt: string
   /** 设备备注的主机名/平台（offer 携带，可空） */
   note?: string
-  /** R2：relay invite（配对时经控制腿登记——吊销时同步 revoke 并断活连接） */
+  /** R2：relay invite（配对时经控制腿登记——吊销时同步 revoke 并断活连接）；expiresAt 0=持久 */
   relayInvite?: { token: string; expiresAt: number }
 }
 

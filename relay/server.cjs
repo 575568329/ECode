@@ -299,13 +299,15 @@ function wireControl(st, ws) {
     }
     if (msg.t === 'pong') return
     if (msg.t === 'invite-create') {
-      const ttl = Math.max(1000, Math.min(INVITE_TTL_CAP_MS, Number(msg.ttlMs) || INVITE_TTL_CAP_MS))
+      // ttl<=0 = 持久 invite（设备凭据生命周期=吊销即终态；正数=短时 invite cap 10.5min——orca 语义保留）
+      const ttl = Number(msg.ttlMs)
+      const eff = ttl > 0 ? Math.min(INVITE_TTL_CAP_MS, ttl) : 0
       const token =
         typeof msg.inviteToken === 'string' && msg.inviteToken.length >= 24
           ? msg.inviteToken
           : crypto.randomBytes(24).toString('base64url')
-      st.invites.set(token, { expiresAt: Date.now() + ttl, conns: new Set() })
-      send(ws, { t: 'invite-ok', reqId: msg.reqId, inviteToken: token, expiresAt: Date.now() + ttl })
+      st.invites.set(token, { expiresAt: eff === 0 ? 0 : Date.now() + eff, conns: new Set() })
+      send(ws, { t: 'invite-ok', reqId: msg.reqId, inviteToken: token, expiresAt: eff === 0 ? 0 : Date.now() + eff })
       return
     }
     if (msg.t === 'invite-revoke') {
@@ -476,7 +478,7 @@ phoneHttp.on('upgrade', (req, socket, head) => {
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n') // 线上形态：升级前拒绝只能 HTTP 层表达
     return socket.destroy()
   }
-  if (inv === undefined || inv.expiresAt <= Date.now()) {
+  if (inv === undefined || (inv.expiresAt !== 0 && inv.expiresAt <= Date.now())) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
     return socket.destroy()
   }

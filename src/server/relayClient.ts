@@ -18,6 +18,7 @@
 import WebSocket from 'ws'
 import { createHmac, randomBytes, randomUUID } from 'node:crypto'
 import type { CredentialClass } from './credentials.js'
+import { E2eeHostSession } from './e2ee.js'
 
 export interface RelayClientOpts {
   /** relay 源（wss://nodetime.cn 或本地 ws://127.0.0.1:7092） */
@@ -36,6 +37,8 @@ export interface RelayClientOpts {
   maxLegs?: number
   /** 租约续期提前量上限毫秒（默认 20-40s 随机；测试缩时用） */
   renewMarginMs?: number
+  /** R3：daemon 静态 E2EE 钥匙（loadOrCreateHostKeys——给了即数据腿强制加密，D4） */
+  hostKeys?: { publicKeyB64: string; privateKeyB64: string }
   log?: (level: 'info' | 'warn' | 'error', event: string, payload?: Record<string, unknown>) => void
 }
 
@@ -333,11 +336,12 @@ export class RelayClient {
  */
 interface LegSession {
   /** ready 前逐帧驱动（明文 hello / R3 e2ee 握手）；返回 close 则立即断腿 */
-  onHandshake(text: string): { ready: boolean; close?: { code: number; reason: string } }
+  onHandshake(text: string): { ready: boolean; send?: string; close?: { code: number; reason: string } }
   decode(text: string): Record<string, unknown> | null
   encode(obj: unknown): string
-  /** 握手确立的凭据（loopback fetch Bearer——R2 明文 hello 携带，R3 在密文 auth 帧携带） */
   readonly auth: string
+  /** 解密失败即断腿（e2ee：计数器失序/GCM 认证失败=不可恢复——明文形态容错跳过） */
+  readonly failClose: boolean
 }
 
 function plaintextSession(verifyAuth: (secret: string) => CredentialClass | null): LegSession {
@@ -346,6 +350,7 @@ function plaintextSession(verifyAuth: (secret: string) => CredentialClass | null
     get auth() {
       return state.auth
     },
+    failClose: false,
     onHandshake(text) {
       let msg: Record<string, unknown>
       try {
@@ -356,7 +361,7 @@ function plaintextSession(verifyAuth: (secret: string) => CredentialClass | null
       const secret = typeof msg.auth === 'string' ? msg.auth : ''
       if (secret === '' || verifyAuth(secret) === null) return { ready: false, close: { code: 4401, reason: 'auth rejected' } }
       state.auth = secret
-      return { ready: true }
+      return { ready: true, send: JSON.stringify({ t: 'hello-ok' }) }
     },
     decode(text) {
       try {
@@ -368,6 +373,20 @@ function plaintextSession(verifyAuth: (secret: string) => CredentialClass | null
     encode(obj) {
       return JSON.stringify(obj)
     },
+  }
+}
+
+/** R3：强制 E2EE 会话工厂（D4——hostKeys 缺省仅限无钥匙的测试形态；生产 serveMain 恒给） */
+function e2eeSession(hostKeys: { privateKeyB64: string }, verifyAuth: (secret: string) => CredentialClass | null): LegSession {
+  const s = new E2eeHostSession(hostKeys.privateKeyB64, verifyAuth)
+  return {
+    get auth() {
+      return s.auth
+    },
+    failClose: true,
+    onHandshake: (text) => s.onHandshake(text),
+    decode: (text) => s.decode(text),
+    encode: (obj) => s.encode(obj),
   }
 }
 
@@ -383,12 +402,17 @@ class DataLeg {
     private readonly opts: RelayClientOpts,
     private readonly onEnd: () => void,
   ) {
-    this.session = plaintextSession(opts.verifyAuth)
+    // D4：hostKeys 在=强制 e2ee（手机 hello/凭据全走密文）；无=仅测试形态的明文 hello
+    this.session = opts.hostKeys !== undefined ? e2eeSession(opts.hostKeys, opts.verifyAuth) : plaintextSession(opts.verifyAuth)
     ws.on('message', (raw) => this.onText(raw.toString()))
   }
 
   private send(obj: unknown): void {
     if (!this.dead && this.ws.readyState === WebSocket.OPEN) this.ws.send(this.session.encode(obj))
+  }
+
+  private rawSend(text: string): void {
+    if (!this.dead && this.ws.readyState === WebSocket.OPEN) this.ws.send(text)
   }
 
   private onText(text: string): void {
@@ -399,14 +423,15 @@ class DataLeg {
         this.close(r.close.code, r.close.reason)
         return
       }
-      if (r.ready) {
-        this.ready = true
-        this.send({ t: 'hello-ok' }) // 手机端连接态判据（R3 换 e2ee_ok）
-      }
+      if (r.send !== undefined) this.rawSend(r.send)
+      if (r.ready) this.ready = true
       return
     }
     const frame = this.session.decode(text)
-    if (frame === null) return
+    if (frame === null) {
+      if (this.session.failClose) this.close(4003, 'decrypt failed') // 严格计数器：错位/重放/篡改不可恢复
+      return
+    }
     void this.dispatch(frame)
   }
 

@@ -14,6 +14,8 @@
  * 在应用挂载前消费：写 relay 配置+token、剥 hash，App 直进已连接态。
  */
 
+import { WebE2eeSession } from './e2ee'
+
 export interface RelayCfg {
   connectUrl: string
   inviteToken: string
@@ -88,6 +90,7 @@ const unauthorizedListeners = new Set<() => void>()
 const frameListeners = new Set<(f: unknown) => void>()
 
 let ws: WebSocket | null = null
+let session: WebE2eeSession | null = null
 let attempt = 0
 let everConnected = false
 let sessionReady = false
@@ -110,35 +113,117 @@ function scheduleReconnect(): void {
   }, delay)
 }
 
+/** R3（D4 强制）：出站帧统一走 e2ee 加密链（保序消费计数器） */
+function sendFrame(obj: unknown): void {
+  if (session === null) {
+    ws?.send(JSON.stringify(obj))
+    return
+  }
+  void session
+    .encode(obj)
+    .then((text) => {
+      if (ws !== null && ws.readyState === WebSocket.OPEN) ws.send(text)
+    })
+    .catch(() => {
+      /* 加密失败=会话已废——close 收割 */
+    })
+}
+
 function connect(): void {
   const cfg = relayGetCfg()
   if (cfg === null) return
+  if (typeof cfg.daemonPubKeyB64 !== 'string' || cfg.daemonPubKeyB64 === '') {
+    // D4：relay 形态强制 E2EE——配对信息缺公钥=不可连接（重新配对）
+    markRelayLost('配对信息缺少端到端加密公钥——请在电脑端重新执行 ecode pair 配对')
+    clearCreds()
+    unauthorizedListeners.forEach((l) => l())
+    return
+  }
   stateListeners.forEach((l) => l('connecting'))
   // invite 走 subprotocol（浏览器 WS 不能带 header；query 会进代理日志）
   ws = new WebSocket(cfg.connectUrl, ['ecode-relay', cfg.inviteToken])
+  session = null
   ws.onopen = () => {
     sessionReady = false
-    ws?.send(JSON.stringify({ t: 'hello', auth: cfg.secret }))
+    // R3：e2ee 握手（明文只有 hello/ready 两个密钥交换帧——auth 起全密文）
+    const s = new WebE2eeSession(cfg.daemonPubKeyB64!, cfg.secret)
+    session = s
+    void s
+      .startHello()
+      .then((hello) => {
+        ws?.send(hello)
+      })
+      .catch(() => {
+        try {
+          ws?.close()
+        } catch {
+          /* 已断 */
+        }
+      })
   }
   ws.onmessage = (e) => {
-    let msg: Record<string, unknown>
+    void onWireMessage(String(e.data))
+  }
+  ws.onclose = (e) => {
+    ws = null
+    session = null
+    sessionReady = false
+    for (const [, p] of pending) {
+      clearTimeout(p.timer)
+      p.reject(new Error('连接已断开'))
+    }
+    pending.clear()
+    if (e.code === 4401 || e.code === 4001 || e.code === 4003) {
+      // invite 失效/被吊销（4401）或 e2ee 被拒（4001/4003）：凭据全清——App 回门并提示重新配对
+      clearCreds()
+      unauthorizedListeners.forEach((l) => l())
+      stateListeners.forEach((l) => l('backoff'))
+      return
+    }
+    stateListeners.forEach((l) => l('backoff'))
+    scheduleReconnect()
+  }
+  ws.onerror = () => {
+    /* close 随后到——退避在 close 统一 */
+  }
+}
+
+/** 线上帧路由（握手段→e2ee 状态机；ready 后→解密分发） */
+async function onWireMessage(text: string): Promise<void> {
+  if (!sessionReady && session !== null) {
     try {
-      msg = JSON.parse(String(e.data)) as Record<string, unknown>
+      const r = await session.onHandshakeFrame(text)
+      if (r.send !== undefined && ws !== null && ws.readyState === WebSocket.OPEN) ws.send(r.send)
+      if (r.ready === true) {
+        const wasReconnect = everConnected
+        everConnected = true
+        attempt = 0
+        sessionReady = true
+        stateListeners.forEach((l) => l('open'))
+        if (wasReconnect) reconnectListeners.forEach((l) => l())
+        flushQueue()
+      }
     } catch {
-      return
+      try {
+        ws?.close()
+      } catch {
+        /* 已断 */
+      }
     }
-    if (msg.t === 'hello-ok') {
-      const first = !everConnected
-      const wasReconnect = everConnected
-      everConnected = true
-      attempt = 0
-      sessionReady = true
-      stateListeners.forEach((l) => l('open'))
-      if (wasReconnect) reconnectListeners.forEach((l) => l())
-      if (first || wasReconnect) flushQueue()
-      return
+    return
+  }
+  if (session === null) return
+  const msg = await session.decode(text)
+  if (msg === null) {
+    // 严格计数器：解密失败不可恢复（重放/乱序/篡改）——fail-close
+    try {
+      ws?.close(4003, 'decrypt failed')
+    } catch {
+      /* 已断 */
     }
-    if (msg.t === 'res') {
+    return
+  }
+  if (msg.t === 'res') {
       const id = String(msg.id)
       const p = pending.get(id)
       if (p === undefined) return
@@ -153,35 +238,13 @@ function connect(): void {
       p.resolve((msg.json ?? {}) as Record<string, unknown>)
       return
     }
-    if (msg.t === 'frame') {
-      frameListeners.forEach((l) => l(msg.frame))
-      return
-    }
-    if (msg.t === 'sub-err' && msg.status === 401) {
-      clearCreds()
-      unauthorizedListeners.forEach((l) => l())
-    }
+  if (msg.t === 'frame') {
+    frameListeners.forEach((l) => l(msg.frame))
+    return
   }
-  ws.onclose = (e) => {
-    ws = null
-    sessionReady = false
-    for (const [, p] of pending) {
-      clearTimeout(p.timer)
-      p.reject(new Error('连接已断开'))
-    }
-    pending.clear()
-    if (e.code === 4401) {
-      // invite 失效/被吊销：凭据全清——App 回门并提示重新配对
-      clearCreds()
-      unauthorizedListeners.forEach((l) => l())
-      stateListeners.forEach((l) => l('backoff'))
-      return
-    }
-    stateListeners.forEach((l) => l('backoff'))
-    scheduleReconnect()
-  }
-  ws.onerror = () => {
-    /* close 随后到——退避在 close 统一 */
+  if (msg.t === 'sub-err' && msg.status === 401) {
+    clearCreds()
+    unauthorizedListeners.forEach((l) => l())
   }
 }
 
@@ -203,11 +266,15 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && (ws === null || ws.readyState !== WebSocket.OPEN)) ensureSocket()
 })
 
+function markRelayLost(message: string): void {
+  localStorage.setItem('ecode-relay-lost', message)
+}
+
 /** 吊销/失效：凭据全清（device secret + relay cfg——回配对流），留标记供 token 门提示重新配对 */
 function clearCreds(): void {
   localStorage.removeItem('ecode-token')
   relayClearCfg()
-  localStorage.setItem('ecode-relay-lost', '1')
+  markRelayLost('设备连接已失效（被吊销或 invite 过期）——请在电脑端重新执行 ecode pair 配对')
   if (ws !== null) {
     try {
       ws.close()
@@ -220,7 +287,7 @@ function clearCreds(): void {
 
 /** token 门提示（设备连接失效后——指引重新配对而非干输 token） */
 export function relayLostMessage(): string | null {
-  return localStorage.getItem('ecode-relay-lost') === '1' ? '设备连接已失效（被吊销或 invite 过期）——请在电脑端重新执行 ecode pair 配对' : null
+  return localStorage.getItem('ecode-relay-lost')
 }
 export function clearRelayLost(): void {
   localStorage.removeItem('ecode-relay-lost')
@@ -247,7 +314,7 @@ export function relaySendCommand(
         reject(new Error('命令超时（中继链路）'))
       }, 130_000)
       pending.set(id, { resolve: resolve as (v: Record<string, unknown>) => void, reject, timer })
-      ws.send(JSON.stringify({ t: 'cmd', id, project, body }))
+      sendFrame({ t: 'cmd', id, project, body })
     })
     if (ws !== null && ws.readyState === WebSocket.OPEN && sessionReady) flushQueue()
   })
@@ -310,7 +377,7 @@ export function relayConnectMux(
     const frame: Record<string, unknown> = { t: 'sub', id: subId }
     if (sessionId !== undefined && sessionId !== '') frame.sessionId = sessionId
     if (since !== null && Number.isFinite(since)) frame.sinceSeq = since
-    ws.send(JSON.stringify(frame))
+    sendFrame(frame)
   })
   if (ws !== null && ws.readyState === WebSocket.OPEN && sessionReady) flushQueue()
 
@@ -323,7 +390,7 @@ export function relayConnectMux(
       unauthorizedListeners.delete(onUnauthorized)
       if (subId !== null && ws !== null && ws.readyState === WebSocket.OPEN) {
         try {
-          ws.send(JSON.stringify({ t: 'unsub', id: subId }))
+          sendFrame({ t: 'unsub', id: subId })
         } catch {
           /* 已断 */
         }

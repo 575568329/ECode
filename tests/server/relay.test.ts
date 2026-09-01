@@ -14,6 +14,7 @@ import { serveMulti } from '../../src/server/multi.js'
 import { ProjectRegistry } from '../../src/server/projects.js'
 import { RelayClient } from '../../src/server/relayClient.js'
 import { DeviceRegistry } from '../../src/server/devices.js'
+import { E2eeClientSession, loadOrCreateHostKeys } from '../../src/server/e2ee.js'
 import type { MuxFrame } from '../../src/protocol/mux.js'
 
 const regToken = `tok-${randomBytes(8).toString('hex')}`
@@ -75,6 +76,7 @@ function waitFor(cond: () => Promise<boolean> | boolean, timeoutMs = 8000, stepM
 async function startDaemon(opts: { hostId: string; leaseMs?: number; renewMarginMs?: number }): Promise<{ srv: Awaited<ReturnType<typeof serveMulti>>; rc: RelayClient; registry: DeviceRegistry }> {
   const registry = new ProjectRegistry({ createSession: async () => ({}) as never })
   const devices = new DeviceRegistry(join(tmp, `devices-${opts.hostId}.json`))
+  const keys = loadOrCreateHostKeys(join(tmp, `e2ee-${opts.hostId}.json`))
   const rc = new RelayClient({
     hostBase: `ws://127.0.0.1:${hostPort}`,
     phoneBase: `ws://127.0.0.1:${phonePort}`,
@@ -85,6 +87,7 @@ async function startDaemon(opts: { hostId: string; leaseMs?: number; renewMargin
     daemonPort: 0,
     verifyAuth: () => null,
     renewMarginMs: opts.renewMarginMs,
+    hostKeys: { publicKeyB64: keys.publicKeyB64, privateKeyB64: keys.privateKeyB64 },
   })
   const srv = await serveMulti(
     { registry, defaultCwd: tmp },
@@ -95,11 +98,11 @@ async function startDaemon(opts: { hostId: string; leaseMs?: number; renewMargin
   rc.bindDaemon(srv.port, srv.verify ?? (() => null))
   rc.start()
   await waitFor(() => rc.status().connected)
-  return { srv, rc, registry: devices }
+  return { srv, rc, registry: devices, hostPubKeyB64: keys.publicKeyB64 }
 }
 
-/** phone-sim：建立数据腿会话（明文 hello），返回收发器 */
-function phoneDial(connectUrl: string, invite: string, secret: string): Promise<{
+/** phone-sim：建立数据腿会话（R3 E2EE 握手——与 web/src/e2ee.ts 同契约的 Node 侧），返回收发器 */
+function phoneDial(connectUrl: string, invite: string, secret: string, hostPubKeyB64: string): Promise<{
   ws: WebSocket
   send: (o: unknown) => void
   next: (pred?: (m: Record<string, unknown>) => boolean, timeoutMs?: number) => Promise<Record<string, unknown>>
@@ -107,8 +110,17 @@ function phoneDial(connectUrl: string, invite: string, secret: string): Promise<
 }> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(connectUrl, ['ecode-relay', invite])
+    const client = new E2eeClientSession(hostPubKeyB64, secret)
     const queue: Record<string, unknown>[] = []
     const waiters: Array<{ pred: (m: Record<string, unknown>) => boolean; resolve: (m: Record<string, unknown>) => void; timer: ReturnType<typeof setTimeout> }> = []
+    const fail = (e: Error): void => {
+      for (const w of waiters) {
+        clearTimeout(w.timer)
+        w.resolve = () => {}
+      }
+      waiters.length = 0
+      reject(e)
+    }
     const pump = (m: Record<string, unknown>): void => {
       const i = waiters.findIndex((w) => w.pred(m))
       if (i >= 0) {
@@ -119,14 +131,20 @@ function phoneDial(connectUrl: string, invite: string, secret: string): Promise<
       }
     }
     ws.on('message', (raw) => {
-      try {
-        pump(JSON.parse(raw.toString()) as Record<string, unknown>)
-      } catch {
-        /* 坏帧跳过 */
+      const text = raw.toString()
+      if (!client.readyState) {
+        // 握手段：e2ee_ready（明文）→ 派生+回密文 auth
+        const r = client.onMessage(text)
+        if (r.send !== undefined) ws.send(r.send)
       }
+      const decoded = client.decode(text) // e2ee_ok 与此后全部帧（密文）
+      if (decoded !== null) pump(decoded)
     })
     ws.on('error', reject)
-    ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', auth: secret })))
+    ws.on('close', (code) => {
+      if (!client.readyState || code === 4001 || code === 4003) fail(new Error(`e2ee 数据腿被拒（code ${code}）`))
+    })
+    ws.on('open', () => ws.send(client.start()))
     const next = (pred?: (m: Record<string, unknown>) => boolean, timeoutMs = 8000): Promise<Record<string, unknown>> =>
       new Promise((res, rej) => {
         const p = (m: Record<string, unknown>): boolean => (pred === undefined ? true : pred(m))
@@ -135,10 +153,10 @@ function phoneDial(connectUrl: string, invite: string, secret: string): Promise<
         const timer = setTimeout(() => rej(new Error('phone-sim 等帧超时')), timeoutMs)
         waiters.push({ pred: p, resolve: res, timer })
       })
-    // hello-ok 即就绪
-    void next((m) => m.t === 'hello-ok')
-      .then(() => resolve({ ws, send: (o) => ws.send(JSON.stringify(o)), next, close: () => ws.close() }))
-      .catch(reject)
+    // e2ee_ok 即就绪（daemon 已验过密文 auth）
+    void next((m) => m.t === 'e2ee_ok')
+      .then(() => resolve({ ws, send: (o) => ws.send(client.encode(o)), next, close: () => ws.close() }))
+      .catch(fail)
   })
 }
 
@@ -147,7 +165,7 @@ describe('R2 relay 全链路', () => {
     const d = await startDaemon({ hostId: 'host-a' })
     try {
       const inv = await d.rc.createInvite(60_000)
-      const phone = await phoneDial(d.rc.phoneConnectUrl, inv.inviteToken, d.srv.token)
+      const phone = await phoneDial(d.rc.phoneConnectUrl, inv.inviteToken, d.srv.token, d.hostPubKeyB64)
       // device 凭据注册项目 → daemon 栅栏拒绝（凭据分级跨中继生效的断言）
       phone.send({ t: 'cmd', id: 'c1', body: { op: { op: 'session/list' } } })
       const res1 = await phone.next((m) => m.t === 'res' && m.id === 'c1')
@@ -164,10 +182,10 @@ describe('R2 relay 全链路', () => {
   it('坏 invite / 坏凭据被拒', { timeout: 25_000 }, async () => {
     const d = await startDaemon({ hostId: 'host-b' })
     try {
-      await expect(phoneDial(d.rc.phoneConnectUrl, 'bogus-invite', 'x')).rejects.toThrow()
+      await expect(phoneDial(d.rc.phoneConnectUrl, 'bogus-invite', 'x', d.hostPubKeyB64)).rejects.toThrow()
       const inv = await d.rc.createInvite(60_000)
       // 正确 invite + 坏凭据：hello 被断（4401）
-      await expect(phoneDial(d.rc.phoneConnectUrl, inv.inviteToken, 'wrong-secret')).rejects.toThrow()
+      await expect(phoneDial(d.rc.phoneConnectUrl, inv.inviteToken, 'wrong-secret', d.hostPubKeyB64)).rejects.toThrow()
     } finally {
       d.rc.dispose()
       await d.srv.close()
@@ -188,7 +206,7 @@ describe('R2 relay 全链路', () => {
       expect(r.relay?.connectUrl).toContain(`/v1/connect/host-c`)
       expect(Array.isArray(r.projects)).toBe(true)
       // 新设备凭据活注入（无需重启）：电话直接用新 secret 连上
-      const phone = await phoneDial(r.relay!.connectUrl, r.relay!.inviteToken, r.secret!)
+      const phone = await phoneDial(r.relay!.connectUrl, r.relay!.inviteToken, r.secret!, d.hostPubKeyB64)
       // 吊销（daemon 端点——注册表删+凭据摘除+invite revoke 断活连接）
       const list = (await (await fetch(`http://127.0.0.1:${d.srv.port}/api/devices`, { headers: { authorization: `Bearer ${d.srv.token}` } })).json()) as {
         devices: Array<{ deviceId: string }>
@@ -213,7 +231,7 @@ describe('R2 relay 全链路', () => {
     const d = await startDaemon({ hostId: 'host-d' })
     try {
       const inv = await d.rc.createInvite(60_000)
-      const phone = await phoneDial(d.rc.phoneConnectUrl, inv.inviteToken, d.srv.token)
+      const phone = await phoneDial(d.rc.phoneConnectUrl, inv.inviteToken, d.srv.token, d.hostPubKeyB64)
       phone.send({ t: 'sub', id: 's1' })
       const subOk = await phone.next((m) => m.t === 'sub-ok' && m.id === 's1')
       expect(subOk.id).toBe('s1')

@@ -38,6 +38,8 @@ export interface MultiDeviceOpts {
   audit?: (event: string, payload: Record<string, unknown>) => void
   /** 配对 offer 的 web 访问源（局域网/远程形态打印可直接点的 URL；缺省不带） */
   webOrigin?: string
+  /** R3：daemon 静态 E2EE 公钥（offer 钉公钥——防 relay MITM 换钥，T2） */
+  hostPublicKeyB64?: string
 }
 
 export interface MultiServeDeps {
@@ -355,7 +357,7 @@ export function serveMulti(
             let relay: { connectUrl: string; hostId: string; inviteToken: string; expiresAt: number } | undefined
             const rc = opts.devices?.relay?.()
             if (rc !== undefined && rc.status().connected) {
-              const inv = await rc.createInvite(10 * 60_000)
+              const inv = await rc.createInvite(0) // ttl 0=持久（随设备吊销作废；E2EE auth 才是内容门）
               reg.attachInvite(entry.deviceId, { token: inv.inviteToken, expiresAt: inv.expiresAt })
               relay = { connectUrl: rc.phoneConnectUrl, hostId: rc.hostId, inviteToken: inv.inviteToken, expiresAt: inv.expiresAt }
             }
@@ -364,6 +366,7 @@ export function serveMulti(
               ok: true,
               device: { deviceId: entry.deviceId, name: entry.name, scope: entry.scope },
               secret: entry.secret,
+              daemonPubKeyB64: opts.devices?.hostPublicKeyB64,
               // 配对时刻的项目快照：device 凭据此后不可枚举项目列表（403 栅栏）——手机可用的
               // 项目集在配对时由用户级凭据一次性快照（新增项目需重配对或用户级 web 操作）
               projects: registry.listKnown(),

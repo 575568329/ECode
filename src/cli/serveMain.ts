@@ -17,6 +17,7 @@ import { serveMulti } from '../server/multi.js'
 import { FeishuGateway } from '../server/im/feishu.js'
 import { RelayClient } from '../server/relayClient.js'
 import { DeviceRegistry } from '../server/devices.js'
+import { loadOrCreateHostKeys } from '../server/e2ee.js'
 import { makeDeps } from './assembly.js'
 
 /**
@@ -205,6 +206,8 @@ export async function serveMode(): Promise<void> {
   if (deviceCreds.length > 0) logger.info('daemon', 'devices_loaded', { count: deviceCreds.length })
   // R2：relay 出站客户端——鸡生蛋解法：client 先建（端口/凭据校验后置 bindDaemon），
   // serveMulti 经 getter 间接引用（devices.relay: () => relayClient），起完 HTTP 再 start()
+  // R3：daemon 静态 E2EE 钥匙（首启生成 0600——配对 offer 带公钥，relay 数据腿强制加密 D4）
+  const e2eeKeys = config.relay !== undefined ? loadOrCreateHostKeys() : null
   let relayClient: RelayClient | undefined
   if (config.relay !== undefined) {
     relayClient = new RelayClient({
@@ -216,6 +219,7 @@ export async function serveMode(): Promise<void> {
       appVersion: myVer,
       daemonPort: 0,
       verifyAuth: () => null,
+      ...(e2eeKeys !== null ? { hostKeys: { publicKeyB64: e2eeKeys.publicKeyB64, privateKeyB64: e2eeKeys.privateKeyB64 } } : {}),
       log: (level, event, payload) =>
         level === 'error' ? logger.error('daemon', event, payload) : level === 'warn' ? logger.warn('daemon', event, payload) : logger.info('daemon', event, payload),
     })
@@ -239,6 +243,7 @@ export async function serveMode(): Promise<void> {
               deviceRegistry,
               relay: () => relayClient,
               webOrigin: config.relay !== undefined ? config.relay.server.replace(/\/$/, '') + '/ecode' : undefined,
+              hostPublicKeyB64: e2eeKeys?.publicKeyB64,
               audit: (event: string, payload: Record<string, unknown>) => logger.info('approval', event, payload),
             },
           }

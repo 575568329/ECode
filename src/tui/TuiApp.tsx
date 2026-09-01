@@ -172,7 +172,8 @@ function generalConfigItems(config: import('../services/config.js').Config): Con
  *
  * - committed：已固化的历史（进 <Static>，滚轮友好）
  * - active：当前轮活跃状态（分区累积：userInput / tools / streamingText）
- * - 一轮一 commit：runLoop 结束 → messagesToCommitted → setCommitted；active 清空
+ * - 提交即锁死：prompt 发送成功 → 用户消息全文 echo 进 Static（失败留动态区折叠显示）；
+ *   轮末 commit：runLoop 结束 → messagesToCommitted 全量重建 → setCommitted；active 清空
  */
 export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initialHistorySessionId, host: attachedHost }: { deps: TuiAppDeps; banner?: string; onRestart?: () => void; onExit?: () => void; initialHistorySessionId?: string; /** T 线 T4：附着形态由入口注入 MultiTransport（deps 换壳）；缺省=Embedded 内联装配 */ host?: TuiHost }): ReactElement {
   const abortRef = useRef<AbortController>(new AbortController())
@@ -286,6 +287,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   }
 
   const [committed, setCommittedState] = useState<CommittedItem[]>([])
+  // 提交即锁死：echo 组装下一态要读最新 committed（含 alt 冻结暂存值），ref 镜像随写随同步
+  const committedRef = useRef<CommittedItem[]>([])
+  // 提交即锁死：echo 项 id 序号（只求 React key 唯一，轮末重建会换回 transcript 位次 id）
+  const echoSeqRef = useRef(0)
   // F-48 批 1：alt 面板期间的 committed 冻结——Static 组件「已渲染游标」存组件 state，
   // 面板打开期间新 commit 若直进 Static 会写进 alt buffer（退出后主 scrollback 缺行）；
   // 冻结暂存到 pending，退出面板（closeOutputPanel）后一次性补齐。altActiveRef 与
@@ -293,6 +298,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const altActiveRef = useRef(false)
   const pendingCommittedRef = useRef<CommittedItem[] | null>(null)
   const setCommitted = (items: CommittedItem[]): void => {
+    committedRef.current = items
     if (altActiveRef.current) {
       pendingCommittedRef.current = items
       return
@@ -812,6 +818,15 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     }
     // T 线 T4：附着态隐式建会话——回执带 sessionId 记录为当前会话（后续命令信封路由）
     if (r.sessionId !== undefined) recordSessionId(r.sessionId)
+    // 提交即锁死（2026-09-01 用户拍板）：发送成功立刻全文 echo 进 Static——执行期也能回看
+    // 自己发的内容（原动态区 2 行折叠只在发送失败回执窗口保留，见 Conversation）。
+    // echo 用 input（=transcript 权威文本；display 只是执行期标签），轮末 turn/completed
+    // 全量重建时同位置同文；Ink Static 按已渲染游标只追加新项，已打印的 echo 不重印不重复。
+    // 只在成功后 echo：失败时不进 transcript，乐观 echo 会让 committed 超前于 Ink 游标、
+    // 下次全量重建数组变短 → 游标之后的真消息不再打印（静默丢屏）
+    echoSeqRef.current += 1
+    setCommitted([...committedRef.current, { kind: 'user', id: `echo${echoSeqRef.current}`, text: input }])
+    setActive((a) => ({ ...a, userInput: '' }))
   }
 
   // P1 闪退面：doSubmit 前半段（图片组装/hook dispatch/getByType 等）在内部 try 之外，任一

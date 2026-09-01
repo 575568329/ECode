@@ -17,7 +17,9 @@ import { UserMessage } from './UserMessage.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import type { CommittedItem, ActiveState, ActiveTool, CommittedToolCall } from './types.js'
 
-/** 用户输入折叠上限（P1-A：防粘贴长代码撑爆动态区） */
+/** 用户输入折叠上限（P1-A：防粘贴长代码撑爆动态区）。
+ *  提交即锁死（2026-09-01）：成功路径 userInput 已清空、全文 echo 进 Static（TuiApp doSubmit），
+ *  此折叠只剩发送失败回执窗口在用（消息不进 transcript，不能乐观 echo，见 doSubmit 注释） */
 const USER_INPUT_MAX_LINES = 2
 
 /** M14-V5 退化保护提示（budget < 12：宁可不显示也不触发 Ink 全清兜底） */

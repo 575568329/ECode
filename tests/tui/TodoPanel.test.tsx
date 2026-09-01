@@ -65,4 +65,14 @@ describe('deriveLatestTodos 派生', () => {
     expect(deriveLatestTodos([{ name: 'bash', use: { input: {} } }])).toBeNull()
     expect(deriveLatestTodos([])).toBeNull()
   })
+
+  it('全部完成 → 面板自动收起（null）', () => {
+    const allDone = [
+      { content: 'a', status: 'completed' },
+      { content: 'b', status: 'completed' },
+    ]
+    const { lastFrame } = render(<TodoPanel todos={allDone} />)
+    // ink-testing 的 lastFrame() 对 null 渲染返回上一帧残留字符串——断言「不含面板标题」即收起
+    expect(lastFrame() ?? '').not.toContain('任务清单')
+  })
 })

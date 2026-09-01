@@ -32,6 +32,9 @@ export function TodoPanel({
 }): React.JSX.Element | null {
   if (altMode || todos === null || todos.length === 0 || maxVisible <= 0) return null
   const done = todos.filter((x) => x.status === 'completed').length
+  // 全部完成 → 整面板自动收起（用户真机反馈：完成后常驻像没清场；对标 CC——清单服务执行期，
+  // 收尾即退役。transcript 里 ✓ 历史仍在，新任务建新清单时面板自然重现）
+  if (done === todos.length) return null
   const shown = todos.length > maxVisible ? todos.slice(0, maxVisible) : todos
   return (
     <Box flexDirection="column" marginBottom={0}>

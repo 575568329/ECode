@@ -6,7 +6,7 @@
  *   点按切换/移除/断开本机连接。
  */
 import { useCallback, useEffect, useState } from 'react'
-import { X, Trash2 } from 'lucide-react'
+import { X, Trash2, QrCode } from 'lucide-react'
 import { getToken } from './connect'
 import { activateHost, fetchHostsOnline, listHosts, relayDisconnect, relayGetCfg, removeHost, type HostOnline } from './relay'
 
@@ -37,11 +37,25 @@ export function DevicesPanel({ onClose }: { onClose: () => void }): React.JSX.El
 }
 
 /** 直连形态：设备列表+吊销（电脑/局域网 web 用） */
+/** UTF-8 安全 base64url（offer 载荷含中文设备名） */
+function utf8ToBase64Url(s: string): string {
+  const bytes = new TextEncoder().encode(s)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
 function DirectDevices({ onClose }: { onClose: () => void }): React.JSX.Element {
   const [devices, setDevices] = useState<DeviceRow[] | null>(null)
   const [relay, setRelay] = useState<{ connected: boolean; generation?: number } | null>(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState('')
+  // R5 补齐（D1 拍板「web 添加设备页随 R5」）：web 端发起配对——生成深链发给手机
+  const [pairName, setPairName] = useState('')
+  const [pairBusy, setPairBusy] = useState(false)
+  const [pairLink, setPairLink] = useState('')
+  const [pairErr, setPairErr] = useState('')
+  const [copied, setCopied] = useState(false)
   const load = useCallback((): void => {
     fetch('/api/devices', { headers: { authorization: `Bearer ${getToken()}` } })
       .then(async (r) => {
@@ -64,9 +78,99 @@ function DirectDevices({ onClose }: { onClose: () => void }): React.JSX.Element 
       .then(load)
       .finally(() => setBusy(''))
   }
+  const pair = (): void => {
+    const name = pairName.trim()
+    if (name === '' || pairBusy) return
+    setPairBusy(true)
+    setPairErr('')
+    setPairLink('')
+    fetch('/api/devices', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ name, scope: 'chat' }),
+    })
+      .then(async (r) => {
+        const body = (await r.json()) as {
+          ok?: boolean
+          error?: string
+          secret?: string
+          device?: { deviceId: string; name: string; scope: string }
+          projects?: unknown[]
+          webOrigin?: string
+          relay?: { connectUrl: string; hostId: string; inviteToken: string; expiresAt: number } | null
+          daemonPubKeyB64?: string
+        }
+        if (!r.ok || body.ok !== true || typeof body.secret !== 'string') throw new Error(body.error ?? `HTTP ${r.status}`)
+        if (body.relay === undefined || body.relay === null) throw new Error('中继未连接——异地配对链接需 relay 在线（可稍后重试，或在电脑终端 ecode pair 走局域网形态）')
+        // offer 组装与 pair CLI 同构（projects 归一字符串、页面链接 https 归一）
+        const offer = {
+          v: 1,
+          deviceId: body.device?.deviceId,
+          name: body.device?.name,
+          scope: body.device?.scope,
+          secret: body.secret,
+          daemonPubKeyB64: body.daemonPubKeyB64,
+          projects: (body.projects ?? []).map((p) => (typeof p === 'string' ? p : (p as { path?: string })?.path)).filter((x): x is string => typeof x === 'string'),
+          webOrigin: body.webOrigin,
+          relay: body.relay,
+        }
+        const origin = (body.webOrigin ?? '').replace(/\/$/, '').replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://')
+        setPairLink(`${origin}/#pairing=${utf8ToBase64Url(JSON.stringify(offer))}`)
+        load()
+      })
+      .catch((e: unknown) => setPairErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setPairBusy(false))
+  }
   return (
     <>
       {err !== '' && <div className="text-xs text-red-400">⚠ {err}</div>}
+      {/* 配对新设备（web 发起——生成的深链发给手机打开即完成配对） */}
+      <div className="rounded border border-neutral-800 p-2.5">
+        <div className="flex items-center gap-1.5 pb-1.5 text-[11px] uppercase tracking-wider text-neutral-500">
+          <QrCode size={11} /> 配对新设备
+        </div>
+        {pairLink === '' ? (
+          <div className="flex gap-1.5">
+            <input
+              value={pairName}
+              onChange={(e) => setPairName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') pair()
+              }}
+              placeholder="设备名（如：我的手机）"
+              className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-800 px-2 py-1.5 text-xs outline-none placeholder:text-neutral-600 focus:border-neutral-500"
+            />
+            <button
+              onClick={pair}
+              disabled={pairName.trim() === '' || pairBusy}
+              className="shrink-0 rounded bg-neutral-200 px-2.5 py-1.5 text-xs font-medium text-neutral-900 disabled:opacity-40"
+            >
+              {pairBusy ? '生成中…' : '生成配对链接'}
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            <div className="text-[11px] text-emerald-400">✓ 已生成——把链接发给手机（微信/QQ 均可），手机浏览器打开即自动配对：</div>
+            <textarea readOnly value={pairLink} rows={4} className="w-full break-all rounded border border-neutral-700 bg-neutral-800 p-1.5 font-mono text-[10px] text-neutral-300" />
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => {
+                  void navigator.clipboard.writeText(pairLink)
+                  setCopied(true)
+                  setTimeout(() => setCopied(false), 1500)
+                }}
+                className="rounded bg-neutral-200 px-2.5 py-1 text-[11px] font-medium text-neutral-900"
+              >
+                {copied ? '已复制' : '复制链接'}
+              </button>
+              <button onClick={() => { setPairLink(''); setPairName('') }} className="rounded border border-neutral-700 px-2.5 py-1 text-[11px] text-neutral-400 hover:text-neutral-200">
+                再配一台
+              </button>
+            </div>
+          </div>
+        )}
+        {pairErr !== '' && <div className="pt-1.5 text-[11px] text-red-400">⚠ {pairErr}</div>}
+      </div>
       {relay !== null && (
         <div className="text-[11px] text-neutral-500">
           中继出站：{relay.connected ? <span className="text-emerald-400">已连接（gen {relay.generation ?? '—'}）</span> : <span className="text-amber-400">未连接</span>}

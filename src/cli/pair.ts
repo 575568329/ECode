@@ -44,7 +44,9 @@ export async function createPairing(name: string, scope: 'chat' | 'full' = 'chat
           name: r.device.name,
           secret: r.secret,
           scope: r.device.scope as 'chat' | 'full',
-          offer: { v: 1, deviceId: r.device.deviceId, name: r.device.name, scope: r.device.scope, secret: r.secret, projects: r.projects, webOrigin: r.webOrigin, relay: r.relay },
+          // daemonPubKeyB64 必须进 offer（钉公钥 T2——实机部署曾漏：multi 返回了但 offer 组装丢弃，
+          // 手机端 D4 强制加密在 connect 时才拒，用户拿到的是一张注定连不上的二维码）
+          offer: { v: 1, deviceId: r.device.deviceId, name: r.device.name, scope: r.device.scope, secret: r.secret, daemonPubKeyB64: r.daemonPubKeyB64, projects: r.projects, webOrigin: r.webOrigin, relay: r.relay },
         }
       }
       process.stderr.write(`daemon 配对失败（HTTP ${res.status}${r.error !== undefined ? `：${r.error}` : ''}）——退回离线形态\n`)

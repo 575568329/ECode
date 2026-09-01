@@ -17,14 +17,14 @@ const todos: TodoEntry[] = [
 describe('TodoPanel 渲染', () => {
   afterEach(() => cleanup())
 
-  it('有清单 → 头部完成度 + 逐项 ASCII 状态符（[x]/[->]/[ ]）', () => {
+  it('有清单 → 头部完成度 + 逐项状态符（✓/▸/○）', () => {
     const { lastFrame } = render(<TodoPanel todos={todos} />)
     const f = lastFrame() ?? ''
     expect(f).toContain('任务清单')
     expect(f).toContain('1/3 完成')
-    expect(f).toContain('[x] 读配置文件')
-    expect(f).toContain('[->] 改模板字段')
-    expect(f).toContain('[ ] 跑测试')
+    expect(f).toContain('✓ 读配置文件')
+    expect(f).toContain('▸ 改模板字段')
+    expect(f).toContain('○ 跑测试')
   })
 
   it('null/空清单/altMode → 不渲染（零占行）', () => {

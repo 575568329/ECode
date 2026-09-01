@@ -4,7 +4,9 @@
  * updates the todo panel, not the transcript"），opencode 默认展开形态最贴合
  * 「清单内容直接可见」诉求。数据源=最近一次 todo 工具调用的 input（消息即状态，
  * M11 v1.2 拍板沿用——不引额外 Store，从 committed/active 派生）。
- * 渲染沿用 M11-P6 的 ASCII 状态符体系（[x]/[->]/[ ]——ambiguous 宽度教训只用 ASCII）。
+ * 状态符（用户真机反馈 [x] 读作「失败叉」）：✓ 完成（成功绿）/ ▸ 进行中 / ○ 待办。
+ * 弃用 M11-P6 的 ASCII 体系（[x]/[->]/[ ]）——清晰度优先；符号仅在行首独立使用，
+ * 无跨列对齐面，ambiguous 宽度终端下至多本行文字偏移 1 列（可接受）。
  */
 import { Box, Text } from 'ink'
 import { theme } from './theme.js'
@@ -49,7 +51,7 @@ export function TodoPanel({
         <Box flexDirection="column">
           {shown.map((x, i) => (
             <Text key={i} color={x.status === 'in_progress' ? theme.info : undefined} bold={x.status === 'in_progress'} dimColor={x.status === 'completed'}>
-              {x.status === 'completed' ? '[x] ' : x.status === 'in_progress' ? '[->] ' : '[ ] '}
+              {x.status === 'completed' ? '✓ ' : x.status === 'in_progress' ? '▸ ' : '○ '}
               {x.content}
             </Text>
           ))}

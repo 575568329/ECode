@@ -26,6 +26,8 @@ export interface DeviceEntry {
   pairedAt: string
   /** 设备备注的主机名/平台（offer 携带，可空） */
   note?: string
+  /** R2：relay invite（配对时经控制腿登记——吊销时同步 revoke 并断活连接） */
+  relayInvite?: { token: string; expiresAt: number }
 }
 
 export class DeviceRegistry {
@@ -80,6 +82,14 @@ export class DeviceRegistry {
   /** 按 secret 查设备（daemon 鉴权用：命中且未删=有效 device 凭据） */
   findBySecret(secret: string): DeviceEntry | null {
     return this.devices.find((d) => d.secret === secret) ?? null
+  }
+
+  /** R2：把 relay invite 绑到设备条目（persist-before-swap） */
+  attachInvite(deviceId: string, invite: { token: string; expiresAt: number }): void {
+    const d = this.devices.find((x) => x.deviceId === deviceId)
+    if (d === undefined) return
+    d.relayInvite = invite
+    this.persist()
   }
 
   /** 吊销：物理删除（本地形态即终态；被吊销设备的下一请求 401→回配对流） */

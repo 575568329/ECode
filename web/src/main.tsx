@@ -1,7 +1,11 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
+import { consumePairingHash } from './relay'
 import './index.css'
+
+// R2：配对深链消费（#pairing= → relay 配置+token 落地、剥 hash）——必须先于 App 挂载
+consumePairingHash()
 
 // 性能基准页（dev-only）：?perf=1 进入——生产构建 DEV=false 走死分支被裁剪
 if (import.meta.env.DEV && new URLSearchParams(location.search).has('perf')) {

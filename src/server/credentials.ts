@@ -33,6 +33,18 @@ export class CredentialStore {
     this.entries.push({ entry: { secret, class: klass }, digest: digestOf(secret) })
   }
 
+  /** R2 吊销三步序第②步：运行中 daemon 的活凭据摘除（此前吊销需重启——R1 披露项收口）。
+   *  逐条摘要常量时比较，命中全删（同 secret 多条目一并失效）；返回是否删除过。 */
+  remove(secret: string): boolean {
+    if (secret === '') return false
+    const d = digestOf(secret)
+    const before = this.entries.length
+    for (let i = this.entries.length - 1; i >= 0; i--) {
+      if (timingSafeEqual(d, this.entries[i].digest)) this.entries.splice(i, 1)
+    }
+    return this.entries.length !== before
+  }
+
   /** 常量时校验：命中返回凭据等级，未命中返回 null（逐条 timingSafeEqual，不短路） */
   verify(presented: string): CredentialClass | null {
     if (presented === '') return null

@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url'
 import { ProjectRegistry } from '../server/projects.js'
 import { serveMulti } from '../server/multi.js'
 import { FeishuGateway } from '../server/im/feishu.js'
+import { RelayClient } from '../server/relayClient.js'
+import { DeviceRegistry } from '../server/devices.js'
 import { makeDeps } from './assembly.js'
 
 /**
@@ -195,23 +197,59 @@ export async function serveMode(): Promise<void> {
     shutdown(0)
   }
   // R1：配对设备凭据注入（devices.json 未吊销条目→extraCredentials device 类——不可 confirm 豁免）
+  const deviceRegistry = new DeviceRegistry()
   const deviceCreds: Array<{ secret: string; class: 'device' }> = []
-  try {
-    const devFile = join(os.homedir(), '.ecode', 'devices.json')
-    if (existsSync(devFile)) {
-      const parsed = JSON.parse(readFileSync(devFile, 'utf8')) as { devices?: Array<{ secret?: string }> }
-      for (const d of parsed.devices ?? []) {
-        if (typeof d.secret === 'string' && d.secret !== '') deviceCreds.push({ secret: d.secret, class: 'device' })
-      }
-      if (deviceCreds.length > 0) logger.info('daemon', 'devices_loaded', { count: deviceCreds.length })
-    }
-  } catch {
-    /* 设备表损坏不阻断 serve 启动 */
+  for (const d of deviceRegistry.list()) {
+    if (d.secret !== '') deviceCreds.push({ secret: d.secret, class: 'device' })
+  }
+  if (deviceCreds.length > 0) logger.info('daemon', 'devices_loaded', { count: deviceCreds.length })
+  // R2：relay 出站客户端——鸡生蛋解法：client 先建（端口/凭据校验后置 bindDaemon），
+  // serveMulti 经 getter 间接引用（devices.relay: () => relayClient），起完 HTTP 再 start()
+  let relayClient: RelayClient | undefined
+  if (config.relay !== undefined) {
+    relayClient = new RelayClient({
+      hostBase: config.relay.hostBase ?? `${config.relay.server.replace(/\/$/, '')}/ecode-tunnel`,
+      phoneBase: config.relay.phoneBase,
+      hostId: config.relay.hostId ?? os.hostname(),
+      hostToken: config.relay.hostToken,
+      hostName: config.relay.name ?? daemonName,
+      appVersion: myVer,
+      daemonPort: 0,
+      verifyAuth: () => null,
+      log: (level, event, payload) =>
+        level === 'error' ? logger.error('daemon', event, payload) : level === 'warn' ? logger.warn('daemon', event, payload) : logger.info('daemon', event, payload),
+    })
   }
   const srv = await serveMulti(
     { registry, defaultCwd: process.cwd() },
-    { port: Number(envOr('ECODE_SERVE_PORT') ?? 0), host: serveHost, password: servePassword, id: sessionId, onStop: stopServe, version: myVer, name: daemonName, extraCredentials: deviceCreds, ...(webDir !== undefined ? { webDir } : {}) },
+    {
+      port: Number(envOr('ECODE_SERVE_PORT') ?? 0),
+      host: serveHost,
+      password: servePassword,
+      id: sessionId,
+      onStop: stopServe,
+      version: myVer,
+      name: daemonName,
+      extraCredentials: deviceCreds,
+      ...(webDir !== undefined ? { webDir } : {}),
+      // R2：设备管理面（配对 offer 的 relay 段依赖 relayClient 在线）
+      ...(config.relay !== undefined || deviceCreds.length > 0
+        ? {
+            devices: {
+              deviceRegistry,
+              relay: () => relayClient,
+              webOrigin: config.relay !== undefined ? config.relay.server.replace(/\/$/, '') + '/ecode' : undefined,
+              audit: (event: string, payload: Record<string, unknown>) => logger.info('approval', event, payload),
+            },
+          }
+        : {}),
+    },
   )
+  if (relayClient !== undefined) {
+    relayClient.bindDaemon(srv.port, srv.verify ?? (() => null))
+    relayClient.start()
+    logger.info('daemon', 'relay_starting', { hostId: relayClient.hostId })
+  }
   // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读。
   // T3：+version（附着前版本比对）+name（多机区分）；tmp+rename 原子写（防撕裂，架构席 P2-3）
   const regPath = join(os.homedir(), '.ecode', 'server.json')
@@ -327,6 +365,7 @@ export async function serveMode(): Promise<void> {
     if (sweep !== null) clearInterval(sweep)
     void (async () => {
       feishuGw?.dispose()
+      relayClient?.dispose()
       await srv.close()
       registry.disposeAll()
       process.exit(code)

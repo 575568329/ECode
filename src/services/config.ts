@@ -65,6 +65,13 @@ export interface Config {
    *  allowUsers=open_id 白名单（审阅 P0-1：缺省/空=拒绝所有——p2p bot 整租户可见，
    *  无白名单即开放执行端点） */
   feishu?: { appId: string; appSecret: string; allowUsers?: string[] }
+  /**
+   * R2：relay 出站连接（异地手机接入——配了才激活；daemon 纯出站零入站新增）。
+   * server=relay 源（wss://host）；hostToken=relay 的 REG_TOKEN（电脑段准入）；
+   * hostId=本机登记名（多机区分，缺省主机名）。hostBase/phoneBase 仅本地直连 relay
+   * 测试时覆盖 nginx 路径约定（缺省 server+/ecode-tunnel 与 server+/ecode）。
+   */
+  relay?: { server: string; hostToken: string; hostId?: string; name?: string; hostBase?: string; phoneBase?: string }
   /** M10-P1：联网搜索（provider 缺省 bing RSS 免费；preferMcp 显式声明搜索 MCP server 名；命中搜索 MCP 时内置不注册） */
   webSearch?: { provider?: 'bing' | 'zhipu'; apiKey?: string; engine?: 'search_std' | 'search_pro' | 'search_pro_sogou' | 'search_pro_quark'; preferMcp?: string[] }
   /** 指令/记忆注入单级上限 KB（M8：ECODE.md/CLAUDE.md/MEMORY.md 各级截断阈值，默认 32） */
@@ -122,6 +129,8 @@ interface ConfigFile {
    *  allowUsers=open_id 白名单（审阅 P0-1：缺省/空=拒绝所有——p2p bot 整租户可见，
    *  无白名单即开放执行端点） */
   feishu?: { appId: string; appSecret: string; allowUsers?: string[] }
+  /** R2：relay 出站连接（jsonc 透传；server/hostToken 必填才激活） */
+  relay?: { server: string; hostToken: string; hostId?: string; name?: string; hostBase?: string; phoneBase?: string }
 }
 
 export interface LoadConfigOpts {
@@ -355,6 +364,8 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     current: { name: providerName, model },
     ...(file.roles !== undefined ? { roles: file.roles } : {}),
     ...(file.feishu !== undefined ? { feishu: file.feishu } : {}),
+    // R2：relay 配置透传（hostToken 缺失=配置不完整不激活——防半配置静默起链路）
+    ...(file.relay !== undefined && file.relay.server !== '' && file.relay.hostToken !== '' ? { relay: file.relay } : {}),
     maxIterations: file.maxIterations ?? DEFAULT_MAX_ITERATIONS,
     bashMaxOutputBytes: file.bashMaxOutputBytes ?? DEFAULT_BASH_MAX_BYTES,
     lintCommand: file.lintCommand,

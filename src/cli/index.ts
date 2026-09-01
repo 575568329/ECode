@@ -135,15 +135,13 @@ async function main(): Promise<void> {
     process.exitCode = 1
     return
   }
-  // R1：`ecode pair` / `ecode devices` 分流（设备配对面——不初始化 Ink/不碰 LLM）
+  // R1：`ecode pair` / `ecode devices` 分流（设备配对面——不初始化 Ink/不碰 LLM；R2 起 async——守护感知）
   if (parsed.mode === 'pair') {
-    const code = runPair(parsed.pairArgs)
-    process.exitCode = code
+    process.exitCode = await runPair(parsed.pairArgs)
     return
   }
   if (parsed.mode === 'devices') {
-    const code = runDevices(parsed.devicesArgs)
-    process.exitCode = code
+    process.exitCode = await runDevices(parsed.devicesArgs)
     return
   }
   // M12：`ecode serve` 分流（常驻宿主 HTTP——不初始化 Ink）

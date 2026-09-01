@@ -25,6 +25,8 @@ export interface ServeResult {
   token: string
   server: http.Server
   close(): Promise<void>
+  /** R2：凭据校验暴露（relayClient 数据腿 hello 鉴权用——设备 secret→等级，未命中 null） */
+  verify?: (secret: string) => 'primary' | 'lan-password' | 'device' | null
 }
 
 export function serveHost(host: HostSession, opts: { port?: number; hostname?: string; id?: string } = {}): Promise<ServeResult> {
@@ -120,6 +122,7 @@ export function serveHost(host: HostSession, opts: { port?: number; hostname?: s
         port,
         token,
         server,
+        verify: (secret) => credentials.verify(secret),
         close: () =>
           new Promise((done) => {
             server.close(() => done())

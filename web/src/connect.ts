@@ -9,6 +9,7 @@
  */
 
 import { EventSourceParserStream } from 'eventsource-parser/stream'
+import { relayActive, relaySendCommand, relayConnectMux, relayFetchProjects, relayAddProject, relayFetchStats } from './relay'
 
 const TOKEN_KEY = 'ecode-token'
 
@@ -62,6 +63,8 @@ export function connectMux(
   /** W-9（批 4）：断线游标——每次连接尝试时读取；返回数字则 mux 重放该会话缓冲帧（seq>since） */
   sinceSeq?: () => number | null,
 ): MuxConnection {
+  // R2：中继形态——同契约 WS 数据腿（过滤/重放/重连语义 daemon 侧原样承担）
+  if (relayActive()) return relayConnectMux(handlers as Parameters<typeof relayConnectMux>[0], sessionId, sinceSeq)
   let disposed = false
   let attempt = 0
   const buildMuxUrl = (): string => {
@@ -155,6 +158,7 @@ export async function sendCommand(
   sessionId: string | undefined,
   op: Record<string, unknown>,
 ): Promise<{ ok: boolean; error?: string; sessionId?: string; value?: unknown; [k: string]: unknown }> {
+  if (relayActive()) return relaySendCommand(project, sessionId, op)
   const body: Record<string, unknown> = { op }
   if (sessionId !== undefined && sessionId !== '') body.sessionId = sessionId
   // confirm=true：web 每条命令都源自用户显式交互（点项目/发送）＝栅栏要求的二次确认语义
@@ -175,6 +179,8 @@ export async function sendCommand(
 export async function fetchProjects(
   base: string,
 ): Promise<{ registered: Array<{ path: string }>; active: Array<{ path: string }>; history: string[] }> {
+  // R2：中继形态——device 凭据不可枚举项目（403 栅栏），用配对时刻快照
+  if (relayActive()) return relayFetchProjects()
   const res = await fetch(`${base}api/projects`, { headers: { authorization: `Bearer ${getToken()}` } })
   if (res.status === 401) {
     clearToken()
@@ -197,6 +203,7 @@ export interface StatsPayload {
   byProject: Array<{ project: string; input: number; output: number; costCny: number; mcpCalls: number }>
 }
 export async function fetchStats(base: string, days = 7): Promise<StatsPayload> {
+  if (relayActive()) return relayFetchStats()
   const res = await fetch(`${base}api/stats?days=${days}`, { headers: { authorization: `Bearer ${getToken()}` } })
   if (res.status === 401) {
     clearToken()
@@ -208,7 +215,9 @@ export async function fetchStats(base: string, days = 7): Promise<StatsPayload> 
   return r
 }
 
-/** 添加项目（web 侧栏「+」）：注册入列表（不冷起宿主）；返回规范化路径（导航 /api/p/<path> 须用它）。 */export async function addProject(base: string, path: string): Promise<string> {
+/** 添加项目（web 侧栏「+」）：注册入列表（不冷起宿主）；返回规范化路径（导航 /api/p/<path> 须用它）。 */
+export async function addProject(base: string, path: string): Promise<string> {
+  if (relayActive()) return relayAddProject()
   const res = await fetch(`${base}api/projects`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${getToken()}` },

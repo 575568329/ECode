@@ -26,6 +26,19 @@ import { extname, join, normalize, sep } from 'node:path'
 import type { ServeResult } from './http.js'
 import type { ProjectRegistry } from './projects.js'
 import { normalizeProjectPath } from '../services/pathnorm.js'
+import type { DeviceRegistry, DeviceScope } from './devices.js'
+import type { RelayClient } from './relayClient.js'
+
+/** R2：设备管理/relay 状态端点注入面（serveMain 接线；缺省=端点 404——嵌入式形态不带）。
+ *  relay 走 getter：RelayClient 需要 srv.port（serveMulti 返回值）——鸡生蛋经闭包解。 */
+export interface MultiDeviceOpts {
+  deviceRegistry?: DeviceRegistry
+  relay?: () => RelayClient | undefined
+  /** 配对/吊销审计（C2⑥ 同一流——serveMain 注入 logger 包装） */
+  audit?: (event: string, payload: Record<string, unknown>) => void
+  /** 配对 offer 的 web 访问源（局域网/远程形态打印可直接点的 URL；缺省不带） */
+  webOrigin?: string
+}
 
 export interface MultiServeDeps {
   registry: ProjectRegistry
@@ -69,6 +82,8 @@ export function serveMulti(
     /** F-27：POST /api/cmd {op:'stop'} 优雅停机回调（serveMode 注入——断 mux → flush 日志 → exit；
      *  缺省 501 NOT_IMPLEMENTED（测试/嵌入方未接线）。本机 token 持有者即主人，不需二次确认） */
     onStop?: () => Promise<void> | void
+    /** R2：设备管理面 + relay 客户端（serveMain 注入） */
+    devices?: MultiDeviceOpts
   } = {},
 ): Promise<ServeResult> {
   const token = randomBytes(24).toString('hex')
@@ -278,6 +293,96 @@ export function serveMulti(
         return
       }
 
+      // R2：设备管理面（pair CLI/web 设备页消费）。列表与注册是一等凭据动作——device 档
+      // 不可自增殖（R1「不可枚举」栅栏延伸到写侧）；吊销三步序=注册表删+活凭据摘除+relay 断连。
+      if (req.method === 'GET' && url.pathname === '/api/devices') {
+        if (credClass === 'device') return json(403, { ok: false, error: '设备凭据不可管理设备（需用户级凭据）' })
+        const reg = opts.devices?.deviceRegistry
+        if (reg === undefined) return json(404, { ok: false, error: '设备管理未接线' })
+        return json(200, {
+          ok: true,
+          devices: reg.list().map((d) => ({ ...d, secret: undefined })),
+          relay: opts.devices?.relay?.()?.status() ?? null,
+        })
+      }
+      if (req.method === 'POST' && url.pathname === '/api/devices/revoke') {
+        if (credClass === 'device') return json(403, { ok: false, error: '设备凭据不可管理设备（需用户级凭据）' })
+        void (async () => {
+          try {
+            const chunks: Buffer[] = []
+            let size = 0
+            for await (const c of req) {
+              size += (c as Buffer).length
+              if (size > MULTI_BODY_CAP) throw Object.assign(new Error('body 超限'), { statusCode: 413 })
+              chunks.push(c as Buffer)
+            }
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as { deviceId?: unknown }
+            const reg = opts.devices?.deviceRegistry
+            if (reg === undefined) return json(404, { ok: false, error: '设备管理未接线' })
+            if (typeof body.deviceId !== 'string') return json(400, { ok: false, error: '缺少 deviceId' })
+            const entry = reg.list().find((d) => d.deviceId === body.deviceId)
+            if (entry === undefined) return json(404, { ok: false, error: `未找到设备 ${String(body.deviceId)}` })
+            // 三步序（orca 蓝本）：relay 断连先行（若在线）→ 注册表删 → 活凭据摘除
+            if (entry.relayInvite !== undefined) await opts.devices?.relay?.()?.revokeInvite(entry.relayInvite.token).catch(() => false)
+            const removed = reg.revoke(entry.deviceId)
+            credentials.remove(entry.secret)
+            opts.devices?.audit?.('device_revoked', { deviceId: entry.deviceId, name: entry.name })
+            return json(200, { ok: removed })
+          } catch (e) {
+            json(400, { ok: false, error: e instanceof Error ? e.message : String(e) })
+          }
+        })()
+        return
+      }
+      if (req.method === 'POST' && url.pathname === '/api/devices') {
+        if (credClass === 'device') return json(403, { ok: false, error: '设备凭据不可配对新设备（需用户级凭据）' })
+        void (async () => {
+          try {
+            const chunks: Buffer[] = []
+            let size = 0
+            for await (const c of req) {
+              size += (c as Buffer).length
+              if (size > MULTI_BODY_CAP) throw Object.assign(new Error('body 超限'), { statusCode: 413 })
+              chunks.push(c as Buffer)
+            }
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as { name?: unknown; scope?: unknown; note?: unknown }
+            const reg = opts.devices?.deviceRegistry
+            if (reg === undefined) return json(404, { ok: false, error: '设备管理未接线' })
+            if (typeof body.name !== 'string' || body.name.trim() === '') return json(400, { ok: false, error: '缺少设备名' })
+            const scope: DeviceScope = body.scope === 'full' ? 'full' : 'chat'
+            const entry = reg.create(body.name.trim(), scope, typeof body.note === 'string' ? body.note : undefined)
+            credentials.add(entry.secret, 'device') // 活注入（R1 需重启的披露项收口）
+            let relay: { connectUrl: string; hostId: string; inviteToken: string; expiresAt: number } | undefined
+            const rc = opts.devices?.relay?.()
+            if (rc !== undefined && rc.status().connected) {
+              const inv = await rc.createInvite(10 * 60_000)
+              reg.attachInvite(entry.deviceId, { token: inv.inviteToken, expiresAt: inv.expiresAt })
+              relay = { connectUrl: rc.phoneConnectUrl, hostId: rc.hostId, inviteToken: inv.inviteToken, expiresAt: inv.expiresAt }
+            }
+            opts.devices?.audit?.('device_paired', { deviceId: entry.deviceId, name: entry.name, scope, viaRelay: relay !== undefined })
+            return json(200, {
+              ok: true,
+              device: { deviceId: entry.deviceId, name: entry.name, scope: entry.scope },
+              secret: entry.secret,
+              // 配对时刻的项目快照：device 凭据此后不可枚举项目列表（403 栅栏）——手机可用的
+              // 项目集在配对时由用户级凭据一次性快照（新增项目需重配对或用户级 web 操作）
+              projects: registry.listKnown(),
+              webOrigin: opts.devices?.webOrigin,
+              relay,
+            })
+          } catch (e) {
+            json(400, { ok: false, error: e instanceof Error ? e.message : String(e) })
+          }
+        })()
+        return
+      }
+      // R2：relay 链路状态（web/TUI 设备页「后台连接」显示）
+      if (req.method === 'GET' && url.pathname === '/api/relay/status') {
+        if (credClass === 'device') return json(403, { ok: false, error: '设备凭据不可查看 relay 状态（需用户级凭据）' })
+        const rc = opts.devices?.relay?.()
+        return json(200, { ok: true, relay: rc !== undefined ? rc.status() : null, phoneConnectUrl: rc?.phoneConnectUrl ?? null })
+      }
+
       // M13-W3：mux 单流——一条 SSE 汇所有项目所有会话（HostEvent 生命周期帧 + 信封事件帧）。
       // M14-C1④：?sessionId= 过滤管线已兑现（只收该会话 ev 帧、host 生命周期帧照发）——客户端
       // 自报仅管线；强制过滤自凭据派生待 R 线（muxFilter 钩子预留①）。
@@ -459,6 +564,7 @@ export function serveMulti(
         port,
         token,
         server,
+        verify: (secret) => credentials.verify(secret),
         close: () =>
           new Promise((done) => {
             registry.disposeAll()

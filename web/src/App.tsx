@@ -9,6 +9,7 @@ import { ArrowLeft, Archive, BarChart3, ChevronDown, Pencil, Plus, Search } from
 import { groupSessionsByTime, searchSessions, type SidebarSession } from './sessionList'
 import { lastSeqFor } from './store'
 import { addProject, connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
+import { relayActive, relayGetCfg, relayLostMessage, clearRelayLost } from './relay'
 import { toConfigView, useApp } from './store'
 import { makeHash, parseHash, type RoutePos } from './routing'
 import { Conversation } from './Conversation'
@@ -29,6 +30,7 @@ function TokenGate({ onReady, hint }: { onReady: () => void; hint?: string }): R
           e.preventDefault()
           if (value.trim() === '') return
           setToken(value.trim())
+          clearRelayLost()
           setError('')
           fetchProjects(BASE)
             .then(() => onReady())
@@ -463,7 +465,7 @@ export function App(): React.JSX.Element {
   if (!ready)
     return (
       <TokenGate
-        hint={unauthorized ? 'token 已失效（daemon 重启会更换 token）——请重新输入' : undefined}
+        hint={relayLostMessage() ?? (unauthorized ? 'token 已失效（daemon 重启会更换 token）——请重新输入' : undefined)}
         onReady={() => {
           setUnauthorized(false)
           setReady(true)
@@ -479,31 +481,42 @@ export function App(): React.JSX.Element {
       {/* 侧栏（桌面常驻；移动=列表态显示） */}
       <aside className={`flex w-full shrink-0 flex-col border-b border-line md:flex md:w-72 md:border-b-0 md:border-r ${mobileDetail ? 'hidden' : 'flex'}`}>
         <div className="flex items-center justify-between px-3 py-2.5">
-          <span className="text-sm font-semibold tracking-wide">ECode</span>
+          <span className="flex items-baseline gap-1.5">
+            <span className="text-sm font-semibold tracking-wide">ECode</span>
+            {relayActive() && (
+              <span className="text-[10px] text-faint" title="经安全中继连接（异地形态）">
+                {relayGetCfg()?.name ?? '中继'}
+              </span>
+            )}
+          </span>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setStatsOpen(true)}
-              title="用量统计（近 7 天）"
-              className="flex h-6 w-6 items-center justify-center rounded text-muted hover:bg-surface-raised hover:text-body"
-            >
-              <BarChart3 size={13} />
-            </button>
+            {!relayActive() && (
+              <button
+                onClick={() => setStatsOpen(true)}
+                title="用量统计（近 7 天）"
+                className="flex h-6 w-6 items-center justify-center rounded text-muted hover:bg-surface-raised hover:text-body"
+              >
+                <BarChart3 size={13} />
+              </button>
+            )}
             <ConnBadge />
           </div>
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-2">
           <div className="flex items-center justify-between px-1 pb-1 pt-2 text-[11px] uppercase tracking-wider text-faint">
             项目
-            <button
-              onClick={() => {
-                setAdding(!adding)
-                setAddErr('')
-              }}
-              title="添加项目（本机绝对路径）"
-              className="flex h-5 w-5 items-center justify-center rounded text-muted hover:bg-surface-raised hover:text-body"
-            >
-              <Plus size={12} />
-            </button>
+            {!relayActive() && (
+              <button
+                onClick={() => {
+                  setAdding(!adding)
+                  setAddErr('')
+                }}
+                title="添加项目（本机绝对路径）"
+                className="flex h-5 w-5 items-center justify-center rounded text-muted hover:bg-surface-raised hover:text-body"
+              >
+                <Plus size={12} />
+              </button>
+            )}
           </div>
           {adding && (
             <form

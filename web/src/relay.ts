@@ -157,7 +157,10 @@ export function consumePairingHash(): void {
       inviteToken: relaySeg.inviteToken,
       secret: offer.secret,
       name: offer.name,
-      projects: Array.isArray(offer.projects) ? offer.projects : [],
+      // 防御性归一：offer.projects 曾是 listKnown 对象形态（{path}）——web 端全按字符串消费
+      projects: (Array.isArray(offer.projects) ? offer.projects : [])
+        .map((p: unknown) => (typeof p === 'string' ? p : (p as { path?: string } | null)?.path))
+        .filter((p: unknown): p is string => typeof p === 'string' && p !== ''),
       expiresAt: relaySeg.expiresAt,
       daemonPubKeyB64: offer.daemonPubKeyB64,
     }

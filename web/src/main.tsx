@@ -20,5 +20,6 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has('perf')) {
 
 // M13-W7：SW 注册（生产构建才注册——dev 模式的 HMR 与 SW 缓存互斥）
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
-  void navigator.serviceWorker.register('/sw.js')
+  // 相对路径：relay 子路径托管（/ecode/）下绝对 /sw.js 会落到反代根（404/HTML——SW 注册必败）
+  void navigator.serviceWorker.register('sw.js')
 }

@@ -213,7 +213,8 @@ export async function serveMode(): Promise<void> {
   if (config.relay !== undefined) {
     relayClient = new RelayClient({
       hostBase: config.relay.hostBase ?? `${config.relay.server.replace(/\/$/, '')}/ecode-tunnel`,
-      phoneBase: config.relay.phoneBase,
+      // phoneBase 缺省 server+'/ecode'（nginx 手机段前缀约定；审阅 P0——不可从 hostBase 推导）
+      phoneBase: config.relay.phoneBase ?? `${config.relay.server.replace(/\/$/, '')}/ecode`,
       hostId: config.relay.hostId ?? os.hostname(),
       hostToken: config.relay.hostToken,
       hostName: config.relay.name ?? daemonName,

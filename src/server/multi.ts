@@ -29,6 +29,27 @@ import { normalizeProjectPath } from '../services/pathnorm.js'
 import type { DeviceRegistry, DeviceScope } from './devices.js'
 import type { RelayClient } from './relayClient.js'
 
+/**
+ * R4 审阅（scope enforcement 兑现）：device 档 chat scope 的信封命令白名单（D2 拍板
+ * 「对话+只读」的执行面——此前 scope 只存储展示零执行，审阅 P1）。full=放行；
+ * 白名单外（model/set、config 写、archive/rename 等管理面）一律 403。
+ */
+const DEVICE_CHAT_OPS = new Set([
+  'prompt',
+  'interrupt',
+  'interjection/clear',
+  'session/list',
+  'session/read',
+  'session/new',
+  'session/restore',
+  'session/rewind.list',
+  'item/read',
+  'config/get',
+  'approval/respond',
+  'askSelect/respond',
+  'askUser/respond',
+])
+
 /** R2：设备管理/relay 状态端点注入面（serveMain 接线；缺省=端点 404——嵌入式形态不带）。
  *  relay 走 getter：RelayClient 需要 srv.port（serveMulti 返回值）——鸡生蛋经闭包解。 */
 export interface MultiDeviceOpts {
@@ -324,11 +345,14 @@ export function serveMulti(
             if (typeof body.deviceId !== 'string') return json(400, { ok: false, error: '缺少 deviceId' })
             const entry = reg.list().find((d) => d.deviceId === body.deviceId)
             if (entry === undefined) return json(404, { ok: false, error: `未找到设备 ${String(body.deviceId)}` })
-            // 三步序（orca 蓝本）：relay 断连先行（若在线）→ 注册表删 → 活凭据摘除
+            // 三步序（orca 蓝本）：relay 断连（若在线）→ 注册表删 → 活凭据摘除 + 本地断腿
             if (entry.relayInvite !== undefined) await opts.devices?.relay?.()?.revokeInvite(entry.relayInvite.token).catch(() => false)
             const removed = reg.revoke(entry.deviceId)
             credentials.remove(entry.secret)
-            opts.devices?.audit?.('device_revoked', { deviceId: entry.deviceId, name: entry.name })
+            // E2EE 语义下唯一权威断连点：控制腿闪断窗口内 revokeInvite 会失败（relay 侧 invite
+            // 仍在），但已 attach 的数据腿可由 daemon 本地按凭据断掉——不留给下一轮退避复活
+            const legs = opts.devices?.relay?.()?.disposeLegsByAuth(entry.secret) ?? 0
+            opts.devices?.audit?.('device_revoked', { deviceId: entry.deviceId, name: entry.name, legsDropped: legs })
             return json(200, { ok: removed })
           } catch (e) {
             json(400, { ok: false, error: e instanceof Error ? e.message : String(e) })
@@ -357,9 +381,18 @@ export function serveMulti(
             let relay: { connectUrl: string; hostId: string; inviteToken: string; expiresAt: number } | undefined
             const rc = opts.devices?.relay?.()
             if (rc !== undefined && rc.status().connected) {
-              const inv = await rc.createInvite(0) // ttl 0=持久（随设备吊销作废；E2EE auth 才是内容门）
-              reg.attachInvite(entry.deviceId, { token: inv.inviteToken, expiresAt: inv.expiresAt })
-              relay = { connectUrl: rc.phoneConnectUrl, hostId: rc.hostId, inviteToken: inv.inviteToken, expiresAt: inv.expiresAt }
+              try {
+                const inv = await rc.createInvite(0) // ttl 0=持久（随设备吊销作废；E2EE auth 才是内容门）
+                reg.attachInvite(entry.deviceId, { token: inv.inviteToken, expiresAt: inv.expiresAt })
+                relay = { connectUrl: rc.phoneConnectUrl, hostId: rc.hostId, inviteToken: inv.inviteToken, expiresAt: inv.expiresAt }
+              } catch (e) {
+                // 回滚（审阅 P1：relay 控制腿重连窗口 createInvite 失败曾留孤儿设备+活凭据）——
+                // 整体失败，用户重试 pair 即可；注册表删+活凭据摘除在响应前完成
+                reg.revoke(entry.deviceId)
+                credentials.remove(entry.secret)
+                opts.devices?.audit?.('device_pair_rollback', { name: body.name, error: e instanceof Error ? e.message : String(e) })
+                return json(502, { ok: false, error: `relay invite 登记失败（控制腿可能正在重连）：${e instanceof Error ? e.message : String(e)}——稍后重试 ecode pair` })
+              }
             }
             opts.devices?.audit?.('device_paired', { deviceId: entry.deviceId, name: entry.name, scope, viaRelay: relay !== undefined })
             return json(200, {
@@ -410,6 +443,10 @@ export function serveMulti(
         const write = guardedSseWrite(res)
         let sendCount = 0
         void muxFilter // T4：per-device 过滤钩子（R1 消费；当前无调用方传入）
+        // R4 审阅（安全席 P1）：device 凭据不带 sessionId 的订阅不 attach 任何会话事件流——
+        // 全机全项目的会话内容（delta/审批 preview）只对显式声明会话的订阅放行；
+        // host 生命周期帧照发（列表页靠 session/list 命令拉取，无需内容流）
+        const deviceScoped = credClass === 'device' && (wantSid === null || wantSid === '')
         const send = (frame: MuxFrame): void => {
           sendCount++
           if (wantSid !== null && wantSid !== '' && 'ev' in frame && frame.sessionId !== wantSid) return
@@ -418,6 +455,7 @@ export function serveMulti(
         }
         const unsubs: Array<() => void> = []
         const attachProject = (cwd: string, host: ProjectHost): void => {
+          if (deviceScoped) return
           for (const [sid, conv] of host.conversationsSnapshot()) {
             // W-9：游标重放（仅重连方声明的会话）——先补缓冲帧再挂活订阅，无缝续传
             if (wantSid !== null && wantSid === sid && sinceSeq !== null && Number.isFinite(sinceSeq)) {
@@ -437,7 +475,7 @@ export function serveMulti(
               if (kind === 'created') {
                 send({ host: { type: 'session/created', brief: info.brief ?? { project: cwd, sessionId: info.sessionId, running: false, title: '', updatedAt: Date.now() } } })
                 const conv = host.conversation(info.sessionId)
-                if (conv !== undefined) unsubs.push(conv.subscribe((ev) => send({ project: cwd, sessionId: info.sessionId, ev }), { canAnswer }))
+                if (conv !== undefined && !deviceScoped) unsubs.push(conv.subscribe((ev) => send({ project: cwd, sessionId: info.sessionId, ev }), { canAnswer }))
               } else {
                 send({ host: { type: 'session/removed', project: cwd, sessionId: info.sessionId } })
               }
@@ -512,6 +550,15 @@ export function serveMulti(
                 console.warn('[serve] onStop 回调失败：', e instanceof Error ? e.message : String(e))
               })
               return
+            }
+            // R4 审阅：device 档 scope 命令面执行（chat=白名单内；full=放行）——user 级凭据不经此门
+            if (credClass === 'device') {
+              const device = opts.devices?.deviceRegistry?.findBySecret(presented)
+              const scope = device?.scope ?? 'chat' // 条目已删（吊销竞态）按最严档处理
+              const opName2 = (typeof cmd.op === 'object' && cmd.op !== null ? (cmd.op as { op?: unknown }).op : undefined) as string | undefined
+              if (scope === 'chat' && (opName2 === undefined || !DEVICE_CHAT_OPS.has(opName2))) {
+                return json(403, { ok: false, error: `设备凭据（对话+只读）不可执行 ${opName2 ?? '该命令'}（管理操作需用户级凭据）` })
+              }
             }
             // M14-C1③ 浏览即装配收敛：session/list 是纯读浏览——冷项目走 history 静态读路径
             // （不 resolveHost→acquire，点过的项目不再全变常驻）；项目已活则照旧走宿主（running 态准确）

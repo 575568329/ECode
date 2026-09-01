@@ -232,6 +232,15 @@ function activateControl(hostId, ws, hello) {
     log(`host rebind: ${hostId} (gen ${prev.generation} kept, active=${prev.active.size})`)
     return
   }
+  // 抢位仲裁（审阅 P1）：旧 control 仍活且租约未过期=fresh hello 来自冒名/重复进程——拒之门外。
+  // 正常重启场景旧 control 已死或租约已过，不受影响；接管权收归 rebind/租约到期两条既有路径
+  if (alive && !prev.leaseExpired) {
+    try {
+      ws.close(4409, 'active host holds slot')
+    } catch {}
+    log(`fresh rejected (slot held): ${hostId} (gen ${prev.generation})`)
+    return
+  }
   // fresh hello：新代（旧 control 与全部数据腿作废——守护进程重启/丢失 resume 的形态）
   prev.generation += 1
   prev.resumeSecret = newResumeSecret()
@@ -374,18 +383,20 @@ function attachDataLeg(st, connId, pending, ws) {
 }
 
 function killConn(st, connId, why) {
+  // 手机腿统一 4401：吊销/失效语义必须带码传达——无码(1000/1006)会让 web 端当成普通断线无限重连，
+  // 永不回配对流（G-R1 验收面）
   const p = st.pending.get(connId)
   if (p !== undefined) {
     clearTimeout(p.timer)
     try {
-      p.phone.close(4404, why)
+      p.phone.close(4401, why)
     } catch {}
     st.pending.delete(connId)
   }
   const a = st.active.get(connId)
   if (a !== undefined) {
     try {
-      a.phone.close()
+      a.phone.close(4401, why)
     } catch {}
     try {
       a.daemon.close()
@@ -431,8 +442,7 @@ const phoneHttp = http.createServer((req, res) => {
         ? { online: true, name: st.name, version: st.version }
         : { online: false }
     }
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.setHeader('cache-control', 'no-store')
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
     return res.end(JSON.stringify({ ok: true, hosts: out }))
   }
   // 静态 PWA 壳（RELAY_WEB_DIR 存在即挂；SPA fallback 同 daemon 形态）
@@ -561,15 +571,18 @@ function rateAllow(ip) {
   return e.n <= ONLINE_RATE_PER_MIN
 }
 
-// —— 租约 sweep：到期未续（fresh/rebind 都算续）→ 关控制腿，此后仅 fresh hello 可入 ——
+// —— 租约 sweep：到期未续（fresh/rebind 都算续）→ 关控制腿，此后仅 fresh hello 可入。
+// 不设 control 存活前置：控制腿已断期间也要置位过期（否则旧 daemon 可凭 resumeSecret 跨租约窗复活）
 setInterval(() => {
   const now = Date.now()
   for (const st of hosts.values()) {
-    if (st.control !== null && now > st.leaseDeadline) {
+    if (!st.leaseExpired && now > st.leaseDeadline) {
       st.leaseExpired = true
-      try {
-        st.control.close(4408, 'lease expired')
-      } catch {}
+      if (st.control !== null) {
+        try {
+          st.control.close(4408, 'lease expired')
+        } catch {}
+      }
       log(`lease expired: ${st.hostId} (gen ${st.generation})`)
     }
   }

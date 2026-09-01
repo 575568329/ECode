@@ -120,6 +120,7 @@ location /ecode-tunnel/ {
 | `RELAY_WEB_DIR` | 空=不托管 | PWA 静态壳目录 |
 | `RELAY_PUBLIC_CONNECT_BASE` | 空 | offer 里的手机接入基址（如 `wss://nodetime.cn/ecode`） |
 | `RELAY_LEASE_MS` / `RELAY_PING_MS` / `RELAY_SILENCE_MS` | 120s / 15s / 75s | 租约/ping/静默踢（orca 实测值，勿乱调） |
+| `RELAY_ATTACH_MS` | 60s | conn-open 后 daemon 拨数据腿时限（超时手机收 4408） |
 | `RELAY_LOG` | relay.log | 运行日志 |
 
 ## 6. 健康检查与排障
@@ -145,6 +146,7 @@ curl -s "https://nodetime.cn/ecode/v1/hosts/online?ids=office-pc"  # 多机在�
 - 明文窗口：仅握手两个密钥交换帧（`e2ee_hello`/`e2ee_ready`）——只含临时公钥与随机 nonce，无凭据。
 - TLS 终止在 nginx（Let's Encrypt）；REG_TOKEN 常量时比较；invite 可吊销即断活连接。
 - relay 进程被攻破的最大损失 = 拒绝服务（转发面瘫痪），不构成内容泄露面。
+- 已知边界（披露）：①PWA 代码由 relay 源下发——恶意 relay 理论上可改 JS（读本机 localStorage）；自部署形态「用户即运营方」自洽，若需彻底闭合应从 daemon 直连首次加载并校验资产指纹；②`#pairing` 深链的 connectUrl 由链接构造者指定——只扫可信来源（电脑端 `ecode pair` 现场出码）的二维码；③hostId 缺省为主机名可被字典枚举（在线查询只回显 name/version，无凭据面；介意可在 config.relay.hostId 配高熵名）。
 
 ---
 
@@ -153,4 +155,4 @@ curl -s "https://nodetime.cn/ecode/v1/hosts/online?ids=office-pc"  # 多机在�
 - 目录 `~/workspace/02_apps/ecode-relay/`（server.cjs + node_modules/ws + web-dist/）；单元 `ecode-relay.service` 按上节格式（ExecStart 用 nvm node `/home/admin/.nvm/versions/node/v22.23.1/bin/node`——`/usr/bin/node` 在本机不存在）。
 - 端口 7091/7092 沿用 T 线最小隧道时代的既有单元与 nginx location（`/ecode/`、`/ecode-tunnel/`），本次补齐 WS 升级头与 `RELAY_WEB_DIR`。
 - 电脑侧：`~/.ecode/config.json` 写 `relay` 段（REG_TOKEN 取自单元 Environment）→ `ecode serve stop && ecode serve` → 日志 `relay_control_up`；`ecode pair` 出带 relay 段的二维码 offer。
-- 外网探针：scripts/relay-e2e-probe.cjs（自机经 wss://nodetime.cn 全链路：配对→数据腿→cmd→事件→重连）。
+- 外网探针：`npx tsx scripts/relay-e2e-probe.ts --server wss://nodetime.cn --token <REG_TOKEN>`（自机经公网全链路 6 断言：控制腿/offer relay 段+钉公钥/E2EE 握手/cmd 往返/事件透传/rebind 自愈）。

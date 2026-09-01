@@ -184,12 +184,32 @@ let attempt = 0
 let everConnected = false
 let sessionReady = false
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+const OP_QUEUE_CAP = 64
 const opQueue: Array<() => void> = [] // sessionReady 前的命令排队（握手先行）
+/** 活动事件订阅（重连后重发——daemon 侧新 DataLeg 的 subs 是空的，不重发=实时流永久静默） */
+const activeSubs = new Map<string, { sessionId?: string; sinceSeq?: () => number | null }>()
 const pending = new Map<string, { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>()
 let nextId = 1
 
-function flushQueue(): void {
-  while (opQueue.length > 0) opQueue.shift()?.()
+function flushQueue(drop = false): void {
+  while (opQueue.length > 0) {
+    const op = opQueue.shift()
+    if (drop) {
+      void op
+      continue
+    }
+    op?.()
+  }
+  if (!drop && sessionReady && activeSubs.size > 0) {
+    // 重连后重发订阅（sinceSeq 取最新游标——mux 重放语义原样生效，对齐直连「每次重连重拉 SSE」）
+    for (const [id, sub] of activeSubs) {
+      const since = sub.sinceSeq?.()
+      const frame: Record<string, unknown> = { t: 'sub', id }
+      if (sub.sessionId !== undefined && sub.sessionId !== '') frame.sessionId = sub.sessionId
+      if (since !== null && Number.isFinite(since)) frame.sinceSeq = since
+      sendFrame(frame)
+    }
+  }
 }
 
 function scheduleReconnect(): void {
@@ -222,9 +242,10 @@ function connect(): void {
   const cfg = relayGetCfg()
   if (cfg === null) return
   if (typeof cfg.daemonPubKeyB64 !== 'string' || cfg.daemonPubKeyB64 === '') {
-    // D4：relay 形态强制 E2EE——配对信息缺公钥=不可连接（重新配对）
-    markRelayLost('配对信息缺少端到端加密公钥——请在电脑端重新执行 ecode pair 配对')
+    // D4：relay 形态强制 E2EE——配对信息缺公钥=不可连接（重新配对）。
+    // 先清凭据再打专属标记（clearCreds 的通用提示不覆盖专属原因）
     clearCreds()
+    markRelayLost('配对信息缺少端到端加密公钥——请在电脑端重新执行 ecode pair 配对')
     unauthorizedListeners.forEach((l) => l())
     return
   }
@@ -337,6 +358,11 @@ async function onWireMessage(text: string): Promise<void> {
   }
 }
 
+function enqueueOp(op: () => void): void {
+  if (opQueue.length >= OP_QUEUE_CAP) opQueue.splice(0, 1) // 队列满=连接长期不可用——最老 op 丢弃让位
+  opQueue.push(op)
+}
+
 function ensureSocket(): void {
   if (relayGetCfg() === null) return
   if (ws !== null) {
@@ -364,6 +390,7 @@ function clearCreds(): void {
   localStorage.removeItem('ecode-token')
   relayClearCfg()
   markRelayLost('设备连接已失效（被吊销或 invite 过期）——请在电脑端重新执行 ecode pair 配对')
+  flushQueue(true) // 挂起命令全部落地（清空态丢弃——clearCreds 后连接永不再建，调用方超时兜底）
   if (ws !== null) {
     try {
       ws.close()
@@ -390,7 +417,7 @@ export function relaySendCommand(
 ): Promise<{ ok: boolean; error?: string; sessionId?: string; value?: unknown; [k: string]: unknown }> {
   return new Promise((resolve, reject) => {
     ensureSocket()
-    opQueue.push(() => {
+    enqueueOp(() => {
       if (ws === null || !sessionReady) {
         reject(new Error('中继连接不可用'))
         return
@@ -456,12 +483,12 @@ export function relayConnectMux(
   }
   unauthorizedListeners.add(onUnauthorized)
 
-  // 订阅（socket ready 后；dispose 竞态守卫）
-  let subId: string | null = null
+  // 订阅（socket ready 后；dispose 竞态守卫）。subId 先占位注册进 activeSubs——重连重发靠这张表
+  const subId = `s${nextId++}`
+  activeSubs.set(subId, { sessionId, sinceSeq })
   ensureSocket()
-  opQueue.push(() => {
+  enqueueOp(() => {
     if (disposed || ws === null || !sessionReady) return
-    subId = `s${nextId++}`
     const since = sinceSeq?.()
     const frame: Record<string, unknown> = { t: 'sub', id: subId }
     if (sessionId !== undefined && sessionId !== '') frame.sessionId = sessionId
@@ -477,7 +504,8 @@ export function relayConnectMux(
       stateListeners.delete(onState)
       reconnectListeners.delete(onReconnect)
       unauthorizedListeners.delete(onUnauthorized)
-      if (subId !== null && ws !== null && ws.readyState === WebSocket.OPEN) {
+      activeSubs.delete(subId)
+      if (ws !== null && ws.readyState === WebSocket.OPEN) {
         try {
           sendFrame({ t: 'unsub', id: subId })
         } catch {

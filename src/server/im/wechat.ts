@@ -21,8 +21,8 @@ import type { Logger } from '../../services/logger.js'
 export const ILINK_API_BASE = 'https://ilinkai.weixin.qq.com'
 const POLL_HOLD_MS = 35_000
 const ERROR_BACKOFF_MS = 3_000
-/** 审批短码有效期（对齐宿主 approvalTimeoutMs 缺省 15min——随 mux resolved 帧即时作废） */
-const APPROVAL_CODE_TTL_MS = 15 * 60_000
+/** 审批短码有效期（对齐宿主 approvalTimeoutMs D-T8 拍板缺省 1h——随 mux resolved 帧即时作废） */
+const APPROVAL_CODE_TTL_MS = 60 * 60_000
 
 export interface WechatGatewayDeps {
   botToken: string
@@ -93,7 +93,11 @@ export class WechatGateway {
           base_info: { channel_version: '1.0.2' },
         })
         if (this.disposed) return
-        const body = res as { ret?: number; msgs?: InboundMsg[]; get_updates_buf?: string }
+        const body = res as { ret?: number; msgs?: InboundMsg[]; get_updates_buf?: string; err_msg?: string }
+        if (typeof body.ret === 'number' && body.ret !== 0) {
+          // iLink 带内错误（HTTP 200 + ret!=0）：当成功会静默空转（审阅 P2）
+          throw new Error(`iLink ret=${body.ret}${body.err_msg !== undefined ? ` ${body.err_msg}` : ''}`)
+        }
         if (typeof body.get_updates_buf === 'string' && body.get_updates_buf !== '') this.cursor = body.get_updates_buf
         for (const msg of body.msgs ?? []) {
           try {
@@ -127,6 +131,12 @@ export class WechatGateway {
     const codeMatch = /^(\d{3,6})\s*(y|yes|n|no|允许|拒绝)$/i.exec(text)
     if (codeMatch !== null) {
       const entry = this.approvalCodes.get(codeMatch[1])
+      // T7 兑换者绑定：短码私发给绑定者——白名单内其他用户不得应答（收敛无效回执 oracle 面）
+      if (entry !== undefined && entry.userId !== userId) {
+        this.deps.logger.warn('im', 'wechat_code_wrong_user', { userId })
+        await this.replyText(userId, `短码无效。`)
+        return
+      }
       if (entry === undefined || entry.expiresAt <= Date.now()) {
         if (entry !== undefined) this.approvalCodes.delete(codeMatch[1])
         await this.replyText(userId, `短码无效或已过期。`)
@@ -203,7 +213,9 @@ export class WechatGateway {
       const tool = String(frame.ev.tool ?? '')
       const preview = String(frame.ev.preview ?? '').replace(/```/g, '｀｀｀').slice(0, 400)
       // T7 审批短码：随机 4 位数字 + preview 指纹（截断下仍可核对）；resolved 即作废
-      const code = String(randomInt(1000, 10000))
+      // 撞码重摇（并发审批 4 位码 ~1/9000——静默覆盖=前一审批经 IM 不可应答）
+      let code = String(randomInt(1000, 10000))
+      while (this.approvalCodes.has(code)) code = String(randomInt(1000, 10000))
       this.approvalCodes.set(code, { requestId, sessionId: frame.sessionId, userId, expiresAt: Date.now() + APPROVAL_CODE_TTL_MS })
       const head = sensitive ? '⚠ 敏感操作（不可记住）' : '需要审批'
       await this.replyText(userId, `${head}\n工具：${tool}\n${preview}\n\n回复「${code} y」允许 /「${code} n」拒绝（短码 15 分钟内有效）`)

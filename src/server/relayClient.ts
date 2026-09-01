@@ -90,10 +90,14 @@ export class RelayClient {
     return this.opts.hostId
   }
 
-  /** 手机数据腿接入 URL（pair offer 的 relay 段用） */
+  /** 手机数据腿接入 URL（pair offer 的 relay 段用）。
+   *  phoneBase 必须显式（serveMain 缺省 server+'/ecode'）——不能从 hostBase 推导：
+   *  本地双端口与 nginx 双前缀下二者无派生关系（审阅 P0：原 hostBase+'/ecode' 拼出死链） */
   get phoneConnectUrl(): string {
-    const base = (this.opts.phoneBase ?? `${this.opts.hostBase.replace(/\/$/, '')}/ecode`).replace(/\/$/, '')
-    return `${base}/v1/connect/${this.opts.hostId}`
+    if (this.opts.phoneBase === undefined || this.opts.phoneBase === '') {
+      throw new Error('relay phoneBase 未配置——无法生成手机接入 URL（serveMain 应缺省 server+/ecode）')
+    }
+    return `${this.opts.phoneBase.replace(/\/$/, '')}/v1/connect/${this.opts.hostId}`
   }
 
   start(): void {
@@ -143,6 +147,24 @@ export class RelayClient {
 
   status(): RelayStatus {
     return { ...this.status_, activeLegs: this.legs.size }
+  }
+
+  /** 吊销/凭据摘除的本地断腿：按 session.auth 比对关掉该凭据的全部数据腿并 abort 其订阅。
+   *  与 relay 可达性解耦——控制腿闪断窗口内吊销也即时生效（relay 侧 revokeInvite 只是辅助） */
+  disposeLegsByAuth(secret: string): number {
+    let n = 0
+    for (const [ws, leg] of this.legs) {
+      if (leg.authOf() !== secret) continue
+      leg.dispose()
+      try {
+        ws.close(4001, 'device revoked')
+      } catch {
+        /* 已关 */
+      }
+      this.legs.delete(ws)
+      n++
+    }
+    return n
   }
 
   // ———————————————— 控制腿 ————————————————
@@ -253,6 +275,7 @@ export class RelayClient {
     return new Promise((resolve, reject) => {
       const reqId = String(frame.reqId)
       const timer = setTimeout(() => {
+        ws.off('message', onMessage) // 超时不摘除=每次超时泄漏一个常驻 listener（审阅 P2）
         this.reqs.delete(reqId)
         reject(new Error('relay 请求超时'))
       }, REQ_TIMEOUT_MS)
@@ -492,7 +515,13 @@ class DataLeg {
         while ((idx = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, idx)
           buf = buf.slice(idx + 1)
-          if (!line.startsWith('data: ')) continue // event:/注释行对 WS 通道无意义
+          if (line.startsWith(': ping')) {
+            // daemon mux 15s 心跳注释行 → app 级 ping 帧透传：喂中继数据腿看门狗（否则闲置
+            // 75s 被当半开连接收割——审阅 P1）+消费 e2ee 计数器（保持双向时序活）
+            this.send({ t: 'ping', ts: Date.now() })
+            continue
+          }
+          if (!line.startsWith('data: ')) continue // event: 行对 WS 通道无意义
           try {
             this.send({ t: 'frame', frame: JSON.parse(line.slice(6)) })
           } catch {
@@ -505,6 +534,11 @@ class DataLeg {
     } finally {
       this.subs.delete(id)
     }
+  }
+
+  /** session 建立时确立的凭据（disposeLegsByAuth 比对用） */
+  authOf(): string {
+    return this.session.auth
   }
 
   private get auth(): string {

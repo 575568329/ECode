@@ -208,15 +208,8 @@ export class RelayClient {
     ws.on('close', (code, reason) => {
       this.status_ = { ...this.status_, connected: false, lastClose: { code, reason: reason.toString() } }
       this.clearRenew()
-      for (const [lws, leg] of this.legs) {
-        leg.dispose()
-        try {
-          lws.close()
-        } catch {
-          /* 已关 */
-        }
-        this.legs.delete(lws)
-      }
+      // 数据腿不动：rebind（同代接管）下数据腿跨控制腿存活；换代由 relay 侧收割（4409 关腿），
+      // relay 进程死则所有 socket 自然断——客户端主动杀腿反而打断「控制腿闪断」的手机连接
       if (this.ws === ws) this.ws = null
       if (this.disposed) return
       if (code === 4401) {

@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Archive, BarChart3, ChevronDown, Pencil, Plus, Search } from 'lucide-react'
+import { ArrowLeft, Archive, BarChart3, ChevronDown, Pencil, Plus, Search, Smartphone } from 'lucide-react'
 import { groupSessionsByTime, searchSessions, type SidebarSession } from './sessionList'
 import { lastSeqFor } from './store'
 import { addProject, connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
@@ -15,6 +15,7 @@ import { makeHash, parseHash, type RoutePos } from './routing'
 import { Conversation } from './Conversation'
 import { Composer } from './Composer'
 import { StatsPanel } from './StatsPanel'
+import { DevicesPanel } from './DevicesPanel'
 
 /** 同源定位 daemon（dev 模式经 vite proxy；托管形态同源直连） */
 const BASE = ''
@@ -220,6 +221,8 @@ export function App(): React.JSX.Element {
   const [renameValue, setRenameValue] = useState('')
   // C4-④：用量面板（侧栏底部入口——全局视角与项目选择无关）
   const [statsOpen, setStatsOpen] = useState(false)
+  // R5：设备管理面板（直连=配对设备+吊销；中继=多机列表+在线徽标）
+  const [devicesOpen, setDevicesOpen] = useState(false)
   const { projects, sessions, selectedProject, selectedSession, select, setProjects, applyHost, applyFrame, setConn, upsertSession, setConfigView } = useApp()
   const loadHistory = useApp((s) => s.loadHistory)
   // hashchange 闭包读最新选中态（effect 只挂一次 select 依赖）
@@ -499,6 +502,13 @@ export function App(): React.JSX.Element {
                 <BarChart3 size={13} />
               </button>
             )}
+            <button
+              onClick={() => setDevicesOpen(true)}
+              title={relayActive() ? '已配对主机（多机切换）' : '配对设备管理'}
+              className="flex h-6 w-6 items-center justify-center rounded text-muted hover:bg-surface-raised hover:text-body"
+            >
+              <Smartphone size={13} />
+            </button>
             <ConnBadge />
           </div>
         </div>
@@ -715,6 +725,7 @@ export function App(): React.JSX.Element {
         </KeyboardAware>
       </main>
       {statsOpen && <StatsPanel onClose={() => setStatsOpen(false)} />}
+      {devicesOpen && <DevicesPanel onClose={() => setDevicesOpen(false)} />}
     </div>
   )
 }

@@ -18,6 +18,8 @@ import { WebE2eeSession } from './e2ee'
 
 export interface RelayCfg {
   connectUrl: string
+  /** relay 登记名（多机区分——切换/在线徽标用） */
+  hostId?: string
   inviteToken: string
   secret: string
   /** 配对的主机名（多机区分显示） */
@@ -49,6 +51,90 @@ export function relayActive(): boolean {
   return relayGetCfg() !== null
 }
 
+// ———————————————— 多机管理面（R5）：配对主机列表 + 主动断开 ————————————————
+const HOSTS_KEY = 'ecode-relay-hosts'
+
+export interface HostEntry extends RelayCfg {
+  hostId: string
+  pairedAt: number
+}
+
+export function listHosts(): HostEntry[] {
+  try {
+    const raw = localStorage.getItem(HOSTS_KEY)
+    return raw !== null ? (JSON.parse(raw) as HostEntry[]) : []
+  } catch {
+    return []
+  }
+}
+
+export function upsertHostList(cfg: RelayCfg): void {
+  if (cfg.hostId === undefined || cfg.hostId === '') return
+  const hosts = listHosts().filter((h) => h.hostId !== cfg.hostId)
+  hosts.unshift({ ...cfg, hostId: cfg.hostId, pairedAt: Date.now() })
+  localStorage.setItem(HOSTS_KEY, JSON.stringify(hosts.slice(0, 16)))
+}
+
+/** 切换活跃主机（写活跃配置——调用方 reload 重挂 WS） */
+export function activateHost(hostId: string): void {
+  const target = listHosts().find((h) => h.hostId === hostId)
+  if (target === undefined) return
+  relaySetCfg(target)
+  localStorage.setItem('ecode-token', target.secret)
+}
+
+export function removeHost(hostId: string): void {
+  localStorage.setItem(HOSTS_KEY, JSON.stringify(listHosts().filter((h) => h.hostId !== hostId)))
+}
+
+/** relay 源 origin（在线查询用——connectUrl 派生） */
+export function relayOrigin(cfg: RelayCfg): string {
+  try {
+    return new URL(cfg.connectUrl).origin
+  } catch {
+    return ''
+  }
+}
+
+/** 多机在线徽标（/v1/hosts/online——只回显已知 hostId，无枚举面） */
+export interface HostOnline {
+  online: boolean
+  name?: string
+  version?: string
+}
+export async function fetchHostsOnline(): Promise<Record<string, HostOnline>> {
+  const hosts = listHosts()
+  if (hosts.length === 0) return {}
+  const byOrigin = new Map<string, string[]>()
+  for (const h of hosts) {
+    const origin = relayOrigin(h)
+    if (origin === '') continue
+    byOrigin.set(origin, [...(byOrigin.get(origin) ?? []), h.hostId])
+  }
+  const out: Record<string, HostOnline> = {}
+  await Promise.all(
+    [...byOrigin].map(async ([origin, ids]) => {
+      try {
+        const res = await fetch(`${origin}/v1/hosts/online?ids=${encodeURIComponent(ids.join(','))}`, { signal: AbortSignal.timeout(4000) })
+        if (!res.ok) return
+        const body = (await res.json()) as { hosts?: Record<string, HostOnline> }
+        for (const [k, v] of Object.entries(body.hosts ?? {})) out[k] = v
+      } catch {
+        /* 单源失败=全部离线显示 */
+      }
+    }),
+  )
+  return out
+}
+
+/** 手机端主动断开设备连接（清凭据回 token 门） */
+export function relayDisconnect(): void {
+  localStorage.removeItem('ecode-token')
+  relayClearCfg()
+  markRelayLost('已断开设备连接——重新接入请在电脑端执行 ecode pair 配对')
+  location.reload()
+}
+
 /** #pairing= 深链消费（main.tsx 挂载前调用一次） */
 export function consumePairingHash(): void {
   const m = /#pairing=([A-Za-z0-9_-]+)/.exec(location.hash)
@@ -65,15 +151,18 @@ export function consumePairingHash(): void {
     const relaySeg = offer.relay
     if (typeof offer.secret !== 'string' || offer.secret === '') return
     if (relaySeg === undefined || typeof relaySeg.connectUrl !== 'string' || typeof relaySeg.inviteToken !== 'string') return // 无 relay 段=局域网形态——走 token 门
-    relaySetCfg({
+    const cfg: RelayCfg = {
       connectUrl: relaySeg.connectUrl,
+      hostId: relaySeg.hostId ?? offer.name,
       inviteToken: relaySeg.inviteToken,
       secret: offer.secret,
       name: offer.name,
       projects: Array.isArray(offer.projects) ? offer.projects : [],
       expiresAt: relaySeg.expiresAt,
       daemonPubKeyB64: offer.daemonPubKeyB64,
-    })
+    }
+    relaySetCfg(cfg)
+    upsertHostList(cfg)
     localStorage.setItem('ecode-token', offer.secret)
     history.replaceState(null, '', location.pathname + location.search)
   } catch {

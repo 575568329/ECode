@@ -288,9 +288,18 @@ export function InputStream({
       }
       const cmd = commandRegistry.get(name)
       if (cmd) {
+        // run 可返回 Promise（异步命令如 /devices——daemon HTTP 面）。同步结果走原路
+        // （动作类命令的开面板时序不能动——/model 测试锁）；仅 Promise 走异步交付
         const result = cmd.run(args)
-        if (result.action === 'clear') onClear?.()
-        onCommand?.(cmd, result)
+        if (result instanceof Promise) {
+          void result.then(
+            (r) => onCommand?.(cmd, r),
+            (e: unknown) => onCommand?.(cmd, { output: `命令执行失败：${e instanceof Error ? e.message : String(e)}` }),
+          )
+        } else {
+          if (result.action === 'clear') onClear?.()
+          onCommand?.(cmd, result)
+        }
       } else {
         // skill 分流（S4.4）：userInvocable 才可手动触发
         const skill = skillRegistry.get(name)

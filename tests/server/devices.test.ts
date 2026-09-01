@@ -5,7 +5,9 @@ import { describe, expect, it, beforeEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { DeviceRegistry } from '../../src/server/devices.js'
+import { DeviceRegistry, formatDevicesText, probeRunningDaemon, revokeDeviceText } from '../../src/server/devices.js'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 
 function tmpFile(): string {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-devices-')), 'devices.json')
@@ -53,5 +55,63 @@ describe('DeviceRegistry（R1 配对设备注册表）', () => {
     r.create('平板', 'full')
     const list = new DeviceRegistry(file).list()
     expect(list.map((d) => d.scope).sort()).toEqual(['chat', 'full'])
+  })
+})
+
+// ———————— R 线：/devices 命令文本面（daemon 探测/列表/吊销） ————————
+describe('devices 文本面（TUI /devices 与 pair CLI 共用）', () => {
+  it('daemon 不在：本地注册表直读 + 本地吊销回退', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-devtext-'))
+    try {
+      const regPath = path.join(dir, 'server.json') // 不存在 → probe null
+      expect(await probeRunningDaemon(regPath)).toBeNull()
+      expect(await formatDevicesText(regPath)).toContain('尚无配对设备')
+      new DeviceRegistry(path.join(dir, 'devices.json')).create('手机', 'chat')
+      const list = await formatDevicesText(regPath)
+      expect(list).toContain('配对设备（1）')
+      expect(list).toContain('手机')
+      expect(list).toContain('对话+只读')
+      const id = new DeviceRegistry(path.join(dir, 'devices.json')).list()[0].deviceId
+      expect(await revokeDeviceText(id, regPath)).toContain('✓ 已吊销')
+      expect(await revokeDeviceText(id, regPath)).toContain('未找到设备')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('daemon 在跑：列表/吊销走 HTTP（三步序语义经 daemon）', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-devtext2-'))
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      if (req.url === '/api/health') return res.end(JSON.stringify({ ok: true, id: 'sess-1' }))
+      if (req.url === '/api/devices' && req.method === 'GET') {
+        return res.end(JSON.stringify({ ok: true, devices: [{ deviceId: 'dev-x', name: '远端列表', scope: 'chat', pairedAt: 'now' }] }))
+      }
+      if (req.url === '/api/devices/revoke' && req.method === 'POST') {
+        let body = ''
+        req.on('data', (c: Buffer) => (body += c.toString()))
+        return req.on('end', () => {
+          const parsed = JSON.parse(body) as { deviceId?: string }
+          res.end(JSON.stringify({ ok: parsed.deviceId === 'dev-live' }))
+        })
+      }
+      res.end(JSON.stringify({ ok: true }))
+    })
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+    const { port } = server.address() as AddressInfo
+    const regPath = path.join(dir, 'server.json')
+    // daemon pid 用当前进程（kill 0 探活必过）
+    fs.writeFileSync(regPath, JSON.stringify({ pid: process.pid, port, token: 'tok', id: 'sess-1' }), 'utf8')
+    try {
+      expect(await probeRunningDaemon(regPath)).not.toBeNull()
+      const list = await formatDevicesText(regPath)
+      expect(list).toContain('经运行中 daemon')
+      expect(list).toContain('远端列表')
+      expect(await revokeDeviceText('dev-nope', regPath)).toContain('✗')
+      expect(await revokeDeviceText('dev-live', regPath)).toContain('即时生效')
+    } finally {
+      server.close()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

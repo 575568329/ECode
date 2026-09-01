@@ -11,10 +11,8 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { homedir, hostname } from 'node:os'
-import { DeviceRegistry, devicesPath } from '../server/devices.js'
+import { hostname } from 'node:os'
+import { DeviceRegistry, devicesPath, probeRunningDaemon } from '../server/devices.js'
 import { formatOfferQr } from './pairQr.js'
 
 export interface PairResult {
@@ -60,20 +58,9 @@ export async function createPairing(name: string, scope: 'chat' | 'full' = 'chat
   return { deviceId: entry.deviceId, name: entry.name, secret: entry.secret, scope: entry.scope }
 }
 
-/** 运行中 daemon 探测（server.json + /api/health 身份核验——killServeByReg 同款防陈旧 PID） */
+/** 运行中 daemon 探测（下沉到 server/devices.ts——与 TUI /devices 命令共用） */
 async function probeDaemon(): Promise<{ port: number; token: string } | null> {
-  try {
-    const regPath = join(homedir(), '.ecode', 'server.json')
-    if (!existsSync(regPath)) return null
-    const reg = JSON.parse(readFileSync(regPath, 'utf8')) as { pid: number; port: number; token: string; id?: string }
-    process.kill(reg.pid, 0)
-    const res = await fetch(`http://127.0.0.1:${reg.port}/api/health`, { signal: AbortSignal.timeout(1500) })
-    const h = (await res.json()) as { ok?: boolean; id?: string }
-    if (h.ok !== true || (reg.id !== undefined && h.id !== reg.id)) return null
-    return { port: reg.port, token: reg.token }
-  } catch {
-    return null
-  }
+  return probeRunningDaemon()
 }
 
 /** offer 文本（打印给用户——#pairing= 深链由手机 web 消费；QR 随行） */

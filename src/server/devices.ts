@@ -11,7 +11,7 @@
  */
 
 import { readFileSync, writeFileSync, chmodSync, renameSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 
@@ -110,4 +110,92 @@ export class DeviceRegistry {
 /** 设备注册表默认路径 */
 export function devicesPath(): string {
   return join(homedir(), '.ecode', 'devices.json')
+}
+
+// ———————— R 线：设备管理文本面（pair CLI 与 TUI /devices 命令共用） ————————
+
+export interface RunningDaemon {
+  port: number
+  token: string
+}
+
+/** 运行中 daemon 探测（server.json + /api/health 身份核验——killServeByReg 同款防陈旧 PID；
+ *  regPath 供测试注入临时目录） */
+export async function probeRunningDaemon(regPath?: string): Promise<RunningDaemon | null> {
+  try {
+    const p = regPath ?? join(homedir(), '.ecode', 'server.json')
+    if (!existsSync(p)) return null
+    const reg = JSON.parse(readFileSync(p, 'utf8')) as { pid: number; port: number; token: string; id?: string }
+    process.kill(reg.pid, 0)
+    const res = await fetch(`http://127.0.0.1:${reg.port}/api/health`, { signal: AbortSignal.timeout(1500) })
+    const h = (await res.json()) as { ok?: boolean; id?: string }
+    if (h.ok !== true || (reg.id !== undefined && h.id !== reg.id)) return null
+    return { port: reg.port, token: reg.token }
+  } catch {
+    return null
+  }
+}
+
+function registryFor(regPath?: string): DeviceRegistry {
+  return regPath !== undefined ? new DeviceRegistry(join(dirname(regPath), 'devices.json')) : new DeviceRegistry()
+}
+
+/** 设备列表文本（daemon 在跑走 HTTP——含 relay invite 标记与运行态；否则本地注册表） */
+export async function formatDevicesText(regPath?: string): Promise<string> {
+  const daemon = await probeRunningDaemon(regPath)
+  let list: DeviceEntry[] = registryFor(regPath).list()
+  let viaDaemon = false
+  if (daemon !== null) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${daemon.port}/api/devices`, {
+        headers: { authorization: `Bearer ${daemon.token}` },
+        signal: AbortSignal.timeout(3000),
+      })
+      const r = (await res.json()) as { devices?: DeviceEntry[] }
+      if (res.ok && Array.isArray(r.devices)) {
+        list = r.devices
+        viaDaemon = true
+      }
+    } catch {
+      /* daemon 查询失败落本地表（可能已退出） */
+    }
+  }
+  if (list.length === 0) {
+    return '尚无配对设备。新设备接入：电脑终端 `ecode pair <名字>`（终端出二维码），或本机 web 设备面板生成配对链接。'
+  }
+  const lines = [`配对设备（${list.length}）${viaDaemon ? '（经运行中 daemon）' : ''}：`]
+  for (const d of list) {
+    lines.push(
+      `  ${d.deviceId}  ${d.name}  [${d.scope === 'full' ? '全功能' : '对话+只读'}]  配对于 ${d.pairedAt}${d.relayInvite !== undefined ? '  [中继]' : ''}`,
+    )
+  }
+  lines.push('吊销：/devices revoke <deviceId>（即时断连）')
+  return lines.join('\n')
+}
+
+/** 吊销（daemon HTTP 优先——同步 relay 断连+活凭据摘除三步序；daemon 不在/不可达回退本地注册表删） */
+export async function revokeDeviceText(id: string, regPath?: string): Promise<string> {
+  if (id === '') return '用法：/devices revoke <deviceId>'
+  const daemon = await probeRunningDaemon(regPath)
+  if (daemon !== null) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${daemon.port}/api/devices/revoke`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${daemon.token}` },
+        body: JSON.stringify({ deviceId: id }),
+        signal: AbortSignal.timeout(5000),
+      })
+      const r = (await res.json()) as { ok?: boolean; error?: string }
+      if (res.ok && r.ok === true) return `✓ 已吊销 ${id}（运行中 daemon 即时生效——凭据活摘除+中继断连，下一请求 401）`
+      if (res.status !== 404) return `✗ daemon 吊销失败（HTTP ${res.status}${r.error !== undefined ? `：${r.error}` : ''}）`
+      // 404=daemon 注册表无此条——落本地删（daemon 起前写入的条目）
+    } catch {
+      /* daemon 不可达——落本地删（活凭据断连未确认，文案如实说） */
+    }
+  }
+  const ok = registryFor(regPath).revoke(id)
+  if (!ok) return `✗ 未找到设备 ${id}`
+  return daemon !== null
+    ? `✓ 已吊销 ${id}（本机注册表；daemon 活凭据断连未确认——如 daemon 在跑，重启后即彻底生效）`
+    : `✓ 已吊销 ${id}（本机注册表；daemon 未在跑——下次启动即不再认此设备）`
 }

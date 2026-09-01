@@ -534,7 +534,7 @@ export class HostSession {
 
   /** 清账 III P2-7：serve 端 /help 输出——只列 host 可执行五命令，面板类命令不列（web 履约不了） */
   private helpForServe(reg: import('../commands/registry.js').CommandRegistry): { output: string } {
-    const hostable = new Set(['help', 'stats', 'cost', 'clear', 'compact'])
+    const hostable = new Set(['help', 'stats', 'cost', 'clear', 'compact', 'devices'])
     const lines = reg
       .list()
       .filter((c) => hostable.has(c.name))
@@ -546,7 +546,7 @@ export class HostSession {
    *  {ok:true,output}=host 已执行；{ok:false,error}=TUI 专属面板或未知名（明确拒绝，不进 LLM）。
    *  host 可执行白名单：/help /stats /cost /clear /compact——其余命令名的 action 均为
    *  TUI 面板/客户端本地副作用（pick-model/open-*-panel/restart…），serve 端无法履约。 */
-  private interceptSlashCommand(text: string): { ok: true; output: string } | { ok: false; error: string } | undefined {
+  private async interceptSlashCommand(text: string): Promise<{ ok: true; output: string } | { ok: false; error: string } | undefined> {
     const reg = this.deps.commands
     if (reg === undefined || !text.startsWith('/')) return undefined
     const name = text.slice(1).split(/\s+/)[0] ?? ''
@@ -561,9 +561,9 @@ export class HostSession {
       return { ok: false, error: `未知命令 /${name}（输入 /help 查看可用命令）` }
     }
     // host 可执行命令：纯输出或宿主已有权威操作
-    if (name === 'help' || name === 'stats') {
+    if (name === 'help' || name === 'stats' || name === 'devices') {
       const args = text.slice(1 + name.length).trim()
-      const r = name === 'help' ? this.helpForServe(reg) : cmd.run(args === '' ? undefined : args)
+      const r = await (name === 'help' ? this.helpForServe(reg) : cmd.run(args === '' ? undefined : args))
       return { ok: true, output: r.output ?? '' }
     }
     if (name === 'cost') {
@@ -594,7 +594,7 @@ export class HostSession {
       })
       return { ok: true, output: '压缩已开始（完成后有 systemMsg 通知）' }
     }
-    return { ok: false, error: `/${name} 为 TUI 面板/本地命令，serve 端不可用（可用：/help /stats /cost /clear /compact）` }
+    return { ok: false, error: `/${name} 为 TUI 面板/本地命令，serve 端不可用（可用：/help /stats /cost /clear /compact /devices）` }
   }
 
 
@@ -655,7 +655,7 @@ export class HostSession {
         // F-23：斜杠命令分流（serve/web 端 /help 等直通 startTurn 会当 prompt 烧 LLM）——
         // 注册了命令面时，/ 开头输入先查表：host 可执行→本地跑；TUI 专属/未知名→明确报错；
         // 绝不落入 LLM。未注册命令面（argv/旧测试）行为不变。
-        const slash = this.interceptSlashCommand(cmd.text)
+        const slash = await this.interceptSlashCommand(cmd.text)
         if (slash !== undefined) {
           if (slash.ok) {
             this.publish('systemMsg', { text: slash.output })

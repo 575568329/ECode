@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join as pathJoin, sep } from 'node:path'
 import { aggregateStats, formatStats } from '../services/stats.js'
+import { formatDevicesText, revokeDeviceText } from '../server/devices.js'
 
 /** 命令执行结果：输出文本（给用户）+ 可选副作用 action */
 export interface CommandResult {
@@ -44,8 +45,9 @@ export interface Command {
   /** 命令名（不含 /，如 'help'） */
   name: string
   description: string
-  /** 执行；args = 命令名后的参数文本（如 `/mcp reconnect db` → 'reconnect db'），无参 undefined */
-  run: (args?: string) => CommandResult
+  /** 执行；args = 命令名后的参数文本（如 `/mcp reconnect db` → 'reconnect db'），无参 undefined。
+   *  可返回 Promise（异步命令——如 /devices 的 daemon HTTP 面；host session 会 await） */
+  run: (args?: string) => CommandResult | Promise<CommandResult>
 }
 
 export class CommandRegistry {
@@ -134,6 +136,19 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
       } catch (e) {
         return { output: `统计不可用：${e instanceof Error ? e.message : String(e)}` }
       }
+    },
+  })
+  registry.register({
+    name: 'devices',
+    description: '配对设备管理（列表/吊销——/devices revoke <id> 即时断连。新设备配对：ecode pair 或 web 设备面板）',
+    run: (args?: string) => {
+      const rest = (args ?? '').trim()
+      if (rest.startsWith('revoke')) {
+        const id = rest.slice('revoke'.length).trim()
+        if (id === '') return Promise.resolve({ output: '用法：/devices revoke <deviceId>（id 见 /devices 列表）' })
+        return revokeDeviceText(id).then((t) => ({ output: t }))
+      }
+      return formatDevicesText().then((t) => ({ output: t }))
     },
   })
   registry.register({

@@ -27,7 +27,7 @@ function info(name: string, overrides: Partial<SkillInfo> = {}): SkillInfo {
 }
 
 function P(skills: SkillInfo[], onPick: (s: string) => void = () => {}): ReturnType<typeof render> {
-  return render(React.createElement(SkillPanel, { skills, onPick, onCancel: () => {} }))
+  return render(React.createElement(SkillPanel, { skills, onPick, onCancel: () => {}, shadowedByCommand: new Set(), shadowedEntries: [] }))
 }
 
 describe('SkillPanel', () => {
@@ -41,6 +41,8 @@ describe('SkillPanel', () => {
         ],
         onPick: () => {},
         onCancel: () => {},
+        shadowedByCommand: new Set(),
+        shadowedEntries: [],
       }),
     )
     const f = lastFrame() ?? ''

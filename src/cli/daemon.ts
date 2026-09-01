@@ -15,8 +15,9 @@ import { homedir, hostname } from 'node:os'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { MultiTransport } from '../protocol/multiTransport.js'
 
-const REG_PATH = join(homedir(), '.ecode', 'server.json')
-const SPAWN_LOCK_PATH = join(homedir(), '.ecode', 'daemon-spawn.lock')
+// 函数化（调用时取 homedir——测试可经 HOME/USERPROFILE 隔离；进程内语义不变）
+const regPath = (): string => join(homedir(), '.ecode', 'server.json')
+const spawnLockPath = (): string => join(homedir(), '.ecode', 'daemon-spawn.lock')
 const READY_TIMEOUT_MS = 15_000
 const HEALTH_TIMEOUT_MS = 2_000
 
@@ -42,7 +43,7 @@ export function daemonName(): string {
 
 export function readServerReg(): ServerReg | null {
   try {
-    const reg = JSON.parse(readFileSync(REG_PATH, 'utf8')) as ServerReg
+    const reg = JSON.parse(readFileSync(regPath(), 'utf8')) as ServerReg
     if (typeof reg.port !== 'number' || typeof reg.token !== 'string' || typeof reg.pid !== 'number') return null
     return reg
   } catch {
@@ -52,14 +53,14 @@ export function readServerReg(): ServerReg | null {
 
 /** 原子写注册文件（tmp+rename——与拉起锁竞态下防撕裂 JSON；架构席 P2-3） */
 export function writeServerRegAtomic(reg: ServerReg): void {
-  const tmp = `${REG_PATH}.tmp-${process.pid}`
+  const tmp = `${regPath()}.tmp-${process.pid}`
   writeFileSync(tmp, JSON.stringify(reg, null, 2), { mode: 0o600 })
   try {
     chmodSync(tmp, 0o600)
   } catch {
     /* 非 POSIX（win32）chmod 无强制力——文档披露不阻断 */
   }
-  renameSync(tmp, REG_PATH)
+  renameSync(tmp, regPath())
 }
 
 function pidAlive(pid: number): boolean {
@@ -133,7 +134,7 @@ type DaemonLogger = {
 /** spawn env 白名单：shell export 的杂项 env（含潜在密钥）不长驻 daemon；serve 绑定三元组
  *  只认外部环境变量（不回退项目 .env——恶意仓库 .env 静默制造局域网常驻暴露的注入面封死）。 */
 function spawnEnv(): NodeJS.ProcessEnv {
-  const allow = ['PATH', 'PATHEXT', 'SYSTEMROOT', 'COMSPEC', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'NODE_OPTIONS', 'SHELL', 'TERM', 'LANG', 'TZ']
+  const allow = ['PATH', 'PATHEXT', 'SYSTEMROOT', 'SYSTEMDRIVE', 'COMSPEC', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'NODE_OPTIONS', 'SHELL', 'TERM', 'LANG', 'TZ', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy']
   const env: Record<string, string> = {}
   for (const k of allow) {
     const v = process.env[k]
@@ -199,7 +200,7 @@ export async function ensureDaemonAttach(opts: {
       return { attached: false, reason: 'daemon 健康检查未通过（可能正在启动）——可 ecode --local 或稍后重试' }
     }
     try {
-      rmSync(REG_PATH, { force: true })
+      rmSync(regPath(), { force: true })
     } catch {
       /* 幂等 */
     }
@@ -208,16 +209,16 @@ export async function ensureDaemonAttach(opts: {
   // 2) 拉起锁（冷启动竞态：双 ecode 同时首启只 spawn 一个 daemon——架构席 P0-2）
   let haveLock = false
   try {
-    const fd = openSync(SPAWN_LOCK_PATH, 'wx')
+    const fd = openSync(spawnLockPath(), 'wx')
     closeSync(fd)
     haveLock = true
   } catch {
     // 已有进程在拉起——锁龄超过 READY_TIMEOUT 视为持锁进程死亡（kill -9/断电），抢删重试一次
     try {
-      const age = Date.now() - statSync(SPAWN_LOCK_PATH).mtimeMs
+      const age = Date.now() - statSync(spawnLockPath()).mtimeMs
       if (age > READY_TIMEOUT_MS) {
-        unlinkSync(SPAWN_LOCK_PATH)
-        const fd = openSync(SPAWN_LOCK_PATH, 'wx')
+        unlinkSync(spawnLockPath())
+        const fd = openSync(spawnLockPath(), 'wx')
         closeSync(fd)
         haveLock = true
       }
@@ -242,7 +243,7 @@ export async function ensureDaemonAttach(opts: {
   } finally {
     if (haveLock) {
       try {
-        unlinkSync(SPAWN_LOCK_PATH)
+        unlinkSync(spawnLockPath())
       } catch {
         /* 幂等 */
       }
@@ -250,4 +251,4 @@ export async function ensureDaemonAttach(opts: {
   }
 }
 
-export { REG_PATH }
+export { regPath as regPathFn }

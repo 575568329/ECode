@@ -167,7 +167,6 @@ export class HostSession {
   private pendingSessionContext: string[] = []
   /** T1⑪：启动告警队列（首次订阅 flush——构造期无订阅者） */
   private pendingStartupWarnings: string[] = []
-  private pendingStartupWarningsFlushed = false
   /** T2：.mcp.json 批准门（首次订阅后发起——需有可应答订阅者才不会 fail-closed 秒回） */
   private pendingMcpApprovalGate?: { file: string; approve: () => Promise<void> }
   /** M14-C3③（P1-12）：prompt 已判定开轮、startTurn 尚未置 running 的同步占位——堵 buildBlocks 的 await 窗口 */
@@ -238,11 +237,9 @@ export class HostSession {
   subscribe(handler: (ev: ProtocolEvent) => void, opts: { canAnswer?: boolean } = {}): () => void {
     const unsub = this.channel.subscribe(handler, opts)
     this.broker.replayPending(handler)
-    // T1⑪：启动告警随首次订阅补发（构造期无订阅者，即时发必丢——dogfood e2e D 组同款时序坑）
-    if (!this.pendingStartupWarningsFlushed) {
-      this.pendingStartupWarningsFlushed = true
-      for (const w of this.pendingStartupWarnings) handler({ type: 'notice', seq: -1, level: 'warn', text: w } as never)
-    }
+    // T1⑪：启动告警随**每个新订阅**补发（构造期无订阅者即时发必丢；审阅 P2——双端场景
+    // 后连的客户端也要看到，per-subscriber 一次而非全局幂等一次）
+    for (const w of this.pendingStartupWarnings) handler({ type: 'notice', seq: -1, level: 'warn', text: w } as never)
     if (this.pendingMcpApprovalGate !== undefined) {
       const gate = this.pendingMcpApprovalGate
       this.pendingMcpApprovalGate = undefined

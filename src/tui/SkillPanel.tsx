@@ -10,7 +10,7 @@ import type { ReactElement } from 'react'
 import { Text } from 'ink'
 import { PanelShell, type PanelRow } from './PanelShell.js'
 import { skillDesc } from '../services/skill/listing.js'
-import { skillRegistry, type SkillInfo } from '../services/skill.js'
+import type { SkillInfo } from '../services/skill.js'
 
 interface SkillPanelProps {
   /** 手动可用 skill（listForCompletion 结果，TuiApp 传入） */
@@ -18,9 +18,13 @@ interface SkillPanelProps {
   /** 选用：回填文本（`/name `）交 TuiApp 写入输入框并关面板 */
   onPick: (fill: string) => void
   onCancel: () => void
+  /** T2（P1-4 单例暗道修）：遮蔽数据由调用方传入（deps.skillRegistry 真件/panel data）——
+   *  面板不再直读模块全局单例（附着壳 fresh 实例下全局件未 load，暗道读空） */
+  shadowedByCommand: Set<string>
+  shadowedEntries: Array<{ name: string; loserPath: string; loserSource: SkillInfo['source']; winnerSource: SkillInfo['source'] }>
 }
 
-export function SkillPanel({ skills, onPick, onCancel }: SkillPanelProps): ReactElement {
+export function SkillPanel({ skills, onPick, onCancel, shadowedByCommand, shadowedEntries }: SkillPanelProps): ReactElement {
   // 分组：项目级 → 用户级 → 内置 → 其他（发现优先级序；builtin 为随包手册，用户可同名覆盖）
   const groups: { label: string; source: SkillInfo['source'][] }[] = [
     { label: '项目级（.ecode/skills/）', source: ['project'] },
@@ -37,22 +41,22 @@ export function SkillPanel({ skills, onPick, onCancel }: SkillPanelProps): React
       rows.push({
         type: 'item',
         // 被内置命令遮蔽的 skill 回填后会命中同名命令（面板自造陷阱）——禁选，只展示
-        disabled: skillRegistry.shadowedByCommand.has(s.name),
+        disabled: shadowedByCommand.has(s.name),
         value: s,
         label: (
           <>
             {s.name.padEnd(16)} {skillDesc(s).slice(0, 40)}
             {s.disableModelInvocation ? <Text color="yellow">  仅手动</Text> : null}
-            {skillRegistry.shadowedByCommand.has(s.name) ? <Text color="yellow">  被命令遮蔽</Text> : null}
+            {shadowedByCommand.has(s.name) ? <Text color="yellow">  被命令遮蔽</Text> : null}
           </>
         ),
       })
     }
   }
   // M7 P4.5：被同名遮蔽的 skill 灰显列出（数据不消失，状态标清楚；禁选——不在注册表，回填无效）
-  if (skillRegistry.shadowedEntries.length > 0) {
+  if (shadowedEntries.length > 0) {
     rows.push({ type: 'header', label: '同名冲突（被遮蔽，不生效）' })
-    for (const sh of skillRegistry.shadowedEntries) {
+    for (const sh of shadowedEntries) {
       rows.push({
         type: 'item',
         disabled: true,

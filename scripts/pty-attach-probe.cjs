@@ -8,6 +8,10 @@
  *   A6 --local：ECODE_FORCE_EMBEDDED=1（--local 同路径）→ 无 server.json 写入
  *   A7 版本不符：预写 version=0.0.0 注册 → 拒绝附着+不 spawn（进程内提示即退出）
  * 跑法：node scripts/pty-attach-probe.cjs
+ *
+ * 稳定性现状（2026-09-01）：A2 的 mock 修复（req.close 清 timer bug）后 Windows pty 长链路
+ * 偶发挂起待查——协议层断言已由 tests/protocol/multiTransport.test.ts + tests/server/multi.test.ts
+ * （G2 双客户端）+ tests/cli/daemon.test.ts 覆盖；本探针作 G-T 真机门的半人工脚手架使用。
  */
 const http = require('node:http')
 const pty = require('D:/study/ECode/node_modules/node-pty')

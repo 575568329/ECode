@@ -1482,6 +1482,8 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
       {overlay?.kind === 'skill-panel' && (
         <SkillPanel
           skills={deps.skillRegistry.listForCompletion()}
+          shadowedByCommand={deps.skillRegistry.shadowedByCommand}
+          shadowedEntries={[...deps.skillRegistry.shadowedEntries]}
           onPick={(fill) => {
             // D32：回填输入框（带尾随空格留传参位），不直接执行
             setInputDraft({ text: fill, seq: nextInsertSeq() })

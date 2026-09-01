@@ -82,8 +82,7 @@ describe('MultiTransport（T4 附着传输）', () => {
     sse(sseRes, { project: '/w/proj', sessionId: 'sid-b', ev: { type: 'delta', seq: 2, text: '他会的' } }) // 他会话过滤
     sse(sseRes, { project: '/w/proj', sessionId: 'sid-a', ev: { type: 'item/completed', seq: 3 } })
     sse(sseRes, { project: '/w/proj', sessionId: 'sid-a', host: { type: 'project/added' } } as never) // host 帧丢弃
-    await new Promise((r) => setTimeout(r, 80))
-    expect(seen.map((e) => e.type)).toEqual(['delta', 'item/completed'])
+    await vi.waitFor(() => expect(seen.map((e) => e.type)).toEqual(['delta', 'item/completed']))
     expect(seen[0]?.seq).toBe(1)
     t.dispose()
     await srv.close()
@@ -92,10 +91,16 @@ describe('MultiTransport（T4 附着传输）', () => {
   it('重连：SSE 断线后退避重连+401 停泵', async () => {
     // 不用 startServer——它的外层包装会先拦 events.mux，这里需要自定义 401/计数行为
     let sseReqCount = 0
+    let failAuth = false
     const sseClients: http.ServerResponse[] = []
     const server = http.createServer((req, res) => {
       if (req.url?.includes('/api/events.mux')) {
         sseReqCount++
+        if (failAuth) {
+          res.writeHead(401)
+          res.end()
+          return
+        }
         res.writeHead(200, { 'content-type': 'text/event-stream' })
         res.write(':open\n\n')
         sseClients.push(res)
@@ -118,10 +123,82 @@ describe('MultiTransport（T4 附着传输）', () => {
     })
     t.subscribe(() => {})
     await vi.waitFor(() => expect(sseReqCount).toBe(1))
-    // 断线：销毁 SSE socket——fetch read 抛错→退避重连
+    // —— W-9：断线→重连带 sinceSeq 游标（P1-2 修复回归锁）——
     sseClients[0].destroy()
     await vi.waitFor(() => expect(sseReqCount).toBeGreaterThanOrEqual(2), { timeout: 15000 })
-    expect(onUnauthorized).not.toHaveBeenCalled()
+    expect(onReconnect).toHaveBeenCalled()
+    // —— 401：停泵不再重连 + onUnauthorized 恰一次（前次断言名不符实，本轮补真 401 覆盖）——
+    failAuth = true
+    sseClients[sseClients.length - 1].destroy()
+    await vi.waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1), { timeout: 15000 })
+    const countAtFail = sseReqCount
+    await new Promise((r) => setTimeout(r, 2000))
+    expect(sseReqCount).toBe(countAtFail) // 停泵：不再重连
+    t.dispose()
+    await new Promise<void>((r) => server.close(() => r()))
+  })
+
+  it('W-9：gap=true（重放覆盖不到）触发 onReconnect(true) 全量补拉信号', async () => {
+    const sseClients: http.ServerResponse[] = []
+    const server = http.createServer((req, res) => {
+      if (req.url?.includes('/api/events.mux')) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.write(':open\n\n')
+        sseClients.push(res)
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{}')
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const addr = server.address() as { port: number }
+    const onReconnect = vi.fn()
+    const t = new MultiTransport({
+      baseUrl: `http://127.0.0.1:${addr.port}`,
+      token: 't',
+      project: '/w/proj',
+      getSessionId: () => 'sid-a',
+      onReconnect,
+    })
+    const seen: Array<{ type: string; seq?: number }> = []
+    t.subscribe((ev) => seen.push(ev as { type: string; seq?: number }))
+    await vi.waitFor(() => expect(sseClients.length).toBeGreaterThan(0))
+    // 模拟 mux 重连基线：gap=true 的 subscribed 帧（缓冲覆盖不到→客户端应触发全量补拉信号）
+    const sseRes = sseClients[0]
+    const sse = (o: unknown) => sseRes.write(`event: x\ndata: ${JSON.stringify(o)}\n\n`)
+    sse({ project: '/w', sessionId: 'sid-a', ev: { type: 'session/subscribed', seq: 9, sessionId: 'sid-a', lastSeq: 9, gap: true } })
+    await vi.waitFor(() => expect(onReconnect).toHaveBeenCalledWith(true))
+    // 非 gap 的 subscribed 不触发
+    onReconnect.mockClear()
+    sse({ project: '/w', sessionId: 'sid-a', ev: { type: 'session/subscribed', seq: 10, sessionId: 'sid-a', lastSeq: 10, gap: false } })
+    await new Promise((r) => setTimeout(r, 120))
+    expect(onReconnect).not.toHaveBeenCalled()
+    t.dispose()
+    await new Promise<void>((r) => server.close(() => r()))
+  })
+
+  it('坏帧跳过：非 JSON data 行不中断流', async () => {
+    const sseClients: http.ServerResponse[] = []
+    const server = http.createServer((req, res) => {
+      if (req.url?.includes('/api/events.mux')) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.write(':open\n\n')
+        sseClients.push(res)
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{}')
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const addr = server.address() as { port: number }
+    const t = new MultiTransport({ baseUrl: `http://127.0.0.1:${addr.port}`, token: 't', project: '/w', getSessionId: () => 's1' })
+    const seen: Array<{ type: string }> = []
+    t.subscribe((ev) => seen.push(ev as { type: string }))
+    await vi.waitFor(() => expect(sseClients.length).toBeGreaterThan(0))
+    const sseRes = sseClients[0]
+    sseRes.write(`event: delta\n\ndata: {broken json\n\n`)
+    sseRes.write(`event: delta\n\ndata: ${JSON.stringify({ project: '/w', sessionId: 's1', ev: { type: 'delta', seq: 1, text: 'x' } })}\n\n`)
+    await vi.waitFor(() => expect(seen.map((e) => e.type)).toEqual(['delta']))
     t.dispose()
     await new Promise<void>((r) => server.close(() => r()))
   })

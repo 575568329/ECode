@@ -2,7 +2,7 @@
  * M12-B1 宿主会话测试：事件序/seq 单调、prompt 三态路由（StartOrSteer/StartIfIdle/Steer 防竞态）、
  * interrupt、轮末兜底续投。MockProvider 模式与 tests/core/loop.test.ts 同源。
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { HostSession, type HostDeps } from '../../src/host/session.js'
 import type { ProtocolEvent, RewindExecResult, RewindListResult } from '../../src/protocol/types.js'
 import type { LLMProvider, LLMProviderRunRequest } from '../../src/providers/interface.js'
@@ -173,9 +173,10 @@ describe('HostSession（B1 宿主会话）', () => {
     const events = collect(host)
     const r = await host.send({ op: 'session/compact' })
     expect(r).toMatchObject({ ok: true, output: expect.stringContaining('压缩已开始') })
-    await new Promise((resolve) => setTimeout(resolve, 50))
     // 空会话 → compactManual 快速失败 → systemMsg「压缩失败：无可压缩对话」（真压缩链自有测试覆盖）
-    expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('压缩失败'))).toBe(true)
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('压缩失败'))).toBe(true)
+    })
   })
 
   it('B2 集成：非 readonly 工具经 Broker——订阅者 respond once 放行；零订阅者 fail-closed 拒绝', async () => {

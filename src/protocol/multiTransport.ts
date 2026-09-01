@@ -43,7 +43,7 @@ export interface MultiTransportOpts {
 export class MultiTransport implements ClientTransport {
   private readonly handlers = new Set<EventHandler>()
   private aborted = false
-  /** 重连触发补拉旗标（首连不触发——宿主 restore 时本就全量拉） */
+  /** 首连/重连判定（重连成功触发一次 onReconnect(false) 轻量对账） */
   private everConnected = false
   private lastSeq: number | null = null
   private abort: AbortController | null = null
@@ -135,8 +135,10 @@ export class MultiTransport implements ClientTransport {
         if (!res.ok || res.body === null) throw new Error(`mux SSE ${res.status}`)
         this.state = 'open'
         this.opts.onState?.('open')
-        const gap = this.everConnected // 重连=补拉旗标（是否 gap 由 subscribed 帧精确判定，此为保守估计）
+        // everConnected 保留：重连成功即触发一次 onReconnect(false)（客户端可做轻量对账）
+        const isReconnect = this.everConnected
         this.everConnected = true
+        if (isReconnect) this.opts.onReconnect?.(false)
         backoff = BACKOFF_BASE_MS
         // spike 实测坑：reader 循环外取一次（锁定流再 getReader 抛 TypeError）
         const reader = res.body.getReader()
@@ -152,8 +154,13 @@ export class MultiTransport implements ClientTransport {
             buf = buf.slice(idx + 2)
             for (const line of raw.split('\n')) {
               if (!line.startsWith('data: ')) continue
-              const frame = JSON.parse(line.slice(6)) as MuxSseFrame
-              this.handleFrame(frame, gap)
+              let frame: MuxSseFrame
+              try {
+                frame = JSON.parse(line.slice(6)) as MuxSseFrame
+              } catch {
+                continue // 坏帧跳过（不因单帧损坏整连重连）
+              }
+              this.handleFrame(frame)
             }
           }
         }
@@ -169,15 +176,16 @@ export class MultiTransport implements ClientTransport {
   }
 
   /** mux 帧→客户端事件：只分发当前会话的 ev（全量广播本地过滤——切会话零重连） */
-  private handleFrame(frame: MuxSseFrame, reconnected: boolean): void {
+  private handleFrame(frame: MuxSseFrame): void {
     if ('host' in frame && frame.host !== undefined) return // 宿主生命周期帧（列表变化走 session/list 主动拉）
     const sid = this.sessionId ?? this.opts.getSessionId()
     if (frame.sessionId !== sid) return
     const ev = frame.ev as unknown as ProtocolEvent
     if (ev.type === 'session/subscribed') {
-      // W-9：重放基线——gap=true（缓冲覆盖不到）通知全量补同步
+      // W-9：重放基线——gap=true（缓冲覆盖不到）一律通知全量补同步（首连也可能收到：
+      // daemon 重启后的 mux 重放与「是否重连」无关，补拉幂等无害）
       const gapFlag = (ev as unknown as { gap?: boolean }).gap === true
-      if (reconnected && gapFlag) {
+      if (gapFlag) {
         this.lastSeq = null
         this.opts.onReconnect?.(true)
       }

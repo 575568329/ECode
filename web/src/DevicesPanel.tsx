@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { X, Trash2, QrCode } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
 import { getToken } from './connect'
 import { activateHost, fetchHostsOnline, listHosts, relayDisconnect, relayGetCfg, removeHost, type HostOnline } from './relay'
 
@@ -150,8 +151,11 @@ function DirectDevices({ onClose }: { onClose: () => void }): React.JSX.Element 
           </div>
         ) : (
           <div className="space-y-1.5">
-            <div className="text-[11px] text-emerald-400">✓ 已生成——把链接发给手机（微信/QQ 均可），手机浏览器打开即自动配对：</div>
-            <textarea readOnly value={pairLink} rows={4} className="w-full break-all rounded border border-neutral-700 bg-neutral-800 p-1.5 font-mono text-[10px] text-neutral-300" />
+            <div className="text-[11px] text-emerald-400">✓ 已生成——手机相机/微信扫二维码即自动配对（扫不动再用下方链接）：</div>
+            <div className="flex justify-center rounded border border-neutral-700 bg-white p-2">
+              <QRCodeSVG value={pairLink} size={168} marginSize={1} />
+            </div>
+            <textarea readOnly value={pairLink} rows={3} className="w-full break-all rounded border border-neutral-700 bg-neutral-800 p-1.5 font-mono text-[10px] text-neutral-300" />
             <div className="flex gap-1.5">
               <button
                 onClick={() => {

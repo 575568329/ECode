@@ -12,6 +12,7 @@
   "dependencies": {
     "eventsource-parser": "^4.1.0",
     "lucide-react": "^0.577.0",
+    "qrcode.react": "^4.2.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",

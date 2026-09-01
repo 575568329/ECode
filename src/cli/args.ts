@@ -21,6 +21,8 @@ export type ArgvResult = ArgvUsage &
     | { mode: 'version' }
     | { mode: 'help' }
     | { mode: 'serve'; serveArgs: string[] }
+    | { mode: 'pair'; pairArgs: string[] }
+    | { mode: 'devices'; devicesArgs: string[] }
     | { mode: 'error'; message: string }
     | { mode: 'repl'; input: string; autoYes: boolean; local: boolean; historySessionId: string | undefined }
   )
@@ -41,6 +43,9 @@ export const USAGE = [
 ].join('\n')
 
 export function parseArgv(argv: string[]): ArgvResult {
+  // R1：设备配对面（pair/devices——不初始化 Ink/不碰 LLM）
+  if (argv[0] === 'pair') return { usage: USAGE, mode: 'pair', pairArgs: argv.slice(1) }
+  if (argv[0] === 'devices') return { usage: USAGE, mode: 'devices', devicesArgs: argv.slice(1) }
   // serve 子命令族：整段原样透传（serveMain 自行解析 --port 等）。
   // 契约锁测（批2a §10.3）：`serve --version` 不在 args 层分流——serve 自有解析，透传语义不变。
   if (argv[0] === 'serve') {

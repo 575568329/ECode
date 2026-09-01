@@ -30,6 +30,7 @@ import { render } from 'ink'
 import React from 'react'
 import { TuiApp, type TuiAppDeps } from '../tui/TuiApp.js'
 import { ensureDaemonAttach } from './daemon.js'
+import { runPair, runDevices } from './pair.js'
 import { makeAttachShellDeps } from './assembly.js'
 import { makeDeps, type Deps } from './assembly.js'
 import { serveStop, serveMode } from './serveMain.js'
@@ -132,6 +133,17 @@ async function main(): Promise<void> {
   if (parsed.mode === 'error') {
     process.stderr.write(`${parsed.message}\n`)
     process.exitCode = 1
+    return
+  }
+  // R1：`ecode pair` / `ecode devices` 分流（设备配对面——不初始化 Ink/不碰 LLM）
+  if (parsed.mode === 'pair') {
+    const code = runPair(parsed.pairArgs)
+    process.exitCode = code
+    return
+  }
+  if (parsed.mode === 'devices') {
+    const code = runDevices(parsed.devicesArgs)
+    process.exitCode = code
     return
   }
   // M12：`ecode serve` 分流（常驻宿主 HTTP——不初始化 Ink）

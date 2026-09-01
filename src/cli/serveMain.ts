@@ -194,9 +194,23 @@ export async function serveMode(): Promise<void> {
     }
     shutdown(0)
   }
+  // R1：配对设备凭据注入（devices.json 未吊销条目→extraCredentials device 类——不可 confirm 豁免）
+  const deviceCreds: Array<{ secret: string; class: 'device' }> = []
+  try {
+    const devFile = join(os.homedir(), '.ecode', 'devices.json')
+    if (existsSync(devFile)) {
+      const parsed = JSON.parse(readFileSync(devFile, 'utf8')) as { devices?: Array<{ secret?: string }> }
+      for (const d of parsed.devices ?? []) {
+        if (typeof d.secret === 'string' && d.secret !== '') deviceCreds.push({ secret: d.secret, class: 'device' })
+      }
+      if (deviceCreds.length > 0) logger.info('daemon', 'devices_loaded', { count: deviceCreds.length })
+    }
+  } catch {
+    /* 设备表损坏不阻断 serve 启动 */
+  }
   const srv = await serveMulti(
     { registry, defaultCwd: process.cwd() },
-    { port: Number(envOr('ECODE_SERVE_PORT') ?? 0), host: serveHost, password: servePassword, id: sessionId, onStop: stopServe, version: myVer, name: daemonName, ...(webDir !== undefined ? { webDir } : {}) },
+    { port: Number(envOr('ECODE_SERVE_PORT') ?? 0), host: serveHost, password: servePassword, id: sessionId, onStop: stopServe, version: myVer, name: daemonName, extraCredentials: deviceCreds, ...(webDir !== undefined ? { webDir } : {}) },
   )
   // 注册文件（B8 daemon 生命周期的锚点）：0600，含 token——客户端从这里读。
   // T3：+version（附着前版本比对）+name（多机区分）；tmp+rename 原子写（防撕裂，架构席 P2-3）

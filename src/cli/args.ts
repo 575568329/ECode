@@ -23,6 +23,7 @@ export type ArgvResult = ArgvUsage &
     | { mode: 'serve'; serveArgs: string[] }
     | { mode: 'pair'; pairArgs: string[] }
     | { mode: 'devices'; devicesArgs: string[] }
+    | { mode: 'wechat-login' }
     | { mode: 'error'; message: string }
     | { mode: 'repl'; input: string; autoYes: boolean; local: boolean; historySessionId: string | undefined }
   )
@@ -34,6 +35,9 @@ export const USAGE = [
   '  ecode                 REPL 交互（Ink TUI）',
   '  ecode "你的问题"       单次执行：stdout 输出后退出（脚本/管道友好）',
   '  ecode serve           常驻宿主 HTTP 服务（serve stop 停止）',
+  '  ecode pair [名字]      配对设备（web/手机接入凭据+offer 二维码）',
+  '  ecode devices         配对设备列表（devices revoke <id> 吊销）',
+  '  ecode wechat-login    微信 ClawBot 扫码登录（bot_token 写入 config.wechat）',
   '',
   '选项：',
   '  -v, --version         输出版本号并退出',
@@ -48,6 +52,7 @@ export function parseArgv(argv: string[]): ArgvResult {
   if (argv[0] === 'devices') return { usage: USAGE, mode: 'devices', devicesArgs: argv.slice(1) }
   // serve 子命令族：整段原样透传（serveMain 自行解析 --port 等）。
   // 契约锁测（批2a §10.3）：`serve --version` 不在 args 层分流——serve 自有解析，透传语义不变。
+  if (argv[0] === 'wechat-login') return { usage: USAGE, mode: 'wechat-login' }
   if (argv[0] === 'serve') {
     return { usage: USAGE, mode: 'serve', serveArgs: argv.slice(1) }
   }

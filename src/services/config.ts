@@ -72,6 +72,11 @@ export interface Config {
    * 测试时覆盖 nginx 路径约定（缺省 server+/ecode-tunnel 与 server+/ecode）。
    */
   relay?: { server: string; hostToken: string; hostId?: string; name?: string; hostBase?: string; phoneBase?: string }
+  /**
+   * R4：微信 ClawBot gateway（iLink 协议——botToken 经 `ecode wechat-login` 扫码获取）。
+   * allowUsers=user id 白名单（xxx@im.wechat）缺省拒——对齐 feishu 语义。
+   */
+  wechat?: { botToken: string; allowUsers?: string[] }
   /** M10-P1：联网搜索（provider 缺省 bing RSS 免费；preferMcp 显式声明搜索 MCP server 名；命中搜索 MCP 时内置不注册） */
   webSearch?: { provider?: 'bing' | 'zhipu'; apiKey?: string; engine?: 'search_std' | 'search_pro' | 'search_pro_sogou' | 'search_pro_quark'; preferMcp?: string[] }
   /** 指令/记忆注入单级上限 KB（M8：ECODE.md/CLAUDE.md/MEMORY.md 各级截断阈值，默认 32） */
@@ -131,6 +136,8 @@ interface ConfigFile {
   feishu?: { appId: string; appSecret: string; allowUsers?: string[] }
   /** R2：relay 出站连接（jsonc 透传；server/hostToken 必填才激活） */
   relay?: { server: string; hostToken: string; hostId?: string; name?: string; hostBase?: string; phoneBase?: string }
+  /** R4：微信 ClawBot（jsonc 透传；botToken 必填才激活） */
+  wechat?: { botToken: string; allowUsers?: string[] }
 }
 
 export interface LoadConfigOpts {
@@ -366,6 +373,7 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     ...(file.feishu !== undefined ? { feishu: file.feishu } : {}),
     // R2：relay 配置透传（hostToken 缺失=配置不完整不激活——防半配置静默起链路）
     ...(file.relay !== undefined && file.relay.server !== '' && file.relay.hostToken !== '' ? { relay: file.relay } : {}),
+    ...(file.wechat !== undefined && file.wechat.botToken !== '' ? { wechat: file.wechat } : {}),
     maxIterations: file.maxIterations ?? DEFAULT_MAX_ITERATIONS,
     bashMaxOutputBytes: file.bashMaxOutputBytes ?? DEFAULT_BASH_MAX_BYTES,
     lintCommand: file.lintCommand,

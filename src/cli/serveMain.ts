@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { ProjectRegistry } from '../server/projects.js'
 import { serveMulti } from '../server/multi.js'
 import { FeishuGateway } from '../server/im/feishu.js'
+import { WechatGateway } from '../server/im/wechat.js'
 import { RelayClient } from '../server/relayClient.js'
 import { DeviceRegistry } from '../server/devices.js'
 import { loadOrCreateHostKeys } from '../server/e2ee.js'
@@ -276,71 +277,95 @@ export async function serveMode(): Promise<void> {
     process.stdout.write('提示：DHCP 可能变动局域网 IP——建议为公司电脑配置静态 IP（中继形态 M14 后此问题消失）\n')
   }
   // M13-W8：飞书 IM gateway（配置了凭据才激活——长连接免公网，公司电脑零暴露）
+  // R4：微信 ClawBot gateway 同注入面（iLink 长轮询）——deps 工厂一次构造两处复用
+  const projectRoot = process.cwd().split(String.fromCharCode(92)).join('/')
+  const imGatewayDeps = (): {
+    project: string
+    sendCommand: (sessionId: string | undefined, op: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; sessionId?: string; value?: unknown }>
+    subscribe: (handler: (frame: { project: string; sessionId: string; ev: { type: string; [k: string]: unknown } }) => void) => () => void
+    listSessions: () => Promise<Array<{ sessionId: string; firstUser: string; running?: boolean }>>
+  } => ({
+    project: projectRoot,
+    sendCommand: async (sessionId, op) => {
+      // 真新建特判（审阅 P1-3：飞书 /new 曾只解绑定，下一条消息 ensureDefault 复用旧默认
+      // 会话——「新建」实为继续旧聊；与 multi.ts 信封层拦截同语义）
+      if ((op as { op?: string }).op === 'session/new') {
+        const r = await registry.acquire(projectRoot, { confirm: true })
+        if (!r.ok || r.host === undefined) return { ok: false, error: 'project acquire failed' }
+        const sid = `${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 10)}`
+        r.host.ensure(sid)
+        return { ok: true, sessionId: sid }
+      }
+      const r = await registry.acquire(projectRoot, { confirm: true })
+      if (!r.ok || r.host === undefined) return { ok: false, error: 'project acquire failed' }
+      const conv = sessionId !== undefined ? r.host.conversation(sessionId) ?? (await r.host.ensureRestore(sessionId)) : r.host.ensureDefault(`${new Date().toISOString().replace(/[:.]/g, '-')}-im`)
+      const result = (await conv.send(op as Parameters<typeof conv.send>[0])) as { ok: boolean; error?: string; sessionId?: string; value?: unknown }
+      return { ...result, sessionId: sessionId ?? r.host.currentSessionId }
+    },
+    subscribe: (handler) => {
+      // mux 语义的最小进程内形态：订阅默认项目全部会话（registry 层面——W8 简化走 registry 快照轮询不可行，
+      // 直接用 ProjectHost 会话订阅：acquire 后 conversationsSnapshot 订阅现有+onSessionEvent 增量）
+      const unsubs: Array<() => void> = []
+      void registry.acquire(projectRoot, { confirm: true }).then((r) => {
+        if (!r.ok || r.host === undefined) return
+        const attach = (): void => {
+          // 审阅 P1-2：gateway 全量订阅但只转发绑定命中的会话（onFrame 未绑定直接 return）——
+          // 观察型连接必须声明 canAnswer:false，否则 sensitive 审批的"零可应答者 fail-closed"
+          // 被 phantom subscriber 撑破（审批挂 15min 超时自动拒——C2⑧ 同病此处曾回归）
+          for (const [sid, conv] of r.host!.conversationsSnapshot()) {
+            unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: sid, ev }), { canAnswer: false }))
+          }
+          unsubs.push(
+            r.host!.onSessionEvent((kind, info) => {
+              if (kind === 'created') {
+                const conv = r.host!.conversation(info.sessionId)
+                if (conv !== undefined) unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: info.sessionId, ev }), { canAnswer: false }))
+              }
+            }),
+          )
+        }
+        attach()
+      })
+      return () => {
+        for (const u of unsubs) u()
+      }
+    },
+    listSessions: async () => {
+      const r = await registry.acquire(projectRoot, { confirm: true })
+      if (!r.ok || r.host === undefined) return []
+      const conv = r.host.ensureDefault(`list-${Date.now()}`)
+      const res = (await conv.send({ op: 'session/list' })) as { ok: boolean; value?: unknown }
+      return Array.isArray(res.value) ? (res.value as Array<{ sessionId: string; firstUser: string; running?: boolean }>) : []
+    },
+  })
   let feishuGw: FeishuGateway | undefined
   if (config.feishu !== undefined && config.feishu.appId !== '' && config.feishu.appSecret !== '') {
-    const projectRoot = process.cwd().split(String.fromCharCode(92)).join('/')
     feishuGw = new FeishuGateway({
       appId: config.feishu.appId,
       appSecret: config.feishu.appSecret,
       allowUsers: config.feishu.allowUsers, // 白名单（缺省/空=拒绝所有——审阅 P0-1）
       logger,
-      project: projectRoot,
-      sendCommand: async (sessionId, op) => {
-        // 真新建特判（审阅 P1-3：飞书 /new 曾只解绑定，下一条消息 ensureDefault 复用旧默认
-        // 会话——「新建」实为继续旧聊；与 multi.ts 信封层拦截同语义）
-        if ((op as { op?: string }).op === 'session/new') {
-          const r = await registry.acquire(projectRoot, { confirm: true })
-          if (!r.ok || r.host === undefined) return { ok: false, error: 'project acquire failed' }
-          const sid = `${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 10)}`
-          r.host.ensure(sid)
-          return { ok: true, sessionId: sid }
-        }
-        const r = await registry.acquire(projectRoot, { confirm: true })
-        if (!r.ok || r.host === undefined) return { ok: false, error: 'project acquire failed' }
-        const conv = sessionId !== undefined ? r.host.conversation(sessionId) ?? (await r.host.ensureRestore(sessionId)) : r.host.ensureDefault(`${new Date().toISOString().replace(/[:.]/g, '-')}-im`)
-        const result = (await conv.send(op as Parameters<typeof conv.send>[0])) as { ok: boolean; error?: string; sessionId?: string; value?: unknown }
-        return { ...result, sessionId: sessionId ?? r.host.currentSessionId }
-      },
-      subscribe: (handler) => {
-        // mux 语义的最小进程内形态：订阅默认项目全部会话（registry 层面——W8 简化走 registry 快照轮询不可行，
-        // 直接用 ProjectHost 会话订阅：acquire 后 conversationsSnapshot 订阅现有+onSessionEvent 增量）
-        const unsubs: Array<() => void> = []
-        void registry.acquire(projectRoot, { confirm: true }).then((r) => {
-          if (!r.ok || r.host === undefined) return
-          const attach = (): void => {
-            // 审阅 P1-2：gateway 全量订阅但只转发绑定命中的会话（onFrame 未绑定直接 return）——
-            // 观察型连接必须声明 canAnswer:false，否则 sensitive 审批的"零可应答者 fail-closed"
-            // 被 phantom subscriber 撑破（审批挂 15min 超时自动拒——C2⑧ 同病此处曾回归）
-            for (const [sid, conv] of r.host!.conversationsSnapshot()) {
-              unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: sid, ev }), { canAnswer: false }))
-            }
-            unsubs.push(
-              r.host!.onSessionEvent((kind, info) => {
-                if (kind === 'created') {
-                  const conv = r.host!.conversation(info.sessionId)
-                  if (conv !== undefined) unsubs.push(conv.subscribe((ev) => handler({ project: projectRoot, sessionId: info.sessionId, ev }), { canAnswer: false }))
-                }
-              }),
-            )
-          }
-          attach()
-        })
-        return () => {
-          for (const u of unsubs) u()
-        }
-      },
-      listSessions: async () => {
-        const r = await registry.acquire(projectRoot, { confirm: true })
-        if (!r.ok || r.host === undefined) return []
-        const conv = r.host.ensureDefault(`list-${Date.now()}`)
-        const res = (await conv.send({ op: 'session/list' })) as { ok: boolean; value?: unknown }
-        return Array.isArray(res.value) ? (res.value as Array<{ sessionId: string; firstUser: string; running?: boolean }>) : []
-      },
+      ...imGatewayDeps(),
     })
     void feishuGw.start().catch((e: unknown) => {
       process.stderr.write(`飞书 gateway 启动失败：${e instanceof Error ? e.message : String(e)}
 `)
       feishuGw = undefined
+    })
+  }
+  // R4：微信 ClawBot gateway（config.wechat.botToken 配置才激活——扫码获取见 `ecode wechat-login`）
+  let wechatGw: WechatGateway | undefined
+  if (config.wechat !== undefined && config.wechat.botToken !== '') {
+    wechatGw = new WechatGateway({
+      botToken: config.wechat.botToken,
+      allowUsers: config.wechat.allowUsers, // 白名单（缺省/空=拒绝所有——T6）
+      logger,
+      ...imGatewayDeps(),
+    })
+    void wechatGw.start().catch((e: unknown) => {
+      process.stderr.write(`微信 gateway 启动失败：${e instanceof Error ? e.message : String(e)}
+`)
+      wechatGw = undefined
     })
   }
 
@@ -370,6 +395,7 @@ export async function serveMode(): Promise<void> {
     if (sweep !== null) clearInterval(sweep)
     void (async () => {
       feishuGw?.dispose()
+      wechatGw?.dispose()
       relayClient?.dispose()
       await srv.close()
       registry.disposeAll()

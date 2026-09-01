@@ -31,6 +31,7 @@ import React from 'react'
 import { TuiApp, type TuiAppDeps } from '../tui/TuiApp.js'
 import { ensureDaemonAttach } from './daemon.js'
 import { runPair, runDevices } from './pair.js'
+import { runWechatLogin } from './wechatLogin.js'
 import { makeAttachShellDeps } from './assembly.js'
 import { makeDeps, type Deps } from './assembly.js'
 import { serveStop, serveMode } from './serveMain.js'
@@ -142,6 +143,11 @@ async function main(): Promise<void> {
   }
   if (parsed.mode === 'devices') {
     process.exitCode = await runDevices(parsed.devicesArgs)
+    return
+  }
+  // R4：`ecode wechat-login` 分流（iLink 扫码登录——不初始化 Ink/不碰 LLM）
+  if (parsed.mode === 'wechat-login') {
+    process.exitCode = await runWechatLogin()
     return
   }
   // M12：`ecode serve` 分流（常驻宿主 HTTP——不初始化 Ink）

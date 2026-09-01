@@ -33,13 +33,30 @@ describe('TodoPanel 渲染', () => {
     expect(render(<TodoPanel todos={todos} altMode />).lastFrame()).toBe('')
   })
 
-  it('超过 12 项截断 + 摘要行（常驻面板不能无限占行——CC TaskListV2 同款思路）', () => {
+  it('超过 3 项截断 + 摘要行（用户拍板：输入区上方只留 3 行）', () => {
     const many: TodoEntry[] = Array.from({ length: 15 }, (_, i) => ({ content: `任务${i}`, status: 'pending' }))
     const f = render(<TodoPanel todos={many} />).lastFrame() ?? ''
     expect(f).toContain('任务0')
-    expect(f).toContain('任务11')
-    expect(f).not.toContain('任务12 ')
-    expect(f).toContain('…还有 3 项')
+    expect(f).toContain('任务2')
+    expect(f).not.toContain('任务3 ')
+    expect(f).toContain('…还有 12 项')
+  })
+
+  it('已完成的排到最后（折叠优先折已完成的——未完成项不被折叠）', () => {
+    const todos: TodoEntry[] = [
+      { content: '已完成1', status: 'completed' },
+      { content: '进行中', status: 'in_progress' },
+      { content: '已完成2', status: 'completed' },
+      { content: '待办A', status: 'pending' },
+      { content: '待办B', status: 'pending' },
+    ]
+    const f = render(<TodoPanel todos={todos} />).lastFrame() ?? ''
+    // 可见 3 行=进行中+两个待办；已完成的全部折叠
+    expect(f).toContain('▸ 进行中')
+    expect(f).toContain('○ 待办A')
+    expect(f).toContain('○ 待办B')
+    expect(f).not.toContain('已完成1')
+    expect(f).toContain('…还有 2 项（均已完成）')
   })
 })
 

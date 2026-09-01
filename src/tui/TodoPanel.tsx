@@ -16,9 +16,13 @@ export interface TodoEntry {
   status: string
 }
 
-/** 超屏防御：清单超过此数截断（CC TaskListV2 同款思路——面板常驻不能无限占行）。
+/** 超屏防御：清单超过此数截断（用户拍板 3 项——输入区上方空间珍贵，完成的排尾优先折叠）。
  *  导出供 TuiApp 派生 todoLines 预算（allocateDynamic 条件段同源，审阅 P0-2） */
-export const TODO_MAX_VISIBLE = 12
+export const TODO_MAX_VISIBLE = 3
+
+/** 显示排序：进行中 > 待办 > 已完成（稳定排序，组内保持原顺序）——
+ *  超 3 项折叠时先折已完成的，未完成项永不被折（用户拍板） */
+const STATUS_RANK: Record<string, number> = { in_progress: 0, pending: 1, completed: 2 }
 
 export function TodoPanel({
   todos,
@@ -35,7 +39,9 @@ export function TodoPanel({
   // 全部完成 → 整面板自动收起（用户真机反馈：完成后常驻像没清场；对标 CC——清单服务执行期，
   // 收尾即退役。transcript 里 ✓ 历史仍在，新任务建新清单时面板自然重现）
   if (done === todos.length) return null
-  const shown = todos.length > maxVisible ? todos.slice(0, maxVisible) : todos
+  const sorted = [...todos].sort((a, b) => (STATUS_RANK[a.status] ?? 1) - (STATUS_RANK[b.status] ?? 1))
+  const shown = sorted.length > maxVisible ? sorted.slice(0, maxVisible) : sorted
+  // 折叠的全是已完成时明说（未完成 > 上限时仍是普通折叠——3 的硬上限使然）
   return (
     <Box flexDirection="column" marginBottom={0}>
       <Box>
@@ -58,7 +64,12 @@ export function TodoPanel({
               {x.content}
             </Text>
           ))}
-          {todos.length > maxVisible && <Text dimColor>…还有 {todos.length - maxVisible} 项</Text>}
+          {todos.length > maxVisible && (
+            <Text dimColor>
+              …还有 {todos.length - maxVisible} 项
+              {sorted.slice(maxVisible).every((x) => x.status === 'completed') ? '（均已完成）' : ''}
+            </Text>
+          )}
         </Box>
       </Box>
     </Box>

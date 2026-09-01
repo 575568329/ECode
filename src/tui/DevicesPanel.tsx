@@ -1,0 +1,164 @@
+/**
+ * /devices 配对设备面板（R 线）：一个面板覆盖 查看列表/吊销/配对新设备（终端二维码+深链）。
+ *
+ * 数据自取（probeRunningDaemon → daemon HTTP；不可达落本地注册表）——面板与宿主零耦合。
+ * 交互（PanelShell 惯例）：↑↓ 选择 · 回车 执行 · Esc 返回；
+ * 吊销二次确认（回车选中 → 再回车确认，防误触）；配对成功切二维码视图（任意键返回）。
+ */
+
+import { useCallback, useEffect, useState } from 'react'
+import type { ReactElement } from 'react'
+import { Box, Text, useInput } from 'ink'
+import { PanelShell } from './PanelShell.js'
+import { theme } from './theme.js'
+import { createPairingFull } from '../server/pairing.js'
+import { DeviceRegistry, probeRunningDaemon, revokeDeviceText } from '../server/devices.js'
+
+interface DeviceRow {
+  deviceId: string
+  name: string
+  scope: string
+  pairedAt: string
+  relayInvite?: { token: string; expiresAt: number }
+}
+
+interface PairResultView {
+  qrText: string
+  link?: string
+  name: string
+  scope: string
+  viaDaemon: boolean
+}
+
+export function DevicesPanel({ onCancel }: { onCancel: () => void }): ReactElement {
+  const [devices, setDevices] = useState<DeviceRow[] | null>(null)
+  const [status, setStatus] = useState('')
+  const [armed, setArmed] = useState<string | null>(null)
+  const [result, setResult] = useState<PairResultView | null>(null)
+  const [pairBusy, setPairBusy] = useState(false)
+
+  const load = useCallback(async (): Promise<void> => {
+    const daemon = await probeRunningDaemon()
+    if (daemon !== null) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${daemon.port}/api/devices`, {
+          headers: { authorization: `Bearer ${daemon.token}` },
+          signal: AbortSignal.timeout(3000),
+        })
+        const r = (await res.json()) as { devices?: DeviceRow[] }
+        if (res.ok && Array.isArray(r.devices)) {
+          setDevices(r.devices)
+          return
+        }
+      } catch {
+        /* daemon 查询失败落本地表 */
+      }
+    }
+    setDevices(new DeviceRegistry().list())
+  }, [])
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const pair = async (): Promise<void> => {
+    if (pairBusy) return
+    setPairBusy(true)
+    try {
+      const name = `手机-${Math.random().toString(36).slice(2, 6)}`
+      const r = await createPairingFull(name, 'chat')
+      setResult({ qrText: r.qrText, link: r.link, name: r.name, scope: r.scope, viaDaemon: r.viaDaemon })
+      await load()
+    } catch (e) {
+      setStatus(`配对失败：${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setPairBusy(false)
+    }
+  }
+
+  const revoke = async (id: string): Promise<void> => {
+    const msg = await revokeDeviceText(id)
+    setStatus(msg)
+    setArmed(null)
+    await load()
+  }
+
+  if (result !== null) {
+    return <PairResultView r={result} onBack={() => setResult(null)} />
+  }
+
+  const rows = [
+    ...(status !== '' ? [{ type: 'header' as const, label: status }] : []),
+    { type: 'item' as const, value: '__pair__' as const, label: pairBusy ? ' ⏳ 生成配对中…' : ' ➕ 配对新设备（回车生成二维码+链接）' },
+    { type: 'header' as const, label: `已配对设备（${devices?.length ?? 0}）` },
+    ...(devices ?? []).map((d) => ({
+      type: 'item' as const,
+      value: d.deviceId,
+      label: (
+        <Text>
+          {' '}
+          {d.name}
+          <Text color={theme.border}> [{d.scope === 'full' ? '全功能' : '对话+只读'}]</Text> {d.pairedAt.slice(0, 10)}
+          {d.relayInvite !== undefined ? <Text color={theme.info}> [中继]</Text> : ''}
+          {armed === d.deviceId ? <Text color={theme.error}> —— 再回车确认吊销（Esc 取消）</Text> : ''}
+        </Text>
+      ),
+    })),
+  ]
+
+  return (
+    <PanelShell
+      title="配对设备"
+      subtitle="新设备配对 · 吊销 · 管理"
+      rows={rows}
+      onPick={(v) => {
+        if (v === '__pair__') {
+          void pair()
+          return
+        }
+        if (typeof v === 'string') {
+          // 吊销二次确认：首次回车仅武装（行内提示），再回车才真吊销
+          if (armed === v) void revoke(v)
+          else setArmed(v)
+        }
+      }}
+      onCancel={() => {
+        if (armed !== null) setArmed(null)
+        else onCancel()
+      }}
+      emptyHint="（尚无配对设备——回车「配对新设备」生成二维码）"
+      keyHints="↑↓ 选择 · 回车 执行/二次确认 · Esc 返回"
+    />
+  )
+}
+
+/** 配对结果视图：终端二维码 + 深链（任意键返回列表） */
+function PairResultView({ r, onBack }: { r: PairResultView; onBack: () => void }): ReactElement {
+  useInput(() => onBack())
+  return (
+    <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor={theme.border} paddingX={1}>
+      <Text color={theme.info} bold>
+        {' '}
+        配对已生成：{r.name}（{r.scope === 'full' ? '全功能' : '对话+只读'}）
+      </Text>
+      {!r.viaDaemon && <Text color={theme.warn}> ⚠ 离线形态（daemon 未在跑）——重启 serve 后生效，且无中继段</Text>}
+      {r.link === undefined && r.viaDaemon && <Text color={theme.warn}> ⚠ 中继未连接——此配对仅限局域网；异地接入请中继在线后重新生成</Text>}
+      {r.qrText !== '' ? (
+        <Box flexDirection="column" marginTop={1}>
+          {r.qrText.split('\n').map((line, i) => (
+            <Text key={`qr${i}`}> {line}</Text>
+          ))}
+        </Box>
+      ) : (
+        <Text color={theme.warn}> （二维码不可用——用下方链接）</Text>
+      )}
+      {r.link !== undefined && (
+        <Box marginTop={1}>
+          <Text> 链接：{r.link}</Text>
+        </Box>
+      )}
+      <Box marginTop={1}>
+        <Text dimColor> 手机相机/微信扫码即自动配对 · 任意键返回列表</Text>
+      </Box>
+    </Box>
+  )
+}

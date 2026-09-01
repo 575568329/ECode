@@ -534,7 +534,7 @@ export class HostSession {
 
   /** 清账 III P2-7：serve 端 /help 输出——只列 host 可执行五命令，面板类命令不列（web 履约不了） */
   private helpForServe(reg: import('../commands/registry.js').CommandRegistry): { output: string } {
-    const hostable = new Set(['help', 'stats', 'cost', 'clear', 'compact', 'devices'])
+    const hostable = new Set(['help', 'stats', 'cost', 'clear', 'compact'])
     const lines = reg
       .list()
       .filter((c) => hostable.has(c.name))
@@ -561,7 +561,7 @@ export class HostSession {
       return { ok: false, error: `未知命令 /${name}（输入 /help 查看可用命令）` }
     }
     // host 可执行命令：纯输出或宿主已有权威操作
-    if (name === 'help' || name === 'stats' || name === 'devices') {
+    if (name === 'help' || name === 'stats') {
       const args = text.slice(1 + name.length).trim()
       const r = await (name === 'help' ? this.helpForServe(reg) : cmd.run(args === '' ? undefined : args))
       return { ok: true, output: r.output ?? '' }
@@ -594,7 +594,7 @@ export class HostSession {
       })
       return { ok: true, output: '压缩已开始（完成后有 systemMsg 通知）' }
     }
-    return { ok: false, error: `/${name} 为 TUI 面板/本地命令，serve 端不可用（可用：/help /stats /cost /clear /compact /devices）` }
+    return { ok: false, error: `/${name} 为 TUI 面板/本地命令，serve 端不可用（可用：/help /stats /cost /clear /compact；设备管理用 TUI /devices 面板或 web 设备面板）` }
   }
 
 

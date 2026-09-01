@@ -51,6 +51,7 @@ import { McpPanel } from './McpPanel.js'
 import { PluginPanel } from './PluginPanel.js'
 import { QuestionPanel } from './QuestionPanel.js'
 import { WarningsPanel } from './WarningsPanel.js'
+import { DevicesPanel } from './DevicesPanel.js'
 import { RewindPanel } from './RewindPanel.js'
 import { SandboxPanel } from './SandboxPanel.js'
 import { ConfigPanel, type ConfigItem } from './ConfigPanel.js'
@@ -393,6 +394,7 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
     | { kind: 'mcp-panel' }
     | { kind: 'plugin-panel' }
     | { kind: 'warnings-panel' }
+    | { kind: 'devices-panel' }
     | { kind: 'rewind-panel' }
     | { kind: 'sandbox-panel' }
     | { kind: 'config-panel' }
@@ -1683,6 +1685,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           }}
         />
       )}
+      {overlay?.kind === 'devices-panel' && (
+        <DevicesPanel
+          onCancel={() => {
+            pickerRef.current = false
+            setOverlay(null)
+          }}
+        />
+      )}
       {overlay?.kind === 'question-panel' && (
         <QuestionPanel
           questions={overlay.questions}
@@ -1812,6 +1822,10 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
           }
           if (result.action === 'open-warnings-panel') {
             setOverlay({ kind: 'warnings-panel' })
+            return
+          }
+          if (result.action === 'open-devices-panel') {
+            setOverlay({ kind: 'devices-panel' })
             return
           }
           if (result.action === 'open-output-panel') {

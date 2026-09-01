@@ -218,6 +218,16 @@ export const CONFIG_TEMPLATE = `{
   //   "appId": "cli_xxx", "appSecret": "\${FEISHU_SECRET}",
   //   "allowUsers": ["ou_xxx"]            // open_id 白名单——缺省/空=拒绝所有（安全默认，必配）
   // }
+  // "relay": {                             // R2：relay 出站连接（异地手机接入——配了 serve 自动连中继，纯出站零开端口）
+  //   "server": "wss://relay.example.com", // relay 源（自部署见 docs/规范/2026-09-01_ECode-relay自部署指南）
+  //   "hostToken": "\${RELAY_TOKEN}",      // relay 的 REG_TOKEN（电脑段准入凭据）
+  //   "hostId": "office-pc",               // 本机登记名（多机区分；缺省主机名）
+  //   "name": "公司电脑"                    // 手机端显示的别名（可选）
+  // },
+  // "wechat": {                            // R4：微信 ClawBot（botToken 经 ecode wechat-login 扫码获取）
+  //   "botToken": "\${WECHAT_BOT_TOKEN}",
+  //   "allowUsers": ["wxid_xxx@im.wechat"] // user id 白名单——缺省/空=拒绝所有（安全默认，必配）
+  // }
   // "logLevel": "info",       // 日志级别：debug | info | warn | error
   // "maxInstructionsKB": 32,  // 指令/记忆注入单级上限 KB（ECODE.md/CLAUDE.md/MEMORY.md）
   // "webFetchMaxKB": 30,      // web_fetch 回喂内容上限 KB（头尾中截）

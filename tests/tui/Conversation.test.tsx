@@ -226,8 +226,8 @@ describe('Conversation', () => {
 })
 
 describe('F-36 消息行栅格（第一列只图标，文字含折行续行从第 2 列起）', () => {
-  it('assistant 文本：首行 ● 槽 + 折行续行全部对齐第 2 列', () => {
-    // ink-testing 缺省 80 列：正文列 78；超长中文段落必折行（1 字 2 列，40+ 字必超）
+  it('assistant 文本：D3 顶格（活动流 2026-09-02 拍板——圆点只标工具行，助手文本空槽）', () => {
+    // ink-testing 缺省 80 列：超长中文段落必折行（1 字 2 列）；顶格=首行与续行都在第 2 列起
     const long = '统一栅格验证文本'.repeat(20)
     const { lastFrame } = render(
       React.createElement(Conversation, {
@@ -237,9 +237,9 @@ describe('F-36 消息行栅格（第一列只图标，文字含折行续行从�
     )
     const lines = (lastFrame() ?? '').split('\n').filter((l) => l.trim() !== '')
     expect(lines.length).toBeGreaterThan(1) // 确已折行
-    expect(lines[0].startsWith('● ')).toBe(true) // 首行圆点槽（2 列：●+空）
+    expect(lines[0].startsWith('● ')).toBe(false) // D3：助手首行不再带圆点
     for (const l of lines) {
-      expect(l.startsWith('● ') || l.startsWith('  ')).toBe(true) // 续行 2 空格缩进=第 2 列
+      expect(l.startsWith('  ')).toBe(true) // 首行与续行统一第 2 列起（空槽悬挂）
     }
   })
 

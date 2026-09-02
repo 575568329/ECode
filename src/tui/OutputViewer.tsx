@@ -869,7 +869,7 @@ export function OutputListPage({ recentTools, onOpen, onExit, altMode, currentSi
 
   return (
     <PanelShell
-      title="/output 输出查看"
+      title="输出查看"
       subtitle="Enter 查看全文 · 运行中任务实时跟随"
       rows={rows}
       onPick={onOpen}

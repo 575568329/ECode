@@ -24,6 +24,9 @@ interface AppProps {
   onCancel?: () => void
   activity: ActivityState
   activityText?: string
+  /** 活动流 B4：动态摘要（thinking tail / executing digest——从 timeline 派生）与轮开始时间 */
+  activityDetail?: string
+  turnStartedAt?: number
   iter?: number
   maxIter?: number
   tokens?: number
@@ -80,6 +83,8 @@ export function App({
   onInterruptTurn,
   activity,
   activityText,
+  activityDetail,
+  turnStartedAt,
   iter,
   maxIter,
   tokens,
@@ -130,7 +135,7 @@ export function App({
         onInterruptTurn={onInterruptTurn}
         conditions={conditions}
       >
-        {!altMode && <ActivityBar state={activity} text={activityText} />}
+        {!altMode && <ActivityBar state={activity} text={activityText} detail={activityDetail} turnStartedAt={turnStartedAt} />}
         {children}
         <Box flexDirection="column">
           {!altMode && (

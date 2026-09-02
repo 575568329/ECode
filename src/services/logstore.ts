@@ -15,7 +15,7 @@ import type { WriteStream } from 'node:fs'
 import { redact } from './redact.js'
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
-export type LogCategory = 'loop' | 'provider' | 'tool' | 'config' | 'tui' | 'system' | 'skill' | 'mcp' | 'hooks' | 'plugin' | 'checkpoint' | 'quality' | 'loop-guard' | 'im' | 'approval' | 'daemon'
+export type LogCategory = 'loop' | 'provider' | 'tool' | 'config' | 'tui' | 'system' | 'skill' | 'mcp' | 'hooks' | 'plugin' | 'checkpoint' | 'quality' | 'loop-guard' | 'im' | 'approval' | 'daemon' | 'review' | 'review'
 
 export interface LogEntry {
   ts: string

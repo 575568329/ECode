@@ -1,4 +1,5 @@
 import { useState, useEffect, Fragment } from 'react'
+import { memo } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import { Text, Box } from 'ink'
 import { marked } from 'marked'
@@ -381,7 +382,7 @@ function decodeHtmlEntities(text: string): string {
 }
 
 /** Markdown 渲染主组件：给已 commit 的助手消息用 */
-export function Markdown({ text }: { text: string }): ReactElement {
+export const Markdown = memo(function Markdown({ text }: { text: string }): ReactElement {
   const decoded = decodeHtmlEntities(text)
   // 快速路径：无 markdown 语法 → 纯文本按宽度折行（跳过 lexer）
   if (!hasMarkdownSyntax(decoded)) {
@@ -393,4 +394,4 @@ export function Markdown({ text }: { text: string }): ReactElement {
       {tokens.map((tok, i) => renderToken(tok, i))}
     </Box>
   )
-}
+})

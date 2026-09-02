@@ -15,15 +15,17 @@ import { MessageRow } from './MessageRow.js'
  * 流式→提交切换：调用方把 streaming 从 true 切 false（M2 方案 A）。
  */
 export function AssistantMessage({ text, streaming }: { text: string; streaming?: boolean }): ReactElement {
+  // 活动流 D3（2026-09-02 用户拍板对齐 CC/ZCode）：助手文本顶格（icon='' 空槽）——
+  // 圆点只标工具行，层级靠图标区分；规范 §3.3 转写面条文随 B4b 同步修订
   if (streaming) {
     return (
-      <MessageRow>
+      <MessageRow icon="">
         <GrayStreaming text={text} />
       </MessageRow>
     )
   }
   return (
-    <MessageRow>
+    <MessageRow icon="">
       <Markdown text={text} />
     </MessageRow>
   )

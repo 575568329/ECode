@@ -332,6 +332,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const streamStripperRef = useRef(createAnsiStripper())
   // 活动流 B4：时间线归约依赖（id 工厂 ref——reducer 无内部状态，调用侧持有计数器）
   const tlDepsRef = useRef(makeTimelineIdFactory())
+  // 活动流 B4：轮开始时间（loading 行轮内耗时——busy 翻转记录）
+  const turnStartedAtRef = useRef<number | null>(null)
+  const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
   const [activity, setActivity] = useState<{ state: ActivityState; text?: string }>({
     state: 'idle',
   })
@@ -646,6 +649,14 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           break
         case 'thread/status':
           runningRef.current = ev.busy
+          if (ev.busy && turnStartedAtRef.current === null) {
+            turnStartedAtRef.current = Date.now()
+            setTurnStartedAt(turnStartedAtRef.current)
+          }
+          if (!ev.busy && turnStartedAtRef.current !== null) {
+            turnStartedAtRef.current = null
+            setTurnStartedAt(null)
+          }
           setRunning(ev.busy)
           setIter(ev.iter)
           if (ev.maxIter !== undefined) setMaxIter(ev.maxIter)
@@ -1581,6 +1592,31 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         }
         return activity.text
       })()}
+      activityDetail={(() => {
+        // 活动流 B4（用户点名「loading 处看到在想什么/在跑什么」）：
+        // thinking 态=最新 live thinking 尾部（D10 tail 滚动感）；tool 态=最新 executing digest（D9）
+        if (activity.state === 'thinking') {
+          for (let i = active.timeline.length - 1; i >= 0; i--) {
+            const e = active.timeline[i]
+            if (e.kind === 'thinking' && e.endedAt === undefined && e.text !== '') {
+              const tail = e.text.length > 40 ? e.text.slice(e.text.length - 40) : e.text
+              return tail.replace(/\s+/g, ' ').trim() + '…'
+            }
+          }
+          return undefined
+        }
+        if (activity.state === 'tool') {
+          for (let i = active.timeline.length - 1; i >= 0; i--) {
+            const e = active.timeline[i]
+            if (e.kind === 'tool' && e.tool.digest !== undefined && e.tool.status === 'running') {
+              return `正在执行 ${e.tool.digest}`
+            }
+          }
+          return undefined
+        }
+        return undefined
+      })()}
+      turnStartedAt={turnStartedAt ?? undefined}
       running={running}
       queuedInterjects={queuedInterjects}
       daemon={(() => {
@@ -1999,10 +2035,6 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           }
           if (result.action === 'open-devices-panel') {
             setOverlay({ kind: 'devices-panel' })
-            return
-          }
-          if (result.action === 'open-output-panel') {
-            setOverlay({ kind: 'output-panel' })
             return
           }
           if (result.action === 'open-config-panel') {

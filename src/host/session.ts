@@ -35,8 +35,9 @@ import { makeSandbox, resolveReal, type SandboxMode } from '../services/sandbox.
 import { isSensitivePath, isProjectEcodeSettings } from '../tools/sensitive.js'
 import { buildMediaBlock } from '../services/media.js'
 import { tokensToCost } from '../services/pricing.js'
+import { callReviewer, buildReviewMessages, shouldReviewAtTurnEnd, longestConsecutiveErrorRun, shouldReviewOnSignal, type ReviewTrigger } from '../services/review/reviewer.js'
 import { TaskRegistry } from '../services/tasks.js'
-import type { LLMProviderRegistry } from '../providers/interface.js'
+import type { LLMProviderRegistry, LLMProvider, ProviderReq } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { HookRunner } from '../services/hooks/runner.js'
 import { readFile } from 'node:fs/promises'
@@ -407,6 +408,8 @@ export class HostSession {
     this.mcpCallCount = 0 // 审阅 P1-1：会话切换计数归零（防旧累计值写进新会话文件致全局双计）
     this.readMtime.clear() // M13-B1：换会话已读表重置（旧会话的读取记录对新会话无意义）
     this.clearRememberedTools() // F-07 档A：换会话 remember 白名单不残留
+    this.reviewTurnCount = 0 // 纠偏审查：轮计数从恢复后重数（历史轮次不参与定时兜底）
+    this.pendingReviewCard = null
   }
 
   /** B3：手动强制压缩（/compact——客户端命令面中间态实现；B5 升格为宿主命令） */
@@ -467,6 +470,16 @@ export class HostSession {
    */
   private summaryRoleCache: { key: string; value: SummaryRole | null } | null = null
   private summaryFloorWarned = false
+  // —— 任务纠偏审查（2026-09-02 用户拍板：定时兜底 + 异常信号提前触发；只审查不接管）——
+  /** 用户轮计数（startTurn 自增；定时兜底按它整除触发。restoreFrom 归零——审查从恢复后重数） */
+  private reviewTurnCount = 0
+  /** 本轮工具批计数（afterTools 自增；startTurn 重置——长轮信号） */
+  private reviewTurnIterations = 0
+  /** 已完成的审查卡（轮末触发、空闲完成时暂存——下轮 startTurn 拼进 input，pendingSessionContext 同款） */
+  private pendingReviewCard: string | null = null
+  /** 审查单飞（轮中信号与轮末定时撞车/审查进行中再触发——只跑一次，防堆卡） */
+  private reviewInflight = false
+  private reviewerCache: { key: string; value: { provider: LLMProvider; req: ProviderReq } | null } | null = null
   private async resolveSummaryRole(): Promise<SummaryRole | null> {
     const cfg = this.cfg()
     const role = cfg.roles?.summary
@@ -491,6 +504,77 @@ export class HostSession {
     const value = { provider, providerReq, window: Math.floor(window * 0.9) }
     this.summaryRoleCache = { key, value }
     return value
+  }
+
+  /**
+   * 审查角色解析（resolveSummaryRole 同模式）：review.enabled + provider 存在才可用；
+   * 键控缓存（/model 热切换后 key 变化自动重解析）。返回 null=审查未启用/配置失效（零行为）。
+   */
+  private resolveReviewer(): { provider: LLMProvider; req: ProviderReq } | null {
+    const cfg = this.cfg()
+    const review = cfg.review
+    if (review === undefined || review.enabled !== true) return null
+    const key = `${review.provider}:${review.model}`
+    if (this.reviewerCache?.key === key) return this.reviewerCache.value
+    const providerCfg = cfg.providers[review.provider]
+    // loadConfig 已校验；此处防御（运行中配置被改）——静默禁用不炸任务
+    if (providerCfg === undefined) return null
+    try {
+      const value = {
+        provider: this.deps.providerRegistry.getByType(providerCfg.type),
+        req: buildProviderReqFor(cfg, review.provider, review.model),
+      }
+      this.reviewerCache = { key, value }
+      return value
+    } catch {
+      this.reviewerCache = { key, value: null }
+      return null
+    }
+  }
+
+  /**
+   * 执行一轮纠偏审查（定时兜底/信号共用；单飞防堆卡）。完成后注入：
+   * 模型还在跑（信号触发的常态）→ 插话队列 midTurn（loop 步间注入当前轮，止住绕圈）；
+   * 已空闲（轮末触发的常态）→ pendingReviewCard（下轮 startTurn 拼进 input——不自动起轮烧 token）。
+   * 失败静默降级（warn 日志 + systemMsg 提示），绝不打断任务主流程。
+   */
+  private async maybeRunReview(trigger: ReviewTrigger): Promise<void> {
+    const reviewer = this.resolveReviewer()
+    if (reviewer === null || this.reviewInflight) return
+    const cfg = this.cfg().review
+    if (cfg === undefined) return
+    this.reviewInflight = true
+    const reason = trigger === 'interval' ? `第 ${this.reviewTurnCount} 轮定时` : '异常信号'
+    this.publish('systemMsg', { text: `⚡ 已请高级模型审查（${reason}，${cfg.model}）…` })
+    try {
+      const outcome = await callReviewer(
+        reviewer.provider,
+        reviewer.req,
+        buildReviewMessages(this.messages.filter(isMessageLine) as Message[]),
+        this.abort.signal,
+      )
+      if (outcome === null) {
+        this.deps.logger.warn('review', 'empty_output', { trigger })
+        return
+      }
+      // 记账：按 reviewer 模型计价（sessionCost 累计 + stats 落盘——/stats 按模型聚合可见审查成本）；
+      // 不发 usage 帧不写 lastIn/lastOut（那是主轮口径，审查调用不该污染 StatusBar）
+      this.recordSideUsage(cfg.model, cfg.provider, outcome.usage)
+      this.deps.logger.info('review', 'card_injected', { trigger, turn: this.reviewTurnCount, chars: outcome.card.length })
+      if (this.running) {
+        this.queue.push({ text: `[纠偏审查·${reason}]\n${outcome.card}`, midTurn: true })
+        this.publish('interjection/enqueued', { text: `纠偏卡（${reason}）已注入` })
+        this.publish('queue/snapshot', { items: this.queue.map((q) => q.text) })
+      } else {
+        this.pendingReviewCard = outcome.card
+        this.publish('systemMsg', { text: '✓ 纠偏卡已就绪（下一轮自动注入）' })
+      }
+    } catch (e) {
+      this.deps.logger.warn('review', 'failed', { trigger, message: e instanceof Error ? e.message : String(e) })
+      this.publish('systemMsg', { text: '（纠偏审查未完成——任务不受影响）' })
+    } finally {
+      this.reviewInflight = false
+    }
   }
 
   /** 等到空闲（argv 模式收尾用；含轮末兜底队列排空） */
@@ -650,6 +734,36 @@ export class HostSession {
   /** 审阅 P1-2：MCP 调用计数（主循环与子代理共用——子代理经 SessionPort.countMcpCall 上报） */
   private bumpMcp(): void {
     this.mcpCallCount++
+  }
+
+  /**
+   * 旁路调用记账（纠偏审查/摘要等非主轮 LLM 调用）：按**指定模型**计价，只进 sessionCost
+   * 累计与 stats 落盘（/stats 按模型聚合可见），不动 lastIn/lastOut、不发 usage 帧
+   * （那是主轮口径——审查调用不该污染 StatusBar 的本轮 token/上下文占用显示）
+   */
+  private recordSideUsage(model: string, providerName: string, usage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number }): void {
+    if (usage === undefined) return
+    const cur = this.cfg()
+    const cost = tokensToCost(model, {
+      input: usage.input,
+      output: usage.output,
+      cacheRead: usage.cacheRead ?? 0,
+      cacheCreation: usage.cacheCreation ?? 0,
+    }, cur.providers[providerName]?.pricing)
+    if (cost != null) this.sessionCost += cost
+    this.deps.history.appendUsageStats({
+      stats: true,
+      ts: Date.now(),
+      cwd: this.deps.cwd ?? process.cwd(),
+      model,
+      input: usage.input,
+      output: usage.output,
+      cacheRead: usage.cacheRead ?? 0,
+      cacheCreation: usage.cacheCreation ?? 0,
+      costCny: cost ?? 0,
+      costKnown: cost != null,
+      mcpCalls: this.mcpCallCount,
+    })
   }
 
   /**
@@ -1042,6 +1156,14 @@ export class HostSession {
       input = `${input}\n\n[hook context]\n${this.pendingSessionContext.join('\n')}`
       this.pendingSessionContext = []
     }
+    // 纠偏审查（2026-09-02）：空闲期完成的审查卡随本轮注入（同 additionalContext 模式——
+    // 不自动起轮烧 token，用户下一条消息自然携带）；轮计数/迭代计数自增与重置
+    if (this.pendingReviewCard !== null) {
+      input = `${input}\n\n[纠偏审查——高级模型对任务方向与执行质量的审查，请按建议校正]\n${this.pendingReviewCard}`
+      this.pendingReviewCard = null
+    }
+    this.reviewTurnCount += 1
+    this.reviewTurnIterations = 0
     // M10-P3 双时点之二：跨 turn 后台任务通知随首轮输入注入
     for (const n of this.tasks.collectNotifications()) input = `${input}\n${n}`
 
@@ -1306,6 +1428,15 @@ export class HostSession {
     this.publish('thread/status', { busy: false, waitingOn: null, iter: 0 })
     this.running = false
     this.currentTurnId = null
+    // 纠偏审查·定时兜底（2026-09-02 用户拍板）：轮计数整除命中才触发（默认第 5/10/15…轮末）。
+    // 异步 void 不阻塞队列续投——审查完成时若已起新轮则走插话注入，空闲则 pendingReviewCard
+    if (
+      this.cfg().review?.enabled === true &&
+      !this.abort.signal.aborted &&
+      shouldReviewAtTurnEnd(this.reviewTurnCount, this.cfg().review ?? {})
+    ) {
+      void this.maybeRunReview('interval')
+    }
     // 轮末兜底：队列续投（带图条目在此以 blocks 起轮）。
     // 中断态不续投（Ctrl+C「无法中断」根因：断掉当前轮后这里立刻用队列条目起新轮，
     // 看似模型停不下来）；队列保留（CC 同款中断不弃队列——下一轮 pollUserInput 步间注入或用户再提交时消费）
@@ -1376,6 +1507,20 @@ export class HostSession {
     return async (round) => {
       const deps = this.deps
       let feedback: string | undefined
+      // 纠偏审查·异常信号（2026-09-02 用户拍板）：连续工具失败（模型在绕圈/踩同一坑）或
+      // 单轮迭代过长（空转）→ 提前请高级模型介入（异步 void——审查卡稍后经插话队列注入
+      // 当前轮，止住绕圈；不阻塞本轮回喂路径）。信号关（onSignals=false）不触发
+      if (this.cfg().review?.enabled === true && this.cfg().review?.onSignals !== false) {
+        this.reviewTurnIterations += 1
+        if (
+          shouldReviewOnSignal(
+            longestConsecutiveErrorRun(round.tools),
+            this.reviewTurnIterations,
+          )
+        ) {
+          void this.maybeRunReview('signal')
+        }
+      }
       // M13-B2：无效轮次检测先行（feedback/abort 注入在 quality 之前——止损优先）
       const guardFb = this.loopGuardRound(round)
       if (guardFb !== undefined) feedback = guardFb

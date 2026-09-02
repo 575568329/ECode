@@ -34,8 +34,13 @@ describe('previewLine', () => {
   it('取首行', () => {
     expect(previewLine('第一行\n第二行')).toBe('第一行')
   })
-  it('截断到 80 字符', () => {
+  it('截断到 80 字符（缺省下限保底）', () => {
     expect(previewLine('a'.repeat(100))).toHaveLength(80)
+  })
+  it('动态宽度（2026-09-02 拍板）：maxColumns 跟终端宽走——宽终端多显示、CJK 按显示列计', () => {
+    expect(previewLine('a'.repeat(100), 120)).toHaveLength(100) // 宽度内不截
+    expect(previewLine('a'.repeat(140), 120)).toHaveLength(120) // 超宽截 119+…
+    expect(previewLine('中'.repeat(50), 40)).toHaveLength(20) // 50 CJK=100 列 > 40 → 截 19 字（38 列）+…=20 字符
   })
 })
 

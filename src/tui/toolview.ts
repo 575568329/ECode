@@ -31,14 +31,16 @@ export function inputDigest(input: unknown): string {
   return String(obj.path ?? obj.command ?? obj.pattern ?? '')
 }
 
-/** 输出首行预览（R2/P1-4：改按显示宽度截 80 列——旧 slice(0,80) 是 UTF-16 码元，
- *  中文 80 字=160 显示列在 80 列终端折行击穿「preview 单行」计价；string-width 感知 CJK）。 */
-export function previewLine(content: string): string {
+/** 输出首行预览（R2/P1-4：按显示宽度截——旧 slice(0,80) 是 UTF-16 码元，
+ *  中文 80 字=160 显示列在 80 列终端折行击穿「preview 单行」计价；string-width 感知 CJK）。
+ *  动态宽度（用户拍板 2026-09-02）：maxColumns 由调用方按终端宽传入（宽终端多显示），
+ *  缺省 80 保底（极窄终端/测试确定性）——收起态恒占 1 行，与折叠行预算体系正交。 */
+export function previewLine(content: string, maxColumns = 80): string {
   const first = content.split('\n')[0] ?? ''
-  if (stringWidth(first) <= 80) return first
+  if (stringWidth(first) <= maxColumns) return first
   let out = ''
   for (const ch of first) {
-    if (stringWidth(out + ch) > 79) break
+    if (stringWidth(out + ch) > maxColumns - 1) break
     out += ch
   }
   return `${out}…`

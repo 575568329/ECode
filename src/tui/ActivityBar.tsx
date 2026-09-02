@@ -52,15 +52,18 @@ export function ActivityBar({ state, text, detail, turnStartedAt }: ActivityBarP
   )
 }
 
-function clipLine(text: string, maxColumns: number): string {
+/** 尾部滚动（用户拍板 2026-09-02）：超宽取**最后** maxColumns 列——右边永远是最新的
+ *  内容（无换行的持续输出=tail -f 滚动感，「程序还在走」的直接证据）；不超宽原样。 */
+function tailLine(text: string, maxColumns: number): string {
   const width = stringWidth(text)
   if (width <= maxColumns) return text
   let out = ''
-  for (const ch of text) {
-    if (stringWidth(out + ch) > maxColumns - 1) break
-    out += ch
+  for (let i = text.length - 1; i >= 0; i--) {
+    const ch = text[i]
+    if (stringWidth(ch) + stringWidth(out) > maxColumns - 1) break
+    out = ch + out
   }
-  return `${out}…`
+  return `…${out}`
 }
 
 function ActiveSpinner({ state, text, detail, turnStartedAt }: { state: ActivityState; text?: string; detail?: string; turnStartedAt?: number }): ReactElement {
@@ -79,12 +82,15 @@ function ActiveSpinner({ state, text, detail, turnStartedAt }: { state: Activity
       ? ` · ${formatElapsed(Date.now() - turnStartedAt)}`
       : ''
   // 用户拍板（2026-09-02 真机）：摘要放行末且灰色——主文案+计时完整优先，剩余宽度给摘要
-  //（超宽裁摘要，主行永不折）；整行恒单物理行（spinner 1+空格 1+主行+摘要 ≤ columns）
+  //（超宽裁摘要，主行永不折）；整行恒单物理行（spinner 1+空格 1+主行+摘要 ≤ columns）。
+  // 滚动语义（同日拍板）：换行是「新行从头显示」的分段依据——取最后一个换行后的当前行，
+  // 行内空白压平；当前行超宽时尾部滚动（右边一直显示最新内容），不超宽原样新内容从左填入
   const columns = typeof process.stdout.columns === 'number' && process.stdout.columns > 0 ? process.stdout.columns : 80
   const mainLine = `${base}${elapsed}`
-  const cleanDetail = detail !== undefined && detail !== '' ? stripUntrustedAnsi(detail).replace(/\s+/g, ' ').trim() : ''
+  const cleanedDetail = detail !== undefined && detail !== '' ? stripUntrustedAnsi(detail).replace(/[^\S\n]+/g, ' ') : ''
+  const currentLine = cleanedDetail.slice(cleanedDetail.lastIndexOf('\n') + 1).trim()
   const detailRoom = columns - 3 - stringWidth(mainLine)
-  const detailLine = cleanDetail !== '' && detailRoom > 4 ? ` ${clipLine(cleanDetail, detailRoom - 1)}` : ''
+  const detailLine = currentLine !== '' && detailRoom > 4 ? ` ${tailLine(currentLine, detailRoom - 1)}` : ''
   return (
     <Box>
       <Text color={color}>{spinner}</Text>

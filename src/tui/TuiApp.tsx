@@ -121,7 +121,7 @@ export interface TuiHost {
   subscribe: (handler: (ev: import('../protocol/types.js').ProtocolEvent) => void, opts?: { canAnswer?: boolean }) => () => void
   dispose: () => void
   mountBridges?: () => void
-  /** T5（D-T3 增补）：daemon 连接状态（顶栏 D✓/D…/D⚠ 三态标识；Embedded 无此面） */
+  /** T5（D-T3 增补）：daemon 连接状态（顶栏「后台运行/连接中/重连中」标识；Embedded 无此面） */
   daemonState?: () => 'connecting' | 'open' | 'backoff'
 }
 
@@ -1692,14 +1692,14 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   )
 
   // M6 M-P7：StatusBar MCP 段（有启用的 server 才显示；连接中瞬时态）。
-  // 2026-09-02 精简批：MCP→M 单字母（用户点名「能用单个字母表示的用单个字母」）
+  // 2026-09-02 精简批回调（用户反馈单字母看不懂）：保留 MCP 词干，去尾省宽
   const mcpSegment = useMemo(() => {
     if (mcpSnapshots.length === 0) return undefined
     const enabled = mcpSnapshots.filter((s) => s.status !== 'disabled')
     if (enabled.length === 0) return undefined
-    if (enabled.some((s) => s.status === 'connecting')) return 'M…'
+    if (enabled.some((s) => s.status === 'connecting')) return 'MCP 连接中'
     const connected = enabled.filter((s) => s.status === 'connected').length
-    return `M${connected}/${enabled.length}`
+    return `MCP ${connected}/${enabled.length}`
   }, [mcpSnapshots])
 
   // placeholder 判据改运行态镜像（streamingText 延迟 commit 常驻的旧病根治）
@@ -1845,11 +1845,11 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       running={running}
       queuedInterjects={queuedInterjects}
       daemon={(() => {
-        // 2026-09-02 精简批：D 单字母三态（✓=后台在跑 / …=连接中 / ⚠=重连中，色随 daemonDanger）
+        // 2026-09-02 精简批回调（用户反馈 D✓ 看不懂）：中文短词，色随 daemonDanger
         if (daemonState === undefined) return undefined
-        if (daemonState === 'open') return 'D✓'
-        if (daemonState === 'backoff') return 'D⚠'
-        return 'D…'
+        if (daemonState === 'open') return '后台运行'
+        if (daemonState === 'backoff') return '后台重连中'
+        return '后台连接中'
       })()}
       daemonDanger={daemonState === 'backoff'}
       mcp={mcpSegment}

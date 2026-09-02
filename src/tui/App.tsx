@@ -1,12 +1,16 @@
 import type { ReactElement, ReactNode } from 'react'
 import { Box, Text } from 'ink'
+import stringWidth from 'string-width'
 import { StatusBar } from './StatusBar.js'
-import { ShortcutHint } from './ShortcutHint.js'
+import { ShortcutHint, BUSY_HINT } from './ShortcutHint.js'
 import { Conversation } from './Conversation.js'
 import { ActivityBar } from './ActivityBar.js'
 import type { ActivityState } from '../core/loop.js'
 import { liveTextOf, type CommittedItem, type ActiveState } from './types.js'
 import { theme } from './theme.js'
+
+/** StatusBar 与 busy 提示之间的分隔符（与 StatusBar 段分隔同款；导出供守卫宽度计算单源） */
+const SEG_HINT_SEP = ' · '
 
 /**
  * App 根组件（最小 Static + M3 ConfirmPrompt）：
@@ -47,6 +51,8 @@ interface AppProps {
   /** T5（D-T3 增补）：daemon 运行段（附着态顶栏常驻） */
   daemon?: string
   daemonDanger?: boolean
+  /** 2026-09-02 用户点名：本进程内存占用（RSS）——StatusBar mem 段 */
+  memBytes?: number
   /** 运行时告警（重试/限流/压缩等）——底部独立第二行渲染并截断（防长消息挤碎状态行） */
   warning?: string
   /** 审阅 P1-1：条件段活跃态（TasksBar/SubagentBar——Conversation 总分配显式扣减）；
@@ -98,6 +104,7 @@ export function App({
   sandboxDanger,
   daemon,
   daemonDanger,
+  memBytes,
   warning,
   warningLevel,
   conditions,
@@ -153,12 +160,14 @@ export function App({
               sandboxDanger={sandboxDanger}
               daemon={daemon}
               daemonDanger={daemonDanger}
+              memBytes={memBytes}
+              reserveWidth={busy ? stringWidth(` ${SEG_HINT_SEP}${BUSY_HINT}`) : 0}
             />
             {/* F-45：idle 态快捷键教学提示去除（用户点名「⏎ 发送 / 命令 ↑↓ 历史这些都不用显示」）——
                 busy 态保留 Ctrl+C 中断（运行中怎么打断是关键信息）；分隔符随 hint 存在性条件渲染 */}
             {busy && (
               <>
-                <Text dimColor> · </Text>
+                <Text dimColor>{SEG_HINT_SEP}</Text>
                 <ShortcutHint context="busy" />
               </>
             )}

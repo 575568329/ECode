@@ -5,6 +5,11 @@
  *   P2 thinking 尾部滚动：300x 无换行在 cols=100 → 显示最后 ~N 个 x（… 前缀在左，
  *      右边=最新内容；旧 clipLine 裁头部时右边是开头 x 串）
  *   P3 换行从头显示：'old line…\nshort new line ok' → 显示 short 新行、不含 old line
+ *   P4-P7 StatusBar 精简批（2026-09-02 用户点名：可读短词 + 内存段 + 宽度守卫）：
+ *   P4 cols=120 全段渲染（含内存段 R350M、⏵⏵ edits/MCP 2/3/后台运行）
+ *   P5 cols=75 守卫丢段（daemon/mcp 先牺牲，mem/ctx/model 在场）
+ *   P6 cols=24 极窄只留 model（守卫终点）
+ *   P7 cols=84 App 同行组合（busy 提示占宽参与守卫；状态行不 wrap）
  * 判定全过 exit 0；任一失败 exit 1（可作 CI/回归哨兵）。
  * 跑法：node scripts/pty-display-probe.cjs
  */
@@ -84,6 +89,41 @@ const longestXRun = (text) => {
     const hidesOld = !/o{20,}/.test(out)
     check('P3 换行从头显示新行', showsNew && hidesOld, `新行可见=${showsNew}，旧行 o 串不可见=${hidesOld}`)
   } catch (e) { check('P3', false, e.message) }
+
+  // P4：cols=120 全段——箭头短词 + 中文 daemon + 内存段在场（R350M）
+  try {
+    const out = await runScene(120, 'status-full')
+    const segs = { '#3/25': out.includes('#3/25'), 'T45k': out.includes('T45k'), 'ctx 45k/200k': out.includes('ctx 45k/200k'), 'MCP 2/3': out.includes('MCP 2/3'), '⏵⏵ edits': out.includes('⏵⏵ edits'), '¥0.003': out.includes('¥0.003'), 'R350M': /R\d+M/.test(out), '后台运行': out.includes('后台运行') }
+    const ok = Object.values(segs).every(Boolean)
+    const noBrand = !out.includes('ECode')
+    check('P4 全段渲染（箭头短词/中文段 + 内存段 R350M）', ok && noBrand, `${JSON.stringify(segs)} 无品牌前缀=${noBrand}`)
+  } catch (e) { check('P4', false, e.message) }
+
+  // P5：cols=75 守卫——全宽 92 → 丢 daemon/mcp 收在 75（mem/ctx/model 在场）
+  try {
+    const out = await runScene(75, 'status-narrow')
+    const drops = !out.includes('后台运行') && !out.includes('MCP 2/3')
+    const keeps = /R\d+M/.test(out) && out.includes('ctx 45k/200k') && out.includes('glm-5.3-flash')
+    check('P5 守卫丢段（daemon/mcp 先牺牲）', drops && keeps, `丢弃观测段=${drops}，保留 mem/ctx/model=${keeps}`)
+  } catch (e) { check('P5', false, e.message) }
+
+  // P6：cols=24 极窄——只留 model（守卫终点；30 列下 model+ctx=28 恰放得下会保 ctx，24 才是终点）
+  try {
+    const out = await runScene(24, 'status-slim')
+    const model = out.includes('glm-5.3-flash')
+    const dropped = !out.includes('ctx') && !out.includes('#3/25') && !/R\d/.test(out)
+    check('P6 极窄只留 model', model && dropped, `model 在场=${model}，其余段退场=${dropped}`)
+  } catch (e) { check('P6', false, e.message) }
+
+  // P7：cols=84 App 同行组合——busy 提示在场（^C中断 ^T展开）且状态行不 wrap
+  //     （wrap 会破坏 allocateDynamic「StatusBar 恒 1 行」帧账 → win32 全清，守卫的意义所在；
+  //      avail=84-24=60：全宽 92 → 丢 daemon/mcp/mem 后 55 ≤ 60，行宽 55+24=79 ≤ 84 留 5 列裕量）
+  try {
+    const out = await runScene(84, 'status-hint')
+    const hint = out.includes('^C中断') && out.includes('^T展开')
+    const noWrap = !/\n\s*45k\/200k/.test(out) && !/\n\s*后台/.test(out)
+    check('P7 busy 提示同行且状态行不 wrap', hint && noWrap, `提示在场=${hint}，无跨行拆段=${noWrap}`)
+  } catch (e) { check('P7', false, e.message) }
 
   const failed = results.filter((r) => !r.ok)
   console.log(failed.length === 0 ? `\n全部 ${results.length} 项通过` : `\n${failed.length}/${results.length} 项失败`)

@@ -30,7 +30,8 @@ describe('App 底部告警第二行', () => {
       }),
     )
     const lines = (lastFrame() ?? '').split('\n')
-    const statusLine = lines.find((l) => l.includes('ECode ·'))
+    // 2026-09-02 精简批：品牌前缀 ECode 已删，状态行以模型名开头
+    const statusLine = lines.find((l) => l.includes('GLM-5.2'))
     const warnLine = lines.find((l) => l.includes('⚠'))
     expect(statusLine).toBeDefined()
     expect(warnLine).toBeDefined()

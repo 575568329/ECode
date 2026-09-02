@@ -89,11 +89,13 @@ describe('App', () => {
         iter: 2,
         maxIter: 50,
         tokens: 500,
+        memBytes: 350 * 1024 ** 2,
       }),
     )
     const f = lastFrame() ?? ''
-    expect(f).toContain('轮 2/50')
-    expect(f).toContain('500 tok')
+    expect(f).toContain('#2/50')
+    expect(f).toContain('T500')
+    expect(f).toContain('R350M')
   })
 
   it('timeline live text + thinking 同时显示（R4 改名：streamingText 已退役）', () => {
@@ -173,6 +175,6 @@ describe('App', () => {
     expect(f).toContain('这是回答')
     expect(f).toContain('继续生成')
     expect(f).toContain('bash')
-    expect(f).toContain('轮 1')
+    expect(f).toContain('#1')
   })
 })

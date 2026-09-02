@@ -12,10 +12,12 @@ describe('ShortcutHint', () => {
     expect((lastFrame() ?? '').trim()).toBe('')
   })
 
-  it('busy 上下文显示中断', () => {
+  it('busy 上下文显示中断 + 展开（^C/^T 记法，Ctrl+T 语义=展开查看器——2026-09-02 用户纠正）', () => {
     const { lastFrame } = render(React.createElement(ShortcutHint, { context: 'busy' }))
     expect(lastFrame()).toContain('中断')
-    expect(lastFrame()).toContain('Ctrl+T')
+    expect(lastFrame()).toContain('展开')
+    expect(lastFrame()).toContain('^C')
+    expect(lastFrame()).toContain('^T')
   })
 
   it('未知 context 回退 default（同样为空）', () => {

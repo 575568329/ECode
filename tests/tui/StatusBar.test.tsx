@@ -72,10 +72,13 @@ describe('StatusBar', () => {
       const { lastFrame } = render(React.createElement(StatusBar, { model: 'M', memBytes: 1.4 * 1024 ** 3 }))
       expect(lastFrame()).toContain('R1.4G')
     })
-    it('formatMem 纯函数（R 前缀在渲染层）：≥10G 取整 / <1M 钳 1M / 整值去 .0', () => {
+    it('formatMem 纯函数（R 前缀在渲染层）：≥10G 取整 / <1M 钳 1M / 整值去 .0 / 进位口径（审阅 P2-3）', () => {
       expect(formatMem(12 * 1024 ** 3)).toBe('12G')
       expect(formatMem(2 * 1024 ** 3)).toBe('2G')
       expect(formatMem(200 * 1024)).toBe('1M')
+      // 舍入后达 1024MB 即进 G——旧实现按原始值判 <1024 会显示 1024M
+      expect(formatMem(1023.6 * 1024 ** 2)).toBe('1G')
+      expect(formatMem(1023.4 * 1024 ** 2)).toBe('1023M')
     })
     it('undefined 不显示内存段', () => {
       const { lastFrame } = render(React.createElement(StatusBar, { model: 'M' }))
@@ -146,5 +149,29 @@ describe('StatusBar', () => {
     const f = lastFrame() ?? ''
     expect(f).toContain('⏵⏵ edits')
     expect(f).not.toContain('accept-edits')
+  })
+
+  it('丢段后超长 model 仍截断（审阅 P1：旧实现只在全段保住分支截断——丢过段后只剩超长 model 不截会 wrap 破帧账）', () => {
+    // ink-testing mock stdout columns=100：110 宽 model + 全段 → 守卫丢光仍超宽 → 恒截断为 99x+…
+    const { lastFrame } = render(
+      React.createElement(StatusBar, {
+        model: 'x'.repeat(110),
+        iter: 3,
+        maxIter: 25,
+        tokens: 45_000,
+        ctxUsed: 45_000,
+        ctxWindow: 200_000,
+        cost: '¥0.003',
+        memBytes: 350 * 1024 ** 2,
+        mcp: 'MCP 2/3',
+        daemon: '后台运行',
+      }),
+    )
+    const f = lastFrame() ?? ''
+    const run = f.match(/x+/g) ?? []
+    const longest = run.length > 0 ? Math.max(...run.map((s) => s.length)) : 0
+    expect(f).toContain('…')
+    expect(longest).toBeLessThanOrEqual(99)
+    expect((f.split('\n')).length).toBe(1)
   })
 })

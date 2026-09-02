@@ -47,13 +47,13 @@ function formatTokens(n: number): string {
   return `${n}`
 }
 
-/** 内存人类可读（RSS bytes）：MB 整数、GB 一位小数（≥10G 取整去小数）——R350M / R1.4G / R12G */
+/** 内存人类可读（RSS bytes）：MB 整数、GB 一位小数（≥10G 取整去小数）——R350M / R1.4G / R12G。
+ *  先舍入到整数 MB 再判进位（审阅 P2-3：1023.99M 按 1024M 显示而非 1G 的口径错位） */
 export function formatMem(bytes: number): string {
-  const mb = bytes / 1024 ** 2
-  if (mb < 1024) return `${Math.max(1, Math.round(mb))}M`
-  const gb = mb / 1024
-  const v = gb >= 10 ? String(Math.round(gb)) : gb.toFixed(1)
-  return `${v.endsWith('.0') ? v.slice(0, -2) : v}G`
+  const mb = Math.max(1, Math.round(bytes / 1024 ** 2))
+  if (mb < 1024) return `${mb}M`
+  const v = mb / 1024
+  return `${v >= 10 ? Math.round(v) : Number(v.toFixed(1))}G`
 }
 
 /** C2 档位可视化（CC ⏵⏵ 式）：箭头数递进表档位 + 短词表策略（2026-09-02 精简批定稿：
@@ -78,7 +78,8 @@ export function sandboxArrows(mode: string): string {
  *  （压缩临近警告 ≥90% warn 色，是唯一带行动指引的段）。 */
 const SEG_SACRIFICE_ORDER = ['daemon', 'mcp', 'mem', 'cost', 'sandbox', 'tokens', 'iter', 'ctx'] as const
 
-const SEG_SEPARATOR = ' · '
+/** 段分隔符——导出单源（审阅 P2-2：App 层 busy 提示分隔符与守卫宽度计算共用，防两处漂移） */
+export const SEG_SEPARATOR = ' · '
 
 interface Seg {
   key: string
@@ -188,16 +189,14 @@ export function StatusBar({
     })
   }
 
-  // model 段恒留：仅剩它也超宽时截断（clipWidth 感知 CJK 显示宽度）
+  // model 段恒留：超长截断无条件做（审阅 P1：旧实现只在"全段保住"分支截断——丢过段后
+  // 只剩超长 model 时不截 → wrap 破「StatusBar 恒 1 行」帧账触发 win32 全清）
   const avail = Math.max(20, columns - reserveWidth)
   const kept = fitSegments(segments, avail)
-  if (kept.length === segments.length) {
-    // 全段保住的常态路径：model 名病态超长仍可能独占超宽——单独兜底
-    const modelShown = clipWidth(model, avail)
-    if (modelShown !== model) {
-      const idx = kept.findIndex((s) => s.key === 'model')
-      if (idx >= 0) kept[idx] = { ...kept[idx], text: modelShown, node: <Text bold>{modelShown}</Text> }
-    }
+  const modelShown = clipWidth(model, avail)
+  if (modelShown !== model) {
+    const idx = kept.findIndex((s) => s.key === 'model')
+    if (idx >= 0) kept[idx] = { ...kept[idx], text: modelShown, node: <Text bold>{modelShown}</Text> }
   }
   return (
     <Box>

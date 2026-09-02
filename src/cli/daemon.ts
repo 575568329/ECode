@@ -116,8 +116,8 @@ export type DaemonOutcome = AttachOutcome | EmbeddedOutcome
 
 /** pid 探活+health+id 比对+版本匹配四验（§4.5.3 身份双验在此收敛）——验过返回 reg+health
  *  （health 供 daemonName 兜底），否则 null */
-async function verifyReg(reg: ServerReg, logger: DaemonLogger): Promise<{ reg: ServerReg; health: HealthInfo } | null> {
-  if (!pidAlive(reg.pid)) return null
+async function verifyReg(reg: ServerReg | null, logger: DaemonLogger): Promise<{ reg: ServerReg; health: HealthInfo } | null> {
+  if (reg === null || !pidAlive(reg.pid)) return null
   const health = await probeHealth(reg.port)
   if (health === null || health.ok !== true) return null
   if (health.id !== undefined && health.id !== reg.id) return null // 陈旧/预置注册文件误附（安全席 P1-2）

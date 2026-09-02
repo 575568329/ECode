@@ -1,6 +1,6 @@
 /**
  * F-36 栅格真机帧眼验（一次性脚本）：mock SSE 回一段长中文 markdown（含代码块），
- * pty 起源码 TUI，轮末抓终帧——核对：assistant 正文 ● 槽、折行续行对齐第 2 列、无第 0 列裸文字。
+ * pty 起源码 TUI，轮末抓终帧——核对：assistant 正文 ◆ 槽（a46e50f D3 二次翻案后）、折行续行对齐第 2 列、无第 0 列裸文字。
  * 跑法：node scripts/pty-layout-frame.cjs
  * 隔离同 overscreen-probe：ECODE_BASE_URL/ECODE_MODEL env 直连 mock（不碰真实配置）。
  */
@@ -94,18 +94,18 @@ server.listen(0, '127.0.0.1', async () => {
   for (const l of lines) {
     const t = l.trim()
     if (t === '' || IDLE_HINT.test(l)) continue
-    // 第 0 列非空（l === t）：正文行必须挂 ● 槽（●/代码框线行合法；strip 假象：光标定位
+    // 第 0 列非空（l === t）：正文行必须挂 ◆ 槽（◆/代码框线行合法；strip 假象：光标定位
     // 序列被剥后块间会视觉挤行，真判定只看第 0 列是否顶格出现正文文字）
-    if (l === t && !l.startsWith('●') && !l.startsWith('╭') && !l.startsWith('│') && !l.startsWith('╰') && /这是一段很长|收尾一句话|列表项|const grid|统一栅格验证/.test(l)) {
+    if (l === t && !l.startsWith('◆') && !l.startsWith('╭') && !l.startsWith('│') && !l.startsWith('╰') && /这是一段很长|收尾一句话|列表项|const grid|统一栅格验证/.test(l)) {
       console.log('FAIL 第 0 列裸文字：', JSON.stringify(l.slice(0, 40)))
       pass = false
     }
   }
   const contLine = lines.find((l) => /^  这是一段很长/.test(l))
   if (contLine !== undefined) console.log('OK   折行续行第 2 列：', JSON.stringify(contLine.slice(0, 24)))
-  const headLine = lines.find((l) => /^● /.test(l))
-  if (headLine !== undefined) console.log('OK   正文挂 ● 槽：', JSON.stringify(headLine.slice(0, 24)))
-  else if (contLine === undefined) { console.log('FAIL 未找到 ● 槽正文行'); pass = false }
+  const headLine = lines.find((l) => /^◆ /.test(l))
+  if (headLine !== undefined) console.log('OK   正文挂 ◆ 槽：', JSON.stringify(headLine.slice(0, 24)))
+  else if (contLine === undefined) { console.log('FAIL 未找到 ◆ 槽正文行'); pass = false }
   console.log(pass ? '== 结论：正文栅格达标 ==' : '== 结论：栅格未达标 ==')
   proc.kill()
   server.close()

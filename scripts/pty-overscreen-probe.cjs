@@ -89,8 +89,16 @@ let proc = null
 const waitFor = (mark, re, timeoutMs) =>
   new Promise((resolve) => {
     const t0 = Date.now()
+    const answered = new Set()
     const id = setInterval(() => {
-      if (re.test(strip(out.slice(mark)))) { clearInterval(id); resolve(true) }
+      const tail = strip(out.slice(mark))
+      // 活动流 R5：quality/lint 探测的 bash 审批卡会卡轮（探针无人工应答）——自动放行
+      const approval = tail.match(/执行 (bash|edit_file|write_file)\?/)
+      if (approval !== null && !answered.has(approval[1])) {
+        answered.add(approval[1])
+        proc.write('y')
+      }
+      if (re.test(tail)) { clearInterval(id); resolve(true) }
       else if (Date.now() - t0 > timeoutMs) { clearInterval(id); resolve(false) }
     }, 120)
   })
@@ -127,7 +135,13 @@ const run = async () => {
       proc.write(`long r${i}`)
       await new Promise((r) => setTimeout(r, 250)) // \r 必须单独 write（合并发被 TextInput 当粘贴内嵌——pty 教训）
       proc.write('\r')
-      const done = await waitFor(m, new RegExp(`END-OF-R${roundNo + 1}`), 30_000)
+      // R5：轮到达 = 末尾标记上屏，或退化/折叠态明示（18 行窗 budget=16<21 按设计 degraded——
+      // V5 退化线 21 后 O1 场景不再全文上屏，判定纳入分级形态；3J 检测不受影响）
+      const done = await waitFor(
+        m,
+        new RegExp(`END-OF-R${roundNo + 1}|终端过小|已折叠`),
+        30_000,
+      )
       if (!done) {
         console.log(`FAIL ${label} 第${i}轮回复未到达（等待 END-OF-R${roundNo + 1}）`)
         console.log('---- 末 16 帧 ----\n' + dumpTail())
@@ -166,8 +180,9 @@ const run = async () => {
     proc.write('') // 活动流 D14：/output 已退役，Ctrl+T 进执行时间线
     await new Promise((r) => setTimeout(r, 250))
     proc.write('\r')
-    const listed = await waitFor(m, /最近工具调用|后台任务|暂无可查看/, 5000)
-    console.log(listed ? 'OK  O4 /output 面板打开' : 'FAIL O4 /output 面板未开')
+    // R5：Ctrl+T 直达执行时间线视图（F-50）——断言面板内容特征（时间线工具行/标题）
+    const listed = await waitFor(m, /执行时间线|时间线（全部流程）|⌕ |▢ bash|● read_file/, 8000)
+    console.log(listed ? 'OK  O4 Ctrl+T 面板打开（执行时间线）' : 'FAIL O4 Ctrl+T 面板未开')
     if (!listed) { ok = false; console.log(dumpTail()); return }
     await new Promise((r) => setTimeout(r, 500))
     proc.write('\x1b')

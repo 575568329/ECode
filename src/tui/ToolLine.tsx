@@ -15,6 +15,7 @@ import { theme } from './theme.js'
 import { symbols, toolIcon } from './symbols.js'
 import { foldLines, useViewport } from './viewport.js'
 import { stripUntrustedAnsi } from '../protocol/sanitize.js'
+import { makeToolDigest } from '../protocol/toolDigest.js'
 import { GAP, INDENT, WIDTH } from './layout.js'
 import type { ActiveTool } from './types.js'
 
@@ -37,7 +38,16 @@ export function ToolLine({ tool, mode }: ToolLineProps): ReactElement {
   const expandCap = Math.min(EXPAND_CAP, Math.max(3, Math.floor(budget / 2)))
   const expandWidth = WIDTH.toolOutput(columns)
   const t = tool
-  const digest = t.digest ?? (t.use !== undefined ? previewLine(JSON.stringify(t.use.input) ?? '') : '')
+  // G1：digest 单源 makeToolDigest（protocol 三方同规则——fallback 不再本地 JSON 串）；
+  // todo 特化（M11-P6 平移）：digest 位显示完成度
+  const todoItems =
+    t.name === 'todo' && t.use
+      ? ((t.use.input as { todos?: Array<{ status: string }> }).todos ?? [])
+      : []
+  const digest =
+    todoItems.length > 0
+      ? `${todoItems.filter((x) => x.status === 'completed').length}/${todoItems.length} 完成`
+      : (t.digest ?? (t.use !== undefined ? makeToolDigest(t.name, t.use.input) : ''))
   const tail =
     t.status === 'error'
       ? { sym: symbols.error, color: theme.error }

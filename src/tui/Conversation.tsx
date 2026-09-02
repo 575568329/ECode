@@ -7,6 +7,7 @@
 import type { ReactElement, ReactNode } from 'react'
 import { Box, Text, Static } from 'ink'
 import { ToolGroupView } from './ToolGroupView.js'
+import { ToolLine } from './ToolLine.js'
 import { TimelineView } from './TimelineView.js'
 import { ConfirmPrompt } from './ConfirmPrompt.js'
 import { foldStreamText } from './stream.js'
@@ -59,10 +60,13 @@ function renderCommitted(item: CommittedItem): ReactNode {
       return <UserMessage text={item.text} />
     case 'assistant-text':
       return <AssistantMessage text={item.text} />
-    case 'tool-group':
-      // Static 收起固化（用户拍板：发送新对话后历史默认全收起——▸ preview 单行；
-      // 看全文在当前轮 Ctrl+O；历史轮全文回看归输出查看器 M14 挂账）
-      return <ToolGroupView tools={callsToTools(item.calls)} />
+    case 'tool-group': {
+      // G1：单工具组省略组头（「1 个工具」冗余——动静切换无跳变：动态区本就无组头）；
+      // 多工具连续合并组保留组头（并行批语义）
+      const tools = callsToTools(item.calls)
+      if (tools.length === 1) return <ToolLine tool={tools[0]!} mode="static" />
+      return <ToolGroupView tools={tools} />
+    }
     case 'compacted':
       // M5 压缩点标记：UI 显示全量原文（投影分离），此处告知模型上下文已被摘要
       // F-36：空 2 列槽对齐正文栅格（CC BriefTool 空 minWidth=2 同款，不加视觉噪声）

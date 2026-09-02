@@ -1594,6 +1594,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         return activity.text
       })()}
       activityDetail={(() => {
+        // R5（真机实证）：审批挂起期优先显示等待审批——「思考中 1m6s」实际在等用户应答属误导
+        if (active.confirm !== null) return `等待审批：${active.confirm.use.name}`
         // 活动流 B4（用户点名「loading 处看到在想什么/在跑什么」）：
         // thinking 态=最新 live thinking 尾部（D10 tail 滚动感）；tool 态=最新 executing digest（D9）
         if (activity.state === 'thinking') {

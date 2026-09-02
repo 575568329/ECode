@@ -87,6 +87,11 @@ export type ProtocolEvent =
   | { type: 'compactFailed'; seq: number; detail?: string }
   | { type: 'config/changed'; seq: number; config: unknown } // B3 接 config 权威源时收紧为 ConfigView
   | { type: 'mcp/status'; seq: number; servers: McpServerStatusView[] }
+  /** 档位变更广播（会话级——用户拍板 2026-09-02：同项目不同对话不互相影响，档位属活动
+   *  会话实例；channel 会话私有 + mux 信封 sessionId 天然隔离，他对话订阅端收不到）。
+   *  sandbox/set 成功后与 restoreFrom 换会话归零时发布：同对话多端显示即时对齐，
+   *  本端切档回声 applySandboxMode 幂等无害 */
+  | { type: 'sandbox/mode'; seq: number; mode: 'default' | 'accept-edits' | 'read-only' | 'workspace-write' | 'full-access' }
 
 /** 发布形态：宿主侧 publish 时不带 seq（通道分配），HTTP 形态服务端帧同理 */
 export type PublishableEvent = DistributiveOmit<ProtocolEvent, 'seq'>

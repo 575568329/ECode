@@ -738,6 +738,11 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         case 'warn':
           pushNoticeFn('warn', ev.text)
           break
+        case 'sandbox/mode':
+          // 同对话档位变化即时对齐（用户拍板：同项目不同对话不互相影响——mux 信封 sessionId
+          // 过滤+channel 会话私有保证只收当前会话；本端 Tab 切档回声/restoreFrom 归零帧幂等）
+          applySandboxMode(ev.mode)
+          break
         case 'notice':
           pushNoticeFn(ev.level, ev.text)
           break
@@ -1255,6 +1260,10 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       ;(old as { dispose?: () => void }).dispose?.()
     }
     resetTransient()
+    // 切对话档位对齐（用户拍板：同项目不同对话不互相影响——本地显示不得携带旧对话切过的
+    // 档；活对话拉回它自己的档，冷对话=default。restoreFrom 归零广播通常已对齐，此处拉取
+    // 兜住同实例端口与广播丢失两条缝）
+    syncSandboxFromHost()
     const lines = await pullTranscript()
     messagesRef.current = lines
     setCommitted(messagesToCommitted(lines))

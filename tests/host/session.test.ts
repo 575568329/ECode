@@ -1076,3 +1076,48 @@ describe('sandbox/get 宿主档位回传', () => {
     host2.dispose()
   })
 })
+
+// —— 会话级档位隔离（用户拍板 2026-09-02：同项目除非相同对话，否则不互相影响）——
+describe('sandbox/mode 会话级档位广播与隔离', () => {
+  it('sandbox/set 成功后订阅者收到 sandbox/mode 帧（同对话多端即时对齐）', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([])))
+    const events = collect(host)
+    await host.send({ op: 'sandbox/set', mode: 'read-only' })
+    const frame = events.find((e) => e.type === 'sandbox/mode')
+    expect(frame).toMatchObject({ mode: 'read-only' })
+    host.dispose()
+  })
+
+  it('同项目两个对话互不串台：A 会话订阅者收不到 B 会话的档位帧（channel 会话私有）', async () => {
+    const hostA = new HostSession(makeCmdDeps(new MockProvider([])))
+    const hostB = new HostSession(makeCmdDeps(new MockProvider([])))
+    const eventsA = collect(hostA)
+    await hostB.send({ op: 'sandbox/set', mode: 'workspace-write' })
+    expect(eventsA.some((e) => e.type === 'sandbox/mode')).toBe(false)
+    expect((await hostB.send({ op: 'sandbox/get' })).value).toMatchObject({ mode: 'workspace-write' })
+    expect((await hostA.send({ op: 'sandbox/get' })).value).toMatchObject({ mode: 'default' })
+    hostA.dispose()
+    hostB.dispose()
+  })
+
+  it('restoreFrom 换会话档位归零：切对话不带旧档 + 广播归零帧（同实例端口的串台缝）', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([])))
+    const events = collect(host)
+    await host.send({ op: 'sandbox/set', mode: 'read-only' })
+    events.length = 0
+    host.restoreFrom([]) // 换会话载入（Embedded 同实例端口路径）
+    expect((await host.send({ op: 'sandbox/get' })).value).toMatchObject({ mode: 'default' })
+    const frame = events.find((e) => e.type === 'sandbox/mode')
+    expect(frame).toMatchObject({ mode: 'default' })
+    host.dispose()
+  })
+
+  it('restoreFrom 归零后重新 set 仍可正常切档（归零不是死档）', async () => {
+    const host = new HostSession(makeCmdDeps(new MockProvider([])))
+    await host.send({ op: 'sandbox/set', mode: 'read-only' })
+    host.restoreFrom([])
+    await host.send({ op: 'sandbox/set', mode: 'accept-edits' })
+    expect((await host.send({ op: 'sandbox/get' })).value).toMatchObject({ mode: 'accept-edits' })
+    host.dispose()
+  })
+})

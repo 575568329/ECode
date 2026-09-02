@@ -416,6 +416,11 @@ export class HostSession {
     this.clearRememberedTools() // F-07 档A：换会话 remember 白名单不残留
     this.reviewTurnCount = 0 // 纠偏审查：轮计数从恢复后重数（历史轮次不参与定时兜底）
     this.pendingReviewCard = null
+    // 换会话档位归零（用户拍板 2026-09-02：同项目不同对话不互相影响——档位属活动会话，
+    // 切对话不带旧档；attached 冷路径/Embedded makeDeps 换新实例本就 default 幂等，同实例
+    // 换会话（测试 fake 端口/降级镜像载入）在此重置）。广播帧让已连接端立即对齐归零
+    this.sandboxMode = (this.cfg().sandbox?.defaultMode as SandboxMode) ?? 'default'
+    this.publish('sandbox/mode', { mode: this.sandboxMode })
   }
 
   /** B3：手动强制压缩（/compact——客户端命令面中间态实现；B5 升格为宿主命令） */
@@ -1138,6 +1143,9 @@ export class HostSession {
           if (!ok) return { ok: false, error: '用户拒绝提档', code: 'REJECTED' }
         }
         this.sandboxMode = cmd.mode
+        // 会话级档位广播：同对话多端（TUI/web）显示即时对齐（channel 会话私有+mux 信封
+        // sessionId——同项目他对话端收不到；本端切档回声 applySandboxMode 幂等）
+        this.publish('sandbox/mode', { mode: this.sandboxMode })
         return { ok: true }
       case 'sandbox/get':
         // 档位回传（重连失同步修复）：宿主真档唯一权威源——客户端附着/重连时点拉取对齐显示

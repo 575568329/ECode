@@ -112,9 +112,9 @@ describe('foldLines 物理行折叠', () => {
 })
 
 describe('M14-V5 allocateDynamic（动态区总守卫分配）', () => {
-  it('退化保护：budget < 12 全降级（宁可不显示也不触发 3J）', () => {
-    expect(allocateDynamic(8)).toEqual({ degraded: true, streamMaxLines: 0, toolGroupCap: 0 })
-    expect(allocateDynamic(11)).toEqual({ degraded: true, streamMaxLines: 0, toolGroupCap: 0 })
+  it('退化保护：budget < 退化线全降级（宁可不显示也不触发 3J；活动流 B4 加 timelineLines 字段）', () => {
+    expect(allocateDynamic(8)).toEqual({ degraded: true, streamMaxLines: 0, toolGroupCap: 0, timelineLines: 0 })
+    expect(allocateDynamic(11)).toEqual({ degraded: true, streamMaxLines: 0, toolGroupCap: 0, timelineLines: 0 })
   })
   it('24 行终端（budget 22）：工具 ≥1 组 + stream 保底 4（审阅批4 输入区实占 8 行后 24 行窗收紧）', () => {
     const a = allocateDynamic(22)

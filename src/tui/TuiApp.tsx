@@ -11,7 +11,6 @@ import { HostSession, isValidSessionId } from '../host/session.js'
 import type { ActivityState } from '../core/loop.js'
 import { toAppError } from '../core/errors.js'
 import type { AppError, ContentBlock, HistoryLine, ImageBlock, Message } from '../core/types.js'
-import type { ToolUseBlock } from '../core/types.js'
 import type { McpPanelView, RewindListResult } from '../protocol/types.js'
 import type { CheckpointMeta } from '../services/checkpoint.js'
 import { tokensToCost } from '../services/pricing.js'
@@ -23,7 +22,8 @@ import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
 import { resurrectDaemonReg } from '../cli/daemon.js' // tui→cli 反向单点（daemon 拉起逻辑归口；无循环依赖——daemon.ts 不 import tui）
-import { createActive, type CommittedItem, type ActiveState } from './types.js'
+import { createActive, liveTextOf, toolsOf, type CommittedItem, type ActiveState } from './types.js'
+import { timelineReducer, makeTimelineIdFactory } from '../protocol/timeline.js'
 import { messagesToCommitted } from './commit.js'
 import { expandSkill, type SkillRegistry } from '../services/skill.js'
 import { globalSkillHooks } from '../services/hooks/global.js'
@@ -330,6 +330,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   // 扣留半截序列；新轮 submit 时重置。净化后的文本仅作 UI 显示（transcript 原文不动，
   // Static 固化另有 commit.ts strip 兜底）
   const streamStripperRef = useRef(createAnsiStripper())
+  // 活动流 B4：时间线归约依赖（id 工厂 ref——reducer 无内部状态，调用侧持有计数器）
+  const tlDepsRef = useRef(makeTimelineIdFactory())
   const [activity, setActivity] = useState<{ state: ActivityState; text?: string }>({
     state: 'idle',
   })
@@ -576,13 +578,31 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   hostEventHandlerRef.current = (ev) => {
       switch (ev.type) {
         case 'delta':
-          setActive((a) => ({ ...a, streamingText: a.streamingText + streamStripperRef.current.push(ev.text) }))
+          // 活动流 B4：净化（stripper）→ 归约（reducer 落 protocol，不 import tui/sanitize）
+          setActive((a) => ({
+            ...a,
+            timeline: timelineReducer(a.timeline, { ...ev, text: streamStripperRef.current.push(ev.text) }, { now: Date.now, nextId: tlDepsRef.current.nextId }),
+          }))
+          break
+        case 'thinking':
+          setActive((a) => ({ ...a, timeline: timelineReducer(a.timeline, ev, { now: Date.now, nextId: tlDepsRef.current.nextId }) }))
+          break
+        case 'thinking/ended':
+          setActive((a) => ({ ...a, timeline: timelineReducer(a.timeline, ev, { now: Date.now, nextId: tlDepsRef.current.nextId }) }))
+          break
+        case 'item/executing':
+          setActive((a) => ({ ...a, timeline: timelineReducer(a.timeline, ev, { now: Date.now, nextId: tlDepsRef.current.nextId }) }))
+          break
+        case 'turn/started':
+          // 活动流 B4（§3.3 双清空点权威）：函数式只重置 timeline——不动 userInput/confirm/
+          // streaming（doSubmit 整对象重置保留为发送失败回执窗口兜底，两处幂等）
+          setActive((a) => ({ ...a, timeline: [] }))
           break
         case 'item/started':
           // 审阅 P2：时间线源（Ctrl+T）读 messagesRef——仅轮末同步时 busy 中看不到当前轮；
           // 工具事件粒度同步（逐 delta 太热），transcript 此时已含本轮已发生条目
           syncRefOnly()
-          setActive((a) => ({ ...a, tools: [...a.tools, { name: ev.name, status: 'running', at: Date.now() }] }))
+          setActive((a) => ({ ...a, timeline: timelineReducer(a.timeline, ev, { now: Date.now, nextId: tlDepsRef.current.nextId }) }))
           setActivity({ state: 'tool', text: ev.name })
           break
         case 'item/completed': {
@@ -610,20 +630,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
               }
             })
           }
-          setActive((a) => {
-            const tools = [...a.tools]
-            const idx = tools.findIndex((t) => t.status === 'running' && t.name === ev.name)
-            const use = ev.use as ToolUseBlock | undefined
-            const done = {
-              name: ev.name,
-              use,
-              result: { type: 'tool_result' as const, tool_use_id: ev.itemId, content: ev.content, is_error: ev.isError },
-              status: (ev.isError ? 'error' : 'done') as 'error' | 'done',
-            }
-            if (idx >= 0) tools[idx] = done
-            else tools.push(done)
-            return { ...a, tools }
-          })
+          // 活动流 B4：按 id 原位回填（itemId 同源修复后闭环；旧 findIndex(running&&name) 同名并行错位退役）
+          setActive((a) => ({ ...a, timeline: timelineReducer(a.timeline, ev, { now: Date.now, nextId: tlDepsRef.current.nextId }) }))
           setActivity({ state: 'thinking' })
           break
         }
@@ -776,6 +784,13 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           break
         case 'queue/snapshot':
           setQueuedInterjects(ev.items)
+          break
+        case 'session/updated':
+          // 2026-09-02：归档/重命名多端同步不再静默（本次事故盲区——他端归档了本会话，
+          // TUI 无任何提示直到恢复失败）。归档当前会话=底部警示常驻；其余仅留痕。
+          if (ev.archived === true) {
+            pushNoticeFn('error', `会话 ${ev.sessionId === deps.history.currentSessionId() ? '（当前会话）' : ev.sessionId} 已被归档（历史列表默认不再显示）`)
+          }
           break
         case 'interjection/injected':
           // 宿主注入后紧随 queue/snapshot 全量同步；此处先摘除本条防一帧延迟
@@ -1528,9 +1543,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     () =>
       deriveLatestTodos([
         ...committed.flatMap((c) => (c.kind === 'tool-group' ? c.calls.map((call) => ({ name: call.use.name, use: call.use })) : [])),
-        ...active.tools.map((t) => ({ name: t.name, use: t.use })),
+        ...toolsOf(active.timeline).map((t) => ({ name: t.name, use: t.use })),
       ]),
-    [committed, active.tools],
+    [committed, active.timeline],
   )
   const todoLines =
     todoEntries === null
@@ -1560,8 +1575,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       activity={activity.state}
       activityText={(() => {
         // F-51：thinking 且有流式输出时显示已输出字数——极小终端一行也能知道在干什么（不黑盒）
-        if (activity.state === 'thinking' && active.streamingText !== '') {
-          return `输出中 ${active.streamingText.length} 字`
+        const live = liveTextOf(active.timeline)
+        if (activity.state === 'thinking' && live !== '') {
+          return `输出中 ${live.length} 字`
         }
         return activity.text
       })()}

@@ -13,10 +13,8 @@ afterEach(() => cleanup())
 describe('App 底部告警第二行', () => {
   const emptyActive: ActiveState = {
     userInput: '',
-    tools: [],
-    streamingText: '',
+    timeline: [],
     streaming: false,
-    expandedTools: new Set(),
     confirm: null,
   }
 
@@ -60,7 +58,7 @@ describe('瞬时提示与告警中心行的优先级（useInterrupt warning 压�
       React.createElement(App, {
         model: 'M',
         committed: [],
-        active: { userInput: '', tools: [], streamingText: '', streaming: false, expandedTools: new Set(), confirm: null },
+        active: { userInput: '', timeline: [], streaming: false, confirm: null },
         activity: 'idle',
         warning: '再按一次 Ctrl+C 退出',
         warningLevel: 'warn',

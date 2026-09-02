@@ -7,10 +7,10 @@
 import type { ReactElement, ReactNode } from 'react'
 import { Box, Text, Static } from 'ink'
 import { ToolGroupView } from './ToolGroupView.js'
+import { TimelineView } from './TimelineView.js'
 import { ConfirmPrompt } from './ConfirmPrompt.js'
 import { foldStreamText } from './stream.js'
 import { allocateDynamic, useViewport } from './viewport.js'
-import { WIDTH } from './layout.js'
 import { MessageRow } from './MessageRow.js'
 import { symbols } from './symbols.js'
 import { UserMessage } from './UserMessage.js'
@@ -25,20 +25,9 @@ const USER_INPUT_MAX_LINES = 2
 /** M14-V5 退化保护提示（budget < 12：宁可不显示也不触发 Ink 全清兜底） */
 const TOO_SMALL_HINT = '[终端过小，本轮内容已折叠——Ctrl+T 查看]'
 
-/** 流式灰字占位（commit 前用；超 maxLines 行折叠头部）。
- *  M14-V2：宽度感知物理行折叠（超长单行不再爆物理行）。
- *  M14-V5：maxLines 来自 allocateDynamic 总分配（缺省 3=旧行为）。 */
-export function GrayStreaming({ text, maxLines }: { text: string; maxLines?: number }): ReactElement {
-  const { columns } = useViewport()
-  // F-36：折行宽 = 正文列宽（GrayStreaming 住在圆点槽右侧——续行对齐第 2 列）
-  const { lines, folded, total } = foldStreamText(text, maxLines, WIDTH.body(columns))
-  return (
-    <Box flexDirection="column">
-      {folded > 0 && <Text dimColor>↑ {folded} 行已折叠（共 {total} 行）</Text>}
-      <Text dimColor>{lines.join('\n')}</Text>
-    </Box>
-  )
-}
+// GrayStreaming 已迁 TimelineView.tsx（活动流 B4——解 Conversation↔TimelineView 循环引用）；
+// 此处 re-export 保持 AssistantMessage 等旧 import 路径零改动。
+export { GrayStreaming } from './TimelineView.js'
 
 /** 折叠用户输入到 USER_INPUT_MAX_LINES 行（复用 foldStreamText，P1-A；M14-V2 物理行化） */
 function FoldedUserInput({ text }: { text: string }): ReactElement {
@@ -106,7 +95,6 @@ function renderCommitted(item: CommittedItem): ReactNode {
 interface ConversationProps {
   committed: CommittedItem[]
   active: ActiveState
-  onToggleTool?: () => void
   onConfirm?: () => void
   onCancel?: () => void
   /** 批2b ①：审批卡字符转发主输入框；②：草稿镜像（非空时单字母快捷失效） */
@@ -131,7 +119,6 @@ interface ConversationProps {
 export function Conversation({
   committed,
   active,
-  onToggleTool,
   onConfirm,
   onCancel,
   onDraftKey,
@@ -143,15 +130,7 @@ export function Conversation({
   conditions,
   altContent,
 }: ConversationProps): ReactElement {
-  const toolExpanded = active.tools.some(
-    (t) => t.use && active.expandedTools.has(t.use.id),
-  )
-  // 界面批 B1：单工具展开态（expandedTools 只含 1 个且非组级全展——Ctrl+E 路径）。
-  // 预算口径与 V2 组展开同：任何展开态 maxTools 收 1（展开工具 expandCap+2 行 + 折叠组头 ≤4 行可控）
-  const singleExpanded =
-    !toolExpanded && active.expandedTools.size > 0
-  // M14-V5（§3.4）总守卫：动态区顶层一次分配（各段独立截断不保证总和 < rows——病态组合
-  // 8 组工具×4 行+灰字+输入仍超 24 行终端）；退化态 markdown/工具区不渲染
+  // M14-V5（§3.4）总守卫：动态区顶层一次分配；活动流 B4——timeline 总预算字段
   const { budget } = useViewport()
   const alloc = allocateDynamic(budget, conditions)
   return (
@@ -168,28 +147,18 @@ export function Conversation({
         altContent
       ) : (
         <>
-      {/* 动态区：当前轮 ①②③ + confirm */}
+      {/* 动态区：用户输入 + 时间线 + confirm（活动流 B4——①②③ 固定槽位退役） */}
       {active.userInput !== '' && <FoldedUserInput text={active.userInput} />}
-      {active.tools.length > 0 &&
-        (alloc.degraded ? (
-          // F-51：极小终端智能分级——不渲染输出体但保留工具名行（用户仍知「跑过什么」），
-          // 只对塞不下的输出体统一折叠提示；避免整轮纯黑盒
-          <>
-            <ToolGroupView tools={active.tools} maxTools={0} />
-            <MessageRow icon="" dim>
-              <Text dimColor>{TOO_SMALL_HINT}</Text>
-            </MessageRow>
-          </>
-        ) : (
-          <ToolGroupView
-            tools={active.tools}
-            expanded={toolExpanded}
-            expandedIds={active.expandedTools}
-            done={!active.streaming}
-            onToggle={onToggleTool}
-            maxTools={toolExpanded || singleExpanded ? Math.min(alloc.toolGroupCap, 1) : alloc.toolGroupCap} // 审阅 P1-3：展开态每组可占 expandCap+2 行，总高失控——收 1 组全文余折叠（全文走 /output）；B1 单展开同口径
-          />
-        ))}
+      {alloc.degraded ? (
+        // F-51 智能分级平移：极小终端不渲染输出体，折叠提示行（条目名在 loading 行 digest 承担）
+        <MessageRow icon="" dim>
+          <Text dimColor>{TOO_SMALL_HINT}</Text>
+        </MessageRow>
+      ) : (
+        active.timeline.length > 0 && (
+          <TimelineView timeline={active.timeline} lines={alloc.timelineLines} liveMaxLines={alloc.streamMaxLines} />
+        )
+      )}
       {active.confirm ? (
         // 审阅 P1-2：key=requestId——连续审批卡（resolved→下一张 requested 落同一渲染批）时
         // 同位置同类型组件不卸载会跨卡继承 selected/expanded/reasonMode（上一张选过 y → 新卡
@@ -204,22 +173,7 @@ export function Conversation({
           readDraft={readDraft}
           onInterruptTurn={onInterruptTurn}
         />
-      ) : (
-        active.streamingText !== '' &&
-        (alloc.degraded ? (
-          <MessageRow icon="" dim>
-            <Text dimColor>
-              {TOO_SMALL_HINT}（模型输出中，已 {active.streamingText.length} 字）
-            </Text>
-          </MessageRow>
-        ) : active.streaming ? (
-          <MessageRow>
-            <GrayStreaming text={active.streamingText} maxLines={alloc.streamMaxLines} />
-          </MessageRow>
-        ) : (
-          <CappedAssistantMessage text={active.streamingText} maxLines={alloc.streamMaxLines} />
-        ))
-      )}
+      ) : null}
       {/* 插话排队留痕（2026-08-29 用户点名）：轮内即时可见；注入后文本随轮末 commit 以
           user 消息落转写（F-35 包装原文），此处排队行随即被 queue/snapshot 摘除——不重不漏 */}
       {queuedInterjects.map((q, i) => (
@@ -235,21 +189,4 @@ export function Conversation({
       {children}
     </Box>
   )
-}
-
-/** M14-V5：轮末残留 markdown（error 轮无 completed 帧）超预算时不渲染全文（markdown 截断
- *  会破碎语法）——降级提示行，全文在 transcript（Ctrl+T 可看） */
-function CappedAssistantMessage({ text, maxLines }: { text: string; maxLines: number }): ReactElement {
-  const { columns } = useViewport()
-  const { total } = foldStreamText(text, undefined, columns)
-  if (total > maxLines * 2) {
-    return (
-      // 审阅 P1-8：/output 列表不含 assistant 文本——改指历史区（下次提交后兜底 commit 进 Static 可滚回看）
-      // F-36：空槽对齐正文栅格
-      <MessageRow icon="" dim>
-        <Text dimColor>⋯ 本轮回复共 {total} 行，终端预算内不展示（再次输入后进入历史区可回看全文）</Text>
-      </MessageRow>
-    )
-  }
-  return <AssistantMessage text={text} />
 }

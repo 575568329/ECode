@@ -34,8 +34,7 @@ describe('活动流 B2：ThinkingLine 消化链', () => {
   it('HistoryStore appendThinking → restoreFull 往返带回（restore 消息流不含）', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ecode-think-'))
     try {
-      const h = new FileHistoryStore(dir)
-      h.setSessionId('sess-think', 'm')
+      const h = new FileHistoryStore({ sessionId: 'sess-think', model: 'm', dir })
       h.append(msg('user', '问'))
       h.appendThinking({ thinking: true, text: '思考全文', durMs: 1000, time: '2026-09-02T00:00:00Z' })
       h.append(msg('assistant', '答'))

@@ -94,6 +94,8 @@ export interface DynamicAllocation {
   streamMaxLines: number
   /** 工具组可见数上限（每组收起恒 ≤4 行；超出折叠为「…还有 N 组」提示） */
   toolGroupCap: number
+  /** 活动流 B4：timeline 总行预算（= content 份额——折叠线的累加上限） */
+  timelineLines: number
 }
 
 /**
@@ -104,7 +106,7 @@ export interface DynamicAllocation {
  */
 export function allocateDynamic(
   budget: number,
-  conditions: { tasksBar?: boolean; subagentBar?: boolean; todoLines?: number } = {},
+  conditions: { tasksBar?: boolean; subagentBar?: boolean; todoLines?: number; queuedLines?: number } = {},
 ): DynamicAllocation {
   // 审阅 P1-1/P1-2：输入区折叠态实占最多 7-8 行（INPUT_FOLD_MAX_LINES=5+上下折叠指示+caret 行），
   // 原 3 行预算低估；条件段（TasksBar/SubagentBar 各 ≤3 行）活跃时显式扣减——原"挤占余量"
@@ -112,19 +114,104 @@ export function allocateDynamic(
   // 四角色审阅 P0-2：todo 常驻面板（≤12 项+表头+溢出提示 ≤14 行）同入条件段扣减——
   // 此前完全未入账，用过 todo 的会话在小终端常态超预算触发 3J。
   // TuiApp 以同一纯函数自算 degraded 驱动 TodoPanel maxVisible（0=隐藏），两处口径同源。
+  // 活动流 B4：插话排队行入 conditions（v1.7 渲染审阅 P2-7——曾完全未入账，多行排队破预算）
+  const queuedLines = Math.max(0, Math.min(conditions.queuedLines ?? 0, 6))
   const todoLines = Math.max(0, Math.min(Math.floor(conditions.todoLines ?? 0), 14))
   const USER_INPUT_LINES = 8
   const CHROME_RESERVE =
-    5 + (conditions.tasksBar === true ? 3 : 0) + (conditions.subagentBar === true ? 3 : 0) + todoLines
+    5 + (conditions.tasksBar === true ? 3 : 0) + (conditions.subagentBar === true ? 3 : 0) + todoLines + queuedLines
   const STREAM_MIN = 4 // 流式区保底（tail 折叠天然弹性，是余量的缓冲垫）
   const condLines =
-    (conditions.tasksBar === true ? 3 : 0) + (conditions.subagentBar === true ? 3 : 0) + todoLines
+    (conditions.tasksBar === true ? 3 : 0) + (conditions.subagentBar === true ? 3 : 0) + todoLines + queuedLines
   // 退化线：保住最小可用内容（1 组 4 行 + stream 4 行）= CHROME 5 + 输入 8 + 8
-  if (budget < 21 + condLines) return { degraded: true, streamMaxLines: 0, toolGroupCap: 0 }
+  if (budget < 21 + condLines) return { degraded: true, streamMaxLines: 0, toolGroupCap: 0, timelineLines: 0 }
   const content = Math.max(4, budget - CHROME_RESERVE - USER_INPUT_LINES)
   const toolGroupCap = Math.max(1, Math.min(6, Math.floor((content - STREAM_MIN) / 4)))
   const streamMaxLines = Math.max(STREAM_MIN, content - toolGroupCap * 4)
-  return { degraded: false, streamMaxLines, toolGroupCap }
+  return { degraded: false, streamMaxLines, toolGroupCap, timelineLines: content }
+}
+
+// —— 活动流 B4：时间线预算（详设 v1.7 §5.5.7 实现锚）——
+
+/** 时间线条目预算切分结果 */
+export interface TimelineBudget {
+  /** 头部折叠线：下标 < visibleFrom 的条目整体折叠为摘要行（最新优先保住） */
+  visibleFrom: number
+  /** 折叠摘要计数（null=无折叠 S0） */
+  foldedSummary: { tools: number; texts: number } | null
+  /** 最新终态 text 段的保守估行（wrap × 1.3 系数 + 2 空行裕量；null=无终态段） */
+  finalTextEstimate: number | null
+  /** 最新终态段 Markdown 显示上限（超过即整段降级提示行，绝不行级截断——P0-2） */
+  finalTextCap: number
+}
+
+/** 条目的最小形状（解耦 protocol 类型——timeline 条目子集，纯函数可单测） */
+export interface TimelineEntryShape {
+  kind: 'text' | 'thinking' | 'tool'
+  live?: boolean
+  text?: string
+  tool?: { name: string; status: string }
+}
+
+/** 单条目实占单价（行）——v1.7 渲染审阅 P0-1：副作用 diff 展开块含附属行（标题 1+marker 1） */
+function entryCost(e: TimelineEntryShape, ctx: { expandCap: number; liveMaxLines: number }): number {
+  if (e.kind === 'text') {
+    return e.live === true ? ctx.liveMaxLines : 1 // live=灰字折叠窗（预算大头）；终态段按降级行 1 计（最新段另用估行）
+  }
+  if (e.kind === 'thinking') return 1
+  if (e.tool === undefined) return 1
+  if (e.tool.status === 'running') return 1
+  const sideEffect = e.tool.name === 'edit_file' || e.tool.name === 'write_file'
+  // 行 1 + ⎿ preview 1；副作用完成后 diff 自动展开（D15）→ 标题 1 + expandCap + marker 1
+  return sideEffect ? 2 + 1 + ctx.expandCap + 1 : 2
+}
+
+/**
+ * 时间线预算（§5.5.7）：自底向上（最新→最老）累加实占，**首个放不下的条目即折叠线**
+ * （其后更老的更放不下——单调性；resize/新条目到达由纯函数整体重算）。
+ * 计价宽度基准 WIDTH.body 口径（columns−2，v1.7 管线审阅 P1-5）。
+ */
+export function timelineBudget(entries: readonly TimelineEntryShape[], lines: number, columns: number, liveMaxLines: number): TimelineBudget {
+  const width = Math.max(10, columns - 2)
+  let lastFinalTextIdx = -1
+  let lastFinalTextChars = 0
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]
+    if (e.kind === 'text' && e.live !== true) {
+      lastFinalTextIdx = i
+      lastFinalTextChars = (e.text ?? '').length
+      break
+    }
+  }
+  const finalTextEstimate =
+    lastFinalTextIdx >= 0 ? Math.ceil(((lastFinalTextChars + width - 1) / width) * 1.3) + 2 : null
+  const ctx = { expandCap: 12, liveMaxLines: Math.max(1, liveMaxLines) }
+  const cap = Math.max(1, Math.floor(lines))
+  let used = 0
+  let visibleFrom = entries.length
+  for (let i = entries.length - 1; i >= 0; i--) {
+    let cost = entryCost(entries[i], ctx)
+    if (i === lastFinalTextIdx && finalTextEstimate !== null) cost = Math.max(cost, finalTextEstimate)
+    if (used + cost > cap) {
+      // 首个放不下的条目即折叠线：它自己与更老的都折叠——visibleFrom=第一个**可见**下标（i+1）
+      visibleFrom = i + 1
+      break
+    }
+    used += cost
+  }
+  if (visibleFrom === entries.length) {
+    return { visibleFrom: 0, foldedSummary: null, finalTextEstimate, finalTextCap: Math.max(4, Math.floor(cap / 3)) }
+  }
+  const folded = entries.slice(0, visibleFrom)
+  return {
+    visibleFrom,
+    foldedSummary: {
+      tools: folded.filter((e) => e.kind === 'tool').length,
+      texts: folded.filter((e) => e.kind === 'text').length,
+    },
+    finalTextEstimate,
+    finalTextCap: Math.max(4, Math.floor(cap / 3)),
+  }
 }
 
 /** 折叠模式：tail=只留尾部（流式灰字/输入粘贴）；head-tail=头尾都留（diff/长输出） */

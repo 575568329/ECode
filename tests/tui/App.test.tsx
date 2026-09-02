@@ -97,7 +97,7 @@ describe('App', () => {
   })
 
   it('active.streamingText + thinking 同时显示', () => {
-    const active = { ...createActive(), streamingText: '正在生成回答' }
+    const active = { ...createActive(), timeline: [{ kind: 'text', id: 'x1', text: '正在生成回答', live: true }], streaming: true }
     const { lastFrame } = render(
       React.createElement(App, {
         model: 'M',
@@ -149,7 +149,7 @@ describe('App', () => {
     ]
     const active = {
       ...createActive(),
-      streamingText: '继续生成',
+      timeline: [{ kind: 'text', id: 'x1', text: '继续生成', live: true }],
       tools: [tool({ id: 't1', name: 'bash', status: 'done' })],
     }
     const { lastFrame } = render(

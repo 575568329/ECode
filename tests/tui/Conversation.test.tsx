@@ -63,14 +63,14 @@ function tool(
 }
 
 describe('Conversation', () => {
-  it('active.streamingText + streaming=true → 灰字（GrayStreaming）', () => {
-    const active = { ...createActive(), streamingText: '流式内容', streaming: true }
+  it('timeline live text 段 → 灰字（GrayStreaming，活动流 B4）', () => {
+    const active = { ...createActive(), timeline: [{ kind: 'text', id: 'x1', text: '流式内容', live: true }], streaming: true }
     const { lastFrame } = render(React.createElement(Conversation, { committed: [], active }))
     expect(lastFrame()).toContain('流式内容')
   })
 
-  it('active.streamingText + streaming=false → Markdown（流式结束，当前轮保留动态区可展开）', () => {
-    const active = { ...createActive(), streamingText: '完成的回答', streaming: false }
+  it('timeline 终态 text 段（最新）→ Markdown 渲染', () => {
+    const active = { ...createActive(), timeline: [{ kind: 'text', id: 'x1', text: '完成的回答', live: false }], streaming: false }
     const { lastFrame } = render(React.createElement(Conversation, { committed: [], active }))
     expect(lastFrame()).toContain('完成的回答')
   })
@@ -82,17 +82,20 @@ describe('Conversation', () => {
     expect(lastFrame() ?? '').not.toContain('流式')
   })
 
-  it('active.tools → 渲染 ToolGroupView（合并块）', () => {
+  it('timeline 工具条目 → 逐行渲染（活动流 B4——合并组退役，预算内全显）', () => {
+    const tl = (id: string, name: string) => ({
+      kind: 'tool' as const,
+      id,
+      tool: { name, id, status: 'done' as const },
+    })
     const active = {
       ...createActive(),
-      tools: [tool({ id: 't1', name: 'read_file' }), tool({ id: 't2', name: 'bash' })],
+      timeline: [tl('t1', 'read_file'), tl('t2', 'bash')],
     }
     const { lastFrame } = render(React.createElement(Conversation, { committed: [], active }))
     const f = lastFrame() ?? ''
-    // 审阅批4：allocateDynamic 输入区实占 8 行后 24 行窗 toolGroupCap=1——第 2 组折叠为提示行
-    expect(f).toContain('1 个工具')
     expect(f).toContain('read_file')
-    expect(f).toContain('还有 1 个工具因终端预算折叠')
+    expect(f).toContain('bash')
   })
 
   it('active.userInput → 显示用户消息', () => {
@@ -150,8 +153,10 @@ describe('Conversation', () => {
     const committed: CommittedItem[] = [{ kind: 'user', id: 'u1', text: '历史消息' }]
     const active = {
       ...createActive(),
-      streamingText: '正在流式',
-      tools: [tool({ id: 't1', name: 'read_file' })],
+      timeline: [
+        { kind: 'text', id: 'x1', text: '正在流式', live: true },
+        { kind: 'tool', id: 't1', tool: { name: 'read_file', id: 't1', status: 'done' } },
+      ],
     }
     const { lastFrame } = render(
       React.createElement(
@@ -163,7 +168,7 @@ describe('Conversation', () => {
     const f = lastFrame() ?? ''
     expect(f).toContain('历史消息')
     expect(f).toContain('正在流式')
-    expect(f).toContain('1 个工具')
+    expect(f).toContain('read_file')
     expect(f).toContain('底部输入')
   })
 
@@ -243,7 +248,7 @@ describe('F-36 消息行栅格（第一列只图标，文字含折行续行从�
     const { lastFrame } = render(
       React.createElement(Conversation, {
         committed: [],
-        active: { ...createActive(), streaming: true, streamingText: long },
+        active: { ...createActive(), streaming: true, timeline: [{ kind: 'text', id: 'x1', text: long, live: true }] },
       }),
     )
     const lines = (lastFrame() ?? '').split('\n').filter((l) => l.trim() !== '' && !l.includes('折叠'))

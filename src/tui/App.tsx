@@ -5,7 +5,7 @@ import { ShortcutHint } from './ShortcutHint.js'
 import { Conversation } from './Conversation.js'
 import { ActivityBar } from './ActivityBar.js'
 import type { ActivityState } from '../core/loop.js'
-import type { CommittedItem, ActiveState } from './types.js'
+import { liveTextOf, type CommittedItem, type ActiveState } from './types.js'
 import { theme } from './theme.js'
 
 /**
@@ -20,7 +20,6 @@ interface AppProps {
   model: string
   committed: CommittedItem[]
   active: ActiveState
-  onToggleTool?: () => void
   onConfirm?: () => void
   onCancel?: () => void
   activity: ActivityState
@@ -73,7 +72,6 @@ export function App({
   model,
   committed,
   active,
-  onToggleTool,
   onConfirm,
   onCancel,
   onDraftKey,
@@ -105,7 +103,7 @@ export function App({
 }: AppProps): ReactElement {
   const busy =
     running ??
-    (active.streamingText !== '' ||
+    (liveTextOf(active.timeline) !== '' ||
       active.confirm !== null ||
       activity === 'thinking' ||
       activity === 'tool' ||
@@ -124,7 +122,6 @@ export function App({
         active={active}
         queuedInterjects={queuedInterjects}
         altContent={altContent}
-        onToggleTool={onToggleTool}
         onConfirm={onConfirm}
         onCancel={onCancel}
         onDraftKey={onDraftKey}

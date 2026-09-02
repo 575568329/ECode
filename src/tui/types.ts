@@ -1,41 +1,66 @@
 /**
- * 最小 Static TUI 的类型定义（详设 2026-08-13 §4）。
+ * 最小 Static TUI 的类型定义（详设 2026-08-13 §4；活动流 B4 改造）。
  *
- * - ActiveState：动态区当前轮的活跃状态（分区累积，runLoop 结束才 commit）
+ * - ActiveState：动态区当前轮的活跃状态（**TurnTimeline 时间线**——文本/思考/工具按到达序一条流，
+ *   替代旧 tools+streamingText 固定槽位；归约收口 protocol/timeline.ts）
  * - CommittedItem：Static 区已固化的历史片段（渐进 append，永不重绘）
- *
- * 动态区视觉顺序（用户定）：① 用户输入 → ② 工具合并块 → ③ 流式灰字 → ④ UI。
- * commit 时按 message.content 原序还原真实时序进 Static。
  */
 
 import type { ToolUseBlock, ToolResultBlock } from '../core/types.js'
+import type { TimelineEntry } from '../protocol/timeline.js'
 
-/** 动态区工具项（本轮内，执行中 or 已完成）。合并块展示，详见 ToolGroupView。 */
+/** 动态区工具项（TimelineTool 的 TUI 视图形态——ToolLine 消费） */
 export interface ActiveTool {
-  /** onToolStart 只给 name（use 此时未解析，P1-2）；onToolResult 后从 messagesRef 反查填入 */
   name: string
+  id?: string
   use?: ToolUseBlock
   result?: ToolResultBlock
   status: 'running' | 'done' | 'error'
-  /** F-06：开始时间戳——展开态输出头部显示 HH:MM，历史快照不再误读为当前状态
-   *  （轮次号全链路成本大，任务书允许降级为纯时间戳；缺省不显示——Static 固化无此字段） */
+  /** F-06：开始时间戳——展开态输出头部显示 HH:MM，历史快照不再误读为当前状态 */
   at?: number
+  /** 活动流：item/executing 帧回填（运行行/loading 行「正在执行 <命令>」） */
+  digest?: string
 }
 
-/** 动态区当前轮活跃状态（分区累积，直到 runLoop 结束才 commit） */
+/** 动态区当前轮活跃状态（时间线累积，直到 runLoop 结束才 commit） */
 export interface ActiveState {
-  /** 本轮用户输入（顶部 ①，折叠到 2 行） */
+  /** 本轮用户输入（顶部，折叠到 2 行） */
   userInput: string
-  /** 本轮所有工具（累积，合并块 ② 展示） */
-  tools: ActiveTool[]
-  /** 本轮流式文本（累积） */
-  streamingText: string
-  /** true=流式中（GrayStreaming 灰字 ③）；false=流式结束（Markdown 渲染，本轮仍在动态区可展开） */
+  /** 轮内时间线（文本/思考/工具按序一条流——替代 tools+streamingText） */
+  timeline: TimelineEntry[]
+  /** true=轮运行中（轮级态：degraded/清空时机判断用） */
   streaming: boolean
-  /** 展开的工具 id（只对当前轮；commit 时清空 = 下一轮收起） */
-  expandedTools: Set<string>
   /** 等待用户确认的副作用工具（非 null 时 ConfirmPrompt 渲染，loop 挂起；详设 §7） */
   confirm: ConfirmState | null
+}
+
+/** timeline → 最新 live text 段文本（旧 streamingText 消费点的等价派生；无 live 段取最后终态段） */
+export function liveTextOf(timeline: TimelineEntry[]): string {
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    const e = timeline[i]
+    if (e.kind === 'text') return e.text
+  }
+  return ''
+}
+
+/** timeline → 工具条目视图（旧 active.tools 消费点的等价派生） */
+export function toolsOf(timeline: TimelineEntry[]): ActiveTool[] {
+  return timeline
+    .filter((e): e is Extract<TimelineEntry, { kind: 'tool' }> => e.kind === 'tool')
+    .map((e) => {
+      const t = e.tool
+      return {
+        name: t.name,
+        id: t.id,
+        status: t.status,
+        ...(t.at !== undefined ? { at: t.at } : {}),
+        ...(t.digest !== undefined ? { digest: t.digest } : {}),
+        ...(t.use !== undefined ? { use: t.use as ToolUseBlock } : {}),
+        ...(t.content !== undefined || t.isError !== undefined
+          ? { result: { type: 'tool_result' as const, tool_use_id: t.id, content: t.content ?? '', is_error: t.isError === true } }
+          : {}),
+      }
+    })
 }
 
 /** confirm 弹窗状态（loop await confirm 期间挂起，onConfirm/onCancel resolve） */
@@ -72,24 +97,8 @@ export type CommittedItem =
 export function createActive(): ActiveState {
   return {
     userInput: '',
-    tools: [],
-    streamingText: '',
+    timeline: [],
     streaming: false,
-    expandedTools: new Set(),
     confirm: null,
   }
-}
-
-/**
- * 界面批 B1：单工具级展开的下一个选中（Ctrl+E 循环）。
- * 规则：在「未展开的 done 工具」中取第一个；全展开 → 空集（全收起重置）。
- * 单选展开（Set 只含一个）——行数入 V2 预算（ToolGroupView expandCap 钳制每个展开输出，
- * Conversation 展开态 maxTools=min(cap,1) 限制可见组数）。
- */
-export function nextSingleExpand(tools: Array<{ use?: { id: string } }>, current: Set<string>): Set<string> {
-  const dones = tools.filter((t) => t.use !== undefined) as Array<{ use: { id: string } }>
-  if (dones.length === 0) return current
-  const next = dones.find((t) => !current.has(t.use.id))
-  if (next === undefined) return new Set()
-  return new Set([next.use.id])
 }

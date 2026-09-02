@@ -138,10 +138,11 @@ describe('thinkingToOpenai', () => {
     expect(thinkingToOpenai(undefined)).toEqual({})
   })
 
-  it('low/medium/high → reasoning_effort', () => {
-    expect(thinkingToOpenai('low')).toEqual({ reasoning_effort: 'low' })
-    expect(thinkingToOpenai('medium')).toEqual({ reasoning_effort: 'medium' })
-    expect(thinkingToOpenai('high')).toEqual({ reasoning_effort: 'high' })
+  it("low/medium/high → thinking:{type:'enabled'}（智谱真机实证：reasoning_effort 被静默忽略，档位无对应参数统一 enabled）", () => {
+    const enabled = { thinking: { type: 'enabled' } }
+    expect(thinkingToOpenai('low')).toEqual(enabled)
+    expect(thinkingToOpenai('medium')).toEqual(enabled)
+    expect(thinkingToOpenai('high')).toEqual(enabled)
   })
 })
 

@@ -31,7 +31,13 @@ import type { HistoryStore } from '../../src/services/history.js'
 vi.mock('../../src/services/clipboard.js', () => ({ readClipboardImage: vi.fn() }))
 
 const resurrectMock = vi.fn()
-vi.mock('../../src/cli/daemon.js', () => ({ resurrectDaemonReg: (...args: unknown[]) => resurrectMock(...args) }))
+const readServerRegMock = vi.fn(() => null)
+// readServerReg 必须随 mock 导出（R6 批起 rescueDaemon 拉起前读注册做 pid 判别——mock 工厂
+// 缺它=TypeError，rescue 链全断、重试/降级静默不走。回归锁：d8f643a 提交门漏跑本文件）
+vi.mock('../../src/cli/daemon.js', () => ({
+  resurrectDaemonReg: (...args: unknown[]) => resurrectMock(...args),
+  readServerReg: (...args: unknown[]) => readServerRegMock(...args),
+}))
 
 const config: Config = {
   providers: { astron: { type: 'anthropic', baseURL: 'http://a', apiKey: 'k', models: ['glm-5.2'] } },

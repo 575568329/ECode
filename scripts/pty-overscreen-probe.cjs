@@ -163,7 +163,7 @@ const run = async () => {
     proc.write('\x7f') // 清 O1 回显探针残留的 z（wedge-probe 同款）
     await new Promise((r) => setTimeout(r, 200))
     const m = markNow()
-    proc.write('/output')
+    proc.write('') // 活动流 D14：/output 已退役，Ctrl+T 进执行时间线
     await new Promise((r) => setTimeout(r, 250))
     proc.write('\r')
     const listed = await waitFor(m, /最近工具调用|后台任务|暂无可查看/, 5000)

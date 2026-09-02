@@ -227,8 +227,8 @@ describe('Conversation', () => {
 })
 
 describe('F-36 消息行栅格（第一列只图标，文字含折行续行从第 2 列起）', () => {
-  it('assistant 文本：D3 顶格（活动流 2026-09-02 拍板——圆点只标工具行，助手文本空槽）', () => {
-    // ink-testing 缺省 80 列：超长中文段落必折行（1 字 2 列）；顶格=首行与续行都在第 2 列起
+  it('assistant 文本：◆ 图标槽（D3 二次翻案 2026-09-02——正文加图标，续行悬挂对齐）', () => {
+    // ink-testing 缺省 80 列：超长中文段落必折行（1 字 2 列）；首行 ◆ 起第 0 列、续行第 2 列起
     const long = '统一栅格验证文本'.repeat(20)
     const { lastFrame } = render(
       React.createElement(Conversation, {
@@ -238,13 +238,14 @@ describe('F-36 消息行栅格（第一列只图标，文字含折行续行从�
     )
     const lines = (lastFrame() ?? '').split('\n').filter((l) => l.trim() !== '')
     expect(lines.length).toBeGreaterThan(1) // 确已折行
-    expect(lines[0].startsWith('● ')).toBe(false) // D3：助手首行不再带圆点
-    for (const l of lines) {
-      expect(l.startsWith('  ')).toBe(true) // 首行与续行统一第 2 列起（空槽悬挂）
+    expect(lines[0]!.startsWith('◆ ')).toBe(true) // D3 二次翻案：正文行 ◆ 占图标槽
+    expect(lines[0]!.startsWith('● ')).toBe(false) // 不与工具行圆点混淆
+    for (const l of lines.slice(1)) {
+      expect(l.startsWith('  ')).toBe(true) // 续行第 2 列起（图标槽悬挂）
     }
   })
 
-  it('流式灰字同栅格：● 槽 + 灰字折行第 2 列起', () => {
+  it('流式灰字同栅格：◆ 槽 + 灰字折行第 2 列起（live 与终态同图标防轮末跳变）', () => {
     const long = '流式灰字栅格验证'.repeat(20)
     const { lastFrame } = render(
       React.createElement(Conversation, {
@@ -254,8 +255,9 @@ describe('F-36 消息行栅格（第一列只图标，文字含折行续行从�
     )
     const lines = (lastFrame() ?? '').split('\n').filter((l) => l.trim() !== '' && !l.includes('折叠'))
     expect(lines.length).toBeGreaterThan(1)
-    // R4/P1-1：严格断言（旧析取放行了带 ● 的错误形态）——D3 顶格：live 与续行统一第 2 列起
-    for (const l of lines) {
+    // R4/P1-1：严格断言——live 首行 ◆ 与终态一致；续行统一第 2 列起；不与 ● 混淆
+    expect(lines[0]!.startsWith('◆ ')).toBe(true)
+    for (const l of lines.slice(1)) {
       expect(l.startsWith('  ')).toBe(true)
       expect(l.startsWith('● ')).toBe(false)
     }

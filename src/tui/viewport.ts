@@ -161,8 +161,8 @@ export interface TimelineEntryShape {
 
 /** 单条目实占单价（行）——v1.7 渲染审阅 P0-1：副作用 diff 展开块含附属行（标题 1+marker 1） */
 function entryCost(e: TimelineEntryShape, ctx: { expandCap: number; liveMaxLines: number; cap: number }): number {
-  // R2/P0-2：margin 级联入账——条目经 MessageRow（marginTop=1）或 ToolLine 输出块
-  // （marginTop=GAP.block/2，Ink 渲染 0.5 与 1 同为 1 空行）每条目 +1
+  // R2/P0-2：margin 级联入账——条目经 MessageRow（marginTop=1）或 ToolLine（根 marginTop=1，
+  // 2026-09-02 块间节奏对调：空行从标题/⎿ 之间移到块顶——总行数不变计价平移）每条目 +1
   if (e.kind === 'text') {
     // live=灰字折叠窗（+margin 1+折叠提示行 1）；终态段=降级行 1+margin 1（最新段另用估行）。
     // G+ 修复（真机回归：工具行全被挤光）——live 显示行数天然弹性（GrayStreaming 折叠窗），

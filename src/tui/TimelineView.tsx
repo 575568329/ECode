@@ -51,17 +51,16 @@ interface TimelineViewProps {
 
 /** 单条目 memo 包裹（未动条目引用恒等 → 跳过重渲；delta 高频下防全量重跑 markdown/fold） */
 const TextEntry = memo(function TextEntry({ text, live, maxLines }: { text: string; live: boolean; maxLines: number }): ReactElement {
-  // R2/P1-3：D3 顶格贯彻到动态区（icon=''）——AssistantMessage 已顶格，此处不一致
-  // 会造成轮末 ● 消失的动静跳变
+  // D3 二次翻案（2026-09-02 用户观感）：正文行 ◆ 占图标槽——live 与终态同图标，轮末零跳变
   if (live) {
     return (
-      <MessageRow icon="">
+      <MessageRow icon={symbols.assistant}>
         <GrayStreaming text={text} maxLines={maxLines} />
       </MessageRow>
     )
   }
   return (
-    <MessageRow icon="">
+    <MessageRow icon={symbols.assistant}>
       <Markdown text={text} />
     </MessageRow>
   )

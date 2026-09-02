@@ -84,7 +84,9 @@ export function ToolLine({ tool, mode }: ToolLineProps): ReactElement {
   const preview = previewLine(content, Math.max(80, columns - 10))
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginTop={GAP.block}>
+      {/* 块间节奏（2026-09-02 用户观感拍板）：空行移到块顶——正文/上一块的 ⎿ 与工具行拉开
+          （原空行在标题与 ⎿ 之间=块内紧块间黏的反节奏）；总行数不变（entryCost 计价零改动） */}
       <Box>
         {/* 行首图标列（D11 按类型：▢终端 ✎编辑 ⌕查阅；名称起于第 2 列=⎿ 悬挂列） */}
         <Box minWidth={INDENT.icon}>
@@ -114,7 +116,7 @@ export function ToolLine({ tool, mode }: ToolLineProps): ReactElement {
                 </Text>
               ) : null
               return (
-                <Box marginTop={GAP.block / 2}>
+                <Box>
                   <Box minWidth={INDENT.gutter}>
                     <Text dimColor>{'  ⎿  '}</Text>
                   </Box>
@@ -149,7 +151,7 @@ export function ToolLine({ tool, mode }: ToolLineProps): ReactElement {
               )
             })()
           ) : (
-            <Box marginTop={GAP.block / 2}>
+            <Box>
               <Box minWidth={INDENT.gutter}>
                 <Text dimColor>{'  ⎿  '}</Text>
               </Box>

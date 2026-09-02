@@ -47,3 +47,27 @@ describe('活动流 B2：ThinkingLine 消化链', () => {
     }
   })
 })
+
+
+describe('审查器附注卡拆分（session 拼接的合成指令不冒充用户）', () => {
+  const CARD = '[审查器附注（glm-5.3 对近期任务轨迹的纠偏摘要，自动生成非用户消息，仅供参考）]' + String.fromCharCode(10) + '卡内容'
+
+  it('拼接形态：用户部分气泡 + 卡片转 review-card 系统行', () => {
+    const items = messagesToCommitted([msg('user', '帮我改A' + String.fromCharCode(10) + String.fromCharCode(10) + CARD)])
+    expect(items.map((i) => i.kind)).toEqual(['user', 'review-card'])
+    expect(items[0]).toMatchObject({ kind: 'user', text: '帮我改A' })
+    expect(items[1]).toMatchObject({ kind: 'review-card' })
+  })
+
+  it('轮内插话整条卡：无用户气泡', () => {
+    const items = messagesToCommitted([msg('user', CARD)])
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ kind: 'review-card' })
+  })
+
+  it('无卡普通消息不受影响', () => {
+    const items = messagesToCommitted([msg('user', '普通输入')])
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ kind: 'user', text: '普通输入' })
+  })
+})

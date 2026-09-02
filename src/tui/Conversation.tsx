@@ -93,6 +93,14 @@ function renderCommitted(item: CommittedItem): ReactNode {
           <Text dimColor>思考 · 持续了 {Math.max(1, Math.round(item.durMs / 1000))} 秒</Text>
         </MessageRow>
       )
+    case 'review-card':
+      // 审查器附注卡（合成指令不冒充用户）——系统提示行（chrome 语义，空槽对齐正文栅格；
+      // 全文在 transcript，Ctrl+T 可回看）
+      return (
+        <MessageRow icon="" dim>
+          <Text dimColor>◎ 审查器附注 · 纠偏摘要 {item.chars} 字（自动生成非用户消息——Ctrl+T 全文）</Text>
+        </MessageRow>
+      )
   }
 }
 

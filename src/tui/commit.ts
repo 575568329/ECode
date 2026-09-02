@@ -13,6 +13,12 @@ import { CONTINUE_PROMPT } from '../core/loop.js'
 import { stripUntrustedAnsi } from './sanitize.js'
 import type { CommittedItem, CommittedToolCall } from './types.js'
 
+/** 审查器附注卡标记（定义处 session.ts:581——格式含全角括号特异性高；此为渲染层识别副本，
+ *  改标记两处同步） */
+const REVIEW_CARD_MARK = '[审查器附注（'
+/** 拼接点（session.ts:1198 双换行拼进 input） */
+const REVIEW_CARD_SEP = '\n\n'
+
 export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
   const messages = lines.filter((l): l is Message => !isBoundary(l) && !isRewind(l) && !isThinking(l))
   // boundary → 压缩标记插入点（key=boundary 前的 Message 数；value=被摘要条数 tailStartIndex）。
@@ -73,14 +79,22 @@ export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
         .filter((b) => b.type === 'text')
         .map((b) => (b as TextBlock).text)
         .join('')
+      // 审查器附注卡（session.ts:581 拼接注入的合成指令）——拆出渲染为系统提示行，
+      // 不冒充用户气泡（CONTINUE_PROMPT 过滤同款语义；拼接点双换行与轮内插话整条两种形态）
+      const splitReviewCard = (t: string): { user: string; card: string | null } => {
+        if (t.startsWith(REVIEW_CARD_MARK)) return { user: '', card: t }
+        const at = t.indexOf(REVIEW_CARD_SEP + REVIEW_CARD_MARK)
+        if (at >= 0) return { user: t.slice(0, at), card: t.slice(at + REVIEW_CARD_SEP.length) }
+        return { user: t, card: null }
+      }
       // max_tokens 自动续写的合成指令（loop CONTINUE_PROMPT）：模型侧需要，UI 不渲染成
       // 用户气泡（审阅 P2：曾以「isMeta 形态」注释虚构机制，实态落盘后在此精确过滤）
       if (text && text !== CONTINUE_PROMPT) {
         flush()
-        // 输入体验批（2026-08-31）：user 文本全文固化（「锁死」——旧 truncateUserText 10 行
-        // 截断会在固化时数据级丢内容且无恢复入口；Static append-only 天然无超屏，
-        // skill 手动展开的数百行也全量固化，动态区 2 行折叠仍由 Conversation 层承担）
-        items.push({ kind: 'user', id: `u${i}`, text })
+        const { user, card } = splitReviewCard(text)
+        // 输入体验批（2026-08-31）：user 文本全文固化（「锁死」；审查卡拆出后用户部分照常气泡）
+        if (user !== '') items.push({ kind: 'user', id: `u${i}`, text: user })
+        if (card !== null) items.push({ kind: 'review-card', id: `rv${i}`, chars: card.length })
       }
       // tool_result 不生成 item（已配对进 tool-group）
     } else if (m.role === 'assistant') {

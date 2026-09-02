@@ -24,7 +24,6 @@ import type { HistoryStore } from '../services/history.js'
 import { resurrectDaemonReg } from '../cli/daemon.js' // tui→cli 反向单点（daemon 拉起逻辑归口；无循环依赖——daemon.ts 不 import tui）
 import { createActive, liveTextOf, toolsOf, type CommittedItem, type ActiveState } from './types.js'
 import { timelineReducer, makeTimelineIdFactory } from '../protocol/timeline.js'
-import { stripUntrustedAnsi } from '../protocol/sanitize.js'
 import { messagesToCommitted } from './commit.js'
 import { expandSkill, type SkillRegistry } from '../services/skill.js'
 import { globalSkillHooks } from '../services/hooks/global.js'
@@ -1627,14 +1626,15 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         // R5（真机实证）：审批挂起期优先显示等待审批——「思考中 1m6s」实际在等用户应答属误导
         if (active.confirm !== null) return `等待审批：${active.confirm.use.name}`
         // 活动流 B4（用户点名「loading 处看到在想什么/在跑什么」）：
-        // thinking 态=最新 live thinking 尾部（D10 tail 滚动感）；tool 态=最新 executing digest（D9）
+        // thinking 态=最新 live thinking 尾部（滚动语义在 ActivityBar 落地——此处保留**换行结构**
+        // 的原文尾部 2000 字，不预截 40 字不抹换行：换行是「新行从头显示」的分段依据，
+        // 用户拍板 2026-09-02）；tool 态=最新 executing digest（D9）
         if (activity.state === 'thinking') {
           for (let i = active.timeline.length - 1; i >= 0; i--) {
             const e = active.timeline[i]
             if (e.kind === 'thinking' && e.endedAt === undefined && e.text !== '') {
               const chars = Array.from(e.text) // R2/P2-4：按码点切（UTF-16 slice 可切半个 emoji）
-              const tail = chars.length > 40 ? chars.slice(chars.length - 40).join('') : e.text
-              return `${stripUntrustedAnsi(tail).replace(/\s+/g, ' ').trim()}…`
+              return chars.length > 2000 ? chars.slice(chars.length - 2000).join('') : e.text
             }
           }
           return undefined

@@ -57,7 +57,7 @@ import { RewindPanel } from './RewindPanel.js'
 import { SandboxPanel } from './SandboxPanel.js'
 import { ConfigPanel, type ConfigItem } from './ConfigPanel.js'
 import { saveConfigKey } from '../services/configFs.js'
-import { nextSandboxMode, type SandboxMode } from '../services/sandbox.js'
+import { nextSandboxMode, SANDBOX_MODES, type SandboxMode } from '../services/sandbox.js'
 import type { SubagentStatus } from '../services/subagent.js'
 import { SubagentBar } from './SubagentBar.js'
 import { TasksBar } from './TasksBar.js'
@@ -162,6 +162,8 @@ function generalConfigItems(config: import('../services/config.js').Config): Con
     { key: 'maxIterations', label: 'maxIterations（每轮最大迭代）', value: String(config.maxIterations), options: ['20', '50', '100', '200'], kind: 'enum' },
     { key: 'autoCommit', label: 'autoCommit（编辑轮末自动 git 提交）', value: String(config.autoCommit === true), options: ['false', 'true'], kind: 'toggle' },
     { key: 'webSearch.provider', label: 'webSearch.provider（搜索引擎）', value: config.webSearch?.provider ?? 'bing', options: ['bing', 'zhipu'], kind: 'enum' },
+    // 默认沙箱档：启动即生效（宿主构造取它——daemon 重拉/新会话都回此档），会话内 Tab 临时切换不落盘
+    { key: 'sandbox.defaultMode', label: 'sandbox.defaultMode（启动默认沙箱档）', value: config.sandbox?.defaultMode ?? 'default', options: [...SANDBOX_MODES], kind: 'enum' },
     // F-25（功能测试批）：文案对齐 M9 实际语义——空/缺省=关闭（不自动探测，防 npm-scripts RCE 链），改值走原始 config
     { key: 'lintCommand', label: 'lintCommand（空=关闭，改值开原始 config）', value: config.lintCommand ?? '', kind: 'readonly' },
   ]
@@ -288,6 +290,24 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const applySandboxMode = (mode: SandboxMode): void => {
     sandboxModeRef.current = mode
     setSandboxMode(mode)
+  }
+  /** 档位权威在宿主（M12-B3）——拉宿主当前档对齐本地显示。失同步场景：daemon 失联重拉后
+   *  HostSession 重建、档位静默回 config 默认，而本地 useState 仍显示用户切过的档——
+   *  「显示 read-only 实际 default 全放行」的假安全；反向（TUI 重启附着活 daemon、宿主保留
+   *  full-access 而本地显示 default）同病。embedded 形态宿主与 useState 同源构造，免拉。 */
+  const syncSandboxFromHost = (): void => {
+    const h = hostRef.current
+    if (h === null) return
+    void h
+      .send({ op: 'sandbox/get' })
+      .then((r) => {
+        if (!r.ok) return
+        const mode = (r.value as { mode?: unknown } | undefined)?.mode
+        if (typeof mode === 'string' && SANDBOX_MODES.includes(mode as SandboxMode)) {
+          applySandboxMode(mode as SandboxMode)
+        }
+      })
+      .catch(() => {})
   }
 
   const [committed, setCommittedState] = useState<CommittedItem[]>([])
@@ -1275,8 +1295,29 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     // session/new 分支与 transcript 读面都以它为准，不再碰已死的后台
     attachedSidRef.current = fbDeps.history.currentSessionId() || sid || attachedSidRef.current
     localHost.subscribe((ev) => hostEventHandlerRef.current(ev))
+    // 降级宿主是全新实例（档位回 config 默认）——重放客户端当前档保持约束连续，方向与
+    // syncSandboxFromHost 相反（此处客户端档才是用户意图）。full-access 提档走宿主 Broker
+    // 审批卡（降级窗口后重新提权须再确认，防静默提权）；拒绝/失败则显示回落 default 对齐真档
+    const degradeMode = sandboxModeRef.current
+    if (degradeMode !== 'default') {
+      void localHost.send({ op: 'sandbox/set', mode: degradeMode }).then((r) => {
+        if (!r.ok) applySandboxMode('default')
+      })
+    }
     // 审阅 P2：直供镜像（走 pullTranscript 会打向刚 dispose 的旧闭包 transport——死链路）
     syncCommitted(diskLines.length > 0 ? diskLines : messagesRef.current)
+    // 轮中降级收场（G3：真机「搜题平台堵死」根因——轮跑在旧宿主里，turn/completed 永不到，
+    // 不收场则 running 恒真、后续输入全进插话队列=表面活着实际全堵）：中断语义收轮 + 时间线
+    // 封口保留已产出 + 排队插话退回提示（本地宿主队列是空的，旧队列永不投递）
+    if (runningRef.current) {
+      runningRef.current = false
+      setRunning(false)
+      setActive((a) => ({ ...a, streaming: false, timeline: a.timeline.map((e) => (e.kind === 'text' && e.live ? { ...e, live: false } : e)) }))
+      if (queuedInterjects.length > 0) {
+        setSystemMsgs([`⚠ 排队的 ${queuedInterjects.length} 条消息已退回（旧队列随后台失效）——请重新发送`], 'warn')
+        setQueuedInterjects([])
+      }
+    }
     // 安全席 P1：同 id 双写警示——降级存活期间他端（手机/飞书/新 daemon）打开同会话会交错落盘
     setSystemMsgs(['⚠ 后台服务不可达——已切换本地模式续聊（同 id 续写；期间请勿在其他端打开本会话，重启 ecode 回后台）'], 'warn')
     return 'local'
@@ -1298,6 +1339,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           // 审阅 P2：找回失败（会话被归档/删除）不静默——上下文为空续聊比"已找回"假话诚实
           else setSystemMsgs(['⚠ 后台已重连，但会话找回失败——续聊上下文可能为空，可 /history 重选'], 'warn')
         }
+        // daemon 重拉=宿主必然重建（档位静默回 config 默认）——无论会话找回成败都拉宿主
+        // 真档对齐显示，防「显示 read-only 实际 default」假安全（用户档位记忆随旧宿主死了）
+        syncSandboxFromHost()
         setSystemMsgs(['✓ 后台服务已重连（会话已找回）'])
         return 'reattached'
       }
@@ -1343,13 +1387,47 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const [daemonState, setDaemonState] = useState<'open' | 'connecting' | 'backoff' | undefined>(
     attachedHost !== undefined ? 'open' : undefined,
   )
+  // G3 轮中失联自愈（真机「搜题平台堵死」根因修复）：rescue 链原只挂命令发送路径——轮执行中
+  // daemon 死亡时事件流断、轮恒 running、输入全进插话队列=永久堵死。此处补触发面：
+  // backoff 持续 8s 且轮运行中 → 主动 rescueDaemon（重拉失败自动本地降级+轮收场）。
+  // ref 桥防 stale closure（rescueDaemon 每渲染重建）
+  const rescueRef = useRef<() => Promise<'reattached' | 'local' | 'dead'>>(() => Promise.resolve('dead'))
+  rescueRef.current = rescueDaemon
   useEffect(() => {
     if (attachedHost === undefined) return
     // 每 tick 读 hostRef 当前宿主（自愈降级换宿主后无 daemonState → 顶栏段自然隐藏）
-    const timer = setInterval(() => setDaemonState((hostRef.current as TuiHost | null)?.daemonState?.()), 2000)
+    // G3：连续 backoff tick 计数（2s/tick × 4 = 8s 窗口——给 daemon 短暂重启留余量）
+    let backoffTicks = 0
+    let rescuing = false
+    const timer = setInterval(() => {
+      const st = (hostRef.current as TuiHost | null)?.daemonState?.()
+      setDaemonState(st)
+      if (st === 'backoff') {
+        backoffTicks += 1
+        // 轮运行中 + 持续失联 + 未在自愈 → 主动 rescue（命令路径外的事件流路径触发）
+        if (backoffTicks >= 4 && runningRef.current && !rescuing) {
+          rescuing = true
+          deps.logger.warn('daemon', 'midturn_rescue', {})
+          void rescueRef.current().finally(() => {
+            rescuing = false
+            backoffTicks = 0
+          })
+        }
+      } else {
+        backoffTicks = 0
+      }
+    }, 2000)
     timer.unref?.()
     return () => clearInterval(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（host 稳定）
+  }, [])
+
+  // 附着启动即拉宿主档位（TUI 重启附着活 daemon：宿主保留旧档而本地 useState 回默认——
+  // 反向失同步，full-access 尤其危险：显示 default 有确认兜底，实际全放行）
+  useEffect(() => {
+    if (attachedHost === undefined) return
+    syncSandboxFromHost()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- attach 期一次
   }, [])
 
   // T 线 T2：宿主 askSelect 可答帧（.mcp.json 批准门等）的协议选项卡态

@@ -78,14 +78,18 @@ function ActiveSpinner({ state, text, detail, turnStartedAt }: { state: Activity
     turnStartedAt !== undefined && (state === 'thinking' || state === 'tool' || state === 'retry')
       ? ` · ${formatElapsed(Date.now() - turnStartedAt)}`
       : ''
-  const detailText = detail !== undefined && detail !== '' ? ` ${stripUntrustedAnsi(detail)}` : ''
-  // 整行单物理行：spinner 1 + 空格 1 + base + detail + elapsed，clip 到终端宽
+  // 用户拍板（2026-09-02 真机）：摘要放行末且灰色——主文案+计时完整优先，剩余宽度给摘要
+  //（超宽裁摘要，主行永不折）；整行恒单物理行（spinner 1+空格 1+主行+摘要 ≤ columns）
   const columns = typeof process.stdout.columns === 'number' && process.stdout.columns > 0 ? process.stdout.columns : 80
-  const line = clipLine(`${base}${detailText}${elapsed}`, columns - 3)
+  const mainLine = `${base}${elapsed}`
+  const cleanDetail = detail !== undefined && detail !== '' ? stripUntrustedAnsi(detail).replace(/\s+/g, ' ').trim() : ''
+  const detailRoom = columns - 3 - stringWidth(mainLine)
+  const detailLine = cleanDetail !== '' && detailRoom > 4 ? ` ${clipLine(cleanDetail, detailRoom - 1)}` : ''
   return (
     <Box>
       <Text color={color}>{spinner}</Text>
-      <Text> {line}</Text>
+      <Text> {mainLine}</Text>
+      {detailLine !== '' && <Text dimColor>{detailLine}</Text>}
     </Box>
   )
 }

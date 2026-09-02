@@ -149,6 +149,29 @@ describe('2026-09-02 自愈链：拉起锁与 resurrectDaemonReg', () => {
     }
   }, 10_000)
 
+  it('resurrectDaemonReg：入口验活命中（SSE 抖动≠死亡）→ 不碰锁不 spawn 直接复用旧 reg', async () => {
+    // 旧 daemon 其实活着：pid=本进程（活）+ 真 health 四验过。入口短路返回旧 reg，
+    // 全程 LOCK 文件不出现（证明没走拉起/轮询路径）——R6 审阅挂账补录的回归锁。
+    const realVersion = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version as string
+    const events: string[] = []
+    const logger = { info: (_c: string, e: string) => events.push(e), warn: () => {} }
+    const health = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, id: 'i4', version: realVersion }))
+    })
+    await new Promise<void>((r) => health.listen(12402, '127.0.0.1', r))
+    writeServerRegAtomic({ id: 'i4', port: 12402, token: 'tk4', pid: process.pid, version: realVersion, name: '活体' })
+    try {
+      const reg = await resurrectDaemonReg(logger)
+      expect(reg).toMatchObject({ id: 'i4', port: 12402, name: '活体' })
+      expect(fs.existsSync(LOCK_PATH)).toBe(false) // 入口验活短路：锁从未创建
+      expect(events).toContain('resurrect_skipped_alive')
+    } finally {
+      health.close()
+      fs.rmSync(REG_PATH, { force: true })
+    }
+  }, 10_000)
+
   afterAll(() => {
     setDaemonHomeForTest(null) // 复位（防将来 isolate:false 跨文件泄漏）
   })

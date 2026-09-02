@@ -196,6 +196,18 @@ export async function resurrectDaemonReg(logger: DaemonLogger): Promise<ServerRe
   } catch {
     /* 无墓碑/损坏=正常路径 */
   }
+  // 入口验活（R6 审阅挂账 2026-09-02 补录）：走到 resurrect 只说明 TUI 侧失联（SSE 断/
+  // 超时/背压），不等于 daemon 死亡——现有注册四验通过即旧 daemon 还活着，直接返回旧 reg
+  // 让调用方 reattach 同一实例，绝不 spawn 第二个 serve（防脑裂/端口互踩/15s 白等）。
+  try {
+    const alive = await verifyReg(readServerReg(), logger)
+    if (alive !== null) {
+      logger.info('daemon', 'resurrect_skipped_alive', { pid: alive.reg.pid, port: alive.reg.port })
+      return alive.reg
+    }
+  } catch {
+    /* 注册文件损坏/读取异常=按死亡路径走重拉 */
+  }
   const haveLock = acquireSpawnLock()
   try {
     if (haveLock) {

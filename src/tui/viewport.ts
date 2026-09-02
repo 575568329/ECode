@@ -123,8 +123,12 @@ export function allocateDynamic(
   const STREAM_MIN = 4 // 流式区保底（tail 折叠天然弹性，是余量的缓冲垫）
   const condLines =
     (conditions.tasksBar === true ? 3 : 0) + (conditions.subagentBar === true ? 3 : 0) + todoLines + queuedLines
-  // 退化线：保住最小可用内容（1 组 4 行 + stream 4 行）= CHROME 5 + 输入 8 + 8
-  if (budget < 21 + condLines) return { degraded: true, streamMaxLines: 0, toolGroupCap: 0, timelineLines: 0 }
+  // 退化线：保住最小可用内容（1 组 4 行 + stream 4 行）= CHROME 5 + 输入 8 + 8。
+  // G+ 修复（真机回归：工具/时间线全不显示）——退化线**不含条件段**：条件段（todo/任务条）
+  // 挤占由下方 content 收缩自然吸收（timelineLines 变小），而非把整个时间线判死——
+  // 30 行终端+todo 面板（condLines=8）曾被抬到 29 触发退化=「啥都不显示」
+  if (budget < 21) return { degraded: true, streamMaxLines: 0, toolGroupCap: 0, timelineLines: 0 }
+  void condLines
   const content = Math.max(4, budget - CHROME_RESERVE - USER_INPUT_LINES)
   const toolGroupCap = Math.max(1, Math.min(6, Math.floor((content - STREAM_MIN) / 4)))
   const streamMaxLines = Math.max(STREAM_MIN, content - toolGroupCap * 4)
@@ -156,12 +160,15 @@ export interface TimelineEntryShape {
 }
 
 /** 单条目实占单价（行）——v1.7 渲染审阅 P0-1：副作用 diff 展开块含附属行（标题 1+marker 1） */
-function entryCost(e: TimelineEntryShape, ctx: { expandCap: number; liveMaxLines: number }): number {
+function entryCost(e: TimelineEntryShape, ctx: { expandCap: number; liveMaxLines: number; cap: number }): number {
   // R2/P0-2：margin 级联入账——条目经 MessageRow（marginTop=1）或 ToolLine 输出块
   // （marginTop=GAP.block/2，Ink 渲染 0.5 与 1 同为 1 空行）每条目 +1
   if (e.kind === 'text') {
-    // live=灰字折叠窗（+margin 1+折叠提示行 1）；终态段=降级行 1+margin 1（最新段另用估行）
-    return e.live === true ? ctx.liveMaxLines + 2 : 2
+    // live=灰字折叠窗（+margin 1+折叠提示行 1）；终态段=降级行 1+margin 1（最新段另用估行）。
+    // G+ 修复（真机回归：工具行全被挤光）——live 显示行数天然弹性（GrayStreaming 折叠窗），
+    // 计价随预算压缩到 cap 的 60%（保底 6），给最新工具条目留可见空间
+    if (e.live === true) return Math.min(ctx.liveMaxLines + 2, Math.max(6, Math.ceil(ctx.cap * 0.6))) + 0
+    return 2
   }
   if (e.kind === 'thinking') return 2 // 行 1 + margin 1
   if (e.tool === undefined) return 1
@@ -192,7 +199,7 @@ export function timelineBudget(rawEntries: readonly TimelineEntryShape[], lines:
   }
   const finalTextEstimate =
     lastFinalTextIdx >= 0 ? Math.ceil(((lastFinalTextChars + width - 1) / width) * 1.3) + 2 : null
-  const ctx = { expandCap: 12, liveMaxLines: Math.max(1, liveMaxLines) }
+  const ctx = { expandCap: 12, liveMaxLines: Math.max(1, liveMaxLines), cap: Math.max(1, Math.floor(lines)) }
   const cap = Math.max(1, Math.floor(lines))
   // R2/P0-2：折叠摘要行恒预留 2（margin 1+行 1；无折叠时并入余量不渲染）
   let used = 2

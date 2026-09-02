@@ -19,6 +19,8 @@ interface OpenaiChunk {
   choices?: Array<{
     delta?: {
       content?: string | null
+      /** 智谱 GLM 思考流（真机实证：thinking:{type:'enabled'} 时思考走此字段，先于 content） */
+      reasoning_content?: string | null
       tool_calls?: Array<{ index: number; id?: string; type?: string; function?: { name?: string; arguments?: string } }>
     }
     finish_reason?: string | null
@@ -42,12 +44,14 @@ function mapOpenaiStop(r: string): StopReason {
   }
 }
 
-/** thinking 枚举 → OpenAI reasoning_effort（D9/P0-5）。
- *  端点行为差异（P1-8）：OpenAI 官方 o 系列（o1/o3/o4-mini）支持生效；DeepSeek 等第三方端点通常忽略未知参数；
- *  OpenAI 官方非推理模型（gpt-4o 等）对未知顶层参数可能 400。若此类模型遇 400，config 设 thinking=off。 */
+/** thinking 枚举 → 思考开关参数（真机实证修正 2026-09-02）。
+ *  智谱 GLM（open.bigmodel.cn）：`thinking: {type:'enabled'}` 生效——`reasoning_effort` 被静默
+ *  忽略（思考不启用，抓流实证 476 块 reasoning_content vs 仅 24 块 content 对照）；思考强度
+ *  档位（low/medium/high）端点无对应参数，统一 enabled。
+ *  OpenAI 官方 o 系的 reasoning_effort 兼容挂账（多端点分发按需再加——当前唯一在册端点为智谱）。 */
 export function thinkingToOpenai(thinking?: ThinkingLevel): Record<string, unknown> {
   if (!thinking || thinking === 'off') return {} // 不传 = 模型默认
-  return { reasoning_effort: thinking } // 'low' | 'medium' | 'high'
+  return { thinking: { type: 'enabled' } }
 }
 
 /** 有状态翻译器：累积 tool_calls（按 index），finish_reason='tool_calls' 时发 tool_use_end。 */
@@ -61,6 +65,16 @@ class OpenaiTranslator {
   private readonly tools = new Map<number, { id: string; name: string; started: boolean }>()
   /** 已发 tool_use_end 的工具 id（P2-9：flush 补发 started 未 end 的，防 length 截断丢工具） */
   private readonly ended = new Set<string>()
+  /** 思考块开合（OpenAI 流无 block 概念：reasoning_content 先行、content/tool 到达即终——blockIndex 恒 0） */
+  private thinkingOpen = false
+
+  /** 思考块封口（content/tool_calls/finish 任一到达时——对应 Anthropic content_block_stop 语义） */
+  private closeThinking(out: Delta[]): void {
+    if (this.thinkingOpen) {
+      this.thinkingOpen = false
+      out.push({ type: 'thinking_end', blockIndex: 0 })
+    }
+  }
 
   push(chunk: OpenaiChunk): Delta[] {
     const out: Delta[] = []
@@ -85,10 +99,16 @@ class OpenaiTranslator {
     if (!choice) return out
 
     const delta = choice.delta
+    if (delta?.reasoning_content) {
+      if (!this.thinkingOpen) this.thinkingOpen = true
+      out.push({ type: 'thinking', blockIndex: 0, text: delta.reasoning_content })
+    }
     if (delta?.content) {
+      this.closeThinking(out)
       out.push({ type: 'text', text: delta.content })
     }
     if (delta?.tool_calls) {
+      this.closeThinking(out)
       for (const tc of delta.tool_calls) {
         const idx = tc.index
         let entry = this.tools.get(idx)
@@ -109,6 +129,7 @@ class OpenaiTranslator {
       }
     }
     if (choice.finish_reason) {
+      this.closeThinking(out)
       this.stopReason = mapOpenaiStop(choice.finish_reason)
       // finish_reason='tool_calls' → 所有活跃 tool 发 end（loop 侧解析 JSON 调用工具）
       if (choice.finish_reason === 'tool_calls') {

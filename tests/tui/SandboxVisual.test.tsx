@@ -18,9 +18,9 @@ describe('C2 sandboxArrows（档位箭头，2026-09-02 精简批回调：箭头+
   it('accept-edits ⏵⏵ edits', () => {
     expect(sandboxArrows('accept-edits')).toBe('⏵⏵ edits')
   })
-  it('workspace-write ⏵⏵ write / full-access ⏵⏵⏵ / read-only ⛔ read-only', () => {
+  it('workspace-write ⏵⏵ write / full-access 全词 / read-only ⛔ read-only', () => {
     expect(sandboxArrows('workspace-write')).toBe('⏵⏵ write')
-    expect(sandboxArrows('full-access')).toBe('⏵⏵⏵')
+    expect(sandboxArrows('full-access')).toBe('full-access')
     expect(sandboxArrows('read-only')).toBe('⛔ read-only')
   })
   it('StatusBar 渲染：accept-edits 显示箭头短词段', () => {
@@ -30,12 +30,12 @@ describe('C2 sandboxArrows（档位箭头，2026-09-02 精简批回调：箭头+
     expect(lastFrame() ?? '').toContain('⏵⏵ edits')
     expect(lastFrame() ?? '').not.toContain('accept-edits')
   })
-  it('StatusBar 渲染：full-access 危险色仍带 ⚠ + 箭头', () => {
+  it('StatusBar 渲染：full-access 危险色 ⚠ + 全词（⚠ 后空格，2026-09-02 用户回调）', () => {
     const { lastFrame } = render(
       React.createElement(StatusBar, { model: 'm', sandbox: 'full-access', sandboxDanger: true }),
     )
-    expect(lastFrame() ?? '').toContain('⚠')
-    expect(lastFrame() ?? '').toContain('⏵⏵⏵')
+    expect(lastFrame() ?? '').toContain('⚠ full-access')
+    expect(lastFrame() ?? '').not.toContain('⏵⏵⏵')
   })
   it('StatusBar 渲染：default 不显示沙箱段（现状回归）', () => {
     const { lastFrame } = render(React.createElement(StatusBar, { model: 'm' }))

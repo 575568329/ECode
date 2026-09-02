@@ -56,8 +56,8 @@ export function formatMem(bytes: number): string {
   return `${v >= 10 ? Math.round(v) : Number(v.toFixed(1))}G`
 }
 
-/** C2 档位可视化（CC ⏵⏵ 式）：箭头数递进表档位 + 短词表策略（2026-09-02 精简批定稿：
- *  去掉重复的 mode 全名，短词保留可读——用户反馈「⏵⏵e 看不懂」回调） */
+/** C2 档位可视化（CC ⏵⏵ 式）：箭头/图标 + 短词表策略（2026-09-02 两次用户回调：
+ *  「⏵⏵e 看不懂」→ 箭头配短词；「⚠⏵⏵⏵ 别人也看不懂」→ full-access 弃箭头用 ⚠ 全词） */
 export function sandboxArrows(mode: string): string {
   switch (mode) {
     case 'accept-edits':
@@ -65,7 +65,7 @@ export function sandboxArrows(mode: string): string {
     case 'workspace-write':
       return '⏵⏵ write'
     case 'full-access':
-      return '⏵⏵⏵'
+      return 'full-access'
     case 'read-only':
       return '⛔ read-only'
     default:
@@ -156,7 +156,7 @@ export function StatusBar({
     segments.push({ key: 'tokens', text: t, node: <Text dimColor>{t}</Text> })
   }
   if (arrows !== '') {
-    const t = `${sandboxDanger ? '⚠' : ''}${arrows}`
+    const t = `${sandboxDanger ? '⚠ ' : ''}${arrows}`
     segments.push({
       key: 'sandbox',
       text: t,

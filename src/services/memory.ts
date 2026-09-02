@@ -26,8 +26,8 @@ export interface LoadMemoryOpts {
  * 读两级 MEMORY.md（用户级 ~/.ecode/memory/MEMORY.md 先、项目级 .ecode/memory/MEMORY.md 后）。
  * 只注入索引文件全文；缺文件/缺目录静默（无 memory 是常态）。
  */
-export function loadMemoryIndexes(opts: LoadMemoryOpts = {}): { level: 'user' | 'project'; content: string; truncated?: boolean }[] {
-  const out: { level: 'user' | 'project'; content: string; truncated?: boolean }[] = []
+export function loadMemoryIndexes(opts: LoadMemoryOpts = {}): { level: 'user' | 'project'; dir: string; content: string; truncated?: boolean }[] {
+  const out: { level: 'user' | 'project'; dir: string; content: string; truncated?: boolean }[] = []
   const cwd = opts.cwd ?? process.cwd()
   const maxBytes = opts.maxBytes ?? MAX_MEMORY_BYTES
   // 项目级 findUp 首个命中（与指令注入同语义——用户自建多级目录时取最近的，
@@ -44,6 +44,7 @@ export function loadMemoryIndexes(opts: LoadMemoryOpts = {}): { level: 'user' | 
     if (trimmed === '') continue
     out.push({
       level,
+      dir: path.dirname(file).split(path.sep).join('/'),
       ...(r.truncated ? { truncated: true } : {}),
       content: r.truncated ? `${trimmed}\n[已截断：原文超出 ${maxBytes} 上限]` : trimmed,
     })
@@ -51,13 +52,20 @@ export function loadMemoryIndexes(opts: LoadMemoryOpts = {}): { level: 'user' | 
   return out
 }
 
-/** 拼注入段（含行为指引——模型看到索引知道该按需读 topic 文件）。 */
-export function renderMemory(indexes: { level: 'user' | 'project'; content: string }[]): string {
+/**
+ * 拼注入段（含行为指引——模型看到索引知道该按需读 topic 文件）。
+ * 每级注入 topic 文件所在绝对目录（2026-09-02 真机实证：只说"同目录"不说在哪，
+ * 模型连猜 4 种路径形态——项目相对回溯/裸相对/Git Bash 风格 /c/...——浪费 4 轮迭代+审批）。
+ */
+export function renderMemory(indexes: { level: 'user' | 'project'; dir?: string; content: string }[]): string {
   if (indexes.length === 0) return ''
-  const parts = indexes.map((m) => `【${m.level === 'user' ? '用户级偏好' : '项目级记忆'}】\n${m.content}`)
+  const parts = indexes.map((m) => {
+    const where = m.dir !== undefined && m.dir !== '' ? `（文件目录 ${m.dir}/）` : ''
+    return `【${m.level === 'user' ? '用户级偏好' : '项目级记忆'}】${where}\n${m.content}`
+  })
   return [
     '--- 记忆索引 ---',
-    '以下是长期记忆的索引（主题文件在同目录，需要细节时用 read_file 读取对应文件；发现值得长期记住的用户偏好/项目约定时，按同格式追加进对应 MEMORY.md 并把细节写入主题文件）。',
+    '以下是长期记忆的索引（主题文件在各级标注的目录里，需要细节时用 read_file 以「目录/文件名」的绝对路径读取，不要猜路径；发现值得长期记住的用户偏好/项目约定时，按同格式追加进对应 MEMORY.md 并把细节写入主题文件）。',
     ...parts,
   ].join('\n')
 }

@@ -39,6 +39,14 @@ describe('loadMemoryIndexes', () => {
     const idx = loadMemoryIndexes({ cwd: tmpRoot, userFile })
     expect(idx[0]?.content).toContain('[已截断')
   })
+
+  it('dir 字段=绝对目录且正斜杠（2026-09-02：模型猜路径 4 轮的根治位）', async () => {
+    const userFile = await writeMem('user/MEMORY.md', '- [全局偏好](a.md) — 用中文')
+    await writeMem('proj/.ecode/memory/MEMORY.md', '- [测试](t.md) — vitest')
+    const idx = loadMemoryIndexes({ cwd: path.join(tmpRoot, 'proj'), userFile })
+    expect(idx[0]?.dir).toBe(path.dirname(userFile).split(path.sep).join('/'))
+    expect(idx[1]?.dir).toBe(path.join(tmpRoot, 'proj', '.ecode', 'memory').split(path.sep).join('/'))
+  })
 })
 
 describe('renderMemory', () => {
@@ -47,11 +55,21 @@ describe('renderMemory', () => {
   })
 
   it('含行为指引（按需读 topic 文件 + 维护指引）', () => {
-    const out = renderMemory([{ level: 'project', content: '- [测试](t.md) — vitest' }])
+    const out = renderMemory([{ level: 'project', dir: 'D:/proj/.ecode/memory', content: '- [测试](t.md) — vitest' }])
     expect(out).toContain('--- 记忆索引 ---')
     expect(out).toContain('read_file')
     expect(out).toContain('项目级记忆')
     expect(out).toContain('vitest')
+    // 2026-09-02：绝对目录必须注入 + 明示不要猜路径（真机模型连猜 4 种路径形态浪费 4 轮）
+    expect(out).toContain('文件目录 D:/proj/.ecode/memory/')
+    expect(out).toContain('绝对路径')
+    expect(out).toContain('不要猜路径')
+  })
+
+  it('无 dir 的旧形状 → 不带目录标注（接口可选，向后兼容）', () => {
+    const out = renderMemory([{ level: 'user', content: '- [偏好](a.md) — 用中文' }])
+    expect(out).toContain('用户级偏好')
+    expect(out).not.toContain('文件目录')
   })
 })
 

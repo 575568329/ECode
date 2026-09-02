@@ -15,10 +15,13 @@ import path from 'node:path'
 import os from 'node:os'
 
 const MODELS_URL = 'https://models.opencode.ai/api.json'
-const CACHE_DIR = path.join(os.homedir(), '.ecode', 'cache')
-const CACHE_PATH = path.join(CACHE_DIR, 'models.json')
+const CACHE_PATH = path.join(os.homedir(), '.ecode', 'cache', 'models.json')
 const CACHE_TTL_MS = 5 * 60 * 1000
-const FETCH_TIMEOUT_MS = 10_000
+/** 拉取超时 3s：本调用在 loop 每轮 onBeforeRequest 热路径上（2026-09-02 真机实证
+ *  models.dev 时通时断，10s 超时让会话连续 3 轮每轮白等 10s——宁可降级也不拖迭代）。 */
+const FETCH_TIMEOUT_MS = 3_000
+/** 拉取负缓存：失败/刚试过 → 60s 内不再发网络请求（防每轮重付超时） */
+const FETCH_BACKOFF_MS = 60 * 1000
 const SAFE_DEFAULT = 32_000
 
 /** 内置兜底表（离线/拉取失败用）。值取自 models.dev 实测（GLM-4.6/5 = 204800 = 200×1024）。 */
@@ -47,6 +50,9 @@ export interface ModelsDb {
 declare const ECODE_MODELS_SNAPSHOT: ModelsDb | undefined
 
 let memoryCache: { db: ModelsDb; ts: number } | null = null
+/** 上次拉取尝试时刻（成功失败都记，负缓存判定）；inflightRefresh 后台刷新去重 */
+let lastFetchAttempt = 0
+let inflightRefresh: Promise<void> | null = null
 
 /**
  * 解析模型的 context window（四级 fallback）。
@@ -114,46 +120,90 @@ export function matchFallback(model: string): number | undefined {
   return undefined
 }
 
-/** 加载 models.db：内存缓存 → 磁盘缓存（5min TTL）→ 联网拉取。全失败返回 null（走内置表）。 */
-export async function loadModelsDb(): Promise<ModelsDb | null> {
-  if (memoryCache && Date.now() - memoryCache.ts < CACHE_TTL_MS) return memoryCache.db
+/**
+ * 加载 models.db：内存缓存 → 磁盘缓存 → 联网拉取。全失败返回 null（走内置表）。
+ *
+ * 2026-09-02 热路径整改（真机实证：models.dev 拉取超时让会话连续 3 轮每轮卡 10s）：
+ * - stale-while-revalidate——有过期旧值（内存/磁盘）立即先行返回，新鲜度后台刷新追进，
+ *   loop 每轮 onBeforeRequest 永不为窗口解析付网络等待；
+ * - 拉取负缓存（FETCH_BACKOFF_MS）——失败后 60s 内不再重试，防每轮重付超时；
+ * - 仅进程内首次无任何缓存时同步拉取一次（上限 FETCH_TIMEOUT_MS）。
+ */
+export async function loadModelsDb(
+  fetcher: () => Promise<ModelsDb | null> = fetchModelsDb,
+  diskPath: string = CACHE_PATH,
+): Promise<ModelsDb | null> {
+  // 内存新鲜 → 直接返回（热路径第一站，零 IO）
+  if (memoryCache !== null && Date.now() - memoryCache.ts < CACHE_TTL_MS) return memoryCache.db
 
-  const disk = await readDiskCache()
-  if (disk && Date.now() - disk.ts < CACHE_TTL_MS) {
-    memoryCache = disk
-    syncPricingFromModelsDb(disk.db) // M8 债 #6：磁盘缓存命中同样同步（主路径——二次启动必走此分支）
-    return disk.db
+  // 内存无值（进程首调用）才碰磁盘；过期旧值驻内存（后续轮次零磁盘读零解析）
+  if (memoryCache === null) {
+    const disk = await readDiskCache(diskPath)
+    if (disk !== null && Date.now() - disk.ts < CACHE_TTL_MS) {
+      memoryCache = disk
+      syncPricingFromModelsDb(disk.db) // M8 债 #6：磁盘缓存命中同样同步（主路径——二次启动必走此分支）
+      return disk.db
+    }
+    if (disk !== null) memoryCache = disk
   }
 
-  // 缓存过期/不存在 → 联网拉取
-  const fresh = await fetchModelsDb()
-  if (fresh) {
-    memoryCache = { db: fresh, ts: Date.now() }
-    await writeDiskCache(fresh)
-    syncPricingFromModelsDb(fresh) // M8 债 #6：cost 字段同步进定价动态层
-    return fresh
+  // 有旧值（哪怕过期）→ 先行返回，后台刷新新鲜度
+  if (memoryCache !== null) {
+    refreshInBackground(fetcher, diskPath)
+    return memoryCache.db
   }
 
-  // 联网失败：过期的磁盘缓存兜底（总比没有强）
-  if (disk) {
-    memoryCache = disk
-    syncPricingFromModelsDb(disk.db)
-    return disk.db
+  // 进程内首次且无任何缓存：同步拉取一次；失败进负缓存 60s
+  if (fetchAllowed()) {
+    lastFetchAttempt = Date.now()
+    const fresh = await fetcher()
+    if (fresh) {
+      await applyFreshDb(fresh, diskPath)
+      return fresh
+    }
   }
   // 构建期快照（离线 + 首次无缓存）
   if (typeof ECODE_MODELS_SNAPSHOT !== 'undefined') return ECODE_MODELS_SNAPSHOT
   return null
 }
 
+/** 新库三件套：驻内存 + 落盘 + 同步定价（同步拉取与后台刷新共用）。 */
+async function applyFreshDb(db: ModelsDb, diskPath: string): Promise<void> {
+  memoryCache = { db, ts: Date.now() }
+  await writeDiskCache(db, diskPath)
+  syncPricingFromModelsDb(db) // M8 债 #6：cost 字段同步进定价动态层
+}
+
+/** 拉取防抖：距上次尝试不足 backoff → 不发请求（成功后内存缓存新鲜，天然不会走到这）。 */
+function fetchAllowed(): boolean {
+  return Date.now() - lastFetchAttempt >= FETCH_BACKOFF_MS
+}
+
+/** 后台刷新（revalidate 半边）：去重 + 负缓存门控，失败静默（下次过期再试）。 */
+function refreshInBackground(fetcher: () => Promise<ModelsDb | null>, diskPath: string): void {
+  if (inflightRefresh !== null || !fetchAllowed()) return
+  lastFetchAttempt = Date.now()
+  inflightRefresh = fetcher()
+    .then(async (fresh) => {
+      if (fresh !== null) await applyFreshDb(fresh, diskPath)
+    })
+    .catch(() => {})
+    .finally(() => {
+      inflightRefresh = null
+    })
+}
+
 /** 测试用：重置内存缓存（避免跨用例污染）。 */
 export function _resetCacheForTest(): void {
   memoryCache = null
+  lastFetchAttempt = 0
+  inflightRefresh = null
 }
 
-async function readDiskCache(): Promise<{ db: ModelsDb; ts: number } | null> {
-  const stat = await fs.stat(CACHE_PATH).catch(() => null)
+async function readDiskCache(diskPath: string = CACHE_PATH): Promise<{ db: ModelsDb; ts: number } | null> {
+  const stat = await fs.stat(diskPath).catch(() => null)
   if (!stat) return null
-  const text = await fs.readFile(CACHE_PATH, 'utf8').catch(() => null)
+  const text = await fs.readFile(diskPath, 'utf8').catch(() => null)
   if (!text) return null
   try {
     return { db: JSON.parse(text) as ModelsDb, ts: stat.mtimeMs }
@@ -162,11 +212,11 @@ async function readDiskCache(): Promise<{ db: ModelsDb; ts: number } | null> {
   }
 }
 
-async function writeDiskCache(db: ModelsDb): Promise<void> {
-  await fs.mkdir(CACHE_DIR, { recursive: true }).catch(() => {})
-  const tempfile = CACHE_PATH + '.tmp'
+async function writeDiskCache(db: ModelsDb, diskPath: string = CACHE_PATH): Promise<void> {
+  await fs.mkdir(path.dirname(diskPath), { recursive: true }).catch(() => {})
+  const tempfile = diskPath + '.tmp'
   await fs.writeFile(tempfile, JSON.stringify(db), 'utf8').catch(() => {})
-  await fs.rename(tempfile, CACHE_PATH).catch(() => {}) // 原子写（防半截）
+  await fs.rename(tempfile, diskPath).catch(() => {}) // 原子写（防半截）
 }
 
 async function fetchModelsDb(): Promise<ModelsDb | null> {

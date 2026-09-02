@@ -1,5 +1,16 @@
-import { describe, it, expect } from 'vitest'
-import { resolveContextWindow, lookupContext, matchFallback, type ModelsDb } from '../../src/services/contextWindow.js'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import {
+  resolveContextWindow,
+  lookupContext,
+  matchFallback,
+  loadModelsDb,
+  _resetCacheForTest,
+  type ModelsDb,
+} from '../../src/services/contextWindow.js'
 
 // models.dev 实测样本（GLM 系列，context = 200×1024 = 204800；glm-5.2 = 1M）
 const GLM_DB: ModelsDb = {
@@ -109,5 +120,103 @@ describe('resolveContextWindow（四级 fallback）', () => {
     // 默认 dbLoader 会真联网；这里用 config 覆盖短路，不触发联网
     const r = await resolveContextWindow('glm-4.6', 123_456)
     expect(r).toBe(123_456)
+  })
+})
+
+describe('loadModelsDb 热路径（2026-09-02 整改：stale-while-revalidate + 负缓存）', () => {
+  let tmpRoot: string
+  let diskPath: string
+
+  beforeEach(async () => {
+    _resetCacheForTest()
+    tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'ecode-cw-'))
+    diskPath = path.join(tmpRoot, 'models.json')
+  })
+
+  afterEach(async () => {
+    _resetCacheForTest()
+    await rm(tmpRoot, { recursive: true, force: true })
+  })
+
+  /** 写磁盘缓存并回拨 mtime 模拟过期（readDiskCache 以 mtime 为 ts） */
+  async function seedDisk(db: ModelsDb, ageMs: number): Promise<void> {
+    await writeFile(diskPath, JSON.stringify(db), 'utf8')
+    const t = new Date(Date.now() - ageMs)
+    await utimes(diskPath, t, t)
+  }
+
+  /** 等后台刷新链（loader 微任务 + 磁盘写）落地 */
+  const settle = async (ms = 30): Promise<void> => {
+    await new Promise((r) => setTimeout(r, ms))
+  }
+
+  it('磁盘过期 + 联网成功 → 先行返回旧值不等网络，后台刷新后取到新值', async () => {
+    await seedDisk(GLM_DB, 10 * 60 * 1000)
+    const FRESH: ModelsDb = { zhipuai: { models: { 'glm-9': { limit: { context: 123 } } } } }
+    let n = 0
+    const fetcher = async (): Promise<ModelsDb | null> => {
+      n++
+      return FRESH
+    }
+    const first = await loadModelsDb(fetcher, diskPath)
+    expect(lookupContext(first as ModelsDb, 'glm-4.6')).toBe(204800) // 先行旧值
+    await settle()
+    const reread = await loadModelsDb(fetcher, diskPath)
+    expect(lookupContext(reread as ModelsDb, 'glm-9')).toBe(123) // 后台刷新已生效
+    expect(n).toBe(1)
+  })
+
+  it('磁盘过期 + 联网失败 → 立即返回旧值，负缓存 60s 内不重试', async () => {
+    await seedDisk(GLM_DB, 10 * 60 * 1000)
+    // 慢失败 fetcher：若实现退化成同步等网络，首调用会拖满 300ms
+    let n = 0
+    const slowFail = async (): Promise<ModelsDb | null> => {
+      n++
+      await new Promise((r) => setTimeout(r, 300))
+      return null
+    }
+    const t0 = Date.now()
+    const first = await loadModelsDb(slowFail, diskPath)
+    expect(Date.now() - t0).toBeLessThan(250) // 先行返回，不为网络等
+    expect(lookupContext(first as ModelsDb, 'glm-4.6')).toBe(204800)
+    await settle(400) // 后台那次失败落定
+    for (let i = 0; i < 2; i++) {
+      const db = await loadModelsDb(slowFail, diskPath)
+      expect(lookupContext(db as ModelsDb, 'glm-4.6')).toBe(204800)
+    }
+    expect(n).toBe(1) // 负缓存拦掉后续重试（旧行为：每轮重付超时）
+  })
+
+  it('无任何缓存 + 联网失败 → null（走内置表），负缓存内第二次不再发请求', async () => {
+    let n = 0
+    const fail = async (): Promise<ModelsDb | null> => {
+      n++
+      return null
+    }
+    expect(await loadModelsDb(fail, diskPath)).toBeNull()
+    expect(await loadModelsDb(fail, diskPath)).toBeNull()
+    expect(n).toBe(1)
+  })
+
+  it('无缓存 + 联网成功 → 返回新值并落盘', async () => {
+    const db = await loadModelsDb(async () => GLM_DB, diskPath)
+    expect(lookupContext(db as ModelsDb, 'glm-4.6')).toBe(204800)
+    await settle()
+    expect(existsSync(diskPath)).toBe(true)
+  })
+
+  it('内存新鲜 → 不碰磁盘不联网（热路径零 IO）', async () => {
+    await loadModelsDb(async () => GLM_DB, diskPath)
+    await settle()
+    let n = 0
+    const db = await loadModelsDb(
+      async () => {
+        n++
+        return null
+      },
+      path.join(tmpRoot, 'nope.json'),
+    )
+    expect(lookupContext(db as ModelsDb, 'glm-4.6')).toBe(204800)
+    expect(n).toBe(0)
   })
 })

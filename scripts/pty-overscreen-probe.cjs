@@ -117,6 +117,9 @@ const run = async () => {
       ECODE_BASE_URL: `http://127.0.0.1:${server.address().port}`,
       ANTHROPIC_API_KEY: 'dummy-key-for-pty-test',
       ECODE_MODEL: 'mock-model',
+      // T 线后 TUI 会自动附着运行中的 daemon（轮次跑在 daemon 进程=无 mock env → 打真端点烧配额，
+      // 且 END-OF-R 指纹永不到达假失败）——本探针测渲染预算，强制进程内模式
+      ECODE_FORCE_EMBEDDED: '1',
     },
     cols: 100,
     rows: 18,

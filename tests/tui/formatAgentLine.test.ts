@@ -31,7 +31,7 @@ describe('formatAgentLine（子代理 transcript 格式化）', () => {
     expect(out[0]).toContain('src/')
     expect(out[0]).not.toMatch(/^\s*tool_result\s*$/)
   })
-  it('assistant text 块 → ● 正文；tool_use 块 → ⚙ 工具名', () => {
+  it('assistant text 块 → ◆ 正文（3af0e5d 与对话栅格同款）；tool_use 块 → ⚙ 工具名', () => {
     const line = JSON.stringify({
       role: 'assistant',
       content: [
@@ -39,7 +39,7 @@ describe('formatAgentLine（子代理 transcript 格式化）', () => {
         { type: 'tool_use', id: 't9', name: 'grep', input: {} },
       ],
     })
-    expect(formatAgentLine(line, W)).toEqual(['● 结论：一切正常', '  ⚙ grep'])
+    expect(formatAgentLine(line, W)).toEqual(['◆ 结论：一切正常', '  ⚙ grep'])
   })
   it('超长文本 preview 截断 300（物理行化由 subagentSource wrap 层负责）', () => {
     const long = '长'.repeat(300)

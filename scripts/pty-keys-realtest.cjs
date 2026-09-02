@@ -74,6 +74,7 @@ const run = async () => {
       ECODE_BASE_URL: `http://127.0.0.1:${port}`,
       ANTHROPIC_API_KEY: 'dummy-key-for-pty-test',
       ECODE_MODEL: 'mock-model',
+      ECODE_FORCE_EMBEDDED: '1', // T 线后防自动附着运行中 daemon（轮次跑 daemon 进程=无 mock env → 打真端点）
     },
     cols: 110,
     rows: 32,

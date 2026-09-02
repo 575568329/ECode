@@ -200,28 +200,38 @@ const run = async () => {
   tui3.write('\x03')
   await sleep(800)
 
-  // ===== A7 版本不符拒绝附着（预写假版本注册——pid 真活+health 真活由 A4 的 daemon 承担） =====
+  // ===== A7 版本不符拒绝附着（P1-7 后版本以 health.version 为准——伪造注册文件版本已骗不过比对，
+  //       改为假 daemon：/api/health 回 ok+同 id+假 version；reg.pid 借探针自身进程保活） =====
   const h3 = isolatedHome()
-  const goodReg = readReg(h1.tmpHome)
-  if (goodReg !== null && (await healthOk(goodReg.port))) {
-    const forged = { ...goodReg, version: '0.0.0-test' }
-    fs.writeFileSync(path.join(h3.tmpHome, '.ecode', 'server.json'), JSON.stringify(forged), { mode: 0o600 })
-    // home 指向 h3 但 daemon 端口/健康来自 h1 的注册——伪造注册指向同一活 daemon，版本假
+  const fakeDaemon = http.createServer((req, res) => {
+    if (req.url.startsWith('/api/health')) {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, id: 'i-fake', version: '9.9.9-fake', name: '假daemon' }))
+      return
+    }
+    res.writeHead(404).end()
+  })
+  await new Promise((r) => fakeDaemon.listen(0, '127.0.0.1', r))
+  const fakePort = fakeDaemon.address().port
+  fs.writeFileSync(
+    path.join(h3.tmpHome, '.ecode', 'server.json'),
+    JSON.stringify({ port: fakePort, token: 'tk-fake', pid: process.pid, id: 'i-fake', version: '9.9.9-fake', name: '假daemon' }),
+    { mode: 0o600 },
+  )
+  {
     let out4 = ''
     const tui4 = spawnTui({ home: h3.tmpHome, cwd: h3.cwd, mockPort })
     tui4.onData((d) => (out4 += d))
-    await waitFor(() => /输入消息/.test(strip(out4)) || /版本不一致|版本不符/.test(strip(out4)), 20000)
+    await waitFor(() => /输入消息/.test(strip(out4)) || /不一致/.test(strip(out4)), 20000)
     await sleep(1000)
-    const rejected = /不一致|未切换/.test(strip(out4))
-    const noSpawn = readReg(h3.tmpHome) !== null && (readReg(h3.tmpHome)?.version === '0.0.0-test')
+    const rejected = /不一致/.test(strip(out4))
+    const noSpawn = readReg(h3.tmpHome)?.version === '9.9.9-fake'
     check('A7 版本不符拒绝附着+不 spawn（保住跑着的任务）', rejected)
     check('A7b 假注册未被覆盖重写（没有误 spawn 新 daemon）', noSpawn)
     try {
       tui4.kill()
     } catch {}
-  } else {
-    check('A7 版本不符拒绝附着（前置 daemon 存活断言未满足——跳过）', false)
-    check('A7b 假注册未被覆盖重写', false)
+    fakeDaemon.close()
   }
 
   // ===== 清理：停 daemon =====

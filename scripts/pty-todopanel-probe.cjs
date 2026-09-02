@@ -84,10 +84,11 @@ const run = async () => {
   await new Promise((r) => setTimeout(r, 1200))
   const tail = strip(out.slice(m)).split('\n').map((l) => l.replace(/\r/g, '').trimEnd()).filter(Boolean).slice(-14).join('\n')
   const hasPanel = /任务清单/.test(tail) && /1\/3 完成/.test(tail)
-  const hasItems = /\[x\] 读配置模板/.test(tail) && /\[->\] 同步手册/.test(tail) && /\[ \] 回归测试/.test(tail)
+  // 3e7e311（09-01 用户拍板）：[x] 读作失败叉 → ✓（仅换字形不加色）；进行中 ▸ / 待办 ○ 同批
+  const hasItems = /✓ 读配置模板/.test(tail) && /▸ 同步手册/.test(tail) && /○ 回归测试/.test(tail)
   const notInFlow = !/todo/.test(tail.split('任务清单')[0] ?? '') // 清单不再以工具行出现在对话流
   console.log(`${hasPanel ? 'OK ' : 'FAIL'} T3 常驻面板出现（任务清单 1/3 完成）`)
-  console.log(`${hasItems ? 'OK ' : 'FAIL'} T4 逐项 ASCII 状态符渲染`)
+  console.log(`${hasItems ? 'OK ' : 'FAIL'} T4 逐项状态符渲染（✓/▸/○）`)
   console.log('---- 末帧 ----\n' + lastFrame(14))
   console.log(`\n# 结论：${hasPanel && hasItems ? 'TodoPanel 集成实证通过' : '见上方帧排查'}`)
   proc.kill()

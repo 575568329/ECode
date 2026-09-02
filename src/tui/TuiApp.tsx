@@ -358,6 +358,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const tlDepsRef = useRef(makeTimelineIdFactory())
   // G+：delta 16ms 合帧缓冲（timer unmount 清理见 effect）
   const deltaBufRef = useRef<{ text: string; timer: ReturnType<typeof setTimeout> | null }>({ text: '', timer: null })
+  // 批2b（P1-A）：thinking 帧合帧缓冲——原先每 thinking delta 直 setActive（比文本更热：
+  // 不进 16ms 合帧），长思考会话的重渲主源；与 deltaBuf 同款语义（16ms 批量/他帧同步 flush 防乱序）
+  const thinkingBufRef = useRef<{ items: Array<import('../protocol/types.js').ProtocolEvent>; timer: ReturnType<typeof setTimeout> | null }>({ items: [], timer: null })
   // 活动流 B4：轮开始时间（loading 行轮内耗时——busy 翻转记录）
   const turnStartedAtRef = useRef<number | null>(null)
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
@@ -383,12 +386,21 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const [tokens, setTokens] = useState(0)
   // 2026-09-02 用户点名：本进程 RSS 常驻状态栏（孤儿实例堆积 4.8GB 事故后的内存可见性）。
   // 5s 采样——观测泄漏趋势足够，避免高频 setState 整帧重算；口径是 TUI 进程自身
-  // （客户端进程），宿主/子代理内存不在此段
-  const [memBytes, setMemBytes] = useState(() => process.memoryUsage().rss)
+  // （客户端进程），宿主/子代理内存不在此段。
+  // 批2c（P1-A）：同钩采 heapUsed 并合并单 state 单 setState（防两个 5s tick 双份整树重渲）——
+  // 「活对象泄漏 vs 垃圾未收」的判别数据源（单 heapUsed 含未回收垃圾，定性需 /doctor 强制 GC 对照）
+  const [mem, setMem] = useState(() => {
+    const m = process.memoryUsage()
+    return { rss: m.rss, heapUsed: m.heapUsed }
+  })
   useEffect(() => {
-    const timer = setInterval(() => setMemBytes(process.memoryUsage().rss), MEM_SAMPLE_MS)
+    const timer = setInterval(() => {
+      const m = process.memoryUsage()
+      setMem({ rss: m.rss, heapUsed: m.heapUsed })
+    }, MEM_SAMPLE_MS)
     return () => clearInterval(timer)
   }, [])
+  const memBytes = mem.rss
   const [sessionCost, setSessionCost] = useState(0)
   // F-44：上下文占用/窗口（usage 帧 API 真值：占用=本轮 prompt 全量 input+cacheRead；
   // 窗口=宿主 resolveContextWindow 解析缓存）——StatusBar ctx 段显示占用与余量
@@ -631,6 +643,26 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           setActive((a) => ({ ...a, timeline: timelineReducer(a.timeline, { type: 'delta', seq: ev.seq - 1, turnId: (ev as { turnId?: string }).turnId ?? '', text: chunk }, { now: Date.now, nextId: tlDepsRef.current.nextId }) }))
         }
       }
+      // 批2b：任何非 thinking 帧到达先同步 flush thinking 缓冲（同上——thinking 与 delta/item
+      // 的时间线顺序不可倒置；单次 setActive 内逐条归约，中间零渲染）
+      if (ev.type !== 'thinking') {
+        const tbuf = thinkingBufRef.current
+        if (tbuf.timer !== null) {
+          clearTimeout(tbuf.timer)
+          tbuf.timer = null
+        }
+        if (tbuf.items.length > 0) {
+          const items = tbuf.items
+          tbuf.items = []
+          if (!interruptedAtRef.current) {
+            setActive((a) => {
+              let tl = a.timeline
+              for (const it of items) tl = timelineReducer(tl, it, { now: Date.now, nextId: tlDepsRef.current.nextId })
+              return { ...a, timeline: tl }
+            })
+          }
+        }
+      }
       switch (ev.type) {
         case 'delta': {
           // 活动流 B4：净化（stripper）→ 归约；G+ 四件套之四：16ms 合帧（每 token 一次 setState
@@ -653,9 +685,27 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           }
           break
         }
-        case 'thinking':
-          setActive((a) => ({ ...a, timeline: timelineReducer(a.timeline, ev, { now: Date.now, nextId: tlDepsRef.current.nextId }) }))
+        case 'thinking': {
+          // 批2b（P1-A）：thinking 帧并入 16ms 合帧（原先每 delta 直 setActive——不进合帧的
+          // 最热路径；长思考会话重渲主源）。缓冲形态为事件数组：interleaved thinking 的
+          // blockIndex 顺序在 flush 时逐条归约保持；他帧到达时上方同步 flush 防时间线乱序
+          const tbuf = thinkingBufRef.current
+          tbuf.items.push(ev)
+          if (tbuf.timer === null) {
+            tbuf.timer = setTimeout(() => {
+              tbuf.timer = null
+              const items = tbuf.items
+              tbuf.items = []
+              if (items.length === 0 || interruptedAtRef.current) return // 审阅修复同款：中断后残渣不上屏
+              setActive((a) => {
+                let tl = a.timeline
+                for (const it of items) tl = timelineReducer(tl, it, { now: Date.now, nextId: tlDepsRef.current.nextId })
+                return { ...a, timeline: tl }
+              })
+            }, 16)
+          }
           break
+        }
         case 'thinking/ended':
           setActive((a) => ({ ...a, timeline: timelineReducer(a.timeline, ev, { now: Date.now, nextId: tlDepsRef.current.nextId }) }))
           break
@@ -1834,8 +1884,15 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           for (let i = active.timeline.length - 1; i >= 0; i--) {
             const e = active.timeline[i]
             if (e.kind === 'thinking' && e.endedAt === undefined && e.text !== '') {
-              const chars = Array.from(e.text) // R2/P2-4：按码点切（UTF-16 slice 可切半个 emoji）
-              return chars.length > 2000 ? chars.slice(chars.length - 2000).join('') : e.text
+              // 批2b（P1-A）：尾取改字符串 slice——原 Array.from(e.text) 对思考**全文**做码点
+              // 数组化（数万字×每帧几十万元素分配）只为取尾 2000；取 2100 单位再对齐代理对
+              // 边界（低代理位=切在 emoji 半截，右移一位——R2/P2-4 码点语义保持）
+              const CUT = 2100
+              if (e.text.length <= CUT) return e.text
+              let from = e.text.length - CUT
+              const cc = e.text.charCodeAt(from)
+              if (cc >= 0xdc00 && cc <= 0xdfff) from += 1
+              return e.text.slice(from)
             }
           }
           return undefined

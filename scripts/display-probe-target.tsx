@@ -7,6 +7,8 @@
  *   tail-newline  ActivityBar thinking：'old line\n' + 短新行（验换行从头显示）
  *   status-*      StatusBar 精简批（2026-09-02）：full=全段 / narrow=丢段 / slim=只留
  *                 model / hint=App 同行组合（busy 提示占宽参与守卫）
+ *   rss-stream    批2c RSS 探针（P1-A）：真 TimelineView 长流自压——20ms delta × 25KB×3 轮，
+ *                 stderr 自报 MEM=/TURN_END=/FINAL= 标记（pty-rss-probe.cjs 断言峰值/回落）
  */
 import React from 'react'
 import { render } from 'ink'
@@ -15,8 +17,12 @@ import stringWidth from 'string-width'
 import { ToolLine } from '../src/tui/ToolLine.js'
 import { ActivityBar } from '../src/tui/ActivityBar.js'
 import { StatusBar } from '../src/tui/StatusBar.js'
+import { TimelineView } from '../src/tui/TimelineView.js'
+import { foldStreamText } from '../src/tui/stream.js'
 import { BUSY_HINT } from '../src/tui/ShortcutHint.js'
 import type { ActiveTool } from '../src/tui/types.js'
+import { useEffect, useRef, useState } from 'react'
+import { writeHeapSnapshot } from 'node:v8'
 
 const scene = process.argv[2] ?? ''
 
@@ -65,9 +71,107 @@ if (scene.startsWith('preview-')) {
     process.stderr.write(`unknown status mode: ${mode}\n`)
     process.exit(2)
   }
+} else if (scene === 'rss-stream' || scene === 'rss-pure' || scene === 'rss-ink') {
+  // 批2c：RSS 探针目标——真 TimelineView（含 GrayStreaming 增量折叠路径）长流自压。
+  // 3 轮 × 25KB（每 20ms 追加 10 中文字 + 每 50 tick 混一个换行——超宽连续段与逻辑行混合形态）；
+  // 标记走 stderr（与 Ink 的 stdout 帧流分离，探针好解析）。
+  // 二分变体（泄漏定位用）：rss-pure=纯 foldStreamText 无 Ink（缓存层）；rss-ink=裸 Ink
+  // Text 重渲无 TimelineView（React/Ink 层）；rss-stream=完整路径
+  const CHARS_PER_TICK = 10
+  const TICKS_PER_TURN = Number(process.env.RSS_TICKS ?? 1250) // 12500 字/轮 ≈ 25KB（探针可缩短做吞吐诊断）
+  const TURNS = Number(process.env.RSS_TURNS ?? 3)
+  function RssApp(): React.ReactElement {
+    const [text, setText] = useState('')
+    const grayCacheRef = useRef<{ current: import('../src/tui/stream.js').StreamFoldCache | null }>({ current: null })
+    useEffect(() => {
+      let tick = 0
+      let turn = 0
+      const timer = setInterval(() => {
+        tick++
+        setText((t) => t + '中'.repeat(CHARS_PER_TICK) + (tick % 50 === 0 ? '\n' : ''))
+        if (tick % 100 === 0) {
+          const m = process.memoryUsage()
+          process.stderr.write(`MEM=${(m.rss / 1048576).toFixed(1)}/${(m.heapUsed / 1048576).toFixed(1)}\n`)
+        }
+        if (tick >= TICKS_PER_TURN) {
+          turn++
+          const m = process.memoryUsage()
+          process.stderr.write(`TURN_END=${turn} MEM=${(m.rss / 1048576).toFixed(1)}/${(m.heapUsed / 1048576).toFixed(1)}\n`)
+          // 批2c 判别器：轮末强制 GC（--expose-gc 下 global.gc 存在）后采样——GC 后仍逐轮
+          // 爬升=真保留型泄漏；掉回基线=懒 GC 未收的垃圾（非泄漏）。探针棘轮断言以此为准
+          const g = (globalThis as { gc?: () => void }).gc
+          if (typeof g === 'function') {
+            g()
+            const mg = process.memoryUsage()
+            process.stderr.write(`TURN_GC=${turn} MEM=${(mg.rss / 1048576).toFixed(1)}/${(mg.heapUsed / 1048576).toFixed(1)}\n`)
+            // 诊断档（RSS_SNAPSHOT=1 且第 2 装轮）：GC 后落堆快照——活对象按构造器聚合定位保留源
+            if (process.env.RSS_SNAPSHOT === '1' && turn === 2) {
+              const file = writeHeapSnapshot(process.cwd() + '/rss-snap.heapsnapshot')
+              process.stderr.write(`SNAPSHOT=${file}\n`)
+            }
+          }
+          tick = 0
+          setText('')
+          if (turn >= TURNS) {
+            clearInterval(timer)
+            // GC 窗口：末轮后 8s 再采样（V8 懒回收——轮末即刻采样必不回落）
+            setTimeout(() => {
+              const m = process.memoryUsage()
+              process.stderr.write(`FINAL=${(m.rss / 1048576).toFixed(1)}/${(m.heapUsed / 1048576).toFixed(1)}\n`)
+              process.exit(0)
+            }, 8000)
+          }
+        }
+      }, 20)
+      return () => clearInterval(timer)
+    }, [])
+    if (scene === 'rss-ink') {
+      // 二分：裸 Ink——只重渲一个 Text（无 TimelineView/fold）
+      return React.createElement(Text, { dimColor: true }, text.slice(-200))
+    }
+    if (process.env.RSS_MINI === '1') {
+      // 二分：MiniGray——只挂 GrayStreaming 同款 fold（RSS_NO_CACHE=1 用旧全量路径对照）
+      const noCache = process.env.RSS_NO_CACHE === '1'
+      const r = noCache ? foldStreamText(text, 4, 78) : foldStreamText(text, 4, 78, grayCacheRef.current)
+      return React.createElement(Text, { dimColor: true }, r.lines.join('\n'))
+    }
+    return React.createElement(TimelineView, {
+      timeline: [{ kind: 'text', id: 'live-1', text, live: true }],
+      lines: 30,
+      liveMaxLines: 4,
+    })
+  }
+  if (scene === 'rss-pure') {
+    // 二分：无 Ink——纯 foldStreamText + cache（含轮末 GC 采样），不 render 任何东西
+    let text = ''
+    let tick = 0
+    let turn = 0
+    const cacheBox = { current: null } as { current: import('../src/tui/stream.js').StreamFoldCache | null }
+    const timer = setInterval(() => {
+      tick++
+      text += '中'.repeat(CHARS_PER_TICK) + (tick % 50 === 0 ? '\n' : '')
+      foldStreamText(text, 4, 78, cacheBox)
+      if (tick >= TICKS_PER_TURN) {
+        turn++
+        const g = (globalThis as { gc?: () => void }).gc
+        if (typeof g === 'function') g()
+        const m = process.memoryUsage()
+        process.stderr.write(`TURN_GC=${turn} MEM=${(m.rss / 1048576).toFixed(1)}/${(m.heapUsed / 1048576).toFixed(1)}\n`)
+        tick = 0
+        text = ''
+        cacheBox.current = null
+        if (turn >= TURNS) {
+          clearInterval(timer)
+          setTimeout(() => process.exit(0), 1000)
+        }
+      }
+    }, 20)
+  } else {
+    render(React.createElement(RssApp))
+  }
 } else {
   process.stderr.write(`unknown scene: ${scene}\n`)
   process.exit(2)
 }
 
-setTimeout(() => process.exit(0), 600)
+if (!scene.startsWith('rss-')) setTimeout(() => process.exit(0), 600)

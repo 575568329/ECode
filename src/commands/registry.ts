@@ -193,8 +193,8 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
   })
   registry.register({
     name: 'doctor',
-    description: '自检配置与文档（config/ECODE.md/memory 索引/hooks/MCP——LLM 检查，你决策）',
-    run: (args?: string) => ({ action: 'inject-prompt' as const, payload: buildDoctorPrompt(args) }),
+    description: '自检配置与文档（config/ECODE.md/memory 索引/hooks/MCP/内存快照——LLM 检查，你决策）',
+    run: (args?: string) => ({ action: 'inject-prompt' as const, payload: `${memorySnapshot()}\n\n${buildDoctorPrompt(args)}` }),
   })
   registry.register({
     name: 'restart',
@@ -207,6 +207,24 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     description: '配置面板（三页签可视化改；jsonc 非破坏保存；/model 仍是会话内切换）',
     run: () => ({ action: 'open-config-panel' as const }),
   })
+}
+
+/**
+ * 批2c（P1-A）：客户端进程内存快照（/doctor 附带，程序化采集——LLM 清单查不了进程内存）。
+ * 强制 GC 需 --expose-gc 启动（global.gc 存在才做）：GC 前后 heapUsed 对照是「活对象泄漏
+ * vs 垃圾未收」的判别器——单 rss/heapUsed 含未回收垃圾，只能看趋势不能定性。
+ */
+function memorySnapshot(): string {
+  const mb = (n: number): string => `${(n / 1048576).toFixed(0)}MB`
+  const before = process.memoryUsage()
+  const gc = (globalThis as { gc?: () => void }).gc
+  if (typeof gc !== 'function') {
+    return `0. 【内存快照·程序化】TUI 进程 rss ${mb(before.rss)} · heapUsed ${mb(before.heapUsed)} · external ${mb(before.external)}（未强制 GC——启动加 --expose-gc 可得 GC 前后对照，用于区分活对象泄漏与垃圾未收；本条原样纳入报告即可，无需检查）`
+  }
+  gc()
+  const after = process.memoryUsage()
+  const drop = before.heapUsed > 0 ? ((1 - after.heapUsed / before.heapUsed) * 100).toFixed(0) : '0'
+  return `0. 【内存快照·程序化·强制 GC 对照】GC 前 rss ${mb(before.rss)} / heapUsed ${mb(before.heapUsed)}；GC 后 heapUsed ${mb(after.heapUsed)}（回落 ${drop}%）。GC 后仍高=活对象泄漏需进一步定位；大幅回落=垃圾未收（V8 懒回收正常形态）。本条原样纳入报告即可，无需检查。`
 }
 
 /**

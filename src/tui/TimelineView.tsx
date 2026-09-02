@@ -13,11 +13,11 @@
  *
  * 性能（渲染审阅 P1-2 四件套之三）：条目级 React.memo——reducer 未动条目引用恒等（B3 锚）。
  */
-import { memo, type ReactElement } from 'react'
+import { memo, useRef, type ReactElement } from 'react'
 import { Box, Text } from 'ink'
 import { Markdown } from './Markdown.js'
 import { ToolLine } from './ToolLine.js'
-import { foldStreamText } from './stream.js'
+import { foldStreamText, type StreamFoldCacheBox } from './stream.js'
 import { useViewport } from './viewport.js'
 import { MessageRow } from './MessageRow.js'
 import { symbols } from './symbols.js'
@@ -32,7 +32,10 @@ const LF = '\n'
  *  折叠（实际行数超 maxLines 破预算），迁移时丢的订阅补回。 */
 export function GrayStreaming({ text, maxLines }: { text: string; maxLines?: number }): ReactElement {
   const { columns } = useViewport()
-  const { lines, folded, total } = foldStreamText(text, maxLines, WIDTH.body(columns))
+  // 批2a（P1-A）：增量折叠缓存——live 条目 text 每 delta 换引用（memo 恒 miss 是设计内），
+  // 每 delta 全文重 wrap 的 O(n²) 由缓存消解（每 delta 只 wrap 新增字符）；resize 换宽自动重算
+  const cacheRef = useRef<StreamFoldCacheBox>({ current: null })
+  const { lines, folded, total } = foldStreamText(text, maxLines, WIDTH.body(columns), cacheRef.current)
   return (
     <Box flexDirection="column">
       {folded > 0 && <Text dimColor>↑ {folded} 行已折叠（共 {total} 行）</Text>}
@@ -120,27 +123,38 @@ export function TimelineView({ timeline, lines, liveMaxLines }: TimelineViewProp
         if (e.kind === 'thinking') {
           return <ThinkingEntry key={e.id} durMs={e.durMs ?? 0} />
         }
-        return (
-          <ToolLine
-            key={e.id}
-            mode="dynamic"
-            tool={{
-              name: e.tool.name,
-              id: e.tool.id,
-              status: e.tool.status,
-              ...(e.tool.at !== undefined ? { at: e.tool.at } : {}),
-              ...(e.tool.digest !== undefined ? { digest: e.tool.digest } : {}),
-              ...(e.tool.use !== undefined ? { use: e.tool.use as never } : {}),
-              ...(e.tool.content !== undefined || e.tool.isError !== undefined
-                ? { result: { type: 'tool_result' as const, tool_use_id: e.tool.id, content: e.tool.content ?? '', is_error: e.tool.isError === true } }
-                : {}),
-            }}
-          />
-        )
+        return <TimelineToolLine key={e.id} entry={e} />
       })}
     </Box>
   )
 }
+
+/**
+ * 批2a（P1-A）：工具条目 memo 门——协议 timeline → ActiveTool 的形状转换原先在
+ * TimelineView 每帧内联做（每帧新对象 → ToolLine 即便 memo 也恒 miss，可见工具条目
+ * 每帧重跑 strip/digest/preview/fold）。以**条目对象**为门：timeline reducer 保证未动
+ * 条目引用恒等（B3 锚），转换收进 memo 子组件内部——未动条目零重渲。
+ */
+const TimelineToolLine = memo(function TimelineToolLine({ entry }: { entry: TimelineEntry }): ReactElement | null {
+  if (entry.kind !== 'tool') return null // 联合类型收窄（TimelineView 调用处已按 kind 分流，此处防御）
+  const t = entry.tool
+  return (
+    <ToolLine
+      mode="dynamic"
+      tool={{
+        name: t.name,
+        id: t.id,
+        status: t.status,
+        ...(t.at !== undefined ? { at: t.at } : {}),
+        ...(t.digest !== undefined ? { digest: t.digest } : {}),
+        ...(t.use !== undefined ? { use: t.use as never } : {}),
+        ...(t.content !== undefined || t.isError !== undefined
+          ? { result: { type: 'tool_result' as const, tool_use_id: t.id, content: t.content ?? '', is_error: t.isError === true } }
+          : {}),
+      }}
+    />
+  )
+})
 
 /** 导出灰字折叠信息（调试/测试面；foldStreamText 在 GrayStreaming 内部消费） */
 export function timelineFoldInfo(text: string, maxLines: number, columns: number): { total: number } {

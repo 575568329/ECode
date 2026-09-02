@@ -14,6 +14,7 @@
  * ANSI 颜色（cli-highlight 代码高亮）靠 dev/start script 的 cross-env FORCE_COLOR=1
  * 在 Node 启动前注入（ESM import 是 hoisted，写在代码里会晚于 chalk 锁 level）。
  */
+import './env.js' // 必须第一个：NODE_ENV 预设要在 react/react-reconciler 加载前生效（见该文件头注释）
 import { loadConfig, emptyShellConfig, type Config } from '../services/config.js'
 import { JsonlLogger } from '../services/logger.js'
 import { LogStore } from '../services/logstore.js'

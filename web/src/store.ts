@@ -26,6 +26,8 @@ export interface ToolItem {
   content?: string
   truncated?: boolean
   fullLoaded?: boolean
+  /** 活动流 B5：item/executing 帧回填（运行卡「正在执行」） */
+  digest?: string
 }
 
 /** 内联图片（data URI 直渲——session/read 恢复形态里 image_ref 已被宿主转回 base64 ImageBlock） */
@@ -73,9 +75,13 @@ export interface SessionView {
   askUser: { requestId: string; questions: AskUserQuestionView[] } | null
   /** W-9（批 4）：重连基线 gap/seq 回绕——Conversation 据此拉全量重同步（loadHistory 清除） */
   resync?: boolean
+  /** 活动流 B5：最新 thinking 尾部摘要（loading 细条「思考中 <tail>」；item/started 封口清空） */
+  thinkingTail: string
+  /** 活动流 B5：轮运行态（activity/turn 期间 loading 细条显隐） */
+  activityBusy: boolean
 }
 
-export const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, loadError: '', approval: null, askSelect: null, askUser: null, resync: false })
+export const emptyView = (): SessionView => ({ entries: [], items: [], streaming: '', queue: [], loaded: false, loadError: '', approval: null, askSelect: null, askUser: null, resync: false, thinkingTail: '', activityBusy: false })
 
 /** 模型视图（config/get 脱敏回执投影——顶栏只看 current + 各 provider 可选模型） */
 export interface ConfigView {
@@ -346,8 +352,23 @@ export const useApp = create<AppState>((set) => ({
         case 'item/started':
           return patchView(st, f.sessionId, (v) => ({
             ...v,
-            items: [...v.items, { id: String(f.ev.itemId ?? ''), name: String(f.ev.name ?? ''), status: 'running' }],
+            // 活动流 B5：工具到达即封口 thinking 摘要（时间线分段语义的 web 侧最小对等）
+            thinkingTail: '',
+            items: [...v.items, { id: String(f.ev.itemId ?? ''), name: String(f.ev.name ?? ''), status: 'running', digest: '' }],
           }))
+        case 'item/executing':
+          // 活动流 B5/D9：执行时 digest（loading 细条「正在执行 <命令>」+ 卡片运行态）
+          return patchView(st, f.sessionId, (v) => ({
+            ...v,
+            items: v.items.map((it) => (it.id === String(f.ev.itemId ?? '') ? { ...it, digest: String(f.ev.digest ?? '') } : it)),
+          }))
+        case 'thinking':
+          return patchView(st, f.sessionId, (v) => {
+            const text = v.thinkingTail + String(f.ev.text ?? '')
+            return { ...v, thinkingTail: text.length > 120 ? text.slice(text.length - 120) : text }
+          })
+        case 'thinking/ended':
+          return patchView(st, f.sessionId, (v) => ({ ...v, thinkingTail: '' }))
         case 'item/completed': {
           const id = String(f.ev.itemId ?? '')
           return patchView(st, f.sessionId, (v) => ({
@@ -360,6 +381,7 @@ export const useApp = create<AppState>((set) => ({
             ...v,
             entries: v.streaming === '' ? v.entries : [...v.entries, { kind: 'assistant', text: v.streaming }],
             streaming: '',
+            thinkingTail: '',
           }))
         case 'queue/snapshot':
           return patchView(st, f.sessionId, (v) => ({ ...v, queue: Array.isArray(f.ev.items) ? (f.ev.items as string[]) : [] }))

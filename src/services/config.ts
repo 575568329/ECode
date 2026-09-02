@@ -60,6 +60,24 @@ export interface Config {
    * 不配 = 会话主模型（现状零行为变化）；窗口下限校验从批预算常量反算（装配层执行）。
    */
   roles?: { summary?: { provider: string; model: string } }
+  /**
+   * 任务纠偏审查（2026-09-02 用户拍板）：低级主模型跑常规轮，高级 reviewer 模型
+   * 「定时兜底 + 异常信号提前触发」出纠偏卡注入（只审查不接管——KV cache 与执行连续性不破）。
+   * 等级定义即此处的 provider/model（谁强谁弱用户显式配置，代码只管调度）；
+   * enabled=false / 不配 = 零行为变化。
+   */
+  review?: {
+    enabled: boolean
+    /** 高级模型（等级定义）：provider 名必须存在于 providers（loadConfig 校验） */
+    provider: string
+    model: string
+    /** 定时兜底：每 N 个用户轮触发一次（默认 5） */
+    intervalTurns?: number
+    /** 长任务才启动：前 N 轮不触发（默认 3——短任务不值得审查烧钱） */
+    minTurns?: number
+    /** 异常信号提前触发（默认 true）：连续工具失败 / 单轮迭代过长 */
+    onSignals?: boolean
+  }
   /** M13-W8 飞书 IM gateway（企业自建应用凭据——配了才激活；长连接免公网） */
   /** 飞书 IM gateway（企业自建应用凭据——配了才激活；长连接免公网）。
    *  allowUsers=open_id 白名单（审阅 P0-1：缺省/空=拒绝所有——p2p bot 整租户可见，
@@ -129,6 +147,15 @@ interface ConfigFile {
   approvalTimeoutMs?: number
   /** M13-B3：角色分流（summary=压缩摘要专用便宜模型；校验 provider 名存在） */
   roles?: { summary?: { provider: string; model: string } }
+  /** 任务纠偏审查（jsonc 透传；provider 名校验同 roles.summary） */
+  review?: {
+    enabled: boolean
+    provider: string
+    model: string
+    intervalTurns?: number
+    minTurns?: number
+    onSignals?: boolean
+  }
   /** M13-W8：飞书凭据（jsonc 透传） */
   /** 飞书 IM gateway（企业自建应用凭据——配了才激活；长连接免公网）。
    *  allowUsers=open_id 白名单（审阅 P0-1：缺省/空=拒绝所有——p2p bot 整租户可见，
@@ -237,6 +264,14 @@ export const CONFIG_TEMPLATE = `{
   // ],
   // "roles": {                // 角色分流（M13）：summary=压缩摘要走便宜模型（不配=会话主模型）
   //   "summary": { "provider": "zhipu-flash", "model": "glm-4.6-flash" }
+  // },
+  // "review": {               // 任务纠偏审查：主模型跑常规轮，高级模型定时+异常信号出纠偏卡
+  //   "enabled": true,        //   开关（false/不配=零行为变化）
+  //   "provider": "zhipu",    //   高级模型（等级定义——谁强谁弱你说了算）
+  //   "model": "glm-5.3",
+  //   "intervalTurns": 5,     //   定时兜底：每 N 个用户轮审查一次（默认 5）
+  //   "minTurns": 3,          //   长任务才启动：前 N 轮不审（默认 3）
+  //   "onSignals": true       //   异常信号提前触发：连续工具失败/单轮迭代过长（默认 true）
   // }
 }
 `
@@ -376,10 +411,23 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
       `[CONFIG_ROLES_INVALID] roles.summary.provider "${file.roles.summary.provider}" 不存在于 providers（可用：${Object.keys(providers).join(', ')}）——请修正 config.json 的 roles 配置`,
     )
   }
+  // 2026-09-02 审查角色校验（同 roles.summary 口径）：provider 名必须存在——审查触发在轮末，
+  // 配置错误拖到那时才炸会让用户误以为任务出错；enabled 但缺 provider/model 同样启动期报
+  if (file.review !== undefined) {
+    if (providers[file.review.provider] === undefined) {
+      throw new Error(
+        `[CONFIG_REVIEW_INVALID] review.provider "${file.review.provider}" 不存在于 providers（可用：${Object.keys(providers).join(', ')}）——请修正 config.json 的 review 配置`,
+      )
+    }
+    if (file.review.enabled && (file.review.model === undefined || file.review.model === '')) {
+      throw new Error('[CONFIG_REVIEW_INVALID] review.enabled=true 但未配 review.model——请补全或设 enabled=false')
+    }
+  }
   return {
     providers,
     current: { name: providerName, model },
     ...(file.roles !== undefined ? { roles: file.roles } : {}),
+    ...(file.review !== undefined ? { review: file.review } : {}),
     ...(file.feishu !== undefined ? { feishu: file.feishu } : {}),
     // R2：relay 配置透传（hostToken 缺失=配置不完整不激活——防半配置静默起链路）
     ...(file.relay !== undefined && file.relay.server !== '' && file.relay.hostToken !== '' ? { relay: file.relay } : {}),

@@ -50,7 +50,7 @@ describe('流式轮演进', () => {
   it('tool 卡：started→running，completed→终态带摘要；truncated 标志随帧（C1⑤）', () => {
     frame('s1', { type: 'item/started', itemId: 'i1', name: 'bash' })
     frame('s1', { type: 'item/completed', itemId: 'i1', summary: 'ls 完成', content: 'a.txt' })
-    expect(useApp.getState().views.s1?.items).toEqual([{ id: 'i1', name: 'bash', status: 'done', summary: 'ls 完成', content: 'a.txt', truncated: false }])
+    expect(useApp.getState().views.s1?.items).toEqual([{ id: 'i1', name: 'bash', status: 'done', summary: 'ls 完成', content: 'a.txt', truncated: false, digest: '' }])
     frame('s1', { type: 'item/started', itemId: 'i2', name: 'read_file' })
     frame('s1', { type: 'item/completed', itemId: 'i2', summary: '大文件', content: 'x'.repeat(100), truncated: true })
     expect(useApp.getState().views.s1?.items[1]?.truncated).toBe(true)

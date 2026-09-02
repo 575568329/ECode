@@ -37,7 +37,8 @@ function Images({ images }: { images: ChatImage[] }): JSX.Element {
   )
 }
 function ToolCard({ project, sessionId, item }: { project: string; sessionId: string; item: ToolItem }): JSX.Element {
-  const [open, setOpen] = useState(false)
+  // 活动流 B5/D15：编辑工具卡默认展开 diff（三端「diff 直接可见不折叠」对齐——TUI Static 全量同语义）
+  const [open, setOpen] = useState(item.name === 'edit_file' || item.name === 'write_file')
   const completeTool = useApp((s) => s.completeTool)
   // C1⑤ 补漏：截断帧（4KB）首次展开时拉 item/read 全文（1MB 上限；宿主 tool_use 配对）
   useEffect(() => {
@@ -59,6 +60,9 @@ function ToolCard({ project, sessionId, item }: { project: string; sessionId: st
         {open ? <ChevronDown size={13} className="text-muted" /> : <ChevronRight size={13} className="text-muted" />}
         <Terminal size={13} className="text-muted" />
         <span className="text-xs text-body">{item.name}</span>
+        {item.status === 'running' && item.digest !== undefined && item.digest !== '' && (
+          <span className="truncate text-xs text-amber-400">正在执行 {item.digest}</span>
+        )}
         <span className={`text-xs ${color}`}>{mark}</span>
         {item.summary !== undefined && item.summary !== '' && <span className="truncate text-xs text-faint">{item.summary}</span>}
         {item.truncated === true && item.fullLoaded !== true && <span className="shrink-0 text-[10px] text-amber-600">已截断</span>}
@@ -219,6 +223,28 @@ const TailMarkdown = function TailMarkdown({ text }: { text: string }): JSX.Elem
 /** 行距（虚拟化行内边距替代原 space-y-3——VList 的行是独立元素） */
 const ROW_PAD = 'mx-auto max-w-3xl pb-3'
 
+/** 活动流 B5：loading 细条——thinking 尾部摘要（滚动感）/ 最新执行 digest；轮运行中常驻 */
+function LoadingStrip({ view }: { view: ReturnType<typeof useApp.getState>['views'][string] | undefined }): JSX.Element | null {
+  if (view === undefined || view.loadError !== '') return null
+  const running = view.items.find((it) => it.status === 'running')
+  const busy = view.streaming !== '' || view.thinkingTail !== '' || running !== undefined
+  if (!busy) return null
+  const text =
+    view.thinkingTail !== ''
+      ? `思考中 ${view.thinkingTail.slice(-40)}…`
+      : running?.digest !== undefined && running.digest !== ''
+        ? `正在执行 ${running.digest}`
+        : running !== undefined
+          ? `正在执行 ${running.name}…`
+          : '生成中…'
+  return (
+    <div className="border-t border-line px-4 py-1 text-xs text-faint">
+      <span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-sky-500 align-middle" />
+      {text}
+    </div>
+  )
+}
+
 export function Conversation({ project, sessionId }: { project: string; sessionId: string }): JSX.Element {
   const view = useApp((s) => s.views[sessionId])
   const loadHistory = useApp((s) => s.loadHistory)
@@ -359,6 +385,8 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
           </div>
         ))}
       </VList>
+      {/* 活动流 B5：loading 细条（用户点名对等——思考中 <tail> / 正在执行 <digest>；滚动体底部） */}
+      <LoadingStrip view={view} />
       {!atBottom && (
         <button
           onClick={jumpToBottom}

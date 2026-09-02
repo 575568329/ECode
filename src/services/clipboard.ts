@@ -37,9 +37,11 @@ export async function readClipboardImage(sessionId: string): Promise<ClipboardIm
   const out = join(dir, `paste-${Date.now()}.png`)
   try {
     if (process.platform === 'win32') {
+      // windowsHide：powershell.exe 是控制台程序——daemon（无控制台）下 spawn 会闪窗打断用户
       await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Sta', '-Command', PS_SCRIPT], {
         env: { ...process.env, Ecode_CLIP_OUT: out },
         timeout: 10_000,
+        windowsHide: true,
       })
     } else if (process.platform === 'darwin') {
       // osascript 读剪贴板图片写文件（AppleScript 一段；失败即无图）

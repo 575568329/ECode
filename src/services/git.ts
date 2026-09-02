@@ -37,7 +37,9 @@ export function hasEcodeTrailer(body: string): boolean {
 }
 
 async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
-  const { stdout } = await execFileAsync('git', args, { cwd, env: env ? { ...process.env, ...env } : process.env })
+  // windowsHide：daemon（detached 拉起，无控制台）spawn git.exe 会新建控制台窗闪窗——autoCommit
+  // 每轮 add/commit、/undo 每次都触发。显式压制（console 交互形态继承父控制台，无副作用）
+  const { stdout } = await execFileAsync('git', args, { cwd, windowsHide: true, env: env ? { ...process.env, ...env } : process.env })
   return stdout
 }
 

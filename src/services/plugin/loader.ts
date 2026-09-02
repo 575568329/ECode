@@ -117,7 +117,8 @@ async function runCommand(
 }
 
 function defaultSpawn(cmd: string, args: string[], opts: { cwd?: string; signal?: AbortSignal }): ChildLike {
-  const child = spawn(cmd, args, { cwd: opts.cwd, signal: opts.signal })
+  // windowsHide：daemon 形态（无控制台）下 git clone 等会闪控制台窗（plugin 安装/市场添加时触发）
+  const child = spawn(cmd, args, { cwd: opts.cwd, signal: opts.signal, windowsHide: true })
   return {
     on(event, cb) {
       if (event === 'error') child.on('error', cb)

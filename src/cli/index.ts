@@ -283,7 +283,9 @@ async function main(): Promise<void> {
         React.createElement(TuiApp, {
           deps: shellDeps as unknown as TuiAppDeps,
           host: outcome.transport,
-          banner: `已附着后台服务（${outcome.daemonName}）——任务在后台持续运行，手机可继续操作`,
+          // 附着成功提示走 initialNotice（底部 systemMsgs 统一通道，5s 自动消失）——
+          // banner 是配置错误持久横幅，不该被这条常态信息占用（后台状态已有顶栏「后台运行中」常驻段）
+          initialNotice: `ℹ 已附着后台服务（${outcome.daemonName}）——任务在后台持续运行，手机可继续操作`,
           initialHistorySessionId,
           onExit: () => gracefulShutdown(0),
         }),

@@ -265,7 +265,9 @@ export class CheckpointStore {
   /** bash 近修改集：git status 变更文件（绝对路径）；非 git 仓库返回空 + warn。 */
   private async gitDirtyFiles(): Promise<string[]> {
     try {
-      const { stdout } = await execFileAsync('git', ['status', '--porcelain', '-z'], { cwd: this.cwd })
+      // windowsHide：本函数在每次 bash/编辑工具前触发（daemon 无控制台形态下 git.exe
+      // 会新建控制台窗闪窗打断用户——与 proc.ts spawnShellCommand 同款压制）
+      const { stdout } = await execFileAsync('git', ['status', '--porcelain', '-z'], { cwd: this.cwd, windowsHide: true })
       const out: string[] = []
       for (const entry of stdout.split('\0')) {
         if (entry === '') continue

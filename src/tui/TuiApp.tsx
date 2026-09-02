@@ -176,7 +176,7 @@ function generalConfigItems(config: import('../services/config.js').Config): Con
  * - 提交即锁死：prompt 发送成功 → 用户消息全文 echo 进 Static（失败留动态区折叠显示）；
  *   轮末 commit：runLoop 结束 → messagesToCommitted 全量重建 → setCommitted；active 清空
  */
-export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initialHistorySessionId, host: attachedHost }: { deps: TuiAppDeps; banner?: string; onRestart?: () => void; onExit?: () => void; initialHistorySessionId?: string; /** T 线 T4：附着形态由入口注入 MultiTransport（deps 换壳）；缺省=Embedded 内联装配 */ host?: TuiHost }): ReactElement {
+export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, onExit, initialHistorySessionId, host: attachedHost }: { deps: TuiAppDeps; banner?: string; /** 启动期一次性提示（如 daemon 附着成功）——走底部 systemMsgs 统一通道，5s TTL 自动消失；区别于 banner（配置错误持久横幅） */ initialNotice?: string; onRestart?: () => void; onExit?: () => void; initialHistorySessionId?: string; /** T 线 T4：附着形态由入口注入 MultiTransport（deps 换壳）；缺省=Embedded 内联装配 */ host?: TuiHost }): ReactElement {
   const abortRef = useRef<AbortController>(new AbortController())
   // M12-B3 中间态：客户端消息镜像（宿主 transcript 权威；轮末/压缩/恢复同步——B5 退役）
   const messagesRef = useRef<HistoryLine[]>([])
@@ -438,6 +438,14 @@ export function TuiApp({ deps, banner: initialBanner, onRestart, onExit, initial
   const [historyMetas, setHistoryMetas] = useState<SessionMeta[]>([])
   // banner（配置无效提示；初始从 cli 传入，/setup 成功后清，submit 配置无效时设）
   const [banner, setBanner] = useState<string | undefined>(initialBanner)
+  // 启动期一次性提示（daemon 附着成功等）：挂载后经 systemMsgs 底部统一通道展示（5s TTL）
+  const initialNoticeShownRef = useRef(false)
+  useEffect(() => {
+    if (initialNotice === undefined || initialNoticeShownRef.current) return
+    initialNoticeShownRef.current = true
+    setSystemMsgs([initialNotice])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（仅消费启动期常量）
+  }, [])
   // /plugin 面板刷新 key（安装/启停操作后重查 browse/list——数据是 loader 现查的，靠 remount 重建）
   const [pluginPanelKey, setPluginPanelKey] = useState(0)
   // /restart 句柄经 ref（deps 闭包稳定，setTimeout 回调取最新）

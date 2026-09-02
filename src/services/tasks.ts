@@ -70,6 +70,7 @@ export class TaskRegistry {
     const outputFile = join(this.outDir, `task-${id}.log`)
     let child: ReturnType<typeof spawn>
     try {
+      // spawnShellCommand 自带 windowsHide（后台任务的孙进程闪窗同样由它压制）
       child = spawnShellCommand(command, cwd)
       // stdio 中转写文件（终审 P2-4：双流 pipe 同一 writeStream——先 end 的流会关目标丢另一流尾部，
       // { end: false } + 两个都结束后才关）

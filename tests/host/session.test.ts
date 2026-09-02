@@ -1041,3 +1041,38 @@ describe('清账 III P2-6/P2-7：裸 / 口径与 serve 端 /help 过滤', () => 
     host.dispose()
   })
 })
+
+// —— 重连档位失同步修复：sandbox/get 回宿主权威档（附着启动/daemon 重拉重连时点客户端拉取对齐显示）——
+describe('sandbox/get 宿主档位回传', () => {
+  const makeSandboxDeps = (defaultMode: string | undefined): HostDeps => {
+    const deps = makeCmdDeps(new MockProvider([]))
+    return { ...deps, getConfig: () => ({ ...deps.getConfig(), sandbox: { defaultMode } }) }
+  }
+
+  it('构造时回 config 默认档（defaultMode 配置即启动档）', async () => {
+    const host = new HostSession(makeSandboxDeps('read-only'))
+    const r = await host.send({ op: 'sandbox/get' })
+    expect(r).toMatchObject({ ok: true, value: { mode: 'read-only' } })
+    host.dispose()
+  })
+
+  it('sandbox/set 切档后回新档（重连客户端拉权威源对齐显示）', async () => {
+    const host = new HostSession(makeSandboxDeps(undefined))
+    await host.send({ op: 'sandbox/set', mode: 'workspace-write' })
+    const r = await host.send({ op: 'sandbox/get' })
+    expect(r).toMatchObject({ ok: true, value: { mode: 'workspace-write' } })
+    host.dispose()
+  })
+
+  it('根因回归钉子：宿主重建（daemon 重拉）档位回 config 默认——旧档只存旧实例内存，客户端必须重拉', async () => {
+    // host1：用户切到 read-only（旧 daemon 侧档位）
+    const host1 = new HostSession(makeSandboxDeps('default'))
+    await host1.send({ op: 'sandbox/set', mode: 'read-only' })
+    expect(await host1.send({ op: 'sandbox/get' })).toMatchObject({ value: { mode: 'read-only' } })
+    host1.dispose()
+    // daemon 崩 → 重拉 = 同 config 新建 HostSession（rescueDaemon reattach 后的宿主真态）：档位已回 default
+    const host2 = new HostSession(makeSandboxDeps('default'))
+    expect(await host2.send({ op: 'sandbox/get' })).toMatchObject({ value: { mode: 'default' } })
+    host2.dispose()
+  })
+})

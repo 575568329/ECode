@@ -182,6 +182,10 @@ export type ProtocolCommand =
   | { op: 'session/compact' }
   | { op: 'model/set'; provider: string; model: string }
   | { op: 'sandbox/set'; mode: 'default' | 'accept-edits' | 'read-only' | 'workspace-write' | 'full-access' }
+  /** 档位权威在宿主——附着启动/daemon 重拉重连时点拉当前档对齐本地显示（宿主档位是
+   *  运行态内存字段，daemon 重拉后 HostSession 重建回 config 默认；客户端显示不刷新
+   *  ＝「显示 read-only 实际 default 全放行」的假安全）。回执 value={ mode } */
+  | { op: 'sandbox/get' }
   | { op: 'config/get' }
 
 /** 命令回执：宿主永不 throw 到客户端（错误收敛为 ok:false——与 approval/respond 的

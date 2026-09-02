@@ -168,6 +168,8 @@ export class HostSession {
   private lastRoundLen = 0
   private roundUses: string[] = []
   private readonly queue: QueueEntry[] = []
+  /** 活跃轮 controller 集合（startTurn 登记/finishTurn 注销；interrupt 全集 abort——2026-09-02 Ctrl+C 立即停兜底） */
+  private readonly activeAbortControllers = new Set<AbortController>()
   private running = false
   /** T 线⑥：SessionStart hook 的 additionalContext 宿主暂存（startTurn 首轮注入后清空） */
   private pendingSessionContext: string[] = []
@@ -875,10 +877,26 @@ export class HostSession {
         })
         return { ok: true, routed: 'Started' }
       }
-      case 'interrupt':
+      case 'interrupt': {
+        // 用户拍板（2026-09-02）：Ctrl+C **立即停止任务**——三重硬化（原协作式 abort 在真机
+        // 审批挂起场景不收敛：interrupt 到达 5 分钟轮不退、且日志实证双轮并行 iter 交错）：
+        // ① abort 当前 controller + 全部残留活跃轮 controller（旧轮 controller 被替换后
+        //    interrupt 打不到它——集合化全停）；② 立即广播停止帧（显示与执行分离：所有端
+        //    秒见停，loop 在后台自行固化退出——轮真退时 finishTurn 的帧幂等无害）；
+        // ③ loop 侧硬检查（迭代顶部/工具批前）+ afterTools 中断态跳过（quality/autoCommit 不跑）
         this.deps.logger.debug('system', 'interrupt_latency_probe', { stage: 'received' }) // 诊断插桩：Ctrl+C 迟滞分段计时
         this.abort.abort()
+        for (const c of this.activeAbortControllers) {
+          try {
+            c.abort()
+          } catch {
+            /* 已断幂等 */
+          }
+        }
+        this.publish('activity', { state: 'aborted' })
+        this.publish('thread/status', { busy: false, waitingOn: null, iter: 0 })
         return { ok: true }
+      }
       case 'interjection/clear':
         // 审查卡是系统产物不随用户 Ctrl+U 清弃（审阅修复）——转 pendingReviewCard 随下轮携带
         {
@@ -1121,6 +1139,9 @@ export class HostSession {
         }
         this.sandboxMode = cmd.mode
         return { ok: true }
+      case 'sandbox/get':
+        // 档位回传（重连失同步修复）：宿主真档唯一权威源——客户端附着/重连时点拉取对齐显示
+        return { ok: true, value: { mode: this.sandboxMode } }
       default:
         // B5（命令·会话·面板族）逐批接线
         return { ok: false, error: `命令 ${cmd.op} 尚未接线（B5 批次）`, code: 'NOT_IMPLEMENTED' }
@@ -1168,6 +1189,10 @@ export class HostSession {
     this.roundUses = []
     this.currentTurnId = randomUUID()
     this.abort = new AbortController()
+    // 用户拍板（2026-09-02 Ctrl+C 立即停）：活跃轮 controller 登记（finishTurn 注销）——
+    // interrupt 全集 abort 兜底双轮并行残留（真机日志：iter 交错=旧轮 controller 被替换后
+    // interrupt 打不到它；集合化保证一次 Ctrl+C 停掉本会话所有在跑的轮）
+    this.activeAbortControllers.add(this.abort)
     const turnId = this.currentTurnId
     // UserPromptSubmit hook（session_id 用真实会话 id——顺手修 TuiApp 侧硬编码 '' 的同源问题）
     if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
@@ -1474,6 +1499,7 @@ export class HostSession {
     this.publish('thread/status', { busy: false, waitingOn: null, iter: 0 })
     this.running = false
     this.currentTurnId = null
+    this.activeAbortControllers.delete(this.abort) // Ctrl+C 立即停：轮收尾注销（集合只留活跃轮）
     // 纠偏审查·定时兜底（2026-09-02 用户拍板）：轮计数整除命中才触发（默认第 5/10/15…轮末）。
     // 异步 void 不阻塞队列续投——完成时按轮身份快照分派（同轮插话/否则 pending）。
     // lastIntervalReviewedTurn 防重（审阅修复）：hook block 轮计数不自增，旧值再判会重复触发
@@ -1562,6 +1588,12 @@ export class HostSession {
     return async (round) => {
       const deps = this.deps
       let feedback: string | undefined
+      // Ctrl+C 立即停（用户拍板 2026-09-02）：中断态跳过整段轮末链（quality lint/test 子进程、
+      // autoCommit git、loopGuard——真机实证中断后这些串行步骤照样跑完拖住轮收尾）
+      if (this.abort.signal.aborted) {
+        this.editedFiles.clear()
+        return undefined
+      }
       // 纠偏审查·异常信号（2026-09-02 用户拍板）：连续工具失败（模型在绕圈/踩同一坑）或
       // 单轮迭代过长（空转）→ 提前请高级模型介入（异步 void——审查卡稍后经插话队列注入
       // 当前轮，止住绕圈；不阻塞本轮回喂路径）。信号关（onSignals=false）不触发；

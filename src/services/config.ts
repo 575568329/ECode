@@ -129,7 +129,8 @@ interface ConfigFile {
   testCommand?: string
   /** M10-P1：联网搜索（provider 缺省 bing；preferMcp 声明搜索 MCP server 名） */
   webSearch?: { provider?: 'bing' | 'zhipu'; apiKey?: string; engine?: 'search_std' | 'search_pro' | 'search_pro_sogou' | 'search_pro_quark'; preferMcp?: string[] }
-  /** M9-P4：沙箱（defaultMode: default/read-only/workspace-write/full-access；blockedCommands 通配清单） */
+  /** M9-P4：沙箱（defaultMode: default/accept-edits/read-only/workspace-write/full-access——
+   *  启动默认档，宿主构造取它；blockedCommands 通配清单全档硬拒） */
   sandbox?: { defaultMode?: string; blockedCommands?: string[] }
   maxInstructionsKB?: number
   webFetchMaxKB?: number

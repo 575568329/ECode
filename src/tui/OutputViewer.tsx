@@ -135,7 +135,8 @@ export function taskFileSource(taskId: string, getWidth: () => number): LineSour
    *  web 端对话页同构）。Ctrl+T 默认落地视图：看完整执行顺序与模型思考路径。
    *  输入体验批（2026-08-31 用户反馈）：时间线格式与主对话流**同构**——用户消息 ❯ 前缀+
    *  主题背景色（SGR 逐行绘制，净化白名单放行）+全文不截断+空行边距（旧实现 JSON.stringify
-   *  压平 preview 300 字符，用户"找不到自己输入的内容"）；assistant ◆→●（对话栅格同款）。
+   *  压平 preview 300 字符，用户"找不到自己输入的内容"）；assistant ◆（对话栅格同款，
+   *  D3 二次翻案与主视图同步）。
    *  虚拟化：OutputViewer 本身固定窗 slice（只渲 offset..height）——本源负责「格式化缓存」：
    *  审阅 P2 改逐消息缓存（WeakMap 按消息对象身份——transcript 只追加、历史消息引用稳定），
    *  新消息到达只格式化增量；滚动 offset 变化/按键重渲不触发任何重算。 */
@@ -269,7 +270,8 @@ export function formatTimelineMessage(m: unknown, width: number, results?: Map<s
           // 且 mdBlock 逻辑行须 wrapAll（viewer 渲染 wrap="truncate" 不折行会截断不可见）
           out.push('')
           mdBlock(stripUntrustedAnsi(clipped)).forEach((l, i) => {
-            const prefix = i === 0 ? '● ' : '  '
+            // D3 二次翻案同批：正文行 ◆ 与工具行 ● 区分（主视图/面板同构——a46e50f 漏改面补齐）
+            const prefix = i === 0 ? '◆ ' : '  '
             wrapAll(prefix + l, inner).forEach((w, j) => out.push(j === 0 ? w : '  ' + w))
           })
           out.push('')
@@ -394,14 +396,14 @@ export function formatAgentLine(line: string, width: number): string[] {
   if (role === 'assistant') {
     const c = j.content as Array<{ type?: string; text?: string; name?: string }> | undefined
     if (!Array.isArray(c)) return []
-      // 项 9：text 块走块级 markdown（● 前缀首行——对话栅格同款、续行缩进 2 对齐 ⚙ 层级）；
-      // 字符上限 4000（保留代码块/段落结构——旧 preview(300) 的空白压平会摧毁块结构）
-      return c.flatMap((b) => {
-        if (b.type === 'text') {
-          const raw = String(b.text ?? '')
-          const clipped = raw.length > 4000 ? raw.slice(0, 4000) : raw
-          return mdBlock(clipped).map((l, i) => (i === 0 ? `● ${l}` : `  ${l}`))
-        }
+    // 项 9：text 块走块级 markdown（◆ 前缀首行——对话栅格同款 D3 二次翻案、续行缩进 2 对齐 ⚙ 层级）；
+    // 字符上限 4000（保留代码块/段落结构——旧 preview(300) 的空白压平会摧毁块结构）
+    return c.flatMap((b) => {
+      if (b.type === 'text') {
+        const raw = String(b.text ?? '')
+        const clipped = raw.length > 4000 ? raw.slice(0, 4000) : raw
+        return mdBlock(clipped).map((l, i) => (i === 0 ? `◆ ${l}` : `  ${l}`))
+      }
       if (b.type === 'tool_use') return [`  ⚙ ${String(b.name)}`]
       return [`  · ${String(b.type ?? '')}`]
     })

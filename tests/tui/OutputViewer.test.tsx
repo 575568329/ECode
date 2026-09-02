@@ -307,7 +307,7 @@ describe('timelineSource（输入体验批：与主对话流同构格式化 + �
     expect(all).toContain('⇺ 已回退')
   })
 
-  it('assistant 文本走 ● + mdBlock；tool_use 出 ▸ 单行', () => {
+  it('assistant 文本走 ◆ + mdBlock；tool_use 出 ▸ 单行', () => {
     const msgs: unknown[] = [
       {
         role: 'assistant',
@@ -318,7 +318,7 @@ describe('timelineSource（输入体验批：与主对话流同构格式化 + �
       },
     ]
     const all = timelineSource(() => msgs, () => 60).lines().join('\n')
-    expect(all).toContain('● 结论如下')
+    expect(all).toContain('◆ 结论如下')
     expect(all).toMatch(/▢.*bash/) // 增量②形态：图标+digest（SGR 色码在图标与名间）
   })
 
@@ -356,10 +356,10 @@ describe('mdBlock 块级 markdown（项 9，方案 A 二期）', () => {
     expect(lines[60]).toContain('还有 20 行')
   })
 
-  it('formatAgentLine assistant text 走块级（● 首行+续行缩进——对话栅格同款）', () => {
+  it('formatAgentLine assistant text 走块级（◆ 首行+续行缩进——对话栅格同款）', () => {
     const line = JSON.stringify({ role: 'assistant', content: [{ type: 'text', text: '总结如下：\n```\n代码内容\n```' }] })
     const out = formatAgentLine(line, 80)
-    expect(out[0]).toBe('● 总结如下：')
+    expect(out[0]).toBe('◆ 总结如下：')
     expect(out[1]).toBe('  ' + ESC + '[2m```' + ESC + '[22m')
     expect(out[2]).toBe('    ' + ESC + '[2m代码内容' + ESC + '[22m') // mdBlock 缩进 2+formatAgentLine 续行 2
   })

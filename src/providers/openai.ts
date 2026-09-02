@@ -249,19 +249,25 @@ export class OpenaiProvider implements LLMProvider {
     const client = this.clients.get(cacheKey) ?? new OpenAI({ baseURL: req.baseURL, apiKey: req.apiKey })
     if (!this.clients.has(cacheKey)) this.clients.set(cacheKey, client)
 
-    const stream = await client.chat.completions.create({
-      model: req.model,
-      messages: toOpenaiMsgs(req.messages, req.system),
-      // P2-10：空 tools 数组不传（部分端点对 tools:[] 报 400）
-      ...(req.tools.length > 0 ? { tools: toOpenaiTools(req.tools) } : {}),
-      stream: true,
-      stream_options: { include_usage: true }, // P1-6：否则 final chunk 无 usage
-      ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
-      ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-      ...(req.topP !== undefined ? { top_p: req.topP } : {}),
-      ...thinkingToOpenai(req.thinking), // P0-5：thinking → reasoning_effort
-      ...(req.signal ? { signal: req.signal } : {}),
-    } as never)
+    // 2026-09-02 批1a（四角色审阅 P0-1 翻案）：signal 必须传 create() **第二参** RequestOptions——
+    // v7 create(body, options) 不认 body 里的 signal（曾混进 body 形参：signal 从未到达 fetch，
+    // 还以 "signal":{} 污染请求体 JSON；Ctrl+C 34-54s 不收敛的真根因。对照实验：传对位置
+    // abort 后 4ms 断流断 TCP，静默流挂死场景也随之解除）
+    const stream = await client.chat.completions.create(
+      {
+        model: req.model,
+        messages: toOpenaiMsgs(req.messages, req.system),
+        // P2-10：空 tools 数组不传（部分端点对 tools:[] 报 400）
+        ...(req.tools.length > 0 ? { tools: toOpenaiTools(req.tools) } : {}),
+        stream: true,
+        stream_options: { include_usage: true }, // P1-6：否则 final chunk 无 usage
+        ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+        ...(req.topP !== undefined ? { top_p: req.topP } : {}),
+        ...thinkingToOpenai(req.thinking), // P0-5：thinking → reasoning_effort
+      } as never,
+      req.signal ? { signal: req.signal } : {},
+    )
 
     const t = new OpenaiTranslator()
     for await (const chunk of stream as unknown as AsyncIterable<OpenaiChunk>) {

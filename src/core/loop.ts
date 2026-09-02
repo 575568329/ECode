@@ -258,6 +258,13 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         tools: opts.tools.specs(),
         signal: opts.signal,
       })) {
+        // 批1a（2026-09-02）：流内逐 chunk signal 硬检查——provider/SDK 层可能不响应或静默吞
+        // abort（真机实证形态），break 是活跃流上唯一及时止损位；break 后 326 行流末兜底判
+        // aborted、finally 固化部分产出、453 合成中断占位 tool_result 配对。break 传播链会
+        // 自动 abort 底层请求（两 SDK 源码+实验实证：消费者 break → generator return() →
+        // SDK finally abort → TCP 断），无需手动关闭面。静默流（零 chunk 挂死）场景由
+        // signal 传参修复（openai.ts 第二参）覆盖——那里本检查没有执行机会
+        if (signalAborted(opts.signal)) break
         switch (d.type) {
           case 'text':
             textBuf += d.text
@@ -320,9 +327,11 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
             break
         }
       }
-      // 真实 SDK abort 语义（pty 实测，loop 日志实证）：fetch abort 不抛错——流静默正常收尾
-      //（done 缺失/截断），for-await 干净结束。若不兜底会当正常 end 走停止判定：
-      // 有 tool_use 时 stop-lying 防御还会继续执行工具=中断失效。signal 已断即权威判中断。
+      // 批1a 注释修正（2026-09-02 翻案）：openai 线「流静默正常收尾」的真因是 signal 曾传进
+      // body 参数从未到达 fetch + openai v7 SDK 吞 AbortError 静默退出（传参已修为第二参）；
+      // anthropic 线是抛 APIUserAbortError（下方 catch 三源判定）。流内逐 chunk 检查是第二道
+      // 保险，此处流末兜底仍是权威判据：signal 已断即判 aborted——有 tool_use 时 stop-lying
+      // 防御才不会继续执行工具=中断失效。
       if (opts.signal?.aborted) stopReason = 'aborted'
     } catch (e) {
       if (streamError === null) streamError = toAppError(e)

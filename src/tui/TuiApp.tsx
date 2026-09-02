@@ -1463,7 +1463,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       setRunning(false)
       setActivity({ state: 'aborted' })
       setActive((a) => ({ ...a, streaming: false }))
-      setSystemMsgs(['已中断（任务停止中——后台执行正在收敛，输入框已可用）'])
+      setSystemMsgs(['已中断（任务停止中——后台执行正在收敛，输入框已可用，部分产出已保留）'])
       void host.send({ op: 'interrupt' })
     },
     // P0#1：confirm/picker 覆盖期间不 abort（由覆盖组件独占 Ctrl+C）
@@ -1811,7 +1811,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         setRunning(false)
         setActivity({ state: 'aborted' })
         setActive((a) => ({ ...a, streaming: false }))
-        setSystemMsgs(['已中断（任务停止中——后台执行正在收敛，输入框已可用）'])
+        setSystemMsgs(['已中断（任务停止中——后台执行正在收敛，输入框已可用，部分产出已保留）'])
         void host.send({ op: 'interrupt' })
       }}
       activity={activity.state}

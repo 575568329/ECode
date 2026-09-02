@@ -699,6 +699,50 @@ describe('runLoop：真实 SDK abort 静默收尾（pty 实测形态——abort 
   })
 })
 
+describe('runLoop：批1a 流内逐 chunk signal 硬检查（真机根因形态）', () => {
+  /** 2026-09-02 四角色审阅的形态陷阱：上面 AbortReal/Silent 两个模板都**自听 signal** 才断，
+   *  测不出真机根因形态（openai signal 传参 bug 期 provider 层零响应，按自己节奏吐流）。
+   *  本 provider 完全无视 signal，20ms/字 慢滴 50 字——唯一能及时断的位置就是 loop 的流内
+   *  逐 chunk 检查（signal 传参修复管静默流；本测锁的是活跃流第二道保险） */
+  class DeafSlowDripProvider implements LLMProvider {
+    readonly type = 'mock'
+    async *run(_req: LLMProviderRunRequest): AsyncIterable<Delta> {
+      for (let i = 1; i <= 50; i++) {
+        await new Promise((r) => setTimeout(r, 20))
+        yield { type: 'text', text: `字${i} ` }
+      }
+      yield { type: 'done', stop_reason: 'end' }
+    }
+  }
+
+  it('中途 abort → 下一 chunk 即断（不等 50×20ms 自然结束）：判 aborted、部分产出固化、无退避', async () => {
+    const ac = new AbortController()
+    const acts: string[] = []
+    const texts: string[] = []
+    const opts = {
+      ...makeOpts(new DeafSlowDripProvider(), []),
+      signal: ac.signal,
+      callbacks: {
+        onText: (t: string) => texts.push(t),
+        onActivity: (s: string) => acts.push(s),
+      },
+    }
+    const t0 = Date.now()
+    const runP = runLoop([], 'hi', opts)
+    setTimeout(() => ac.abort(), 80) // 流进行约 1/3 处
+    const messages = await runP
+    const elapsed = Date.now() - t0
+    // 不等流自然结束（50×20=1000ms）也不吃退避（BASE_RETRY_MS 500ms 起）：abort 后下一 chunk 即断
+    expect(elapsed).toBeLessThan(600)
+    expect(acts).toContain('aborted')
+    expect(acts).not.toContain('retry')
+    // 部分产出固化：收到若干字但远未收满 50，assistant 是最后一条消息
+    expect(texts.length).toBeGreaterThan(0)
+    expect(texts.length).toBeLessThan(50)
+    expect(messages.at(-1)?.role).toBe('assistant')
+  })
+})
+
 describe('runLoop：图片毒化出路指引（2026-08-29 P1 处置，CC/codex 同思路）', () => {
   /** 返回带图 blocks 的只读工具（模拟 read_file 读图） */
   const imgTool: Tool = {

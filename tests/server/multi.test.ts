@@ -196,8 +196,16 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
       // ② 人专属端点归档生效（冷项目直落 sidecar）
       const arc = await (await fetch(`${bE}/api/archive`, { method: 'POST', headers: aE, body: JSON.stringify({ project: dirE.split(String.fromCharCode(92)).join('/'), sessionId: sid, archived: true }) })).json()
       expect(arc).toMatchObject({ ok: true })
-      const meta = JSON.parse(wf1.length >= 0 ? (await import('node:fs')).readFileSync(join(sessionsDir, `${sid}.meta.json`), 'utf8') : '{}') as { archived?: boolean }
+      const meta = JSON.parse((await import('node:fs')).readFileSync(join(sessionsDir, `${sid}.meta.json`), 'utf8')) as { archived?: boolean }
       expect(meta.archived).toBe(true)
+      // ②' 跨项目归属拒收（审阅 S1）：另一个项目的 cwd 查不到该会话 → 404
+      const dirF = mkdtempSync(join(tmpdir(), 'ecode-projF-'))
+      try {
+        const wrongProj = await (await fetch(`${bE}/api/archive`, { method: 'POST', headers: aE, body: JSON.stringify({ project: dirF.split(String.fromCharCode(92)).join('/'), sessionId: sid, archived: false }) })).json()
+        expect(wrongProj).toMatchObject({ ok: false })
+      } finally {
+        rmSync(dirF, { recursive: true, force: true })
+      }
       // ③ session/list 默认不显示归档；includeArchived 拉到
       const coldList = await (await fetch(`${bE}/api/p/${enc(dirE)}/cmd`, { method: 'POST', headers: aE, body: JSON.stringify({ op: { op: 'session/list', includeArchived: true } }) })).json()
       expect((coldList.value as Array<{ sessionId: string; archived?: boolean }>).find((m) => m.sessionId === sid)?.archived).toBe(true)

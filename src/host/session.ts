@@ -795,9 +795,14 @@ export class HostSession {
     // 归属校验（审阅 S3 同口径）：跨项目改写他项目会话元数据=完整性破坏
     if (!this.ownsSession(sessionId)) return { ok: false, error: `会话不存在或不属于当前项目：${sessionId}`, code: 'SESSION_NOT_FOUND' }
     this.deps.history.patchSessionMeta(sessionId, { archived })
-    this.publish('session/updated', { sessionId, archived })
+    this.publishUpdated(sessionId, { archived })
     this.deps.logger.info('system', 'session_archived', { sessionId, archived })
     return { ok: true }
+  }
+
+  /** session/updated 广播公共出口（审阅 A1：serve 冷路径也经此发帧——不因会话冷热分叉）。 */
+  publishUpdated(sessionId: string, patch: { title?: string; archived?: boolean }): void {
+    this.publish('session/updated', { sessionId, ...patch })
   }
 
   private async dispatch(cmd: ProtocolCommand): Promise<CommandResult> {

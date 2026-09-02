@@ -302,6 +302,11 @@ export async function serveMode(): Promise<void> {
   } => ({
     project: projectRoot,
     sendCommand: async (sessionId, op) => {
+      // 2026-09-02 归档人专属（审阅 F-2）：IM 网关不经过 /cmd HTTP 拦截，须在此同款拒收——
+      // 归档只能由 web /api/archive 人专属端点发起（宿主 dispatch 兜底之外的第二道闸）
+      if ((op as { op?: string }).op === 'session/archive') {
+        return { ok: false, error: '归档是人专属操作，不能经 IM 网关发起（web 归档按钮走 /api/archive）', code: 'HUMAN_ONLY_COMMAND' }
+      }
       // 真新建特判（审阅 P1-3：飞书 /new 曾只解绑定，下一条消息 ensureDefault 复用旧默认
       // 会话——「新建」实为继续旧聊；与 multi.ts 信封层拦截同语义）
       if ((op as { op?: string }).op === 'session/new') {

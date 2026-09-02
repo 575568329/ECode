@@ -533,17 +533,25 @@ export function serveMulti(
             // 归属校验：sessionId 拼进 sidecar 路径——白名单（与 isValidSessionId 同源）
             if (!isValidSessionId(body.sessionId)) return json(400, { ok: false, error: `会话 id 非法：${body.sessionId}` })
             const cwd = normalizeProjectPath(body.project)
+            // 归属校验（审阅 S1）：确认会话确实属于该项目——防持一等凭据者跨项目归档任意会话
+            // （patchSessionMeta 按文件名全局找，无项目维度约束；冷路径也须与协议侧 ownsSession 同口径）
+            const sidMeta = FileHistoryStore.listMetas(opts.sessionsDir ?? join(homedir(), '.ecode', 'sessions'), cwd)
+            if (!sidMeta.some((m) => m.sessionId === body.sessionId)) {
+              return json(404, { ok: false, error: `会话 ${body.sessionId} 不属于项目 ${cwd}` })
+            }
             // 目标活会话 → 借其宿主执行（session/updated 帧可达各订阅端）；
-            // 冷会话/冷项目 → 借 history 静态路径直接落 sidecar（不拉起会话宿主——归档历史条目
-            // 无需装配；多端列表一致性靠下次 session/list 的冷读自愈）
+            // 冷会话（项目活但未载入）→ 宿主 history 落 sidecar + 借宿主通道广播
+            // （审阅 A1：冷路径也要发 session/updated——TUI 底部警示/多端列表同步不因会话冷热分叉）
             const entry = registry.listActive().find((e) => e.path === cwd)
             if (entry !== undefined) {
               const r = await registry.acquire(cwd, { confirm: true })
               if (r.ok && r.host !== undefined) {
                 const live = r.host.conversation(body.sessionId)
                 if (live !== undefined) return json(200, { ...(await live.archiveSession(body.sessionId, body.archived)) })
-                // 冷会话（项目活但该会话未载入）：用项目宿主的 history 落 sidecar + 日志
                 FileHistoryStore.patchSessionMeta(opts.sessionsDir ?? join(homedir(), '.ecode', 'sessions'), body.sessionId, { archived: body.archived })
+                // 审阅 A1：广播依赖该项目的任一活会话通道（informative 帧——无订阅者时宿主广播零开销）
+                const anyConv = r.host.conversationsSnapshot()[0]?.[1]
+                anyConv?.publishUpdated?.(body.sessionId, { archived: body.archived })
                 return json(200, { ok: true })
               }
             }

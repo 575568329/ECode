@@ -138,7 +138,8 @@ const EntryRow = memo(function EntryRow({ e, actionCtx }: { e: ChatEntry; action
 /** 历史工具行（批 3 W-4）：点击展开完整结果——编辑类工具着色 diff（+/- 着色/超长截断），
  *  其余 pre；附着图照渲。open 态行内私有。 */
 function ToolEntryRow({ e, actionCtx }: { e: ChatEntry; actionCtx: MessageActionContext }): JSX.Element {
-  const [open, setOpen] = useState(false)
+  // R3/D15：历史编辑卡默认展开 diff（与运行卡同款——「最终呈现 diff 直接可见」三端对齐）
+  const [open, setOpen] = useState(e.name === 'edit_file' || e.name === 'write_file')
   const isEdit = e.name === 'edit_file' || e.name === 'write_file'
   const view = useMemo(
     () => (open && isEdit && e.detail !== undefined ? parseDiffContent(e.detail) : null),

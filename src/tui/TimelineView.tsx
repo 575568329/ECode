@@ -18,6 +18,7 @@ import { Box, Text } from 'ink'
 import { Markdown } from './Markdown.js'
 import { ToolLine } from './ToolLine.js'
 import { foldStreamText } from './stream.js'
+import { useViewport } from './viewport.js'
 import { MessageRow } from './MessageRow.js'
 import { symbols } from './symbols.js'
 import { WIDTH } from './layout.js'
@@ -26,10 +27,12 @@ import type { TimelineEntry } from '../protocol/timeline.js'
 
 const LF = '\n'
 
-/** 流式灰字占位（自 Conversation 迁入，活动流 B4——解循环引用；re-export 见 Conversation） */
+/** 流式灰字占位（自 Conversation 迁入，活动流 B4——解循环引用；re-export 见 Conversation）。
+ *  R2/P1-5：恢复 useViewport 订阅 resize——memo 条目下直读 stdout 会在变窄窗口按旧宽
+ *  折叠（实际行数超 maxLines 破预算），迁移时丢的订阅补回。 */
 export function GrayStreaming({ text, maxLines }: { text: string; maxLines?: number }): ReactElement {
-  const cols = typeof process.stdout.columns === 'number' && process.stdout.columns > 0 ? process.stdout.columns : 80
-  const { lines, folded, total } = foldStreamText(text, maxLines, Math.max(10, cols - 2))
+  const { columns } = useViewport()
+  const { lines, folded, total } = foldStreamText(text, maxLines, WIDTH.body(columns))
   return (
     <Box flexDirection="column">
       {folded > 0 && <Text dimColor>↑ {folded} 行已折叠（共 {total} 行）</Text>}
@@ -48,15 +51,17 @@ interface TimelineViewProps {
 
 /** 单条目 memo 包裹（未动条目引用恒等 → 跳过重渲；delta 高频下防全量重跑 markdown/fold） */
 const TextEntry = memo(function TextEntry({ text, live, maxLines }: { text: string; live: boolean; maxLines: number }): ReactElement {
+  // R2/P1-3：D3 顶格贯彻到动态区（icon=''）——AssistantMessage 已顶格，此处不一致
+  // 会造成轮末 ● 消失的动静跳变
   if (live) {
     return (
-      <MessageRow>
+      <MessageRow icon="">
         <GrayStreaming text={text} maxLines={maxLines} />
       </MessageRow>
     )
   }
   return (
-    <MessageRow>
+    <MessageRow icon="">
       <Markdown text={text} />
     </MessageRow>
   )
@@ -80,7 +85,7 @@ const FoldedTextEntry = memo(function FoldedTextEntry({ chars }: { chars: number
 })
 
 export function TimelineView({ timeline, lines, liveMaxLines }: TimelineViewProps): ReactElement {
-  const { columns } = { columns: WIDTH.content(typeof process.stdout.columns === 'number' ? process.stdout.columns : 80) }
+  const { columns } = useViewport()
   const budget = timelineBudget(timeline, lines, columns, liveMaxLines)
   // live thinking 渲染跳过不占行（§5.5.6——只供 loading 行消费；终态行才计价）
   const visible = timeline.filter((e) => !(e.kind === 'thinking' && e.endedAt === undefined))
@@ -97,7 +102,7 @@ export function TimelineView({ timeline, lines, liveMaxLines }: TimelineViewProp
       {budget.foldedSummary !== null && (
         <MessageRow icon="" dim>
           <Text dimColor>
-            ▲ 已折叠：本轮前段 {budget.foldedSummary.tools} 个调用 · {budget.foldedSummary.texts} 段文本（Ctrl+T 全程回看）
+            {symbols.folded} 已折叠：本轮前段 {budget.foldedSummary.tools} 个调用 · {budget.foldedSummary.texts} 段文本（Ctrl+T 全程回看）
           </Text>
         </MessageRow>
       )}

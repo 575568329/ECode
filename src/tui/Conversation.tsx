@@ -10,7 +10,7 @@ import { ToolGroupView } from './ToolGroupView.js'
 import { TimelineView } from './TimelineView.js'
 import { ConfirmPrompt } from './ConfirmPrompt.js'
 import { foldStreamText } from './stream.js'
-import { allocateDynamic, useViewport } from './viewport.js'
+import { allocateDynamic, useViewport, clipWidth } from './viewport.js'
 import { MessageRow } from './MessageRow.js'
 import { symbols } from './symbols.js'
 import { UserMessage } from './UserMessage.js'
@@ -156,7 +156,13 @@ export function Conversation({
         </MessageRow>
       ) : (
         active.timeline.length > 0 && (
-          <TimelineView timeline={active.timeline} lines={alloc.timelineLines} liveMaxLines={alloc.streamMaxLines} />
+          // R2/P1-1（设计 §5.5.1 S2 审批压缩）：confirm 打开时 timeline 压成 1 行让位
+          // ConfirmPrompt（其自管公式只看 budget 不知道头顶 timeline 占行——并存必超）
+          <TimelineView
+            timeline={active.timeline}
+            lines={active.confirm !== null ? 2 : alloc.timelineLines}
+            liveMaxLines={alloc.streamMaxLines}
+          />
         )
       )}
       {active.confirm ? (
@@ -179,7 +185,8 @@ export function Conversation({
       {queuedInterjects.map((q, i) => (
         <MessageRow key={`qi-${i}`} icon={symbols.prompt} dim>
           <Text dimColor>
-            {q.length > 46 ? `${q.slice(0, 46)}…` : q}
+            {/* R3/§1.5：显示宽度截断（旧 q.slice(0,46) 是字符数——46 个 CJK=92 列破预算） */}
+            {clipWidth(q, 46)}
             （已排队 · Ctrl+U 清空）
           </Text>
         </MessageRow>

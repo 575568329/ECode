@@ -150,20 +150,25 @@ export interface TimelineEntryShape {
   kind: 'text' | 'thinking' | 'tool'
   live?: boolean
   text?: string
+  /** thinking 专属：未闭合（live）标记——计价前滤除（与渲染层同口径） */
+  endedAt?: number
   tool?: { name: string; status: string }
 }
 
 /** 单条目实占单价（行）——v1.7 渲染审阅 P0-1：副作用 diff 展开块含附属行（标题 1+marker 1） */
 function entryCost(e: TimelineEntryShape, ctx: { expandCap: number; liveMaxLines: number }): number {
+  // R2/P0-2：margin 级联入账——条目经 MessageRow（marginTop=1）或 ToolLine 输出块
+  // （marginTop=GAP.block/2，Ink 渲染 0.5 与 1 同为 1 空行）每条目 +1
   if (e.kind === 'text') {
-    return e.live === true ? ctx.liveMaxLines : 1 // live=灰字折叠窗（预算大头）；终态段按降级行 1 计（最新段另用估行）
+    // live=灰字折叠窗（+margin 1+折叠提示行 1）；终态段=降级行 1+margin 1（最新段另用估行）
+    return e.live === true ? ctx.liveMaxLines + 2 : 2
   }
-  if (e.kind === 'thinking') return 1
+  if (e.kind === 'thinking') return 2 // 行 1 + margin 1
   if (e.tool === undefined) return 1
-  if (e.tool.status === 'running') return 1
+  if (e.tool.status === 'running') return 2 // 行 1 + margin 1
   const sideEffect = e.tool.name === 'edit_file' || e.tool.name === 'write_file'
-  // 行 1 + ⎿ preview 1；副作用完成后 diff 自动展开（D15）→ 标题 1 + expandCap + marker 1
-  return sideEffect ? 2 + 1 + ctx.expandCap + 1 : 2
+  // 行 1+margin 1+⎿ preview 1；副作用 diff 自动展开（D15）→ 标题 1+expandCap+marker 1
+  return sideEffect ? 2 + 1 + 1 + ctx.expandCap + 1 : 3
 }
 
 /**
@@ -171,7 +176,9 @@ function entryCost(e: TimelineEntryShape, ctx: { expandCap: number; liveMaxLines
  * （其后更老的更放不下——单调性；resize/新条目到达由纯函数整体重算）。
  * 计价宽度基准 WIDTH.body 口径（columns−2，v1.7 管线审阅 P1-5）。
  */
-export function timelineBudget(entries: readonly TimelineEntryShape[], lines: number, columns: number, liveMaxLines: number): TimelineBudget {
+export function timelineBudget(rawEntries: readonly TimelineEntryShape[], lines: number, columns: number, liveMaxLines: number): TimelineBudget {
+  // R2/P1-2：与渲染层同口径滤除 live thinking（不占行不计价——根治 visibleFrom 下标空间错位）
+  const entries = rawEntries.filter((e) => !(e.kind === 'thinking' && e.endedAt === undefined))
   const width = Math.max(10, columns - 2)
   let lastFinalTextIdx = -1
   let lastFinalTextChars = 0
@@ -187,20 +194,26 @@ export function timelineBudget(entries: readonly TimelineEntryShape[], lines: nu
     lastFinalTextIdx >= 0 ? Math.ceil(((lastFinalTextChars + width - 1) / width) * 1.3) + 2 : null
   const ctx = { expandCap: 12, liveMaxLines: Math.max(1, liveMaxLines) }
   const cap = Math.max(1, Math.floor(lines))
-  let used = 0
+  // R2/P0-2：折叠摘要行恒预留 2（margin 1+行 1；无折叠时并入余量不渲染）
+  let used = 2
   let visibleFrom = entries.length
+  let broke = false
   for (let i = entries.length - 1; i >= 0; i--) {
     let cost = entryCost(entries[i], ctx)
     if (i === lastFinalTextIdx && finalTextEstimate !== null) cost = Math.max(cost, finalTextEstimate)
     if (used + cost > cap) {
-      // 首个放不下的条目即折叠线：它自己与更老的都折叠——visibleFrom=第一个**可见**下标（i+1）
+      // R2/P0-1：broke 区分「全放下」与「最新条目就放不下」——旧实现两路径同值
+      // （visibleFrom===length）误判全可见，反向全量渲染直通 3J
       visibleFrom = i + 1
+      broke = true
       break
     }
     used += cost
   }
-  if (visibleFrom === entries.length) {
-    return { visibleFrom: 0, foldedSummary: null, finalTextEstimate, finalTextCap: Math.max(4, Math.floor(cap / 3)) }
+  if (!broke) {
+    // R2/P1-6：finalTextCap=cap（estimate 失准保险丝）——「放得下与否」由 used 计入 estimate
+    // 的折叠判定统一裁决，渲染层不再双重门槛（cap/3 会把放得下的段过度降级）
+    return { visibleFrom: 0, foldedSummary: null, finalTextEstimate, finalTextCap: cap }
   }
   const folded = entries.slice(0, visibleFrom)
   return {
@@ -210,7 +223,7 @@ export function timelineBudget(entries: readonly TimelineEntryShape[], lines: nu
       texts: folded.filter((e) => e.kind === 'text').length,
     },
     finalTextEstimate,
-    finalTextCap: Math.max(4, Math.floor(cap / 3)),
+    finalTextCap: cap,
   }
 }
 

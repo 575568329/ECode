@@ -22,11 +22,11 @@ describe('timelineBudget（§5.5.7）', () => {
     expect(out.foldedSummary!.tools).toBeGreaterThanOrEqual(1)
   })
 
-  it('diff 附属行计价（P0-1）：副作用工具单价 = 行1+preview1+标题1+expandCap+marker1', () => {
-    // 预算恰好 = 2+1+12+1=16 放一个 edit；17 的第二个 edit 折叠
-    const one = timelineBudget([edit('e1')], 16, 80, 5)
+  it('diff 附属行计价（P0-1）：副作用单价含 margin 与摘要预留（R2 后=2+16+2 摘要=20 放一个）', () => {
+    // 单价 = 行1+margin1+preview1+标题1+expandCap12+marker1 = 17；摘要恒预留 2 → 预算 19 恰放一个
+    const one = timelineBudget([edit('e1')], 19, 80, 5)
     expect(one.foldedSummary).toBeNull()
-    const two = timelineBudget([edit('e1'), edit('e2')], 16, 80, 5)
+    const two = timelineBudget([edit('e1'), edit('e2')], 19, 80, 5)
     expect(two.foldedSummary).not.toBeNull()
     expect(two.foldedSummary!.tools).toBe(1) // e1 折叠、e2 可见
   })
@@ -38,11 +38,18 @@ describe('timelineBudget（§5.5.7）', () => {
     expect(out.finalTextEstimate!).toBeGreaterThanOrEqual(4) // 200 字/78 宽 ≈ 3 行 ×1.3+2
   })
 
-  it('thinking 条目单价 1 行', () => {
-    const entries: TimelineEntryShape[] = [{ kind: 'thinking' }, { kind: 'thinking' }, { kind: 'thinking' }]
-    const ok = timelineBudget(entries, 3, 80, 3)
+  it('thinking 条目单价 2 行（R2 后含 margin 1）', () => {
+    const entries: TimelineEntryShape[] = [{ kind: 'thinking', endedAt: 1 }, { kind: 'thinking', endedAt: 2 }, { kind: 'thinking', endedAt: 3 }]
+    const ok = timelineBudget(entries, 8, 80, 3) // 摘要 2 + 3×2 = 8 恰好
     expect(ok.foldedSummary).toBeNull()
-    const fold = timelineBudget(entries, 2, 80, 3)
+    const fold = timelineBudget(entries, 7, 80, 3)
     expect(fold.foldedSummary).not.toBeNull()
+  })
+
+  it('R2/P0-1：最新条目就放不下 → 全折叠（broke 区分——旧实现误判全可见反向全量渲染）', () => {
+    const out = timelineBudget([{ kind: 'tool', tool: { name: 'bash', status: 'done' } }, edit('e1')], 9, 80, 5)
+    expect(out.foldedSummary).not.toBeNull()
+    expect(out.foldedSummary!.tools).toBe(2) // 全折叠，只剩摘要行
+    expect(out.visibleFrom).toBe(2)
   })
 })

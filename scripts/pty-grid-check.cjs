@@ -3,7 +3,7 @@
  * 场景：提交任务 → mock 回 tool_use(read_file) → 真实工具执行 → 助手文本（慢响应窗口内插话）。
  * 断言（strip 后的流内行）：
  *   G1 用户消息   ❯ 顶格第 0 列（无「 ❯」）
- *   G2 工具行     ● read_file（时间线制：逐调用行，组头「N 个工具」随活动流 D1 退役）
+ *   G2 工具行     ● read_file（时间线制：动态区逐调用行；Static 历史组头保留——ToolGroupView 薄壳化挂账 R3）
  *   G3 助手文本   顶格（活动流 D3 2026-09-02 拍板：圆点只标工具行，助手 icon='' 空槽第 2 列起）
  *   G4 排队插话行 ❯ + 已排队标记
  * 跑法：node scripts/pty-grid-check.cjs

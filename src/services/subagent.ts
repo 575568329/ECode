@@ -18,7 +18,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { runLoop, type LoopRunOptions } from '../core/loop.js'
-import type { HistoryLine, Message, ToolUseBlock } from '../core/types.js'
+import { isMessageLine } from '../core/types.js'
+import type { HistoryLine, ToolUseBlock } from '../core/types.js'
 import type { LLMProvider, ProviderReq } from '../providers/interface.js'
 import type { Tool, ToolContext, ToolRegistry } from '../tools/interface.js'
 import type { Logger } from './logger.js'
@@ -363,7 +364,7 @@ async function resumeSummary(
   const providerReq = deps.getProviderReq()
   const provider = deps.getProvider()
   const transcriptText = messages
-    .filter((l): l is Message => 'role' in l && 'content' in l)
+    .filter(isMessageLine)
     .map((m) => {
       const parts = (Array.isArray(m.content) ? m.content : [])
         .map((b: { type: string; text?: string; name?: string; content?: unknown }) =>

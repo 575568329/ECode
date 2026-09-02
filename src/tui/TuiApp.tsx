@@ -24,6 +24,7 @@ import type { HistoryStore } from '../services/history.js'
 import { resurrectDaemonReg } from '../cli/daemon.js' // tui→cli 反向单点（daemon 拉起逻辑归口；无循环依赖——daemon.ts 不 import tui）
 import { createActive, liveTextOf, toolsOf, type CommittedItem, type ActiveState } from './types.js'
 import { timelineReducer, makeTimelineIdFactory } from '../protocol/timeline.js'
+import { stripUntrustedAnsi } from '../protocol/sanitize.js'
 import { messagesToCommitted } from './commit.js'
 import { expandSkill, type SkillRegistry } from '../services/skill.js'
 import { globalSkillHooks } from '../services/hooks/global.js'
@@ -1599,8 +1600,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           for (let i = active.timeline.length - 1; i >= 0; i--) {
             const e = active.timeline[i]
             if (e.kind === 'thinking' && e.endedAt === undefined && e.text !== '') {
-              const tail = e.text.length > 40 ? e.text.slice(e.text.length - 40) : e.text
-              return tail.replace(/\s+/g, ' ').trim() + '…'
+              const chars = Array.from(e.text) // R2/P2-4：按码点切（UTF-16 slice 可切半个 emoji）
+              const tail = chars.length > 40 ? chars.slice(chars.length - 40).join('') : e.text
+              return `${stripUntrustedAnsi(tail).replace(/\s+/g, ' ').trim()}…`
             }
           }
           return undefined

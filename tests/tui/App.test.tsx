@@ -96,7 +96,7 @@ describe('App', () => {
     expect(f).toContain('500 tok')
   })
 
-  it('active.streamingText + thinking 同时显示', () => {
+  it('timeline live text + thinking 同时显示（R4 改名：streamingText 已退役）', () => {
     const active = { ...createActive(), timeline: [{ kind: 'text', id: 'x1', text: '正在生成回答', live: true }], streaming: true }
     const { lastFrame } = render(
       React.createElement(App, {
@@ -111,8 +111,11 @@ describe('App', () => {
     expect(f).toContain('思考中')
   })
 
-  it('active.tools + activity=tool', () => {
-    const active = { ...createActive(), tools: [tool({ id: 't1', name: 'read_file' })] }
+  it('timeline 工具条目 + activity=tool（R4/P0-1：旧 tools 死字段是假覆盖——断言实被 activityText 满足）', () => {
+    const active = {
+      ...createActive(),
+      timeline: [{ kind: 'tool', id: 't1', tool: { name: 'read_file', id: 't1', status: 'done' } }],
+    }
     const { lastFrame } = render(
       React.createElement(App, {
         model: 'M',
@@ -149,8 +152,10 @@ describe('App', () => {
     ]
     const active = {
       ...createActive(),
-      timeline: [{ kind: 'text', id: 'x1', text: '继续生成', live: true }],
-      tools: [tool({ id: 't1', name: 'bash', status: 'done' })],
+      timeline: [
+        { kind: 'tool', id: 't1', tool: { name: 'bash', id: 't1', status: 'done' } },
+        { kind: 'text', id: 'x1', text: '继续生成', live: true },
+      ],
     }
     const { lastFrame } = render(
       React.createElement(App, {

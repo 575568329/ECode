@@ -306,6 +306,19 @@ describe('批2b 配套：两段式回填态与 busy 拦截', () => {
     expect(f).toContain('/不存在的命令xyz') // 文本仍在输入框（批2b：只提示不吞）
   })
 
+  it('R4/D14：/output 已退役——busy 下不再白名单放行（走 onSlashBusy 拦截）', async () => {
+    const onSlashBusy = vi.fn()
+    const { stdin } = render(
+      React.createElement(InputStream, { onSubmit: () => {}, busy: true, onSlashBusy, onCommand: vi.fn() }),
+    )
+    await flush()
+    stdin.write('/output')
+    await flush()
+    stdin.write('\r')
+    await flush(60)
+    expect(onSlashBusy).toHaveBeenCalled() // 不在白名单 → busy 拦截（不再有 open-output-panel 动作）
+  })
+
   it('F-46 busy 放行只读白名单：/warnings 执行、白名单外仍拦（活动流 D14：/output 已退役出白名单）', async () => {
     const onCommand = vi.fn()
     const onSlashBusy = vi.fn()

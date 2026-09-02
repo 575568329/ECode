@@ -45,7 +45,7 @@ export interface TimelineReducerDeps {
   nextId: (kind: 'text' | 'thinking' | 'tool') => string
 }
 
-function sealLiveTexts(state: TimelineEntry[], deps: TimelineReducerDeps): TimelineEntry[] {
+function sealLiveTexts(state: TimelineEntry[]): TimelineEntry[] {
   let changed = false
   const next = state.map((e) => {
     if (e.kind === 'text' && e.live) {
@@ -54,7 +54,6 @@ function sealLiveTexts(state: TimelineEntry[], deps: TimelineReducerDeps): Timel
     }
     return e
   })
-  void deps
   return changed ? next : state
 }
 
@@ -81,7 +80,9 @@ export function timelineReducer(state: TimelineEntry[], ev: ProtocolEvent, deps:
         next[idx] = { ...hit, text: hit.text + ev.text }
         return next
       }
-      return [...state, { kind: 'thinking', id: deps.nextId('thinking'), blockIndex: ev.blockIndex, startedAt: deps.now(), text: ev.text }]
+      // R1/P2-1：interleaved 分段——新 thinking 块首见先封口 live text（与 loop 侧 flushText 同步），
+      // text→thinking→text 不黏连（两侧同规则=轮末重建无跳变）
+      return [...sealLiveTexts(state), { kind: 'thinking', id: deps.nextId('thinking'), blockIndex: ev.blockIndex, startedAt: deps.now(), text: ev.text }]
     }
     case 'thinking/ended': {
       const idx = state.findIndex((e) => e.kind === 'thinking' && e.blockIndex === ev.blockIndex && e.endedAt === undefined)
@@ -93,7 +94,7 @@ export function timelineReducer(state: TimelineEntry[], ev: ProtocolEvent, deps:
     }
     case 'item/started': {
       // text 分段唯一封口信号（B1 保持流式时机的根由）
-      const sealed = sealLiveTexts(state, deps)
+      const sealed = sealLiveTexts(state)
       return [...sealed, { kind: 'tool', id: ev.itemId, tool: { name: ev.name, id: ev.itemId, status: 'running', at: deps.now() } }]
     }
     case 'item/executing': {
@@ -128,7 +129,7 @@ export function timelineReducer(state: TimelineEntry[], ev: ProtocolEvent, deps:
     case 'turn/completed':
     case 'error': {
       // 全部 live 段封口（error 轮无 completed 帧的兜底）
-      return sealLiveTexts(state, deps)
+      return sealLiveTexts(state)
     }
     default:
       return state

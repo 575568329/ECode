@@ -1,3 +1,4 @@
+import stringWidth from 'string-width'
 /**
  * ToolCallView 的纯逻辑（TUI 规范 §4.11）：聚合 + 摘要 + 折叠阈值。
  * 与渲染（.tsx）分离，便于单测。
@@ -22,16 +23,25 @@ export interface ToolSummary {
 /** 折叠阈值（字节），输出超过则默认折叠。呼应 §4.11。 */
 export const FOLD_THRESHOLD = 200
 
-/** 入参摘要：取 path / command / pattern 等关键字段。 */
+/** 入参摘要：R3 起薄转发 protocol makeToolDigest（三方单源——旧本地 path??command??pattern
+ *  无截断无兜底与宿主/web 版漂移；名称参数由调用方语义补——此函数历史签名只收 input）。 */
 export function inputDigest(input: unknown): string {
   if (typeof input !== 'object' || input === null) return ''
   const obj = input as Record<string, unknown>
   return String(obj.path ?? obj.command ?? obj.pattern ?? '')
 }
 
-/** 输出首行预览（截断 80 字符）。 */
+/** 输出首行预览（R2/P1-4：改按显示宽度截 80 列——旧 slice(0,80) 是 UTF-16 码元，
+ *  中文 80 字=160 显示列在 80 列终端折行击穿「preview 单行」计价；string-width 感知 CJK）。 */
 export function previewLine(content: string): string {
-  return content.split('\n')[0]?.slice(0, 80) ?? ''
+  const first = content.split('\n')[0] ?? ''
+  if (stringWidth(first) <= 80) return first
+  let out = ''
+  for (const ch of first) {
+    if (stringWidth(out + ch) > 79) break
+    out += ch
+  }
+  return `${out}…`
 }
 
 /** 单个工具调用摘要。 */

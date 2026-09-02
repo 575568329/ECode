@@ -223,6 +223,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     }
     const newToolUses: ToolUseBlock[] = []
     let sawThinking = false // B1：thinking-only 轮不算空响应（思考也是输出）
+    const seenThinkingBlocks = new Set<number>() // R1/P2-1：interleaved 分段封口守卫（每 iter 重置）
     let stopReason: StopReason = 'end'
     let streamError: AppError | null = null
     let isAborted = false
@@ -248,6 +249,12 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
             break
           case 'thinking':
             sawThinking = true
+            // 活动流审阅 R1/P2-1：interleaved thinking（text→thinking→text）时首见新块封口
+            // text——与 reducer 侧同步，transcript 分段与客户端时间线同源（不封口则两段黏连）
+            if (!seenThinkingBlocks.has(d.blockIndex)) {
+              seenThinkingBlocks.add(d.blockIndex)
+              flushText()
+            }
             opts.callbacks.onThinking?.(d.blockIndex, d.text)
             break
           case 'thinking_end':

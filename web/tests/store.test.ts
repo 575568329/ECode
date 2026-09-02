@@ -314,3 +314,31 @@ describe('W-9：重连游标 + 旧帧去重（批 4）', () => {
     expect(useApp.getState().views.s1?.streaming).toBe('seed新')
   })
 })
+
+
+// —— 活动流 B5/R4：三新帧消费（P1-5 补测）——
+describe('活动流：thinking/executing 帧消费', () => {
+  it('item/executing 按 id 回填 running 卡 digest', () => {
+    frame('s1', { type: 'item/started', turnId: 't', itemId: 'i1', name: 'bash' })
+    frame('s1', { type: 'item/executing', turnId: 't', itemId: 'i1', digest: 'npm test' })
+    const v = useApp.getState().views.s1
+    expect(v?.items[0]?.digest).toBe('npm test')
+    expect(v?.items[0]?.status).toBe('running')
+  })
+
+  it('thinking 尾部窗 120 字 + started 封口清空', () => {
+    frame('s1', { type: 'thinking', turnId: 't', blockIndex: 0, text: '想'.repeat(150) })
+    let v = useApp.getState().views.s1
+    expect(v?.thinkingTail.length).toBe(120)
+    frame('s1', { type: 'item/started', turnId: 't', itemId: 'i2', name: 'grep' })
+    v = useApp.getState().views.s1
+    expect(v?.thinkingTail).toBe('')
+  })
+
+  it('thinking/ended 清空尾部窗', () => {
+    frame('s1', { type: 'thinking', turnId: 't', blockIndex: 0, text: '思考片段' })
+    frame('s1', { type: 'thinking/ended', turnId: 't', blockIndex: 0, durMs: 800 })
+    const v = useApp.getState().views.s1
+    expect(v?.thinkingTail).toBe('')
+  })
+})

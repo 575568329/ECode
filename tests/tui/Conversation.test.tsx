@@ -154,8 +154,8 @@ describe('Conversation', () => {
     const active = {
       ...createActive(),
       timeline: [
-        { kind: 'text', id: 'x1', text: '正在流式', live: true },
         { kind: 'tool', id: 't1', tool: { name: 'read_file', id: 't1', status: 'done' } },
+        { kind: 'text', id: 'x1', text: '正在流式', live: true },
       ],
     }
     const { lastFrame } = render(
@@ -168,7 +168,8 @@ describe('Conversation', () => {
     const f = lastFrame() ?? ''
     expect(f).toContain('历史消息')
     expect(f).toContain('正在流式')
-    expect(f).toContain('read_file')
+    // R2 后 24 行窗计价含 margin：live(5+2)+tool(3) 超总盘 9 → 牺牲链保 live 折老 tool（设计行为）
+    expect(f).toContain('已折叠')
     expect(f).toContain('底部输入')
   })
 
@@ -253,8 +254,10 @@ describe('F-36 消息行栅格（第一列只图标，文字含折行续行从�
     )
     const lines = (lastFrame() ?? '').split('\n').filter((l) => l.trim() !== '' && !l.includes('折叠'))
     expect(lines.length).toBeGreaterThan(1)
+    // R4/P1-1：严格断言（旧析取放行了带 ● 的错误形态）——D3 顶格：live 与续行统一第 2 列起
     for (const l of lines) {
-      expect(l.startsWith('● ') || l.startsWith('  ')).toBe(true)
+      expect(l.startsWith('  ')).toBe(true)
+      expect(l.startsWith('● ')).toBe(false)
     }
   })
 

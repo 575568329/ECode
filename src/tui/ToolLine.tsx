@@ -12,7 +12,7 @@ import { Box, Text } from 'ink'
 import { previewLine } from './toolview.js'
 import { DiffLine } from './DiffLine.js'
 import { theme } from './theme.js'
-import { symbols } from './symbols.js'
+import { symbols, toolIcon } from './symbols.js'
 import { foldLines, useViewport } from './viewport.js'
 import { stripUntrustedAnsi } from '../protocol/sanitize.js'
 import { GAP, INDENT, WIDTH } from './layout.js'
@@ -59,9 +59,9 @@ export function ToolLine({ tool, mode }: ToolLineProps): ReactElement {
   return (
     <Box flexDirection="column">
       <Box>
-        {/* 组内工具行行首图标列（排版批：图标都在最前面——名称起于第 2 列=⎿ 悬挂列） */}
+        {/* 行首图标列（D11 按类型：▢终端 ✎编辑 ⌕查阅；名称起于第 2 列=⎿ 悬挂列） */}
         <Box minWidth={INDENT.icon}>
-          <Text dimColor>{symbols.tool}</Text>
+          <Text dimColor>{toolIcon(t.name)}</Text>
         </Box>
         <Text bold>{t.name}</Text>
         {digest !== '' && (

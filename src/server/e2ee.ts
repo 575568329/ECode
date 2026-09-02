@@ -68,7 +68,12 @@ export function loadOrCreateHostKeys(file?: string): E2eeKeypair & { file: strin
   const path = file ?? join(homedir(), '.ecode', 'keys', 'e2ee.json')
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as E2eeKeypair
-    if (typeof parsed.publicKeyB64 === 'string' && typeof parsed.privateKeyB64 === 'string') return { ...parsed, file: path }
+    // 审阅修复（开发席 P1-3）：内容级校验——JSON 合法但 base64 解不出 32B（磁盘半写/手工编辑）
+    // 原样放行会在首个 conn-open 的 E2eeHostSession 构造抛 ERR_INVALID_KEY → dialDataLeg 的
+    // void 无 catch → unhandledRejection 崩整个 daemon（每次手机重连复崩）。不符即按损坏重生成
+    const pub = Buffer.from(parsed.publicKeyB64, 'base64')
+    const priv = Buffer.from(parsed.privateKeyB64, 'base64')
+    if (pub.length === 32 && priv.length === 32) return { ...parsed, file: path }
   } catch {
     /* 无文件/损坏=重生成（旧 offer 里的公钥随之失效——重配对即可，披露） */
   }
@@ -188,6 +193,9 @@ export class E2eeHostSession {
         const clientNonce = Buffer.from(msg.clientNonceB64, 'base64')
         if (clientNonce.length !== 32) return { ready: false, close: { code: 4001, reason: 'bad nonce' } }
         const shared = diffieHellman({ privateKey: this.hostPriv, publicKey: importPublic(Buffer.from(msg.ephPubB64, 'base64')) })
+        // 安全加固（审阅 P2）：低阶点显式拒绝——当前 OpenSSL 3 对全零/阶-1 点已在 diffieHellman
+        // 内抛错，但换 crypto provider 不保证；全零 shared=可预测密钥=MITM 面。一行固化消灭依赖
+        if (shared.length !== 32 || shared.every((b) => b === 0)) return { ready: false, close: { code: 4001, reason: 'low-order point' } }
         const hostNonce = randomBytes(32)
         this.keys = deriveKeys(Buffer.from(shared), clientNonce, hostNonce)
         this.state = 'wait-auth'

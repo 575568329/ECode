@@ -132,7 +132,7 @@ describe('TUI 稳定性：daemon 失联自愈链', () => {
     await flush(80)
     await vi.waitFor(() => expect(prompts).toBe(2), { timeout: 3000 })
     expect(resurrectMock).toHaveBeenCalledTimes(1)
-    expect(reattach).toHaveBeenCalledWith('http://127.0.0.1:45678', 'tk9')
+    expect(reattach).toHaveBeenCalledWith('http://127.0.0.1:45678', 'tk9', false) // 新实例（prevReg null）→ keepSeq=false
     // 关键命令全序（测试席 P1：全序断言替代弱 toContain）——建会话→首发失败→冷拉回→重读→重试
     const ops = calls.map((c) => c.op)
     expect(ops.indexOf('session/new')).toBeLessThan(ops.indexOf('session/restore'))
@@ -256,5 +256,72 @@ describe('TUI 稳定性：daemon 失联自愈链', () => {
     // 失败如实提示（不静默、不半切换）
     expect(lastFrame() ?? '').toContain('恢复失败')
     expect(lastFrame() ?? '').toContain('未切换')
+  })
+
+  it('路径⑤：同实例抖动重连（pid 未变）——不收场（防误杀活轮，R6/P0-1 判别面回归锁）', async () => {
+    // prevReg 与 resurrect 返回同一 pid：SSE 抖动重连而非新实例——活轮可能还在流，收场=冻结流文本
+    const sameReg = { id: 'i9', port: 45678, token: 'tk9', pid: 4321, version: '0.1.0' }
+    readServerRegMock.mockReturnValue(sameReg)
+    resurrectMock.mockResolvedValue(sameReg)
+    let prompts = 0
+    const host: TuiHost & { reattach?: unknown; setSessionId?: unknown } = {
+      send: async (cmd: ProtocolCommand): Promise<CommandResult> => {
+        if (cmd.op === 'prompt') {
+          prompts += 1
+          if (prompts === 1) return { ok: false, error: '命令通道不可达：ECONNREFUSED', code: 'NETWORK' }
+          return { ok: true, routed: 'Started', sessionId: 's-same' }
+        }
+        if (cmd.op === 'session/new') return { ok: true, sessionId: 's-same' }
+        if (cmd.op === 'session/restore') return { ok: true, sessionId: 's-same' }
+        if (cmd.op === 'session/read') return { ok: true, value: [] as HistoryLine[] }
+        return { ok: true }
+      },
+      subscribe: () => () => {},
+      dispose: () => {},
+      ...({ reattach: () => {}, setSessionId: () => {} } as never),
+    }
+    const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps() as never, host: host as never }))
+    await flush()
+    stdin.write('抖动重连')
+    await flush()
+    stdin.write('\r')
+    await flush(80)
+    await vi.waitFor(() => expect(prompts).toBe(2), { timeout: 3000 })
+    const f = lastFrame() ?? ''
+    expect(f).toContain('服务未中断') // 同实例分支提示
+    expect(f).not.toContain('原轮已随服务中断') // 未走 closeDeadTurn 收场（活轮不被误杀）
+  })
+
+  it('路径⑥：重连成功但会话找回失败——提前收场+警告可见（「已找回」假话修复回归锁）', async () => {
+    // prevReg 为 null（或 pid 不同）→ 新实例路径；restore 失败 → 走「会话找回失败」分支
+    readServerRegMock.mockReturnValue(null)
+    resurrectMock.mockResolvedValue({ id: 'i9', port: 45678, token: 'tk9', pid: 9999, version: '0.1.0' })
+    let prompts = 0
+    const host: TuiHost & { reattach?: unknown; setSessionId?: unknown } = {
+      send: async (cmd: ProtocolCommand): Promise<CommandResult> => {
+        if (cmd.op === 'prompt') {
+          prompts += 1
+          if (prompts === 1) return { ok: false, error: '命令通道不可达：ECONNREFUSED', code: 'NETWORK' }
+          return { ok: true, routed: 'Started', sessionId: 's-lost' }
+        }
+        if (cmd.op === 'session/new') return { ok: true, sessionId: 's-lost' }
+        if (cmd.op === 'session/restore') return { ok: false, error: '会话不存在', code: 'SESSION_NOT_FOUND' }
+        if (cmd.op === 'session/read') return { ok: true, value: [] as HistoryLine[] }
+        return { ok: true }
+      },
+      subscribe: () => () => {},
+      dispose: () => {},
+      ...({ reattach: () => {}, setSessionId: () => {} } as never),
+    }
+    const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps() as never, host: host as never }))
+    await flush()
+    stdin.write('找回失败场景')
+    await flush()
+    stdin.write('\r')
+    await flush(80)
+    await vi.waitFor(() => expect(prompts).toBe(2), { timeout: 3000 })
+    const f = lastFrame() ?? ''
+    expect(f).toContain('会话找回失败') // 警告可见（不被「✓ 会话已找回」覆盖——R6 假话修复）
+    expect(f).not.toContain('会话已找回')
   })
 })

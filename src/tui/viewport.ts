@@ -160,14 +160,21 @@ export interface TimelineEntryShape {
 }
 
 /** 单条目实占单价（行）——v1.7 渲染审阅 P0-1：副作用 diff 展开块含附属行（标题 1+marker 1） */
+
+/** live 段折叠窗行数（**计价与渲染同源**——审阅修复·架构/开发席 P2：原计价压到 cap 60%
+ * 但渲染窗仍用未压缩 liveMaxLines，多条目顶满预算时帧高越界=3J 防线开口） */
+export function liveWindowLines(liveMaxLines: number, cap: number): number {
+  return Math.max(4, Math.min(liveMaxLines, Math.max(6, Math.ceil(cap * 0.6)) - 2))
+}
+
 function entryCost(e: TimelineEntryShape, ctx: { expandCap: number; liveMaxLines: number; cap: number }): number {
   // R2/P0-2：margin 级联入账——条目经 MessageRow（marginTop=1）或 ToolLine（根 marginTop=1，
   // 2026-09-02 块间节奏对调：空行从标题/⎿ 之间移到块顶——总行数不变计价平移）每条目 +1
   if (e.kind === 'text') {
     // live=灰字折叠窗（+margin 1+折叠提示行 1）；终态段=降级行 1+margin 1（最新段另用估行）。
     // G+ 修复（真机回归：工具行全被挤光）——live 显示行数天然弹性（GrayStreaming 折叠窗），
-    // 计价随预算压缩到 cap 的 60%（保底 6），给最新工具条目留可见空间
-    if (e.live === true) return Math.min(ctx.liveMaxLines + 2, Math.max(6, Math.ceil(ctx.cap * 0.6))) + 0
+    // 计价随预算压缩到 cap 的 60%（保底 6），给最新工具条目留可见空间（窗行数同源 liveWindowLines）
+    if (e.live === true) return liveWindowLines(ctx.liveMaxLines, ctx.cap) + 2
     return 2
   }
   if (e.kind === 'thinking') return 2 // 行 1 + margin 1

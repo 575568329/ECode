@@ -208,6 +208,19 @@ export async function resurrectDaemonReg(logger: DaemonLogger): Promise<ServerRe
   } catch {
     /* 注册文件损坏/读取异常=按死亡路径走重拉 */
   }
+  // 审阅修复（开发席 P2）：版本不符的活 daemon 也不 spawn——verifyReg 的 null 有四种原因，
+  // 其中「pid 活+health ok+id 匹配但版本不符」时旧 daemon 明明活着，照 spawn 会双 daemon
+  // 并存（对齐 ensureDaemonAttach 的拒绝语义——提示用户显式处理，不自动脑裂）
+  {
+    const staleReg = readServerReg()
+    if (staleReg !== null && pidAlive(staleReg.pid)) {
+      const health = await probeHealth(staleReg.port)
+      if (health !== null && health.ok === true && (health.id === undefined || health.id === staleReg.id)) {
+        logger.warn('daemon', 'resurrect_skipped_version', { daemon: health.version ?? '未知', cli: myVersion() })
+        return null
+      }
+    }
+  }
   const haveLock = acquireSpawnLock()
   try {
     if (haveLock) {

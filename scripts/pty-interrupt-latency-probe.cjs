@@ -11,9 +11,9 @@ const http = require('node:http')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { spawn } = require('D:/study/ECode/node_modules/node-pty')
+const { spawn } = require(path.join(__dirname, '..', 'node_modules', 'node-pty'))
 
-const REPO = 'D:/study/ECode'
+const REPO = path.resolve(__dirname, '..') // 审阅修复（测试席 P2）：原硬编码 D:/study/ECode——换目录即崩
 const DELTA_MS = 500
 const N_DELTAS = 60
 const MARK = '流速测试段落内容'
@@ -173,7 +173,10 @@ async function run() {
   } else {
     console.log('[debug] sandbox 保留：', sandbox)
   }
-  process.exit(0)
+  // 审阅修复（测试席 P2）：插桩缺失=探针失能（曾恒 exit 0——被纳入「探针全绿」口径即假绿）。
+  // 四段至少有 pressed+received 才算测到；墙钟不是插桩可达性的证据
+  const measured = stages.pressed !== undefined && stages.received !== undefined && stages.surfaced !== undefined && stages.turn_finished !== undefined
+  process.exit(measured ? 0 : 2)
 }
 
 run().catch((e) => { console.error(e); process.exit(1) })

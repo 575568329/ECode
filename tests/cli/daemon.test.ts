@@ -59,8 +59,8 @@ describe('daemon.ts 入口序（文件面分支——经真 REG/LOCK 文件驱�
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, id: 'i1', version: `0.0.0-different-${realVersion}` }))
     })
-    await new Promise<void>((r) => health.listen(12399, '127.0.0.1', r))
-    writeServerRegAtomic({ id: 'i1', port: 12399, token: 'tk', pid: process.pid, version: '0.0.0-different' })
+    await new Promise<void>((r) => health.listen(0, '127.0.0.1', r))
+    writeServerRegAtomic({ id: 'i1', port: (health.address() as { port: number }).port, token: 'tk', pid: process.pid, version: '0.0.0-different' })
     const outcome = await ensureDaemonAttach({ logger: noopLogger, forceEmbedded: false })
     expect(outcome.attached).toBe(false)
     if (!outcome.attached) {
@@ -77,8 +77,8 @@ describe('daemon.ts 入口序（文件面分支——经真 REG/LOCK 文件驱�
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, id: 'i2', version: realVersion }))
     })
-    await new Promise<void>((r) => health.listen(12400, '127.0.0.1', r))
-    writeServerRegAtomic({ id: 'i2', port: 12400, token: 'tk2', pid: process.pid, version: realVersion, name: '测试机' })
+    await new Promise<void>((r) => health.listen(0, '127.0.0.1', r))
+    writeServerRegAtomic({ id: 'i2', port: (health.address() as { port: number }).port, token: 'tk2', pid: process.pid, version: realVersion, name: '测试机' })
     const outcome = await ensureDaemonAttach({ logger: noopLogger, forceEmbedded: false })
     expect(outcome.attached).toBe(true)
     if (outcome.attached) {
@@ -124,13 +124,13 @@ describe('2026-09-02 自愈链：拉起锁与 resurrectDaemonReg', () => {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, id: 'i3', version: realVersion }))
     })
-    await new Promise<void>((r) => health.listen(12401, '127.0.0.1', r))
-    writeServerRegAtomic({ id: 'i3', port: 12401, token: 'tk3', pid: process.pid, version: realVersion, name: '复用机' })
+    await new Promise<void>((r) => health.listen(0, '127.0.0.1', r))
+    writeServerRegAtomic({ id: 'i3', port: (health.address() as { port: number }).port, token: 'tk3', pid: process.pid, version: realVersion, name: '复用机' })
     // 预置"他方持锁"（新 mtime）→ resurrect 不 spawn，纯轮询注册四验
     fs.writeFileSync(LOCK_PATH, '')
     try {
       const reg = await resurrectDaemonReg(noopLogger)
-      expect(reg).toMatchObject({ id: 'i3', port: 12401, token: 'tk3', name: '复用机' })
+      expect(reg).toMatchObject({ id: 'i3', port: (health.address() as { port: number }).port, token: 'tk3', name: '复用机' })
     } finally {
       releaseSpawnLock()
       health.close()
@@ -159,11 +159,11 @@ describe('2026-09-02 自愈链：拉起锁与 resurrectDaemonReg', () => {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, id: 'i4', version: realVersion }))
     })
-    await new Promise<void>((r) => health.listen(12402, '127.0.0.1', r))
-    writeServerRegAtomic({ id: 'i4', port: 12402, token: 'tk4', pid: process.pid, version: realVersion, name: '活体' })
+    await new Promise<void>((r) => health.listen(0, '127.0.0.1', r))
+    writeServerRegAtomic({ id: 'i4', port: (health.address() as { port: number }).port, token: 'tk4', pid: process.pid, version: realVersion, name: '活体' })
     try {
       const reg = await resurrectDaemonReg(logger)
-      expect(reg).toMatchObject({ id: 'i4', port: 12402, name: '活体' })
+      expect(reg).toMatchObject({ id: 'i4', port: (health.address() as { port: number }).port, name: '活体' })
       expect(fs.existsSync(LOCK_PATH)).toBe(false) // 入口验活短路：锁从未创建
       expect(events).toContain('resurrect_skipped_alive')
     } finally {

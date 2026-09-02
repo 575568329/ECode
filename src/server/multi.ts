@@ -70,6 +70,12 @@ export interface MultiServeDeps {
 
 const MULTI_BODY_CAP = 1024 * 1024
 
+/** 审阅修复（安全席 P1-2）：401 per-IP 退避参数——10 次/5 分钟窗触发 10 分钟封禁 */
+const AUTH_FAIL_LIMIT = 10
+const AUTH_FAIL_WINDOW_MS = 5 * 60_000
+const AUTH_FAIL_BACKOFF_MS = 10 * 60_000
+const authFails = new Map<string, { count: number; until: number }>()
+
 /**
  * M14-C2③：静态托管 CSP。img-src 需 data:（历史图片 base64 直渲）、blob:；
  * style-src 'unsafe-inline'（React 运行时 style 属性）；connect-src 同源 fetch+SSE。
@@ -191,8 +197,17 @@ export function serveMulti(
   const resolveHost = async (
     project: string | null,
     credClass: 'primary' | 'lan-password' | 'device' | null,
+    deviceSecret?: string,
   ): Promise<{ host: ProjectHost } | { error: string; code: number }> => {
     const cwd = cwdOf(project)
+    // 审阅修复（安全席 P1-1）：device 档快照拦截——配对条目带 allowedProjects 时目标项目
+    // 不在快照内一律 404（undefined=存量条目不限制，重配对即获得快照保护）
+    if (credClass === 'device' && deviceSecret !== undefined) {
+      const devEntry = opts.devices?.deviceRegistry?.findBySecret(deviceSecret)
+      if (devEntry?.allowedProjects !== undefined && !devEntry.allowedProjects.includes(cwd)) {
+        return { error: '该项目不在本设备的配对快照内（新增项目需在电脑侧重新配对）', code: 404 }
+      }
+    }
     // M14-C2①：confirm 豁免不再由 `?confirm=true` 客户端自报（审阅 P1-7——对脚本化客户端护栏为零），
     // 改为凭据分级派生——一等凭据（primary/lan-password，用户亲手持有）即栅栏同意；device 级不放行
     const confirm = credClass === 'primary' || credClass === 'lan-password'
@@ -247,10 +262,27 @@ export function serveMulti(
         return
       }
       // M14-C2①②：Bearer-only + CredentialStore 常量时校验（Basic 形态退役——审阅 P2 双凭据解析留一）
+      // 审阅修复（安全席 P1-2）：401 per-IP 退避——C2① 后 lan-password 是 confirm 豁免/设备管理级
+      // 全权凭据，无限速字典爆破收益大增（2026-08-27 挂账在新的权限语义下升级为 P1）
+      const authFailKey = req.socket.remoteAddress ?? '?'
+      const af = authFails.get(authFailKey)
+      if (af !== undefined && af.until > Date.now()) {
+        return json(429, { error: `尝试过多已限速，${Math.ceil((af.until - Date.now()) / 1000)}s 后重试` })
+      }
       const auth = req.headers.authorization ?? ''
       const presented = auth.startsWith('Bearer ') ? auth.slice(7) : ''
       const credClass = credentials.verify(presented)
-      if (credClass === null) return json(401, { error: '未授权' })
+      if (credClass === null) {
+        const prev = authFails.get(authFailKey)
+        const count = (prev !== undefined && prev.until > Date.now() - AUTH_FAIL_WINDOW_MS ? prev.count : 0) + 1
+        if (count >= AUTH_FAIL_LIMIT) {
+          authFails.set(authFailKey, { count, until: Date.now() + AUTH_FAIL_BACKOFF_MS })
+        } else {
+          authFails.set(authFailKey, { count, until: 0 })
+        }
+        return json(401, { error: '未授权' })
+      }
+      authFails.delete(authFailKey) // 成功即清（正常客户端 typo 不累积）
 
       // 项目列表（M13-W4 三源并集：显式注册 ∪ 活项目 ∪ 历史反推 meta.cwd——Web 打开即见本机所有有历史的项目）
       // 审阅 P1-1：读侧全局信息（本机全部项目路径）与写侧同级栅栏——device 凭据不可枚举
@@ -376,7 +408,9 @@ export function serveMulti(
             if (reg === undefined) return json(404, { ok: false, error: '设备管理未接线' })
             if (typeof body.name !== 'string' || body.name.trim() === '') return json(400, { ok: false, error: '缺少设备名' })
             const scope: DeviceScope = body.scope === 'full' ? 'full' : 'chat'
-            const entry = reg.create(body.name.trim(), scope, typeof body.note === 'string' ? body.note : undefined)
+            // 审阅修复（安全席 P1-1）：快照落条目——「配对时项目快照」从纯展示变服务端强制边界
+            //（baseline 过滤+resolveHost 拦截+mux 帧过滤三处消费）
+            const entry = reg.create(body.name.trim(), scope, typeof body.note === 'string' ? body.note : undefined, registry.listKnown().map((p) => p.path))
             credentials.add(entry.secret, 'device') // 活注入（R1 需重启的披露项收口）
             let relay: { connectUrl: string; hostId: string; inviteToken: string; expiresAt: number } | undefined
             const rc = opts.devices?.relay?.()
@@ -447,9 +481,14 @@ export function serveMulti(
         // 全机全项目的会话内容（delta/审批 preview）只对显式声明会话的订阅放行；
         // host 生命周期帧照发（列表页靠 session/list 命令拉取，无需内容流）
         const deviceScoped = credClass === 'device' && (wantSid === null || wantSid === '')
+        // 审阅修复（安全席 P1-1/架构席 P1-2）：device 档快照边界三处兑现之二——
+        // (a) 帧过滤：wantSid 订阅的 ev 帧其所属项目须在配对快照内（undefined=存量条目放行）
+        const devEntry = credClass === 'device' ? opts.devices?.deviceRegistry?.findBySecret(presented) : undefined
+        const devAllowed = devEntry?.allowedProjects
         const send = (frame: MuxFrame): void => {
           sendCount++
           if (wantSid !== null && wantSid !== '' && 'ev' in frame && frame.sessionId !== wantSid) return
+          if (devAllowed !== undefined && 'ev' in frame && !devAllowed.includes(frame.project)) return
           const eventName = 'host' in frame ? frame.host.type : frame.ev.type
           write(`event: ${eventName}\n\ndata: ${JSON.stringify(frame)}\n\n`)
         }
@@ -489,16 +528,25 @@ export function serveMulti(
             attachProject(cwd, host)
           }),
         )
-        // 连接三连之一：baseline（活项目全部已 live——acquire 走 live 复用同步路径）
+        // 连接三连之一：baseline（活项目全部已 live——acquire 走 live 复用同步路径）。
+        // 审阅修复（架构席 P1-3）：acquire 是秒级 IO——客户端在装配期间断开（web 刷新/手机网络
+        // 切换）时 close 已清空 unsubs，迟到的 attachProject 会把订阅挂到死连接上永不退订
+        //（宿主每帧向死连接 write+订阅集合随连断累积）。基线循环内逐项检查销毁态即跳过
         void (async () => {
           const projects: string[] = []
           const sessions: SessionBrief[] = []
-          for (const entry of registry.listActive()) {
+          // 审阅修复（安全席 P1-1）：baseline 对 device 凭据按配对快照过滤——原无条件推送
+          // 全机项目路径+全部会话 brief（标题=首条 prompt 摘要），打穿同文件 device 403 栅栏
+          //（undefined=存量条目保持原语义——重配对即获得快照保护）
+          const baseAllowed = credClass === 'device' ? opts.devices?.deviceRegistry?.findBySecret(presented)?.allowedProjects : undefined
+          const visibleProjects = baseAllowed !== undefined ? registry.listActive().filter((e) => baseAllowed.includes(e.path)) : null
+          for (const entry of visibleProjects ?? registry.listActive()) {
+            if (res.writableEnded || res.destroyed) return // 连接已断——不再装配/挂订阅
             const r = await registry.acquire(entry.path, { confirm: true }).catch(() => null)
             if (r !== null && r.ok && r.host !== undefined) {
               projects.push(entry.path)
               sessions.push(...r.host.briefs())
-              attachProject(entry.path, r.host)
+              if (!res.writableEnded && !res.destroyed) attachProject(entry.path, r.host)
             }
           }
           send({ host: { type: 'session/baseline', projects, sessions } })
@@ -636,7 +684,7 @@ export function serveMulti(
               }
               return json(200, { ok: true, value: metas })
             }
-            const h = await resolveHost(project, credClass)
+            const h = await resolveHost(project, credClass, presented)
             if ('error' in h) return json(h.code, { ok: false, error: h.error })
             // 项目级 session/new：真新建（区别于缺省路由的 ensureDefault 复用默认会话——
             // 「+新对话」两次进同一会话的病灶）。ensure 即挂活 + created 帧广播（mux 列表

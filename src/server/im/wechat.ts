@@ -151,7 +151,7 @@ export class WechatGateway {
     }
 
     // 命令面（对齐 feishu /new /sessions /switch）
-    if (text.startsWith('/new')) {
+    if (/^\/new(?:\s|$)/.test(text)) {
       const r = await this.deps.sendCommand(undefined, { op: 'session/new' })
       const sid = r.sessionId ?? ''
       if (r.ok && sid !== '') {
@@ -203,7 +203,7 @@ export class WechatGateway {
         const lines = r.value as Array<{ role?: string; content?: Array<{ type: string; text?: string }> }>
         const lastAssistant = [...lines].reverse().find((l) => l.role === 'assistant')
         const text = (lastAssistant?.content ?? []).filter((b) => b.type === 'text').map((b) => b.text ?? '').join('')
-        if (text !== '') await this.replyText(userId, text.slice(0, 3500))
+        if (text !== '') await this.replyText(userId, Array.from(text).slice(0, 3500).join('')) // 按码点截断（slice 会截半 emoji 代理对）
       }
       return
     }
@@ -211,14 +211,15 @@ export class WechatGateway {
       const requestId = String(frame.ev.requestId ?? '')
       const sensitive = String(frame.ev.kind ?? '') === 'sensitive'
       const tool = String(frame.ev.tool ?? '')
-      const preview = String(frame.ev.preview ?? '').replace(/```/g, '｀｀｀').slice(0, 400)
+      // 按码点截断（slice 会截半 emoji 代理对——TuiApp R2/P2-4 同款口径）
+      const preview = Array.from(String(frame.ev.preview ?? '').replace(/```/g, '｀｀｀')).slice(0, 400).join('')
       // T7 审批短码：随机 4 位数字 + preview 指纹（截断下仍可核对）；resolved 即作废
       // 撞码重摇（并发审批 4 位码 ~1/9000——静默覆盖=前一审批经 IM 不可应答）
       let code = String(randomInt(1000, 10000))
       while (this.approvalCodes.has(code)) code = String(randomInt(1000, 10000))
       this.approvalCodes.set(code, { requestId, sessionId: frame.sessionId, userId, expiresAt: Date.now() + APPROVAL_CODE_TTL_MS })
       const head = sensitive ? '⚠ 敏感操作（不可记住）' : '需要审批'
-      await this.replyText(userId, `${head}\n工具：${tool}\n${preview}\n\n回复「${code} y」允许 /「${code} n」拒绝（短码 15 分钟内有效）`)
+      await this.replyText(userId, `${head}\n工具：${tool}\n${preview}\n\n回复「${code} y」允许 /「${code} n」拒绝（短码 1 小时内有效，或直接在电脑端处理）`)
       return
     }
     if (frame.ev.type === 'approval/resolved') {

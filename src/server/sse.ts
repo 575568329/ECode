@@ -11,7 +11,7 @@
 /** 慢消费者判定窗口：连续无消费时长 */
 export const SLOW_CONSUMER_MS = 5_000
 
-type SseWritable = { write(chunk: string): boolean; once(ev: 'drain', fn: () => void): void; destroy(): void }
+type SseWritable = { write(chunk: string): boolean; once(ev: 'drain', fn: () => void): void; destroy(): void; writableEnded?: boolean; destroyed?: boolean }
 
 /**
  * 创建受守卫的 SSE 写函数。ping 注释帧同样经此路径（心跳写阻塞同样算背压）。
@@ -31,6 +31,9 @@ export function guardedSseWrite(res: SseWritable): (chunk: string) => void {
     clearSlow()
   }
   return (chunk: string): void => {
+    // 审阅修复（架构席 P1-3 双保险）：连接销毁后短路——迟到的订阅回调再 write 只会
+    // 静默丢+反复起 5s slowTimer（OutgoingMessage 销毁态 write 不抛）
+    if (res.writableEnded === true || res.destroyed === true) return
     if (res.write(chunk) === false) {
       clearSlow()
       slowTimer = setTimeout(() => res.destroy(), SLOW_CONSUMER_MS)

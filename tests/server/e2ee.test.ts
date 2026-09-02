@@ -3,7 +3,7 @@
  * WebCrypto 侧（web/src/e2ee.ts）的跨实现契约在 web/tests/e2ee.test.ts。
  */
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { E2eeClientSession, E2eeHostSession, buildNonce, deriveKeys, generateKeypair, loadOrCreateHostKeys } from '../../src/server/e2ee.js'
@@ -132,9 +132,17 @@ describe('E2EE 钥匙持久化', () => {
       // 磁盘形态可解析（0600 在 Windows 无强制力——不断言 mode）
       const parsed = JSON.parse(readFileSync(file, 'utf8')) as { publicKeyB64: string }
       expect(parsed.publicKeyB64).toBe(k1.publicKeyB64)
-      // 损坏文件=重生成（披露语义）
-      const k4 = loadOrCreateHostKeys(join(dir, 'keys', 'broken.json'))
+      // 损坏文件=重生成（披露语义）。审阅修复（测试席 P2）：真写损坏内容——原版从未写入文件，
+      // 测的是「文件不存在」的首启生成分支；两种损坏形态各自锁定（JSON 破碎 / JSON 合法但内容非 32B）
+      const brokenDir = join(dir, 'keys')
+      mkdirSync(brokenDir, { recursive: true })
+      writeFileSync(join(brokenDir, 'broken.json'), '{ not json', 'utf8')
+      const k4 = loadOrCreateHostKeys(join(brokenDir, 'broken.json'))
       expect(k4.publicKeyB64).not.toBe('')
+      const halfKey = Buffer.alloc(10).toString('base64')
+      writeFileSync(join(brokenDir, 'half.json'), JSON.stringify({ publicKeyB64: halfKey, privateKeyB64: halfKey }), 'utf8')
+      const k5 = loadOrCreateHostKeys(join(brokenDir, 'half.json'))
+      expect(Buffer.from(k5.publicKeyB64, 'base64').length).toBe(32) // 非 32B 内容=按损坏重生成（P1-3 崩溃面锁）
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

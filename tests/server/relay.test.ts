@@ -34,7 +34,7 @@ beforeAll(async () => {
       RELAY_REG_TOKEN: regToken,
       RELAY_PHONE_PORT: String(phonePort),
       RELAY_HOST_PORT: String(hostPort),
-      RELAY_LOG: 'C:/Windows/Temp/relay-test.log',
+      RELAY_LOG: join(tmpdir(), 'ecode-relay-test-' + Date.now() + '.log'),
       RELAY_ATTACH_MS: '10000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

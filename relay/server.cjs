@@ -489,13 +489,24 @@ phoneHttp.on('upgrade', (req, socket, head) => {
     return socket.destroy()
   }
   if (inv === undefined || (inv.expiresAt !== 0 && inv.expiresAt <= Date.now())) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+    // 审阅修复（安全席 P2）：与 host 不在线同码 404——401/404 差异构成 hostId 在线枚举 oracle
+    // （绕过 /v1/hosts/online 的限速与不枚举设计）
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
     return socket.destroy()
   }
   phoneWss.handleUpgrade(req, socket, head, (ws) => {
     const connId = `c${st.nextConn++}`
     const ticket = crypto.randomBytes(24).toString('hex')
     const entry = { phone: ws, ticket, buffer: [], watch: undefined, timer: undefined }
+    // 审阅修复（安全席 P2）：pending 总数上限——静默连接在 attach 前每条挂 60s 计时+最多
+    // 8MB 缓冲，无上限可内存放大 DoS（daemon 侧 maxLegs=8 只护对端）
+    if (st.pending.size >= 32) {
+      try {
+        ws.close(4429, 'too many pending')
+      } catch {}
+      log(`pending cap hit: ${st.hostId} (>=32)`)
+      return
+    }
     st.pending.set(connId, entry)
     inv.conns.add(connId)
     entry.timer = setTimeout(() => {

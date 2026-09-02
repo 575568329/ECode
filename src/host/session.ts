@@ -141,6 +141,9 @@ interface QueueEntry {
    *  审查包装不冒充用户、轮末续投转 pendingReviewCard 不自动起轮、Ctrl+U 不清弃、
    *  queue/snapshot 只发摘要。缺省 'user'——既有插话/排队路径零变化 */
   kind?: 'user' | 'review'
+  /** 中断后到达的输入（审阅修复）：中断广播使 running 仍 true 期间用户的新输入会被当
+   *  插话入队——轮末中断分支对本标条目豁免（照常续投=新任务意图，旧插话仍保留不弃） */
+  afterAbort?: boolean
 }
 
 export class HostSession {
@@ -169,7 +172,7 @@ export class HostSession {
   private roundUses: string[] = []
   private readonly queue: QueueEntry[] = []
   /** 活跃轮 controller 集合（startTurn 登记/finishTurn 注销；interrupt 全集 abort——2026-09-02 Ctrl+C 立即停兜底） */
-  private readonly activeAbortControllers = new Set<AbortController>()
+  private readonly activeAbortControllers = new Map<string, AbortController>()
   private running = false
   /** T 线⑥：SessionStart hook 的 additionalContext 宿主暂存（startTurn 首轮注入后清空） */
   private pendingSessionContext: string[] = []
@@ -260,6 +263,15 @@ export class HostSession {
 
   /** 会话销毁：pending 审批 fail-closed 收敛 + 桥卸载 + 通道关闭 */
   dispose(): void {
+    // 审阅修复：残留活跃轮 controller 全断+清集合（会话回收时 loop 不再向已 dispose 的 channel publish）
+    for (const c of [...this.activeAbortControllers.values()]) {
+      try {
+        c.abort()
+      } catch {
+        /* 幂等 */
+      }
+    }
+    this.activeAbortControllers.clear()
     this.cancelIdleNotification() // 批2d：会话关闭清理（定时器不越界触发）
     this.tasks.dispose()
     this.broker.dispose()
@@ -861,7 +873,7 @@ export class HostSession {
               event: 'UserPromptSubmit',
               session_id: this.deps.history.currentSessionId(),
               prompt: cmd.text,
-            }, { cwd: this.deps.cwd })
+            }, { cwd: this.deps.cwd, signal: this.abort.signal }) // 审阅修复：补 signal——中断即杀 Stop hook 子进程（原中断后 hook 照跑到自然结束，是「执行侧」最长残余段）
             if (verdict.block) {
               const msg = `✋ 插话被 hook 拦截${verdict.reason !== undefined && verdict.reason !== '' ? `：${verdict.reason}` : ''}`
               this.publish('systemMsg', { text: msg })
@@ -870,7 +882,10 @@ export class HostSession {
             if (verdict.additionalContext.length > 0) text = `${text}\n\n[hook context]\n${verdict.additionalContext.join('\n')}`
           }
           // StartOrSteer：busy 输入=插话（host 权威队列，D2）
-          this.queue.push({ text, blocks, midTurn: true })
+          // 审阅修复（三席 P1）：中断广播后 running 仍 true（loop 后台收敛），用户此刻的
+          // 新输入会被当插话入队，而中断态轮末不续投——消息滞留死轮队列须再发一条才跑。
+          // 打标 afterAbort：轮末中断分支豁免续投（新任务意图，与「中断不弃中断前队列」不冲突）
+          this.queue.push({ text, blocks, midTurn: true, ...(this.abort.signal.aborted ? { afterAbort: true } : {}) })
           this.publish('interjection/enqueued', { text: cmd.text })
           this.publish('queue/snapshot', { items: this.queue.map((q) => (q.kind === 'review' ? '[纠偏审查卡·待注入]' : q.text)) })
           return { ok: true, routed: 'Steered' }
@@ -890,8 +905,10 @@ export class HostSession {
         //    秒见停，loop 在后台自行固化退出——轮真退时 finishTurn 的帧幂等无害）；
         // ③ loop 侧硬检查（迭代顶部/工具批前）+ afterTools 中断态跳过（quality/autoCommit 不跑）
         this.deps.logger.debug('system', 'interrupt_latency_probe', { stage: 'received' }) // 诊断插桩：Ctrl+C 迟滞分段计时
+        // 审阅修复：空闲态（无轮在跑）不广播 aborted（误按 Ctrl+C 不制造「已中断」噪音提示）
+        if (!this.running && this.activeAbortControllers.size === 0) return { ok: true }
         this.abort.abort()
-        for (const c of this.activeAbortControllers) {
+        for (const c of [...this.activeAbortControllers.values()]) {
           try {
             c.abort()
           } catch {
@@ -1196,12 +1213,12 @@ export class HostSession {
     this.lastRoundLen = this.messages.length
     this.roundUses = []
     this.currentTurnId = randomUUID()
+    const turnId = this.currentTurnId
     this.abort = new AbortController()
-    // 用户拍板（2026-09-02 Ctrl+C 立即停）：活跃轮 controller 登记（finishTurn 注销）——
+    // 用户拍板（2026-09-02 Ctrl+C 立即停）：活跃轮 controller 按轮登记（finishTurn 按轮注销）——
     // interrupt 全集 abort 兜底双轮并行残留（真机日志：iter 交错=旧轮 controller 被替换后
     // interrupt 打不到它；集合化保证一次 Ctrl+C 停掉本会话所有在跑的轮）
-    this.activeAbortControllers.add(this.abort)
-    const turnId = this.currentTurnId
+    this.activeAbortControllers.set(turnId, this.abort)
     // UserPromptSubmit hook（session_id 用真实会话 id——顺手修 TuiApp 侧硬编码 '' 的同源问题）
     if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
       this.deps.logger.info('hooks', 'dispatch', { event: 'UserPromptSubmit' })
@@ -1427,7 +1444,7 @@ export class HostSession {
       // Stop hook（对齐 TUI 语义；argv 经宿主后也获得——行为增强，记录在案）
       try {
         if (deps.hookRunner != null && deps.hookRunner.hasHandlers('Stop')) {
-          await deps.hookRunner.dispatch('Stop', {
+          await deps.hookRunner.dispatch('Stop', { /* 审阅修复：补 signal——中断后 Stop hook 子进程不再拖住轮收尾（UserPromptSubmit 同款） */
             event: 'Stop',
             session_id: deps.history.currentSessionId(),
             stop_reason: this.abort.signal.aborted ? 'aborted' : 'turn-complete',
@@ -1507,7 +1524,7 @@ export class HostSession {
     this.publish('thread/status', { busy: false, waitingOn: null, iter: 0 })
     this.running = false
     this.currentTurnId = null
-    this.activeAbortControllers.delete(this.abort) // Ctrl+C 立即停：轮收尾注销（集合只留活跃轮）
+    this.activeAbortControllers.delete(turnId) // 审阅修复：按轮注销（原 delete(this.abort) 删的是当前字段——双轮形态下旧轮收尾误删新轮的登记、自己的 controller 永久残留）
     // 纠偏审查·定时兜底（2026-09-02 用户拍板）：轮计数整除命中才触发（默认第 5/10/15…轮末）。
     // 异步 void 不阻塞队列续投——完成时按轮身份快照分派（同轮插话/否则 pending）。
     // lastIntervalReviewedTurn 防重（审阅修复）：hook block 轮计数不自增，旧值再判会重复触发
@@ -1525,13 +1542,23 @@ export class HostSession {
     // 看似模型停不下来）；队列保留（CC 同款中断不弃队列——下一轮 pollUserInput 步间注入或用户再提交时消费）
     // 审查卡（kind:'review'）不参与续投（审阅修复）：自动起轮消化系统卡=无人输入下烧主模型
     // 调用，违背 pending 分支「不自动起轮」承诺——转 pendingReviewCard 随下轮携带
-    let next = this.abort.signal.aborted ? undefined : this.queue.shift()
+    // 审阅修复：中断态不续投的是**中断前**的旧插话（CC 同款语义）；中断后到达的新输入
+    // （afterAbort 打标）= 用户看到停止反馈后的新任务意图——照常续投起轮
+    let next = this.abort.signal.aborted
+      ? (() => {
+          const idx = this.queue.findIndex((q) => q.afterAbort === true)
+          if (idx < 0) return undefined
+          const [entry] = this.queue.splice(idx, 1)
+          return entry
+        })()
+      : this.queue.shift()
     while (next !== undefined && next.kind === 'review') {
       this.pendingReviewCard = next.text
       next = this.queue.shift()
     }
-    if (this.abort.signal.aborted && this.queue.length > 0) {
-      this.publish('systemMsg', { text: `已中断（插话队列保留 ${this.queue.length} 条，下轮自动注入；Ctrl+U 清空）` })
+    const keptCount = this.queue.filter((q) => q.afterAbort !== true).length
+    if (this.abort.signal.aborted && keptCount > 0) {
+      this.publish('systemMsg', { text: `已中断（插话队列保留 ${keptCount} 条，下轮自动注入；Ctrl+U 清空）` })
     }
     if (next !== undefined) {
       this.publish('queue/snapshot', { items: this.queue.map((q) => (q.kind === 'review' ? '[纠偏审查卡·待注入]' : q.text)) })

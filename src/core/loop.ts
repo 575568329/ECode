@@ -143,6 +143,12 @@ export interface LoopRunOptions {
   onSensitiveAccess?: (description: string) => Promise<boolean | string>
 }
 
+/** signal 中断判定（模块级函数绕 TS 控制流窄化——迭代顶检 break 后，同函数内后续
+ *  `signal?.aborted === true` 会被窄化为不可达，但 await 窗口内状态可翻转，真实可达） */
+function signalAborted(signal?: AbortSignal): boolean {
+  return signal?.aborted === true
+}
+
 /** max_tokens 续写指令：CC "Resume directly — no apology, no recap" 同语义。
  *  审阅 P2 修正：曾注释称「isMeta 形态 UI 不渲染」——全仓并无 isMeta 机制，实态是
  *  裸 user 消息随会话落盘。UI 侧由 commit.ts 按本常量精确匹配过滤（不渲染成用户气泡），
@@ -186,8 +192,10 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
   for (let iter = 1; iter <= opts.maxIterations; iter++) {
     // Ctrl+C 立即停（用户拍板 2026-09-02）：迭代顶部 signal 硬检查——原协作式退出依赖
     // provider 流/审批收敛等环节自愿响应，审批拒绝回喂后还会起下一迭代（真机实证：
-    // interrupt 到达 5 分钟轮不退）。aborted 即静默退（宿主已广播停止帧，此处不再补事件）
-    if (iter >= 2 && opts.signal?.aborted === true) {
+    // interrupt 到达 5 分钟轮不退）。aborted 即静默退（宿主已广播停止帧，此处不再补事件）。
+    // 审阅修复：iter>=1（原 >=2 漏掉「interrupt 落在 UserPromptSubmit hook await 期、新轮
+    // controller 不知中断已发生」的窗口——首迭代照发一次无效拨号）；正常轮首迭代 signal 恒未断不误伤
+    if (signalAborted(opts.signal)) {
       opts.logger.info('loop', 'aborted_at_iter_top', { iter }, iter)
       done = true
       break
@@ -321,7 +329,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
       // abort 判定三源：裸 AbortError / Anthropic SDK 手动 abort 抛 APIUserAbortError（name 不同，
       // 错分类成可重试会走退避+假 warn）/ signal 已断（宿主 interrupt——兜底权威判据）
       const isAbort =
-        e instanceof Error && (e.name === 'AbortError' || e.name === 'APIUserAbortError') ? true : opts.signal?.aborted === true
+        e instanceof Error && (e.name === 'AbortError' || e.name === 'APIUserAbortError') ? true : signalAborted(opts.signal)
       if (isAbort) {
         stopReason = 'aborted'
         isAborted = true
@@ -443,6 +451,23 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     if (stopReason === 'end' && newToolUses.length > 0) {
       opts.logger.warn('loop', 'stop_lying_defense', { iter, toolUses: newToolUses.length }, iter)
     } else if (stopReason === 'end' || stopReason === 'aborted') {
+      // 审阅修复（Ctrl+C 立即停三席）：流中中断时 assistant 已固化 tool_use 块（finally 无条件
+      // 落盘）——break 前给未配对的补**中断占位 tool_result**（is_error），保持 tool_use/
+      // tool_result 恒配对。投影层 repairOrphanToolUses 会剥孤儿（请求不 400），但 transcript
+      // 落盘留孤儿是恢复/审计噪音——源头合成比下游修复干净（length 截断剥除是另一形态先例）
+      if (stopReason === 'aborted' && newToolUses.length > 0) {
+        const abortResultMsg: Message = {
+          role: 'user',
+          content: newToolUses.map((u) => ({
+            type: 'tool_result' as const,
+            tool_use_id: u.id,
+            content: '用户中断，工具未执行',
+            is_error: true,
+          })),
+        }
+        messages.push(abortResultMsg)
+        opts.history.append(abortResultMsg)
+      }
       opts.callbacks.onActivity?.(stopReason === 'aborted' ? 'aborted' : 'idle')
       opts.logger.info('loop', 'stop', { stopReason, iter })
       done = true
@@ -536,12 +561,22 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
   return messages
 }
 
+/** 中断占位 tool_result（审阅修复：中断路径 tool_use/tool_result 恒配对——空返回会留下
+ *  `user content:[]` 与孤儿 tool_use 落盘，依赖投影层 repair 剥除是下游兜底不是源头治理） */
+const abortedResult = (u: ToolUseBlock): ToolResultBlock => ({
+  type: 'tool_result',
+  tool_use_id: u.id,
+  content: '用户中断，工具未执行',
+  is_error: true,
+})
+
 /** 工具执行：只读 Promise.all 并行 / 副作用串行（详设 §3.2）。 */
 async function executeTools(uses: ToolUseBlock[], opts: LoopRunOptions): Promise<ToolResultBlock[]> {
-  // Ctrl+C 立即停：工具批前 signal 硬检查——中断后的批不再执行（原只防流中 abort，批入口无检查）
-  if (opts.signal?.aborted === true) {
+  // Ctrl+C 立即停：工具批前 signal 硬检查——中断后的批不再执行（原只防流中 abort，批入口无检查），
+  // 每个工具给中断占位 result（不执行≠不配对）
+  if (signalAborted(opts.signal)) {
     opts.logger.info('loop', 'aborted_before_tools', { count: uses.length })
-    return []
+    return uses.map(abortedResult)
   }
   const results: ToolResultBlock[] = []
   const readonlys = uses.filter((u) => opts.tools.get(u.name)?.readonly)
@@ -551,6 +586,14 @@ async function executeTools(uses: ToolUseBlock[], opts: LoopRunOptions): Promise
     results.push(...(await Promise.all(readonlys.map((u) => invokeTool(u, opts)))))
   }
   for (const u of sideEffects) {
+    // 审阅修复（安全席 P1）：批内逐工具 signal 检查——原只查批入口一次，批内剩余副作用工具
+    // 在中断后照跑（hostConfirm 的 signal 快拒被 full-access/accept-edits/remember 直放早退
+    // 绕过）。剩余工具补中断占位（与批入口同语义）
+    if (signalAborted(opts.signal)) {
+      opts.logger.info('loop', 'aborted_mid_tools', { remaining: sideEffects.length - sideEffects.indexOf(u) })
+      for (const rest of sideEffects.slice(sideEffects.indexOf(u))) results.push(abortedResult(rest))
+      break
+    }
     results.push(await invokeTool(u, opts))
   }
   return results

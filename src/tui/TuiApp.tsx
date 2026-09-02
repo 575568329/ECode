@@ -643,7 +643,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
               buf.timer = null
               const chunk = buf.text
               buf.text = ''
-              if (chunk !== '') {
+              if (chunk !== '' && !interruptedAtRef.current) { // 审阅修复：中断后 pending 残渣不上屏
                 setActive((a) => ({
                   ...a,
                   timeline: timelineReducer(a.timeline, { type: 'delta', seq: ev.seq, turnId: ev.turnId, text: chunk }, { now: Date.now, nextId: tlDepsRef.current.nextId }),
@@ -1263,6 +1263,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     const value = r.value as { sessionId?: string } | undefined
     const sid = value?.sessionId ?? r.sessionId
     if (sid !== undefined) recordSessionId(sid)
+    interruptedAtRef.current = false // 审阅修复：恢复（可能带活轮）的会话——解除迟到帧丢弃防活轮流式被吞
     // 审阅 P0-2 修复：本地 makeDeps 形态（--local 或自愈降级后），dispatch 的 ensureConversation
     // 只是把目标会话 ensure 进 ProjectHost（新宿主），发起宿主（hostRef）仍是旧会话——不切换
     // 则显示换新（read 按 cmd.sessionId 直读文件）而续聊上下文/落盘全走旧会话宿主（读写分裂：
@@ -1801,7 +1802,16 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       draft={mainDraft}
       readDraft={() => draftPortRef.current?.read() ?? ''}
       onInterruptTurn={() => {
-        // F-31：卡上 Ctrl+C=拒卡+中断整轮（用户拍板「按一下直接退出 loop」）
+        // F-31：卡上 Ctrl+C=拒卡+中断整轮（用户拍板「按一下直接退出 loop」）。
+        // 审阅修复：复用主路径的本地即时接管（interruptedAtRef 丢迟到帧——否则 loop 收敛期
+        // 残渣 delta 照渲染，「按了又转起来」）
+        abortRef.current.abort()
+        interruptedAtRef.current = true
+        runningRef.current = false
+        setRunning(false)
+        setActivity({ state: 'aborted' })
+        setActive((a) => ({ ...a, streaming: false }))
+        setSystemMsgs(['已中断（任务停止中——后台执行正在收敛，输入框已可用）'])
         void host.send({ op: 'interrupt' })
       }}
       activity={activity.state}

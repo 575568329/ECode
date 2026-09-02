@@ -68,9 +68,11 @@ describe('审查上下文 buildReviewMessages', () => {
 })
 
 describe('纠偏卡格式化 formatReviewCard', () => {
-  it('剥控制字符（防 ESC 序列进 transcript）、首尾裁剪；空串透传', () => {
+  it('净化走 sanitize 单源（审阅修复）：危险序列整段剥（OSC 钓鱼/剪贴板注入）、C0 剥、SGR 颜色码放行（F-50b 单源语义）', () => {
     expect(formatReviewCard('  [纠偏审查]\n- 方向：正确  ')).toBe('[纠偏审查]\n- 方向：正确')
-    expect(formatReviewCard('ab\x1b[31m红\x1b[0mcd\x00')).toBe('ab[31m红[0mcd') // ESC 被剥，残文无害化
+    expect(formatReviewCard('ab\x1b[31m红\x1b[0mcd\x00')).toBe('ab\x1b[31m红\x1b[0mcd') // SGR 放行（单源拍板）；\x00 剥
+    expect(formatReviewCard('\x1b]52;c;bm9hcmJhZ2U\x07表面正常')).toBe('表面正常') // OSC 52 剪贴板注入：整段吞
+    expect(formatReviewCard('a\x1b[2Jb')).toBe('ab') // 清屏重画（伪造 UI 面）：剥
     expect(formatReviewCard('')).toBe('')
     expect(formatReviewCard('   ')).toBe('')
   })

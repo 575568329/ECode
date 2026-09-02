@@ -443,3 +443,32 @@ describe('文件权限（安全审阅 P1：chmod 显式兑现，POSIX 才可断�
     expect(fs.statSync(cfgPath + '.bak').mode & 0o777).toBe(0o600)
   })
 })
+
+describe('2026-09-02 review 块校验（任务纠偏审查）', () => {
+  const baseProviders = { main: { type: 'anthropic', baseURL: 'http://x', apiKey: 'sk', models: ['m'] } }
+  const writeReview = (review: Record<string, unknown>): void => {
+    writeConfig(JSON.stringify({
+      providers: baseProviders,
+      default: { provider: 'main', model: 'm' },
+      review,
+    }))
+  }
+
+  it('enabled=true + provider 不存在 → 启动报 CONFIG_REVIEW_INVALID', () => {
+    writeReview({ enabled: true, provider: '不存在的', model: 'r' })
+    expect(() => loadConfig({ configPath: cfgPath, loadDotenv: false })).toThrow('CONFIG_REVIEW_INVALID')
+  })
+
+  it('enabled=true + 缺 model → 启动报 CONFIG_REVIEW_INVALID', () => {
+    writeReview({ enabled: true, provider: 'main' })
+    expect(() => loadConfig({ configPath: cfgPath, loadDotenv: false })).toThrow('CONFIG_REVIEW_INVALID')
+  })
+
+  it('enabled=false + provider 陈旧 → 静默通过（可选功能的配置错误不阻断主功能——审阅修复）+ 合法块透传', () => {
+    writeReview({ enabled: false, provider: '已删除的', model: '' })
+    expect(() => loadConfig({ configPath: cfgPath, loadDotenv: false })).not.toThrow()
+    writeReview({ enabled: true, provider: 'main', model: 'glm-5.3', intervalTurns: 7, onSignals: false })
+    const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
+    expect(cfg.review).toMatchObject({ enabled: true, provider: 'main', model: 'glm-5.3', intervalTurns: 7, onSignals: false })
+  })
+})

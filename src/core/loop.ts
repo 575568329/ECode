@@ -130,8 +130,11 @@ export interface LoopRunOptions {
    * M11-P7：主循环插话——迭代顶部拉取（iter≥2：首轮输入即 userInput，避免连续双 user）。
    * 返回非空则追加为普通 user Message（落盘/恢复/rewind 零特殊处理）；多条由宿主合并。
    * additive 可选回调（afterTools 同模式，无 feature 分支）；子代理 optsB 不配——插话目标是主循环。
+   * 审阅修复（2026-09-02 纠偏审查四角色）：返回对象形态带 kind:'review'（纠偏审查卡）时
+   * 走中性审查包装——原统一冒充「用户发来新消息」是归属谎言（审计混淆），且给恶意内容
+   * 提供用户声优的注入放大面（执行端恰是最弱的低级模型）。插话参数化既有范畴，心脏无 feature 分支。
    */
-  pollUserInput?: () => string | null
+  pollUserInput?: () => string | { text: string; kind?: 'review' } | null
   /**
    * 敏感访问确认通路（安全审阅 P0）：invokeTool 构造 toolCtx 时透传为 confirmSensitive，
    * TuiApp 注入 UI 弹窗；argv 无头模式不传即工具侧 fail-closed。
@@ -185,14 +188,19 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     // 顺序天然在 tool_result→afterTools 回喂之后）
     if (iter >= 2) {
       const queued = opts.pollUserInput?.()
-      if (queued !== undefined && queued !== null && queued !== '') {
+      const qText = typeof queued === 'string' ? queued : queued?.text
+      if (qText !== undefined && qText !== null && qText !== '') {
         // F-35：插话带引导包装（CC wrapCommandText 同款格式）——裸插话会让模型只应插话
-        // 丢原任务；包装显式声明「任务执行中的补充」+「结合原任务继续」双指令
+        // 丢原任务；包装显式声明「任务执行中的补充」+「结合原任务继续」双指令。
+        // kind:'review'（纠偏审查卡）走中性审查包装——不冒充用户消息（归属谎言+注入放大面）
+        const isReview = queued !== null && typeof queued === 'object' && queued.kind === 'review'
         const interjectMsg: Message = {
           role: 'user',
           content: [{
             type: 'text',
-            text: `用户在任务执行中发来新消息：\n${queued}\n\n请在完成当前任务的过程中处理上述补充（必要时按其调整做法），随后继续原任务直至完成，不要只回应本条而中断原任务。`,
+            text: isReview
+              ? `${qText}\n\n（以上为审查器自动生成的纠偏摘要，非用户消息——请评估后仅采纳高置信项校正做法，继续当前任务。）`
+              : `用户在任务执行中发来新消息：\n${qText}\n\n请在完成当前任务的过程中处理上述补充（必要时按其调整做法），随后继续原任务直至完成，不要只回应本条而中断原任务。`,
           }],
         }
         messages.push(interjectMsg)

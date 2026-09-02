@@ -266,12 +266,12 @@ export const CONFIG_TEMPLATE = `{
   //   "summary": { "provider": "zhipu-flash", "model": "glm-4.6-flash" }
   // },
   // "review": {               // 任务纠偏审查：主模型跑常规轮，高级模型定时+异常信号出纠偏卡
-  //   "enabled": true,        //   开关（false/不配=零行为变化）
-  //   "provider": "zhipu",    //   高级模型（等级定义——谁强谁弱你说了算）
-  //   "model": "glm-5.3",
+  //   "enabled": true,        //   开关（false/不配=零行为变化）。注意：启用后近期对话（含工具
+  //   "provider": "zhipu",    //   输出）会发送至该 provider 所配端点（与主模型不同厂商时=数据
+  //   "model": "glm-5.3",     //   多流向一个端点，自担）；审查费用在 /stats 按模型可见
   //   "intervalTurns": 5,     //   定时兜底：每 N 个用户轮审查一次（默认 5）
   //   "minTurns": 3,          //   长任务才启动：前 N 轮不审（默认 3）
-  //   "onSignals": true       //   异常信号提前触发：连续工具失败/单轮迭代过长（默认 true）
+  //   "onSignals": true       //   异常信号提前触发：连续工具失败/单轮迭代过长（默认 true；每轮最多一次）
   // }
 }
 `
@@ -411,15 +411,16 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
       `[CONFIG_ROLES_INVALID] roles.summary.provider "${file.roles.summary.provider}" 不存在于 providers（可用：${Object.keys(providers).join(', ')}）——请修正 config.json 的 roles 配置`,
     )
   }
-  // 2026-09-02 审查角色校验（同 roles.summary 口径）：provider 名必须存在——审查触发在轮末，
-  // 配置错误拖到那时才炸会让用户误以为任务出错；enabled 但缺 provider/model 同样启动期报
-  if (file.review !== undefined) {
+  // 2026-09-02 审查角色校验：**只在 enabled 时拦截**（审阅修复·安全席——可选附加功能的
+  // 配置错误不该阻断主功能：用户关掉 review 但 provider 名陈旧时应静默继续）；provider 名
+  // 必须存在——审查触发在轮末，配置错误拖到那时才炸会让用户误以为任务出错
+  if (file.review !== undefined && file.review.enabled === true) {
     if (providers[file.review.provider] === undefined) {
       throw new Error(
         `[CONFIG_REVIEW_INVALID] review.provider "${file.review.provider}" 不存在于 providers（可用：${Object.keys(providers).join(', ')}）——请修正 config.json 的 review 配置`,
       )
     }
-    if (file.review.enabled && (file.review.model === undefined || file.review.model === '')) {
+    if (file.review.model === undefined || file.review.model === '') {
       throw new Error('[CONFIG_REVIEW_INVALID] review.enabled=true 但未配 review.model——请补全或设 enabled=false')
     }
   }

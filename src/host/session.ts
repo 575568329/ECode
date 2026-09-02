@@ -137,6 +137,10 @@ interface QueueEntry {
   blocks?: ImageBlock[]
   /** StartOrSteer（插话语义）=true：步间注入；StartIfIdle（排队语义）=false：轮末续投 */
   midTurn: boolean
+  /** 来源（审阅修复 2026-09-02）：'review'=纠偏审查卡（系统产物）——pollUserInput 走中性
+   *  审查包装不冒充用户、轮末续投转 pendingReviewCard 不自动起轮、Ctrl+U 不清弃、
+   *  queue/snapshot 只发摘要。缺省 'user'——既有插话/排队路径零变化 */
+  kind?: 'user' | 'review'
 }
 
 export class HostSession {
@@ -479,6 +483,12 @@ export class HostSession {
   private pendingReviewCard: string | null = null
   /** 审查单飞（轮中信号与轮末定时撞车/审查进行中再触发——只跑一次，防堆卡） */
   private reviewInflight = false
+  /** 定时防重（审阅修复）：上次定时触发时的轮计数——hook block 轮计数不自增，finishTurn
+   *  用旧值再判会对同一轮重复触发（连发烧钱+新卡覆盖旧卡） */
+  private lastIntervalReviewedTurn = -1
+  /** 信号每轮一次（审阅修复）：长失败轮批批命中阈值，无此标志会连环审查（最坏 ~38 次/
+   *  轮高级模型调用）+ 卡连环注入膨胀上下文 */
+  private reviewSignalFiredThisTurn = false
   private reviewerCache: { key: string; value: { provider: LLMProvider; req: ProviderReq } | null } | null = null
   private async resolveSummaryRole(): Promise<SummaryRole | null> {
     const cfg = this.cfg()
@@ -526,17 +536,20 @@ export class HostSession {
       }
       this.reviewerCache = { key, value }
       return value
-    } catch {
-      this.reviewerCache = { key, value: null }
+    } catch (e) {
+      // 审阅修复：失败**不缓存**（原缓存 null 会让 type typo 修好后仍永久静默失效——缓存键
+      // 不含 registry 状态），且不静默——用户看到 enabled=true 却无审查，应能从日志定位
+      this.deps.logger.warn('review', 'resolve_failed', { provider: review.provider, message: e instanceof Error ? e.message : String(e) })
       return null
     }
   }
 
   /**
-   * 执行一轮纠偏审查（定时兜底/信号共用；单飞防堆卡）。完成后注入：
-   * 模型还在跑（信号触发的常态）→ 插话队列 midTurn（loop 步间注入当前轮，止住绕圈）；
-   * 已空闲（轮末触发的常态）→ pendingReviewCard（下轮 startTurn 拼进 input——不自动起轮烧 token）。
-   * 失败静默降级（warn 日志 + systemMsg 提示），绝不打断任务主流程。
+   * 执行一轮纠偏审查（定时兜底/信号共用；单飞防堆卡）。完成后注入（审阅修复后的分派）：
+   * 快照触发时的轮身份——完成时**同一轮**仍在跑（信号止绕圈场景）→ 插话队列 midTurn
+   * （kind:'review'，loop 走中性审查包装）；否则（定时常态/轮已结束或已换轮）→
+   * pendingReviewCard（下轮 startTurn 拼进 input——不自动起轮烧 token，且旧任务的卡
+   * 不会以插话形态错位注入用户的新任务轮）。失败静默降级，绝不打断任务主流程。
    */
   private async maybeRunReview(trigger: ReviewTrigger): Promise<void> {
     const reviewer = this.resolveReviewer()
@@ -545,6 +558,7 @@ export class HostSession {
     if (cfg === undefined) return
     this.reviewInflight = true
     const reason = trigger === 'interval' ? `第 ${this.reviewTurnCount} 轮定时` : '异常信号'
+    const firedTurnId = this.running ? this.currentTurnId : null // 轮身份快照（审阅修复：防跨轮错位注入）
     this.publish('systemMsg', { text: `⚡ 已请高级模型审查（${reason}，${cfg.model}）…` })
     try {
       const outcome = await callReviewer(
@@ -561,14 +575,18 @@ export class HostSession {
       // 不发 usage 帧不写 lastIn/lastOut（那是主轮口径，审查调用不该污染 StatusBar）
       this.recordSideUsage(cfg.model, cfg.provider, outcome.usage)
       this.deps.logger.info('review', 'card_injected', { trigger, turn: this.reviewTurnCount, chars: outcome.card.length })
-      if (this.running) {
-        this.queue.push({ text: `[纠偏审查·${reason}]\n${outcome.card}`, midTurn: true })
+      // 注入文本统一带中性前缀（审阅/安全席：不冒充用户、不带无条件服从指令——采纳建议
+      // 仍须过既有确认与安全栅栏）；剥内层 [纠偏审查] 标头防双层
+      const bare = outcome.card.replace(/^\[纠偏审查\]\s*\n?/, '')
+      const wrapped = `[审查器附注（${cfg.model} 对近期任务轨迹的纠偏摘要，自动生成非用户消息，仅供参考）]\n${bare}`
+      if (firedTurnId !== null && this.running && this.currentTurnId === firedTurnId) {
+        this.queue.push({ text: wrapped, midTurn: true, kind: 'review' })
         this.publish('interjection/enqueued', { text: `纠偏卡（${reason}）已注入` })
-        this.publish('queue/snapshot', { items: this.queue.map((q) => q.text) })
       } else {
-        this.pendingReviewCard = outcome.card
+        this.pendingReviewCard = wrapped
         this.publish('systemMsg', { text: '✓ 纠偏卡已就绪（下一轮自动注入）' })
       }
+      this.publish('queue/snapshot', { items: this.queue.map((q) => (q.kind === 'review' ? '[纠偏审查卡·待注入]' : q.text)) })
     } catch (e) {
       this.deps.logger.warn('review', 'failed', { trigger, message: e instanceof Error ? e.message : String(e) })
       this.publish('systemMsg', { text: '（纠偏审查未完成——任务不受影响）' })
@@ -816,7 +834,7 @@ export class HostSession {
           }
           if (cmd.mode === 'StartIfIdle') {
             this.queue.push({ text: cmd.text, blocks, midTurn: false })
-            this.publish('queue/snapshot', { items: this.queue.map((q) => q.text) })
+            this.publish('queue/snapshot', { items: this.queue.map((q) => (q.kind === 'review' ? '[纠偏审查卡·待注入]' : q.text)) })
             return { ok: true, routed: 'Queued' }
           }
           if (typeof cmd.mode === 'object' && cmd.mode.Steer.expectedTurnId !== this.currentTurnId) {
@@ -842,7 +860,7 @@ export class HostSession {
           // StartOrSteer：busy 输入=插话（host 权威队列，D2）
           this.queue.push({ text, blocks, midTurn: true })
           this.publish('interjection/enqueued', { text: cmd.text })
-          this.publish('queue/snapshot', { items: this.queue.map((q) => q.text) })
+          this.publish('queue/snapshot', { items: this.queue.map((q) => (q.kind === 'review' ? '[纠偏审查卡·待注入]' : q.text)) })
           return { ok: true, routed: 'Steered' }
         }
         void this.startTurn(cmd.text, blocks).catch((e: unknown) => {
@@ -857,7 +875,12 @@ export class HostSession {
         this.abort.abort()
         return { ok: true }
       case 'interjection/clear':
-        this.queue.length = 0
+        // 审查卡是系统产物不随用户 Ctrl+U 清弃（审阅修复）——转 pendingReviewCard 随下轮携带
+        {
+          const reviewLeft = this.queue.filter((q) => q.kind === 'review')
+          if (reviewLeft.length > 0) this.pendingReviewCard = reviewLeft[reviewLeft.length - 1].text
+          this.queue.length = 0
+        }
         this.publish('queue/snapshot', { items: [] })
         return { ok: true }
       case 'approval/respond': {
@@ -885,6 +908,13 @@ export class HostSession {
         this.readMtime.clear() // M13-B1：已读表随会话重置
         this.clearRememberedTools() // F-07 档A：会话级 remember 白名单随会话清空
         this.mcpCallCount = 0 // 审阅 P1-1：与客户端 setSessionCost(0) 同语义
+        // 审阅修复：/clear=换会话语义，review 状态与 restoreFrom 对齐归零（否则轮计数跨
+        // 「新对话」继承——第 1 条新消息就触发定时审查；且旧对话的暂存卡会注入新对话）
+        this.reviewTurnCount = 0
+        this.reviewTurnIterations = 0
+        this.reviewSignalFiredThisTurn = false
+        this.lastIntervalReviewedTurn = -1
+        this.pendingReviewCard = null
         return { ok: true }
       case 'session/restore':
         // M13-W2：restore=ensure（活复用/冷载入 restoreFrom/并发幂等单飞——落点 ProjectHost）
@@ -1157,13 +1187,15 @@ export class HostSession {
       this.pendingSessionContext = []
     }
     // 纠偏审查（2026-09-02）：空闲期完成的审查卡随本轮注入（同 additionalContext 模式——
-    // 不自动起轮烧 token，用户下一条消息自然携带）；轮计数/迭代计数自增与重置
+    // 不自动起轮烧 token，用户下一条消息自然携带）。卡文本自带中性前缀（审阅/安全席修复：
+    // 去「请按建议校正」服从指令——采纳建议仍须过既有确认与安全栅栏）
     if (this.pendingReviewCard !== null) {
-      input = `${input}\n\n[纠偏审查——高级模型对任务方向与执行质量的审查，请按建议校正]\n${this.pendingReviewCard}`
+      input = `${input}\n\n${this.pendingReviewCard}`
       this.pendingReviewCard = null
     }
     this.reviewTurnCount += 1
     this.reviewTurnIterations = 0
+    this.reviewSignalFiredThisTurn = false
     // M10-P3 双时点之二：跨 turn 后台任务通知随首轮输入注入
     for (const n of this.tasks.collectNotifications()) input = `${input}\n${n}`
 
@@ -1335,14 +1367,19 @@ export class HostSession {
         signal: this.abort.signal,
         pollUserInput: () => {
           // 步间注入只吃插话语义（midTurn）且无图的条目；排队语义（StartIfIdle）与带图条目
-          // 留给轮末兜底（带图以 blocks 起轮，见类头偏差记录）
+          // 留给轮末兜底（带图以 blocks 起轮，见类头偏差记录）。
+          // 审查卡（kind:'review'）带标记返回——loop 据此走中性审查包装（不冒充用户，审阅修复）
           const injectable = this.queue.filter((q) => q.midTurn && q.blocks === undefined)
           if (injectable.length === 0) return null
           for (const q of injectable) {
             this.queue.splice(this.queue.indexOf(q), 1)
-            this.publish('interjection/injected', { text: q.text })
+            this.publish('interjection/injected', { text: q.kind === 'review' ? '纠偏审查卡' : q.text })
           }
-          this.publish('queue/snapshot', { items: this.queue.map((q) => q.text) })
+          this.publish('queue/snapshot', { items: this.queue.map((q) => (q.kind === 'review' ? '[纠偏审查卡·待注入]' : q.text)) })
+          // 单条 review：带 kind 标记；多条混合/多条用户：合并文本（既有行为）
+          if (injectable.length === 1 && injectable[0].kind === 'review') {
+            return { text: injectable[0].text, kind: 'review' as const }
+          }
           return injectable.map((q) => q.text).join('\n\n')
         },
       })
@@ -1429,23 +1466,32 @@ export class HostSession {
     this.running = false
     this.currentTurnId = null
     // 纠偏审查·定时兜底（2026-09-02 用户拍板）：轮计数整除命中才触发（默认第 5/10/15…轮末）。
-    // 异步 void 不阻塞队列续投——审查完成时若已起新轮则走插话注入，空闲则 pendingReviewCard
+    // 异步 void 不阻塞队列续投——完成时按轮身份快照分派（同轮插话/否则 pending）。
+    // lastIntervalReviewedTurn 防重（审阅修复）：hook block 轮计数不自增，旧值再判会重复触发
     if (
       this.cfg().review?.enabled === true &&
       !this.abort.signal.aborted &&
+      this.reviewTurnCount !== this.lastIntervalReviewedTurn &&
       shouldReviewAtTurnEnd(this.reviewTurnCount, this.cfg().review ?? {})
     ) {
+      this.lastIntervalReviewedTurn = this.reviewTurnCount
       void this.maybeRunReview('interval')
     }
     // 轮末兜底：队列续投（带图条目在此以 blocks 起轮）。
     // 中断态不续投（Ctrl+C「无法中断」根因：断掉当前轮后这里立刻用队列条目起新轮，
     // 看似模型停不下来）；队列保留（CC 同款中断不弃队列——下一轮 pollUserInput 步间注入或用户再提交时消费）
-    const next = this.abort.signal.aborted ? undefined : this.queue.shift()
+    // 审查卡（kind:'review'）不参与续投（审阅修复）：自动起轮消化系统卡=无人输入下烧主模型
+    // 调用，违背 pending 分支「不自动起轮」承诺——转 pendingReviewCard 随下轮携带
+    let next = this.abort.signal.aborted ? undefined : this.queue.shift()
+    while (next !== undefined && next.kind === 'review') {
+      this.pendingReviewCard = next.text
+      next = this.queue.shift()
+    }
     if (this.abort.signal.aborted && this.queue.length > 0) {
       this.publish('systemMsg', { text: `已中断（插话队列保留 ${this.queue.length} 条，下轮自动注入；Ctrl+U 清空）` })
     }
     if (next !== undefined) {
-      this.publish('queue/snapshot', { items: this.queue.map((q) => q.text) })
+      this.publish('queue/snapshot', { items: this.queue.map((q) => (q.kind === 'review' ? '[纠偏审查卡·待注入]' : q.text)) })
       void this.startTurn(next.text, next.blocks).catch((e: unknown) => {
         // 兜底续投失败不留哑轮（与首轮同款：发 error 事件 + 记日志）
         this.publish('error', { message: e instanceof Error ? e.message : String(e) })
@@ -1509,8 +1555,9 @@ export class HostSession {
       let feedback: string | undefined
       // 纠偏审查·异常信号（2026-09-02 用户拍板）：连续工具失败（模型在绕圈/踩同一坑）或
       // 单轮迭代过长（空转）→ 提前请高级模型介入（异步 void——审查卡稍后经插话队列注入
-      // 当前轮，止住绕圈；不阻塞本轮回喂路径）。信号关（onSignals=false）不触发
-      if (this.cfg().review?.enabled === true && this.cfg().review?.onSignals !== false) {
+      // 当前轮，止住绕圈；不阻塞本轮回喂路径）。信号关（onSignals=false）不触发；
+      // reviewSignalFiredThisTurn 每轮一次（审阅修复：长失败轮批批命中，无上限会连环审查烧钱）
+      if (this.cfg().review?.enabled === true && this.cfg().review?.onSignals !== false && !this.reviewSignalFiredThisTurn) {
         this.reviewTurnIterations += 1
         if (
           shouldReviewOnSignal(
@@ -1518,6 +1565,7 @@ export class HostSession {
             this.reviewTurnIterations,
           )
         ) {
+          this.reviewSignalFiredThisTurn = true
           void this.maybeRunReview('signal')
         }
       }

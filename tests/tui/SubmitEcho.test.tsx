@@ -85,7 +85,11 @@ function makeFakeHost(opts: { failPrompt?: boolean } = {}) {
         lines.push({ role: 'user', content: [{ type: 'text', text: cmd.text }] } as Message)
         return { ok: true, routed: 'Started', sessionId: 's-echo' }
       }
-      if (cmd.op === 'session/read') return { ok: true, value: lines }
+      // 2026-09-02 附着态首个 prompt 前惰性建专属会话（防同项目双 TUI 串台）——fake 跟随
+      if (cmd.op === 'session/new') return { ok: true, sessionId: 's-echo' }
+      // 测试席 P1：返回快照副本（真实形态是 HTTP 定格快照——共享引用会把 read 过早/过晚的
+      // 时序问题全部钝化，恰是 await 串行化修复要防的那类交错）
+      if (cmd.op === 'session/read') return { ok: true, value: [...lines] }
       return { ok: true }
     },
     subscribe: (h: (ev: ProtocolEvent) => void) => {
@@ -161,4 +165,33 @@ describe('提交即锁死（发送成功全文进 Static）', () => {
     expect(frames.join('')).not.toContain('ZZHEADZZ')
     expect(lines).toHaveLength(0)
   })
+
+  it('第二轮提交：echo 与全量重建交错下同内容只上屏一份（await 串行化回归锁——测试席 P1）', async () => {
+    const { host, fire } = makeFakeHost()
+    const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
+    await flush()
+    // —— 第一轮（带轮末 completed + busy 复位——真宿主轮末必发 busy:false，缺了第二轮会走插话路径）——
+    await typeAndSubmit(stdin)
+    await vi.waitFor(() => {
+      expect(lastFrame() ?? '').toContain('ZZHEADZZ')
+    }, { timeout: 2000, interval: 30 })
+    fire({ type: 'thread/status', seq: 1, busy: true, waitingOn: null, iter: 1 })
+    fire({ type: 'turn/completed', seq: 2, turnId: 't1' })
+    fire({ type: 'thread/status', seq: 3, busy: false, waitingOn: null, iter: 1 })
+    await flush(60)
+    const first = lastFrame() ?? ''
+    expect(first.split('ZZHEADZZ').length - 1).toBe(1)
+    // —— 第二轮（transcript 已非空——轮首兜底 commit 与 echo 交错的窗口就在这里）——
+    await typeAndSubmit(stdin)
+    await vi.waitFor(() => {
+      expect((lastFrame() ?? '').split('ZZHEADZZ').length - 1).toBe(2)
+    }, { timeout: 2000, interval: 30 })
+    fire({ type: 'thread/status', seq: 4, busy: true, waitingOn: null, iter: 2 })
+    fire({ type: 'turn/completed', seq: 5, turnId: 't2' })
+    fire({ type: 'thread/status', seq: 6, busy: false, waitingOn: null, iter: 2 })
+    await flush(60)
+    // 轮末全量重建后仍恰好两份（echo+transcript 同位不重印）
+    expect((lastFrame() ?? '').split('ZZHEADZZ').length - 1).toBe(2)
+    expect(lastFrame() ?? '').not.toContain('行已折叠')
+  }, 10_000)
 })

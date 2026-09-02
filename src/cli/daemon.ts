@@ -16,10 +16,21 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { MultiTransport } from '../protocol/multiTransport.js'
 
 // 函数化（调用时取 homedir——测试可经 HOME/USERPROFILE 隔离；进程内语义不变）
-const regPath = (): string => join(homedir(), '.ecode', 'server.json')
-const spawnLockPath = (): string => join(homedir(), '.ecode', 'daemon-spawn.lock')
+const regPath = (): string => join(homeBase(), '.ecode', 'server.json')
+const spawnLockPath = (): string => join(homeBase(), '.ecode', 'daemon-spawn.lock')
 const READY_TIMEOUT_MS = 15_000
 const HEALTH_TIMEOUT_MS = 2_000
+
+/** 测试注入 home 目录（2026-09-02 实证修复）：原「USERPROFILE/HOME env 覆盖」隔离在 vitest
+ *  worker 内不可靠（真机复现：跑 daemon.test.ts 把真实 ~/.ecode/server.json 覆盖成假注册，
+ *  毁掉在跑 daemon 的注册文件 → 下次启动误判重拉双 daemon）。显式注入彻底绕开 env 时序。
+ *  null=复位。VITEST 守卫：生产环境误调直接炸（防测试钩子成为注入面——安全席 P2） */
+let homeOverrideForTest: string | null = null
+export function setDaemonHomeForTest(home: string | null): void {
+  if (process.env.VITEST === undefined) throw new Error('setDaemonHomeForTest 仅限测试环境调用')
+  homeOverrideForTest = home
+}
+const homeBase = (): string => homeOverrideForTest ?? homedir()
 
 export interface ServerReg {
   id: string
@@ -103,8 +114,9 @@ export interface EmbeddedOutcome {
 }
 export type DaemonOutcome = AttachOutcome | EmbeddedOutcome
 
-/** pid 探活+health+id 比对+版本匹配四验（§4.5.3 身份双验在此收敛） */
-async function verifyAndAttach(reg: ServerReg, logger: DaemonLogger): Promise<AttachOutcome | null> {
+/** pid 探活+health+id 比对+版本匹配四验（§4.5.3 身份双验在此收敛）——验过返回 reg+health
+ *  （health 供 daemonName 兜底），否则 null */
+async function verifyReg(reg: ServerReg, logger: DaemonLogger): Promise<{ reg: ServerReg; health: HealthInfo } | null> {
   if (!pidAlive(reg.pid)) return null
   const health = await probeHealth(reg.port)
   if (health === null || health.ok !== true) return null
@@ -116,6 +128,12 @@ async function verifyAndAttach(reg: ServerReg, logger: DaemonLogger): Promise<At
     logger.warn('daemon', 'version_mismatch', { daemon: daemonVer, cli: myVersion() })
     return null
   }
+  return { reg, health }
+}
+
+async function verifyAndAttach(reg: ServerReg, logger: DaemonLogger): Promise<AttachOutcome | null> {
+  const ok = await verifyReg(reg, logger)
+  if (ok === null) return null
   const transport = new MultiTransport({
     baseUrl: `http://127.0.0.1:${reg.port}`,
     token: reg.token,
@@ -123,7 +141,79 @@ async function verifyAndAttach(reg: ServerReg, logger: DaemonLogger): Promise<At
     getSessionId: () => undefined,
     canAnswer: true,
   })
-  return { attached: true, transport, daemonName: reg.name ?? health.name ?? hostname() }
+  return { attached: true, transport, daemonName: reg.name ?? ok.health.name ?? hostname() }
+}
+
+/** 拉起锁（审阅修复：原 ensureDaemonAttach 独有的锁龄回收抽公共——resurrectDaemonReg 缺它时
+ *  持锁进程 kill -9 残锁会让后续所有自愈只等不拉、15s 白等后错误降级）。true=持锁（调用方
+ *  finally 里 releaseSpawnLock）；false=他方在拉（只等待复用） */
+export function acquireSpawnLock(): boolean {
+  try {
+    const fd = openSync(spawnLockPath(), 'wx')
+    closeSync(fd)
+    return true
+  } catch {
+    // 已有进程在拉起——锁龄超过 READY_TIMEOUT 视为持锁进程死亡（kill -9/断电），抢删重试一次
+    try {
+      const age = Date.now() - statSync(spawnLockPath()).mtimeMs
+      if (age > READY_TIMEOUT_MS) {
+        unlinkSync(spawnLockPath())
+        const fd = openSync(spawnLockPath(), 'wx')
+        closeSync(fd)
+        return true
+      }
+    } catch {
+      /* 抢锁仍失败/已消失——按无锁等待 */
+    }
+  }
+  return false
+}
+
+export function releaseSpawnLock(): void {
+  try {
+    unlinkSync(spawnLockPath())
+  } catch {
+    /* 幂等 */
+  }
+}
+
+/**
+ * 2026-09-02 TUI 稳定性拍板（用户定调：附着状态不能打断 TUI 干活）——daemon 意外死亡时
+ * 的重拉入口：拉起锁串行化（含锁龄回收） → detached spawn → 轮询新注册四验（READY_TIMEOUT 内）。
+ * 返回新注册（port/token 都可能变——调用方据此 reattach 既有 transport），失败 null。
+ * 与 ensureDaemonAttach 的分工：那是入口序（含发现/版本拒绝策略），本函数只管"死了拉活"。
+ */
+export async function resurrectDaemonReg(logger: DaemonLogger): Promise<ServerReg | null> {
+  // stop 墓碑（审阅 安全席 P2）：`ecode serve stop` 后 5 分钟内不自动重拉——尊重显式停止
+  //（否则 stop 后存活 TUI 发条消息 daemon 就被拉回，"立刻停掉/关闭暴露面"的意图被推翻）。
+  // 手动 `ecode serve` 上位新实例时墓碑被清除
+  try {
+    const tomb = JSON.parse(readFileSync(join(homeBase(), '.ecode', 'daemon.stopped'), 'utf8')) as { ts?: number }
+    if (typeof tomb.ts === 'number' && Date.now() - tomb.ts < 5 * 60_000) {
+      logger.info('daemon', 'resurrect_skipped_stopped', {})
+      return null
+    }
+  } catch {
+    /* 无墓碑/损坏=正常路径 */
+  }
+  const haveLock = acquireSpawnLock()
+  try {
+    if (haveLock) {
+      logger.info('daemon', 'resurrect', {})
+      spawnDetachedServe(logger)
+    }
+    const deadline = Date.now() + READY_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 300))
+      const reg = readServerReg()
+      if (reg === null) continue
+      const ok = await verifyReg(reg, logger)
+      if (ok !== null) return ok.reg
+    }
+    return null
+  } finally {
+    if (haveLock) releaseSpawnLock()
+  }
 }
 
 type DaemonLogger = {
@@ -206,26 +296,9 @@ export async function ensureDaemonAttach(opts: {
     }
   }
 
-  // 2) 拉起锁（冷启动竞态：双 ecode 同时首启只 spawn 一个 daemon——架构席 P0-2）
-  let haveLock = false
-  try {
-    const fd = openSync(spawnLockPath(), 'wx')
-    closeSync(fd)
-    haveLock = true
-  } catch {
-    // 已有进程在拉起——锁龄超过 READY_TIMEOUT 视为持锁进程死亡（kill -9/断电），抢删重试一次
-    try {
-      const age = Date.now() - statSync(spawnLockPath()).mtimeMs
-      if (age > READY_TIMEOUT_MS) {
-        unlinkSync(spawnLockPath())
-        const fd = openSync(spawnLockPath(), 'wx')
-        closeSync(fd)
-        haveLock = true
-      }
-    } catch {
-      /* 抢锁仍失败/已消失——按无锁等待 */
-    }
-  }
+  // 2) 拉起锁（冷启动竞态：双 ecode 同时首启只 spawn 一个 daemon——架构席 P0-2；
+  //  锁龄回收已抽公共 acquireSpawnLock——与 resurrectDaemonReg 同一套）
+  const haveLock = acquireSpawnLock()
   try {
     if (haveLock) {
       opts.logger.info('daemon', 'spawn', { name: hostname() })
@@ -241,13 +314,7 @@ export async function ensureDaemonAttach(opts: {
     }
     return { attached: false, reason: haveLock ? 'daemon 拉起失败（查看 daemon 日志）' : '等待其他进程拉起 daemon 超时' }
   } finally {
-    if (haveLock) {
-      try {
-        unlinkSync(spawnLockPath())
-      } catch {
-        /* 幂等 */
-      }
-    }
+    if (haveLock) releaseSpawnLock()
   }
 }
 

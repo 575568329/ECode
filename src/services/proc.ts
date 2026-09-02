@@ -79,6 +79,7 @@ function probeGitBash(): string {
     const out = execSync('where bash', {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true, // daemon（无控制台）首次探测闪 cmd.exe 窗——与 spawn 系同压
     })
     const found = out
       .split('\n')

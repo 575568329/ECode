@@ -22,6 +22,7 @@ import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
+import { resurrectDaemonReg } from '../cli/daemon.js' // tui→cli 反向单点（daemon 拉起逻辑归口；无循环依赖——daemon.ts 不 import tui）
 import { createActive, type CommittedItem, type ActiveState } from './types.js'
 import { messagesToCommitted } from './commit.js'
 import { expandSkill, type SkillRegistry } from '../services/skill.js'
@@ -176,7 +177,8 @@ function generalConfigItems(config: import('../services/config.js').Config): Con
  * - 提交即锁死：prompt 发送成功 → 用户消息全文 echo 进 Static（失败留动态区折叠显示）；
  *   轮末 commit：runLoop 结束 → messagesToCommitted 全量重建 → setCommitted；active 清空
  */
-export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, onExit, initialHistorySessionId, host: attachedHost }: { deps: TuiAppDeps; banner?: string; /** 启动期一次性提示（如 daemon 附着成功）——走底部 systemMsgs 统一通道，5s TTL 自动消失；区别于 banner（配置错误持久横幅） */ initialNotice?: string; onRestart?: () => void; onExit?: () => void; initialHistorySessionId?: string; /** T 线 T4：附着形态由入口注入 MultiTransport（deps 换壳）；缺省=Embedded 内联装配 */ host?: TuiHost }): ReactElement {
+export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, onExit, initialHistorySessionId, host: attachedHost, localFallback }: { deps: TuiAppDeps; banner?: string; /** 启动期一次性提示（如 daemon 附着成功）——走底部 systemMsgs 统一通道，5s TTL 自动消失；区别于 banner（配置错误持久横幅） */ initialNotice?: string; onRestart?: () => void; onExit?: () => void; initialHistorySessionId?: string; /** T 线 T4：附着形态由入口注入 MultiTransport（deps 换壳）；缺省=Embedded 内联装配 */ host?: TuiHost; /** 2026-09-02 TUI 稳定性拍板：daemon 重拉也失败时的本地兜底装配（惰性——降级发生才执行
+ *  makeDeps 全装配；入参=当前 daemon 侧会话 id，降级后续写同一会话文件，TUI 不因后台失联断聊） */ localFallback?: (sessionId: string | undefined, config: Config) => TuiAppDeps }): ReactElement {
   const abortRef = useRef<AbortController>(new AbortController())
   // M12-B3 中间态：客户端消息镜像（宿主 transcript 权威；轮末/压缩/恢复同步——B5 退役）
   const messagesRef = useRef<HistoryLine[]>([])
@@ -266,7 +268,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
 
   /** M10-P2b：Alt+V 粘贴——读剪贴板图落附件目录，返回插入输入框的短标签（无图 null） */
   const pasteImageFromClipboard = async (): Promise<string | null> => {
-    const img = await readClipboardImage(deps.history.currentSessionId())
+    // 审阅 P2：附着态附件目录键控用 daemon 侧真实会话 id（原读本地壳 id——归档错位）
+    const img = await readClipboardImage(attachedSidRef.current ?? deps.history.currentSessionId())
     if (img === null) {
       setSystemMsgs(['剪贴板无图片（或读取失败）'], 'warn')
       return null
@@ -453,8 +456,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
 
   // —— M12-B3：宿主会话（数据/执行/审批全权在宿主；TuiApp 只是协议客户端）——
   const hostRef = useRef<TuiHost | null>(null)
-  /** 附着形态的 MultiTransport（setSessionId 用；embedded 下恒 null） */
-  const transportRef = useRef<{ setSessionId?: (sid: string) => void } | null>(null)
+  /** 附着形态的 MultiTransport（setSessionId/reattach 用；embedded 下恒 null） */
+  const transportRef = useRef<{ setSessionId?: (sid: string) => void; reattach?: (baseUrl: string, token: string) => void } | null>(null)
   if (attachedHost !== undefined && hostRef.current === null) {
     hostRef.current = attachedHost
     if ('setSessionId' in attachedHost) {
@@ -466,48 +469,60 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       }
     }
   }
+  /** Embedded 宿主构造（初始兜底与 2026-09-02 自愈降级共用）：优先 ProjectHost（makeDeps
+   *  装配形态——skills/hooks 等项目级件齐备），否则内联 HostSession（测试 fake 形态） */
+  const buildInlineHost = (d: TuiAppDeps): HostSession => {
+    if (d.project !== undefined) return d.project.ensureDefault(d.history.currentSessionId()) as HostSession
+    const h = new HostSession({
+      providerRegistry: d.providerRegistry,
+      tools: d.tools,
+      logger: d.logger,
+      history: d.history,
+      getConfig: () => configRef.current,
+      orchestrator: d.orchestrator,
+      skillListForPrompt: () => d.skillRegistry.listForPrompt(),
+      ...(d.hookRunner != null ? { hookRunner: d.hookRunner } : {}),
+      ...(d.checkpoint != null && d.checkpoint !== undefined ? { checkpoint: d.checkpoint } : {}),
+      ...(d.quality != null && d.quality !== undefined ? { quality: d.quality } : {}),
+      ctxWindowHint: () => ctxWindowRef.current,
+      cwd: process.cwd(),
+      // T 线 T2：session/restore 命令的 Embedded 端口——宿主即会话宿主，载入=restoreFrom
+      // 自身（无 ProjectHost 间接）；历史由 d.history 真读（fake store 空会话返回 NOT_FOUND）。
+      // 2026-09-02 用户拍板：恢复=**继续原会话**（同 id 续写，不再 fork 复制一份）——
+      // 载入外还须切本地续写指针（restoreFrom 只换内存 messages，落盘仍按 history 的
+      // currentId——不切则后续 prompt 全写进恢复前的旧会话文件）
+      ensureConversation: (sid) => {
+        if (!isValidSessionId(sid)) return Promise.resolve({ ok: false as const, error: `会话 id 非法：${sid}`, code: 'BAD_SESSION_ID' })
+        const lines = d.history.restoreFull(sid)
+        if (lines.length === 0) return Promise.resolve({ ok: false as const, error: '会话不存在或为空', code: 'SESSION_NOT_FOUND' })
+        h.restoreFrom(lines)
+        d.history.setSessionId(sid)
+        return Promise.resolve({ ok: true as const, value: { sessionId: sid } })
+      },
+    })
+    return h
+  }
   if (hostRef.current === null) {
     // M13-W1：宿主取自 ProjectHost（会话容器；首会话已由 makeDeps ensure——此处幂等取回）；
     // 测试 fake 无 project 走内联构造兜底（与 M12 等价）
-    const inline =
-      deps.project !== undefined
-        ? deps.project.ensureDefault(deps.history.currentSessionId())
-        : new HostSession({
-            providerRegistry: deps.providerRegistry,
-            tools: deps.tools,
-            logger: deps.logger,
-            history: deps.history,
-            getConfig: () => configRef.current,
-            orchestrator: deps.orchestrator,
-            skillListForPrompt: () => deps.skillRegistry.listForPrompt(),
-            ...(deps.hookRunner != null ? { hookRunner: deps.hookRunner } : {}),
-            ...(deps.checkpoint != null && deps.checkpoint !== undefined ? { checkpoint: deps.checkpoint } : {}),
-            ...(deps.quality != null && deps.quality !== undefined ? { quality: deps.quality } : {}),
-            ctxWindowHint: () => ctxWindowRef.current,
-            cwd: process.cwd(),
-            // T 线 T2：session/restore(fork) 命令的 Embedded 端口——宿主即会话宿主，载入=restoreFrom
-            // 自身（无 ProjectHost 间接）；历史由 deps.history 真读（fake store 空会话返回 NOT_FOUND）
-            ensureConversation: (sid) => {
-              if (!isValidSessionId(sid)) return Promise.resolve({ ok: false as const, error: `会话 id 非法：${sid}`, code: 'BAD_SESSION_ID' })
-              const lines = deps.history.restoreFull(sid)
-              if (lines.length === 0) return Promise.resolve({ ok: false as const, error: '会话不存在或为空', code: 'SESSION_NOT_FOUND' })
-              hostInstance.restoreFrom(lines)
-              return Promise.resolve({ ok: true as const, value: { sessionId: sid } })
-            },
-          })
-    const hostInstance = inline as HostSession
     // HostSession 结构超集兼容 TuiHost（附着形态同位替换为 MultiTransport）
-    hostRef.current = hostInstance
+    hostRef.current = buildInlineHost(deps)
   }
   const host = hostRef.current
-  /** T 线 T4：附着态标记（挂账项守卫——skill-create/PluginPanel 等直调面附着态禁用，D-T2） */
-  const attached = attachedHost !== undefined
+  /** T 线 T4：附着态标记（挂账项守卫——skill-create/PluginPanel 等直调面附着态禁用，D-T2）。
+   *  审阅 P2：派生加 transportRef——自愈降级置 null 后即回本地语义（/skill-create 等不再误报
+   *  「附着模式不可用」）；重渲染时机由降级内的 setState 保证 */
+  const attached = attachedHost !== undefined && transportRef.current !== null
 
   // T 线 T2：transcript 读面命令化——宿主 messages 镜像改走 session/read 无参全量（与
   // restoreFull 同源同形；Embedded=InMemoryChannel 内存拷贝，附着=HTTP）。原 12 处
   // `host.transcript` 直调的协议通道等价物；失败保留旧镜像（不闪空）
   const pullTranscript = async (): Promise<HistoryLine[]> => {
-    const r = await host.send({ op: 'session/read', sessionId: deps.history.currentSessionId() })
+    // 2026-09-02 回归修复：附着态目标 id 取 attachedSidRef（daemon 侧真实会话）——原用本地
+    // deps.history 的 id，daemon 上不存在该会话 → session/read 恒 SESSION_NOT_FOUND →
+    // turn/completed 时 committed 永不增长，而动态区每轮清空 → 本轮 LLM 回复+工具调用
+    // 全部丢屏（TUI 只剩用户提问 echo）。Embedded 退回本地 id（本地 history 即权威）
+    const r = await host.send({ op: 'session/read', sessionId: attachedSidRef.current ?? deps.history.currentSessionId() })
     if (!r.ok) return messagesRef.current
     return r.value as unknown as HistoryLine[]
   }
@@ -517,9 +532,12 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     attachedSidRef.current = sid
     transportRef.current?.setSessionId?.(sid)
   }
-  /** 拉取并同步渲染镜像（ref+committed 全量重建——事件回调内异步化） */
-  const syncCommitted = (lines?: HistoryLine[]): void => {
-    void (lines !== undefined ? Promise.resolve(lines) : pullTranscript()).then((l) => {
+  /** 拉取并同步渲染镜像（ref+committed 全量重建——事件回调内异步化）。
+   *  返回 Promise 供轮首兜底串行化（doSubmit await：兜底重建与 echo 追加交错会把
+   *  transcript user 项+echo 项双双进 Static——同内容重复上屏，2026-09-02 实证）；事件
+   *  回调调用点不 await，行为不变 */
+  const syncCommitted = (lines?: HistoryLine[]): Promise<void> => {
+    return (lines !== undefined ? Promise.resolve(lines) : pullTranscript()).then((l) => {
       messagesRef.current = l
       setCommitted(messagesToCommitted(l))
     }).catch(() => {})
@@ -551,10 +569,11 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     },
   }
 
-  // 事件→UI 映射（渲染/审批/插话/进度全事件驱动；回调直驱 setState 的旧路径退役）
-  useEffect(() => {
-    host.mountBridges?.()
-    const unsub = host.subscribe((ev) => {
+  // 事件→UI 映射（渲染/审批/插话/进度全事件驱动；回调直驱 setState 的旧路径退役）。
+  // handler 经 ref 持有：2026-09-02 自愈链降级换宿主后，新宿主重订阅的是同一份处理逻辑
+  const mountedRef = useRef(true) // 审阅 P2：unmount 后 in-flight rescue 不再建新宿主
+  const hostEventHandlerRef = useRef<(ev: import('../protocol/types.js').ProtocolEvent) => void>(() => {})
+  hostEventHandlerRef.current = (ev) => {
       switch (ev.type) {
         case 'delta':
           setActive((a) => ({ ...a, streamingText: a.streamingText + streamStripperRef.current.push(ev.text) }))
@@ -765,10 +784,15 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         default:
           break // 其余事件 B5 消费或无需 UI
       }
-    })
+  }
+  useEffect(() => {
+    host.mountBridges?.()
+    const unsub = host.subscribe((ev) => hostEventHandlerRef.current(ev))
     return () => {
       unsub()
-      host.dispose()
+      mountedRef.current = false
+      // dispose 当前宿主（ref 取——自愈降级换宿主后 unmount 要收的是新宿主；旧通道在降级时已退役）
+      hostRef.current?.dispose?.()
       hostRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（host/recordUsage/pushNoticeFn 均稳定引用或 ref 闭包）
@@ -803,8 +827,31 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       return
     }
     // error 轮兜底 commit（正常轮在 turn/completed 已进 Static——V4；error 轮无 completed 帧，
-    // transcript 里的本轮内容在这里收进 Static 再开新轮）
-    syncCommitted()
+    // transcript 里的本轮内容在这里收进 Static 再开新轮）。**await 串行化**：兜底重建完成
+    // 后才 echo——否则两者交错时 echo 基于重建前镜像追加、重建再在其后覆盖，transcript
+    // user 项与 echo 项同内容双份上屏（2026-09-02 回归实证）
+    await syncCommitted()
+    // 2026-09-02 串台回归修复：附着态首个 prompt 不带信封 sessionId，serve 缺省路由落**项目
+    // 默认会话**——同项目第二个 TUI 同样落默认会话，两终端互进对方 messages、事件互播（真机
+    // 双开串台）。首个 prompt 前显式 session/new（serve 层真新建）拿专属会话；Embedded 形态
+    // 本就是进程私有会话，不经此路径。
+    if (attached && attachedSidRef.current === undefined) {
+      let nr = await host.send({ op: 'session/new' })
+      // 首命令也可能撞上后台失联（daemon 崩溃后首个输入）——同样走自愈链再试一次；
+      // 降级路径（local）会话已由 degrade 建立，直接放行（本地宿主无 session/new 命令）
+      if (!nr.ok && nr.code === 'NETWORK') {
+        const outcome = await rescueDaemon()
+        if (outcome === 'local') nr = { ok: true, sessionId: attachedSidRef.current }
+        else if (outcome === 'reattached') nr = await (hostRef.current ?? host).send({ op: 'session/new' })
+      }
+      if (!nr.ok || nr.sessionId === undefined) {
+        setActive((a) => ({ ...a, streaming: false }))
+        setSystemMsgs([`新建会话失败：${nr.ok ? '回执缺 sessionId' : nr.error}`], 'warn')
+        setActivity({ state: 'idle' })
+        return
+      }
+      recordSessionId(nr.sessionId)
+    }
     // T 线⑥：SessionStart additionalContext 宿主暂存随首轮注入（startTurn 内）——
     // 原 pendingSessionCtxRef 客户端机制退役（附着态注入点同样在宿主，web/TUI 一致）
     // 消息确认发送：粘贴暂存此刻清空（早退路径均不清——图片不丢）
@@ -814,12 +861,27 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     streamStripperRef.current = createAnsiStripper() // 新轮重置（半截序列不跨轮）
     setError(null)
     setActivity({ state: 'thinking' })
-    const r = await host.send({
+    // 首发也走 hostRef（审阅 P0-1 修复）：自愈降级会替换 hostRef 并 dispose 旧 transport——
+    // 本 async 闭包固化的 host 已死，返 DISPOSED≠NETWORK 不入自愈重试，首条消息必失败
+    let r = await (hostRef.current ?? host).send({
       op: 'prompt',
       text: input,
       mode: 'StartOrSteer',
       ...(images !== undefined && images.length > 0 ? { images } : {}),
     })
+    // TUI 稳定性（2026-09-02）：后台失联（daemon 崩溃/被杀）不弃用户输入——自愈链（重拉→
+    // 降级本地）完成后重试一次；重试仍败才如实报错。rescue 单飞：自愈期间并发提交共等
+    if (!r.ok && r.code === 'NETWORK' && attached) {
+      const outcome = await rescueDaemon()
+      if (outcome !== 'dead') {
+        r = await (hostRef.current ?? host).send({
+          op: 'prompt',
+          text: input,
+          mode: 'StartOrSteer',
+          ...(images !== undefined && images.length > 0 ? { images } : {}),
+        })
+      }
+    }
     if (!r.ok) {
       setActive((a) => ({ ...a, streaming: false }))
       setSystemMsgs([`发送失败：${r.error}`], 'warn')
@@ -1082,29 +1144,115 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   }
 
   const restoreSession = async (sessionId: string) => {
-    // T 线 T2：恢复命令化——session/restore fork:true 宿主权威执行（载入 ensureRestore+起新 id
-    // 播种+快照目录跟随+SessionStart(resume) 宿主 dispatch 全在宿主侧，T1②）；客户端只刷新视图。
-    // 原 deps.project.ensureRestore/restoreFrom/forkSession/copyForResume 客户端手搓三连退役。
-    const r = await host.send({ op: 'session/restore', sessionId, fork: true })
+    // T 线 T2：恢复命令化——session/restore 宿主权威执行（载入 ensureRestore+SessionStart(resume)
+    // 宿主 dispatch 全在宿主侧，T1②）；客户端只刷新视图。原 deps.project.ensureRestore/
+    // restoreFrom/forkSession/copyForResume 客户端手搓三连退役。
+    // 2026-09-02 用户拍板：**继续原会话**（不带 fork——同 id 续写；原 fork:true 会复制一份
+    // 新会话，历史列表每次恢复多一条，用户要的是接着聊）。与 web 端恢复语义对齐（ensure）。
+    // 附着态发送前先切 transport 会话 id：信封若还带旧会话 id，serve 按①显式路由进旧会话
+    // （旧会话被回收时直接 404），且回执顶层 sessionId 被信封 id 覆盖拿不到目标 id。
+    transportRef.current?.setSessionId?.(sessionId)
+    const r = await host.send({ op: 'session/restore', sessionId })
     if (!r.ok) {
+      // 恢复失败回滚 transport（目标未载入，事件过滤与信封仍指旧会话）
+      const prev = attachedSidRef.current
+      if (prev !== undefined) transportRef.current?.setSessionId?.(prev)
       setSystemMsgs([`⚠ 恢复失败：${r.error}，未切换`])
       return
     }
-    // P0 修复（审阅）：消费回执的新 sessionId（宿主 fork 播种的新 id）——后续命令信封
-    // 与事件帧过滤都以它为准；附着态由 MultiTransport.setSessionId 更新分发基线
+    // P0 修复（审阅）：消费回执的新 sessionId——后续命令信封与事件帧过滤都以它为准；
+    // 附着态由 MultiTransport.setSessionId 更新分发基线。value 优先（serve 层会把顶层
+    // sessionId 覆盖为信封 id），顶层兜底（Embedded 内联端口 value 形态缺省时）
     const value = r.value as { sessionId?: string } | undefined
-    if (value?.sessionId !== undefined) recordSessionId(value.sessionId)
+    const sid = value?.sessionId ?? r.sessionId
+    if (sid !== undefined) recordSessionId(sid)
+    // 审阅 P0-2 修复：本地 makeDeps 形态（--local 或自愈降级后），dispatch 的 ensureConversation
+    // 只是把目标会话 ensure 进 ProjectHost（新宿主），发起宿主（hostRef）仍是旧会话——不切换
+    // 则显示换新（read 按 cmd.sessionId 直读文件）而续聊上下文/落盘全走旧会话宿主（读写分裂：
+    // 模型看不到恢复的历史、轮末写旧文件、pullTranscript 读不到新轮 → 刚发的消息从屏幕消失）。
+    // 附着形态由 serve 信封路由+前置 setSessionId 兜住，不经此分支。
+    if (transportRef.current === null && deps.project !== undefined && sid !== undefined) {
+      const target = await deps.project.ensureRestore(sid)
+      const old = hostRef.current
+      hostRef.current = target
+      target.subscribe((ev) => hostEventHandlerRef.current(ev))
+      ;(old as { dispose?: () => void }).dispose?.()
+    }
     resetTransient()
     const lines = await pullTranscript()
     messagesRef.current = lines
     setCommitted(messagesToCommitted(lines))
   }
-  // CLI `ecode --history <id>` 启动恢复：复用 /history 的 restoreSession（起新 sessionId 续写，D2）。
+  // CLI `ecode --history <id>` 启动恢复：复用 /history 的 restoreSession（继续原会话续写，
+  // 2026-09-02 用户拍板不再 fork 复制）。
   // host 由 hostRef 渲染期惰性构造，effect 执行时已就绪；restoreSession 每渲染重建不列依赖，
   // prop 为启动期常量——仅随它触发一次。
   useEffect(() => {
     if (initialHistorySessionId !== undefined) void restoreSession(initialHistorySessionId)
   }, [initialHistorySessionId])
+
+  // —— 2026-09-02 TUI 稳定性拍板（用户定调：附着状态不能打断 TUI 干活）——daemon 失联自愈链 ——
+  // 三级：①命令 NETWORK 失败 → 重拉 daemon（resurrectDaemonReg）→ transport 热重连（不换实例，
+  // 事件订阅零扰动）→ 冷拉回当前会话 → 重试原命令；②重拉失败 → 本地降级（localFallback 全装配
+  // + 当前镜像续写同一会话文件）——TUI 永不断聊；③降级件也缺（测试 fake）→ 明确提示不卡输入。
+  const rescueInflightRef = useRef<Promise<'reattached' | 'local' | 'dead'> | null>(null)
+  const degradeToLocal = (): 'local' | 'dead' => {
+    if (!mountedRef.current) return 'dead' // 审阅 P2：unmount 后 in-flight rescue 尾段不再建新宿主（无人 dispose 会泄漏）
+    // 会话 id：优先 daemon 侧真实会话（续写同一文件）；从未建立（首命令即失联）时 undefined——
+    // 由 cli 侧 localFallback 闭包兜底新 id（本地开新会话继续干活）
+    const sid = attachedSidRef.current ?? (deps.history.currentSessionId() || undefined)
+    if (localFallback === undefined) {
+      setSystemMsgs(['✗ 后台服务不可达且重拉失败——输入未丢，可稍后重试或重启 ecode'], 'warn')
+      return 'dead'
+    }
+    const fbDeps = localFallback(sid, configRef.current) // 审阅 P1：传活 config——/model、/setup 的切换不随降级回退启动快照
+    const localHost = buildInlineHost(fbDeps)
+    // 审阅 P2：优先磁盘全量（messagesRef 镜像最后同步在上一轮末——daemon 崩在轮中时本轮已落盘
+    // 的尾部行只在磁盘；上下文缺尾=续聊遗漏）。磁盘无此会话再退镜像（同机 sessions 目录共享）
+    const diskLines = sid !== undefined ? fbDeps.history.restoreFull(sid) : []
+    ;(localHost as { restoreFrom?: (l: HistoryLine[]) => void }).restoreFrom?.(diskLines.length > 0 ? diskLines : messagesRef.current)
+    // 旧通道退役（dispose 清订阅断泵）；宿主切换 + 同一份事件处理重订阅；后续渲染 host 即新宿主
+    ;(host as { dispose?: () => void }).dispose?.()
+    transportRef.current = null
+    hostRef.current = localHost
+    // 本地会话 id 上位（fbDeps.history 绑传入 id；首命令即失联的兜底新 id）——后续 prompt 的
+    // session/new 分支与 transcript 读面都以它为准，不再碰已死的后台
+    attachedSidRef.current = fbDeps.history.currentSessionId() || sid || attachedSidRef.current
+    localHost.subscribe((ev) => hostEventHandlerRef.current(ev))
+    // 审阅 P2：直供镜像（走 pullTranscript 会打向刚 dispose 的旧闭包 transport——死链路）
+    syncCommitted(diskLines.length > 0 ? diskLines : messagesRef.current)
+    // 安全席 P1：同 id 双写警示——降级存活期间他端（手机/飞书/新 daemon）打开同会话会交错落盘
+    setSystemMsgs(['⚠ 后台服务不可达——已切换本地模式续聊（同 id 续写；期间请勿在其他端打开本会话，重启 ecode 回后台）'], 'warn')
+    return 'local'
+  }
+  const rescueDaemon = (): Promise<'reattached' | 'local' | 'dead'> => {
+    if (rescueInflightRef.current !== null) return rescueInflightRef.current // 单飞：并发提交共等一次重拉
+    const p = (async (): Promise<'reattached' | 'local' | 'dead'> => {
+      setSystemMsgs(['后台服务失联——正在重拉…'], 'warn')
+      deps.logger.warn('daemon', 'rescue_started', {})
+      const reg = await resurrectDaemonReg(deps.logger)
+      const transport = transportRef.current
+      if (reg !== null && transport?.reattach !== undefined) {
+        transport.reattach(`http://127.0.0.1:${reg.port}`, reg.token)
+        // daemon 重启后内存会话空——冷拉回当前会话（ensureRestore 同 id 续写，历史文件在同机共享）
+        if (attachedSidRef.current !== undefined) {
+          transport.setSessionId?.(attachedSidRef.current)
+          const rr = await (hostRef.current ?? host).send({ op: 'session/restore', sessionId: attachedSidRef.current })
+          if (rr.ok) syncCommitted()
+          // 审阅 P2：找回失败（会话被归档/删除）不静默——上下文为空续聊比"已找回"假话诚实
+          else setSystemMsgs(['⚠ 后台已重连，但会话找回失败——续聊上下文可能为空，可 /history 重选'], 'warn')
+        }
+        setSystemMsgs(['✓ 后台服务已重连（会话已找回）'])
+        return 'reattached'
+      }
+      return degradeToLocal()
+    })()
+    rescueInflightRef.current = p
+    void p.finally(() => {
+      rescueInflightRef.current = null // 完成即清单飞——下次失联可再自愈
+    })
+    return p
+  }
 
   const { warning } = useInterrupt({
     onInterrupt: () => {
@@ -1140,8 +1288,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     attachedHost !== undefined ? 'open' : undefined,
   )
   useEffect(() => {
-    if (attachedHost === undefined || host.daemonState === undefined) return
-    const timer = setInterval(() => setDaemonState(host.daemonState?.()), 2000)
+    if (attachedHost === undefined) return
+    // 每 tick 读 hostRef 当前宿主（自愈降级换宿主后无 daemonState → 顶栏段自然隐藏）
+    const timer = setInterval(() => setDaemonState((hostRef.current as TuiHost | null)?.daemonState?.()), 2000)
     timer.unref?.()
     return () => clearInterval(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（host 稳定）

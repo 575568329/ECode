@@ -3,7 +3,7 @@
  * 覆盖：spawnEnv 白名单/四验分支（版本不符+health 不达+stale 注册）/拉起锁 stale 回收。
  * daemon 端口走本地假 http server；注册/锁文件写隔离 HOME（USERPROFILE 覆盖）。
  */
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import * as http from 'node:http'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -14,12 +14,17 @@ process.env.ECODE_DBG = ''
 const tmpHome = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ecode-daemon-test-')), 'home')
 fs.mkdirSync(path.join(tmpHome, '.ecode'), { recursive: true })
 const REG_PATH = path.join(tmpHome, '.ecode', 'server.json')
-const LOCK_PATH = path.join(tmpHome, '.ecode', 'daemon-spawn-lock')
+const LOCK_PATH = path.join(tmpHome, '.ecode', 'daemon-spawn.lock')
 // 单测内打桩 REG/LOCK 路径：daemon.ts 以 homedir() 为基——USERPROFILE 覆盖（process 级）不可行（并行污染），
 // 故直接对模块内常量打桩：用 vi.mock 不可行（常量非导出）——改为把 daemon.ts 的 REG/LOCK 路径改为可注入。
 // 本测试采用「临时改写用户目录环境」的最小副作用方案：chdir 不动，仅断言纯函数。
 
-import { daemonName, ensureDaemonAttach, writeServerRegAtomic, readServerReg } from '../../src/cli/daemon.js'
+import { daemonName, ensureDaemonAttach, writeServerRegAtomic, readServerReg, setDaemonHomeForTest, acquireSpawnLock, releaseSpawnLock, resurrectDaemonReg } from '../../src/cli/daemon.js'
+
+// 2026-09-02 实证修复：原「USERPROFILE/HOME env 覆盖」隔离在 vitest worker 内不可靠——真机
+// 复现跑本文件会把真实 ~/.ecode/server.json 覆盖成假注册（毁掉在跑 daemon 的注册 → 下次启动
+// 误判重拉双 daemon）。改走显式注入（setDaemonHomeForTest），彻底绕开 env 时序/缓存。
+setDaemonHomeForTest(tmpHome)
 
 describe('daemon.ts 纯函数面', () => {
   it('daemonName：ECODE_SERVE_NAME 优先，缺省主机名', () => {
@@ -33,13 +38,8 @@ describe('daemon.ts 纯函数面', () => {
 })
 
 describe('daemon.ts 入口序（文件面分支——经真 REG/LOCK 文件驱动）', () => {
-  // daemon.ts 的 REG_PATH 在模块加载时以 homedir() 计算——测试以「环境变量 HOME/USERPROFILE
-  // 先于 import」的方式隔离（vitest 单文件进程内 set 后 dynamic import）。
-  beforeEach(() => {
-    // regPath()/spawnLockPath() 调用时取 homedir()（Node 优先 USERPROFILE）——测试指向隔离 home
-    process.env.USERPROFILE = tmpHome
-    process.env.HOME = tmpHome
-  })
+  // 注册/锁路径已由模块顶层 setDaemonHomeForTest(tmpHome) 显式注入（见上——env 覆盖不可靠）
+  beforeEach(() => {})
 
   const noopLogger = {
     info: () => {},
@@ -93,4 +93,63 @@ describe('daemon.ts 入口序（文件面分支——经真 REG/LOCK 文件驱�
     expect(outcome.attached).toBe(false)
     expect(outcome.reason).toContain('本地模式')
   }, 10_000)
+})
+
+describe('2026-09-02 自愈链：拉起锁与 resurrectDaemonReg', () => {
+  setDaemonHomeForTest(tmpHome)
+
+  const noopLogger = { info: () => {}, warn: () => {} }
+
+  it('acquireSpawnLock：无锁→持锁→释放幂等；新锁互斥；stale 锁（kill -9 残留）龄检抢回', () => {
+    // 无锁 → 持锁
+    expect(acquireSpawnLock()).toBe(true)
+    expect(fs.existsSync(LOCK_PATH)).toBe(true)
+    // 新锁（他方在拉）→ 不抢
+    expect(acquireSpawnLock()).toBe(false)
+    // 释放幂等（未持锁也安全）
+    releaseSpawnLock()
+    releaseSpawnLock()
+    expect(fs.existsSync(LOCK_PATH)).toBe(false)
+    // stale 锁：mtime 推到 READY_TIMEOUT 之前 → 龄检抢删重取（残锁不再让自愈永远干等）
+    fs.writeFileSync(LOCK_PATH, '')
+    const stale = new Date(Date.now() - 60_000)
+    fs.utimesSync(LOCK_PATH, stale, stale)
+    expect(acquireSpawnLock()).toBe(true)
+    releaseSpawnLock()
+  })
+
+  it('resurrectDaemonReg：他方持锁（不 spawn）+假 health 四验过 → 返回 reg 复用（真实注册路径）', async () => {
+    const realVersion = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version as string
+    const health = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, id: 'i3', version: realVersion }))
+    })
+    await new Promise<void>((r) => health.listen(12401, '127.0.0.1', r))
+    writeServerRegAtomic({ id: 'i3', port: 12401, token: 'tk3', pid: process.pid, version: realVersion, name: '复用机' })
+    // 预置"他方持锁"（新 mtime）→ resurrect 不 spawn，纯轮询注册四验
+    fs.writeFileSync(LOCK_PATH, '')
+    try {
+      const reg = await resurrectDaemonReg(noopLogger)
+      expect(reg).toMatchObject({ id: 'i3', port: 12401, token: 'tk3', name: '复用机' })
+    } finally {
+      releaseSpawnLock()
+      health.close()
+      fs.rmSync(REG_PATH, { force: true })
+    }
+  }, 15_000)
+
+  it('resurrectDaemonReg：stop 墓碑（5min 内）→ 尊重显式停止直接 null，不重拉', async () => {
+    fs.writeFileSync(path.join(tmpHome, '.ecode', 'daemon.stopped'), JSON.stringify({ ts: Date.now() }))
+    try {
+      const reg = await resurrectDaemonReg(noopLogger)
+      expect(reg).toBeNull()
+      expect(fs.existsSync(LOCK_PATH)).toBe(false) // 未走拉起（墓碑在锁之前短路）
+    } finally {
+      fs.rmSync(path.join(tmpHome, '.ecode', 'daemon.stopped'), { force: true })
+    }
+  }, 10_000)
+
+  afterAll(() => {
+    setDaemonHomeForTest(null) // 复位（防将来 isolate:false 跨文件泄漏）
+  })
 })

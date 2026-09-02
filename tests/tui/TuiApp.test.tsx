@@ -233,22 +233,25 @@ describe('TuiApp /model', () => {
     expect(f).toContain('帮我写函数')
   })
 
-  it('选中 → session/restore(fork) 命令恢复 + 新 id 播种 + committed 重建', async () => {
+  it('选中 → session/restore 命令恢复 + 继续原会话（不 fork）+ committed 重建', async () => {
     const restored: Message[] = [
       { role: 'user', content: [{ type: 'text', text: '之前问的问题' }] },
       { role: 'assistant', content: [{ type: 'text', text: '之前的回答' }] },
     ]
     const restoreFull = vi.fn(() => restored)
     const forkSession = vi.fn()
-    // T 线 T2：宿主 fork 后 currentSessionId 切新 id、session/read 的 ownsSession 按 loadAll 判——
-    // fake 跟随真实 FileHistoryStore 语义（forkSession 换 id + loadAll 含当前 id）
+    // 2026-09-02 用户拍板：恢复=继续原会话（同 id 续写，不再 fork 复制）——Embedded 端口
+    // 在 restoreFrom 外还切本地续写指针（setSessionId），落盘/读面都以原会话 id 为准
     let curId = '2026-08-13T10-00-00-000Z-old'
     const history = {
       ...noopHistory,
       loadAll: () => [
-        { sessionId: curId === '2026-08-13T10-00-00-000Z-old' ? '2026-08-13T10-00-00-000Z-s1' : curId, createdAt: '2026-08-13T10:00:00.000Z', model: 'glm-5.2', firstUser: '之前问的问题' },
+        { sessionId: '2026-08-13T10-00-00-000Z-s1', createdAt: '2026-08-13T10:00:00.000Z', model: 'glm-5.2', firstUser: '之前问的问题' },
       ],
       restoreFull,
+      setSessionId: (id: string) => {
+        curId = id
+      },
       forkSession: (id: string, lines: never, model: never) => {
         forkSession(id, lines, model)
         curId = id
@@ -268,9 +271,10 @@ describe('TuiApp /model', () => {
     await flush()
     stdin.write('\r') // 选中第一项恢复
     await flush()
-    await flush() // T 线 T2：恢复走 session/restore(fork:true) 命令（异步链）——宿主 ensureConversation 真读历史
+    await flush() // T 线 T2：恢复走 session/restore 命令（异步链）——宿主 ensureConversation 真读历史
     expect(restoreFull).toHaveBeenCalledWith('2026-08-13T10-00-00-000Z-s1')
-    expect(forkSession).toHaveBeenCalled() // 宿主 fork 播种：新 id + 全量恢复行（fork 自包含）
+    expect(forkSession).not.toHaveBeenCalled() // 不再 fork 复制——继续原会话
+    expect(curId).toBe('2026-08-13T10-00-00-000Z-s1') // 续写指针切到原会话 id
     // committed 重建：含恢复的 assistant 文本（session/read 全量拉取后 messagesToCommitted）
     expect(lastFrame() ?? '').toContain('之前的回答')
   })
@@ -284,8 +288,11 @@ describe('TuiApp /model', () => {
     let curId = '2026-08-13T10-00-00-000Z-old'
     const history = {
       ...noopHistory,
-      loadAll: () => [{ sessionId: curId === '2026-08-13T10-00-00-000Z-old' ? '2026-08-13T10-00-00-000Z-s1' : curId, createdAt: '2026-08-13T10:00:00.000Z', model: 'glm-5.2', firstUser: '启动前问的' }],
+      loadAll: () => [{ sessionId: '2026-08-13T10-00-00-000Z-s1', createdAt: '2026-08-13T10:00:00.000Z', model: 'glm-5.2', firstUser: '启动前问的' }],
       restoreFull: () => restored,
+      setSessionId: (id: string) => {
+        curId = id
+      },
       forkSession: (id: string, lines: never, model: never) => {
         forkSession(id, lines, model)
         curId = id
@@ -301,7 +308,8 @@ describe('TuiApp /model', () => {
     await flush()
     await flush() // 恢复命令异步链
     expect(lastFrame() ?? '').toContain('启动前的回答') // committed 重建
-    expect(forkSession).toHaveBeenCalled() // 宿主 fork 播种
+    expect(forkSession).not.toHaveBeenCalled() // 继续原会话（不 fork）
+    expect(curId).toBe('2026-08-13T10-00-00-000Z-s1')
   })
 
   it('空历史 → 显示「无历史会话」', async () => {

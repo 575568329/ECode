@@ -283,6 +283,12 @@ async function main(): Promise<void> {
         React.createElement(TuiApp, {
           deps: shellDeps as unknown as TuiAppDeps,
           host: outcome.transport,
+          // 2026-09-02 TUI 稳定性：daemon 重拉也失败时的本地兜底（惰性——降级发生才全装配
+          // makeDeps；以 daemon 侧会话 id 构造=同 id 续写同一会话文件；从未建立会话（首命令
+          // 即失联）时兜底新 id 本地开聊——TUI 不因后台失联断聊。config 传调用时活值——
+          // /model、/setup 的运行中切换不随降级回退启动快照（审阅 P1））
+          localFallback: (sid, cfg) =>
+            makeDeps(cfg, logger, sid ?? new Date().toISOString().replace(/[:.]/g, '-'), process.cwd(), { approvalPolicy: autoYes ? 'auto-approve' : 'ask' }) as unknown as TuiAppDeps,
           // 附着成功提示走 initialNotice（底部 systemMsgs 统一通道，5s 自动消失）——
           // banner 是配置错误持久横幅，不该被这条常态信息占用（后台状态已有顶栏「后台运行中」常驻段）
           initialNotice: `ℹ 已附着后台服务（${outcome.daemonName}）——任务在后台持续运行，手机可继续操作`,

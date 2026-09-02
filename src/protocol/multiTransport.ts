@@ -16,6 +16,17 @@ import type { CommandResult, ProtocolCommand, ProtocolEvent } from './types.js'
 const OPEN_TIMEOUT_MS = 5_000
 const BACKOFF_BASE_MS = 500
 const BACKOFF_MAX_MS = 10_000
+/** 2026-09-02 TUI 稳定性：命令通道超时——daemon 半死（进程在、事件循环卡）时 fetch 会
+ *  无限期挂起（本地回环无 TCP 失败信号），doSubmit await 住= TUI 假死。10s 本地回环足够；
+ *  env 可注入（测试短超时），上限 60s（防误配禁用防挂起保护——安全席 P2） */
+const cmdTimeoutMs = (): number => {
+  const v = Number(process.env.ECODE_CMD_TIMEOUT_MS)
+  return Number.isFinite(v) && v > 0 ? Math.min(v, 60_000) : 10_000
+}
+
+/** 冷启动重活命令的超时档（审阅 P2）：目标项目宿主被 daemon 回收后 session/restore 要
+ *  重建项目级全装配，10s 可能不够——放宽到 30s 防"实际载入成功客户端却判失败回滚" */
+const HEAVY_OPS: ReadonlySet<string> = new Set(['session/restore', 'rewind/exec'])
 
 interface MuxSseFrame {
   project: string
@@ -71,10 +82,12 @@ export class MultiTransport implements ClientTransport {
       const sid = this.sessionId ?? this.opts.getSessionId()
       if (sid !== undefined && sid !== '') body.sessionId = sid
       // confirm=true：TUI 每条命令同源自用户显式交互（Enter/按键）＝历史反推项目 428 栅栏的确认语义
+      const tmo = HEAVY_OPS.has(cmd.op) ? Math.max(cmdTimeoutMs(), 30_000) : cmdTimeoutMs()
       const res = await fetch(`${this.opts.baseUrl}/api/p/${encodeURIComponent(this.opts.project)}/cmd?confirm=true`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${this.opts.token}` },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(tmo),
       })
       if (res.status === 401) {
         this.opts.onUnauthorized?.()
@@ -82,8 +95,26 @@ export class MultiTransport implements ClientTransport {
       }
       return (await res.json()) as CommandResult
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e), code: 'NETWORK' }
+      // 安全席 P1：区分超时（请求**可能已送达** daemon——自动重试会把同一 prompt 双执行、
+      // bash 副作用双跑）与连接失败（必未送达——可安全自愈重试）。TIMEOUT 不入自愈链，留用户手动重发
+      const isTimeout = e instanceof Error && (e.name === 'TimeoutError' || (e.name === 'AbortError' && /timeout/i.test(e.message)))
+      const msg = e instanceof Error ? e.message : String(e)
+      if (isTimeout) return { ok: false, error: `后台服务无响应（超时，本轮可能已在执行——请勿盲目重发）`, code: 'TIMEOUT' }
+      return { ok: false, error: `命令通道不可达：${msg}`, code: 'NETWORK' }
     }
+  }
+
+  /**
+   * 2026-09-02 TUI 稳定性：daemon 意外死亡被重拉后，新实例的 port/token 都可能变——热更新
+   * 本 transport 的地址凭据（**不换实例**：TuiApp 的 hostRef/事件订阅全部不动），断掉 SSE 泵
+   * （abort 可打断 in-flight fetch 与退避 sleep——连接成功后 backoff 自行重置）；游标清零
+   * （新 daemon 的 seq 空间从零开始，旧 lastSeq 会挡掉重放判定）。
+   */
+  reattach(baseUrl: string, token: string): void {
+    this.opts.baseUrl = baseUrl
+    this.opts.token = token
+    this.lastSeq = null
+    this.abort?.abort() // 泵循环 catch 后以新地址重连（退避从 base 重起）
   }
 
   subscribe(handler: EventHandler): () => void {
@@ -170,7 +201,27 @@ export class MultiTransport implements ClientTransport {
       if (this.aborted || this.handlers.size === 0) return
       this.state = 'backoff'
       this.opts.onState?.('backoff')
-      await new Promise((r) => setTimeout(r, backoff * (0.5 + Math.random())))
+      // 审阅 P2：sleep 可被 abort 唤醒——reattach 换地址后不必等完剩余退避窗（最坏 10s+抖动），
+      // 命令面虽即时生效，事件面也应尽快改连新端
+      const delay = backoff * (0.5 + Math.random())
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          sig?.removeEventListener('abort', onAbort)
+          resolve()
+        }, delay)
+        const sig = this.abort?.signal
+        const onAbort = (): void => {
+          clearTimeout(timer)
+          resolve()
+        }
+        if (sig === undefined) return
+        if (sig.aborted) {
+          clearTimeout(timer)
+          resolve()
+          return
+        }
+        sig.addEventListener('abort', onAbort, { once: true })
+      })
       backoff = Math.min(backoff * 2, BACKOFF_MAX_MS)
     }
   }

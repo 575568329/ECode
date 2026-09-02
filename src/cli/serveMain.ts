@@ -69,6 +69,14 @@ export async function serveStop(): Promise<void> {
   } catch {
     // 幂等
   }
+  // 2026-09-02 审阅（安全席 P2）：显式停的墓碑——存活 TUI 的失联自愈（resurrectDaemonReg）
+  // 检测到近期墓碑则不重拉（否则 stop 后 30s 内发条消息 daemon 就被原样拉回，用户的
+  // 「立刻停掉/关闭暴露面」意图被推翻）。daemon 新实例成功四验时自动清除（见 daemon.ts）
+  try {
+    writeFileSync(join(os.homedir(), '.ecode', 'daemon.stopped'), JSON.stringify({ ts: Date.now() }), { mode: 0o600 })
+  } catch {
+    // 写失败不阻断 stop（墓碑只是自愈让位信号）
+  }
 }
 
 export async function serveMode(): Promise<void> {
@@ -268,6 +276,12 @@ export async function serveMode(): Promise<void> {
     /* 非 POSIX（win32）chmod 无强制力——文档披露不阻断 */
   }
   renameSync(regTmp, regPath)
+  // 新 daemon 上位清除 stop 墓碑（显式停后用户手动 `ecode serve` = 重新拥抱后台，自愈链恢复资格）
+  try {
+    rmSync(join(os.homedir(), '.ecode', 'daemon.stopped'), { force: true })
+  } catch {
+    /* 幂等 */
+  }
   console.log(JSON.stringify({ type: 'ready', schemaVersion: 1, bound: `${serveHost}:${srv.port}`, register: regPath }))
   // 局域网形态打印手机可直接点击的访问 URL（半行代码消除"我该在手机输什么"的摩擦——审阅 P1）
   if (!isLoopbackServe) {

@@ -49,7 +49,10 @@ export interface McpServerStatusView {
  *  seq 会话级单调（宿主侧通道分配）：顺序/去重/分页游标三用。 */
 export type ProtocolEvent =
   | { type: 'delta'; seq: number; turnId: string; text: string }
-  | { type: 'item/started'; seq: number; itemId: string; name: string }
+  | { type: 'thinking'; seq: number; turnId: string; blockIndex: number; text: string }
+  | { type: 'thinking/ended'; seq: number; turnId: string; blockIndex: number; durMs: number }
+  | { type: 'item/started'; seq: number; turnId: string; itemId: string; name: string }
+  | { type: 'item/executing'; seq: number; turnId: string; itemId: string; digest: string }
   | { type: 'item/completed'; seq: number; itemId: string; name: string; isError: boolean; summary: string; content: string; truncated?: boolean; use?: unknown }
   | { type: 'usage'; seq: number; input: number; output: number; cacheRead?: number; cacheCreation?: number; costCny?: number; /** F-44：当前上下文占用（input+cacheRead，API 真值）与模型窗口（resolveContextWindow）——StatusBar ctx 段 */ contextUsed?: number; contextWindow?: number }
   | { type: 'turn/started'; seq: number; turnId: string }

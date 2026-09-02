@@ -12,6 +12,7 @@ export const symbols = {
   foldCollapsed: '▸', // 折叠（未展开）
   foldExpanded: '▾', // 折叠（已展开）
   trunc: '…', // 截断
+  thinking: '✻', // 思考行（活动流 D4-B；U+273B）
 } as const
 
 export type Symbols = typeof symbols

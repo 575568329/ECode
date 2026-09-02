@@ -93,6 +93,13 @@ function renderCommitted(item: CommittedItem): ReactNode {
           </Text>
         </MessageRow>
       )
+    case 'thinking':
+      // 活动流 D4-B：思考折叠行（正文在 Ctrl+T 面板）——转写面入栅格，✻ 占图标槽
+      return (
+        <MessageRow icon={symbols.thinking} dim>
+          <Text dimColor>思考 · 持续了 {Math.max(1, Math.round(item.durMs / 1000))} 秒</Text>
+        </MessageRow>
+      )
   }
 }
 

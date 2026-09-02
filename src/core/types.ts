@@ -133,8 +133,19 @@ export interface RewindLine {
   time: string
 }
 
-/** history 存储行：消息 or 边界 or 回退标记（联合类型，避免标记行破坏 Message 结构，M5 §11/M9-P2）。 */
-export type HistoryLine = Message | BoundaryLine | RewindLine
+/** 思考行（活动流 D4-B）：thinking_end 时宿主追加的**非消息行**——回看有痕、投影零影响
+ *  （isMessageLine 排除=不进 LLM 上下文；与 BoundaryLine/RewindLine 同机制先例）。
+ *  落盘全文与 Message 原文同权（HistoryStore 有意不脱敏，P0-6 边界）。 */
+export interface ThinkingLine {
+  thinking: true
+  text: string
+  /** 思考持续毫秒（宿主在 thinking_end 算好随行落盘——时钟权威在宿主侧） */
+  durMs: number
+  time: string
+}
+
+/** history 存储行：消息 or 边界 or 回退 or 思考标记（联合类型，避免标记行破坏 Message 结构，M5 §11/M9-P2/活动流 D4-B）。 */
+export type HistoryLine = Message | BoundaryLine | RewindLine | ThinkingLine
 
 /** boundary 类型守卫。 */
 export function isBoundary(line: HistoryLine): line is BoundaryLine {
@@ -146,9 +157,14 @@ export function isRewind(line: HistoryLine): line is RewindLine {
   return typeof line === 'object' && line !== null && (line as RewindLine).rewind === true
 }
 
-/** Message 行守卫（非标记行）——消费点统一用此过滤，防新标记变体漏进 LLM 上下文（M9-P2 收敛）。 */
+/** thinking 行守卫（活动流 D4-B）。 */
+export function isThinking(line: HistoryLine): line is ThinkingLine {
+  return typeof line === 'object' && line !== null && (line as ThinkingLine).thinking === true
+}
+
+/** Message 行守卫（非标记行）——消费点统一用此过滤，防新标记变体漏进 LLM 上下文（M9-P2 收敛；活动流 B2 扩 thinking）。 */
 export function isMessageLine(line: HistoryLine): line is Message {
-  return !isBoundary(line) && !isRewind(line)
+  return !isBoundary(line) && !isRewind(line) && !isThinking(line)
 }
 
 /** 默认单次输出上限（max_tokens；审阅 P2 单源化）：provider 兜底（anthropic.ts）与

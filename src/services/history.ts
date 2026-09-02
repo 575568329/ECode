@@ -19,7 +19,7 @@ import * as fs from 'node:fs'
 import { normalizeProjectPath } from './pathnorm.js'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import { isMessageLine, isBoundary, isRewind, type BoundaryLine, type HistoryLine, type Message, type RewindLine, type ImageBlock, type DocumentBlock, type ImageRefBlock } from '../core/types.js'
+import { isMessageLine, isBoundary, isRewind, isThinking, type BoundaryLine, type HistoryLine, type Message, type RewindLine, type ThinkingLine, type ImageBlock, type DocumentBlock, type ImageRefBlock } from '../core/types.js'
 import { readFileSync } from 'node:fs'
 
 export interface SessionMeta {
@@ -71,6 +71,8 @@ export interface HistoryStore {
   appendCompactBoundary(boundary: BoundaryLine): void
   /** /rewind 追加回退行（append-only；M9-P2 投影截断锚，重启恢复后仍生效） */
   appendRewind(line: RewindLine): void
+  /** 活动流 D4-B：思考行追加（append-only 非消息行——回看有痕，投影零影响） */
+  appendThinking(line: ThinkingLine): void
   /** M12-P0：追加用量统计行（usage 帧驱动；聚合扫描用，不进消息流） */
   appendUsageStats(record: UsageStatsRecord): void
   /** 切换 sessionId（/history 恢复后续写新文件；旧文件只读不破坏，D2） */
@@ -186,6 +188,12 @@ export class FileHistoryStore implements HistoryStore {
     this.writeLine(JSON.stringify(record))
   }
 
+  /** 活动流 D4-B：思考行（append-only；restoreFull 按 thinking 标记带回，isMessageLine 排除出投影） */
+  appendThinking(line: ThinkingLine): void {
+    this.flushPendingSeed()
+    this.writeLine(JSON.stringify(line))
+  }
+
   /** 切换 sessionId（/history 恢复后续写新文件；旧文件只读不破坏，D2） */
   setSessionId(id: string, model?: string): void {
     if (id === this.sessionId) return
@@ -222,6 +230,7 @@ export class FileHistoryStore implements HistoryStore {
     for (const line of seed) {
       if (isBoundary(line)) this.appendCompactBoundary(line)
       else if (isRewind(line)) this.appendRewind(line)
+      else if (isThinking(line)) this.appendThinking(line)
       else if (isMessageLine(line)) this.append(line)
     }
   }
@@ -327,12 +336,14 @@ export class FileHistoryStore implements HistoryStore {
     for (const line of content.split('\n')) {
       if (!line.trim()) continue
       try {
-        const parsed = JSON.parse(line) as { meta?: true; compact_boundary?: true; rewind?: true } & HistoryLine
+        const parsed = JSON.parse(line) as { meta?: true; compact_boundary?: true; rewind?: true; thinking?: true } & HistoryLine
         if (parsed.meta) continue // 跳过 meta 行
         if ((parsed as { stats?: true }).stats === true) continue // M12-P0：跳过用量统计行（不进消息流）
-        // 终审 P2-1：按标记字段三分发——rewind 行伪装成 Message 是类型谎言（下游守卫兜得住，但新消费点会踩）
+        // 终审 P2-1：按标记字段分发——标记行伪装成 Message 是类型谎言；活动流 B2：thinking 分支
+        // 先行（无 content 字段，落 else 的 msg.content.some 会抛 TypeError 被 catch 吃掉=恢复静默丢思考行）
         if (parsed.compact_boundary) lines.push(parsed as BoundaryLine)
         else if (parsed.rewind) lines.push(parsed as RewindLine)
+        else if (parsed.thinking) lines.push(parsed as ThinkingLine)
         else {
           // M10-P2b：存储态 image_ref → 内存态 ImageBlock（文件缺失降级 TextBlock 占位）
           const msg = parsed as Message
@@ -439,6 +450,7 @@ export class NoopHistoryStore implements HistoryStore {
   append(_msg: Message): void {}
   appendCompactBoundary(_boundary: BoundaryLine): void {}
   appendRewind(_line: RewindLine): void {}
+  appendThinking(_line: ThinkingLine): void {}
   appendUsageStats(_record: UsageStatsRecord): void {}
   patchSessionMeta(_sessionId: string, _patch: { title?: string; archived?: boolean }): void {}
   loadAll(): SessionMeta[] {

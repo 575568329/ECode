@@ -19,7 +19,8 @@ import { randomUUID, createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
-import type { HistoryLine, ImageBlock, Message, RewindLine } from '../core/types.js'
+import type { HistoryLine, ImageBlock, Message, RewindLine, ThinkingLine } from '../core/types.js'
+import { makeToolDigest } from '../protocol/toolDigest.js'
 import type { RewindExecResult, RewindListResult, SkillPanelView, McpPanelView } from '../protocol/types.js'
 import { buildProviderReq, buildProviderReqFor, DEFAULT_NOTIFICATION_IDLE_SECONDS, type Config } from '../services/config.js'
 import { makeOnBeforeRequest, type SummaryRole } from '../services/compaction/hook.js'
@@ -174,7 +175,9 @@ export class HostSession {
   private currentTurnId: string | null = null
   private abort = new AbortController()
   private ctxWindowCache: number | null = null
-  private itemSeq = 0
+  // 活动流 B2：思考块计时与文本累积（onThinking 记录 → onThinkingEnd 算时长落 ThinkingLine）
+  private readonly thinkingStarts = new Map<number, number>()
+  private readonly thinkingBufs = new Map<number, string>()
   /** 截断全文暂存（tool_use_id → 全文，插入序淘汰；item/read 第二源，见 RECENT_FULL_RING 注） */
   private recentFullResults = new Map<string, string>()
   private idleResolvers: Array<() => void> = []
@@ -649,6 +652,22 @@ export class HostSession {
     this.mcpCallCount++
   }
 
+  /**
+   * 2026-09-02 用户拍板：归档是人专属操作的**唯一执行入口**（协议 dispatch 对 session/archive
+   * 一律拒绝 HUMAN_ONLY_COMMAND；本方法只由 serve 层人专属端点 /api/archive 直调——
+   * 手动 curl/浏览器地址栏可达，AI 会话经 /cmd 协议面永远到不了这里）。
+   * 实现即原协议分支：sidecar 标记 + session/updated 帧广播（多端列表同步）+ 审计日志。
+   */
+  async archiveSession(sessionId: string, archived: boolean): Promise<CommandResult> {
+    if (!isValidSessionId(sessionId)) return { ok: false, error: `会话 id 非法：${sessionId}`, code: 'BAD_SESSION_ID' }
+    // 归属校验（审阅 S3 同口径）：跨项目改写他项目会话元数据=完整性破坏
+    if (!this.ownsSession(sessionId)) return { ok: false, error: `会话不存在或不属于当前项目：${sessionId}`, code: 'SESSION_NOT_FOUND' }
+    this.deps.history.patchSessionMeta(sessionId, { archived })
+    this.publish('session/updated', { sessionId, archived })
+    this.deps.logger.info('system', 'session_archived', { sessionId, archived })
+    return { ok: true }
+  }
+
   private async dispatch(cmd: ProtocolCommand): Promise<CommandResult> {
     switch (cmd.op) {
       case 'prompt': {
@@ -792,16 +811,13 @@ export class HostSession {
         if (states === undefined) return { ok: true, value: metas }
         return { ok: true, value: metas.map((m) => (states.has(m.sessionId) ? { ...m, running: states.get(m.sessionId) } : m)) }
       }
-      case 'session/archive': {
-        // 批 2：归档/恢复——meta sidecar 标记 + session/updated 帧广播（多端列表同步）
-        if (!isValidSessionId(cmd.sessionId)) return { ok: false, error: `会话 id 非法：${cmd.sessionId}`, code: 'BAD_SESSION_ID' }
-        // 审阅 S3：只验形态可跨项目改写他项目会话元数据（完整性破坏）——归属校验
-        if (!this.ownsSession(cmd.sessionId)) return { ok: false, error: `会话不存在或不属于当前项目：${cmd.sessionId}`, code: 'SESSION_NOT_FOUND' }
-        this.deps.history.patchSessionMeta(cmd.sessionId, { archived: cmd.archived })
-        this.publish('session/updated', { sessionId: cmd.sessionId, archived: cmd.archived })
-        this.deps.logger.info('system', 'session_archived', { sessionId: cmd.sessionId, archived: cmd.archived })
-        return { ok: true }
-      }
+      // 2026-09-02 用户拍板：**归档是人专属操作，AI/协议通道不可发起**（不存在"审批后放行"）。
+      // 事故依据：full-access 会话用 curl 调 serve API 静默归档了用户正聊着的会话——协议命令
+      // 不区分人与 AI，AI 读到 token 即可冒充人。故协议 dispatch 一律拒绝（HUMAN_ONLY_COMMAND）；
+      // 唯一执行入口 = serve 层人专属端点（multi.ts /api/archive）经宿主 archiveSession() 直调。
+      // TUI 同样无归档入口（/history 面板不含该操作）。
+      case 'session/archive':
+        return { ok: false, error: '归档是人专属操作，不能由 AI/协议通道发起（web 归档按钮走人专属端点）', code: 'HUMAN_ONLY_COMMAND' }
       case 'session/rename': {
         // 批 2：手动重命名（pin 语义——覆盖 firstUser 显示）；同帧广播多端同步
         if (!isValidSessionId(cmd.sessionId)) return { ok: false, error: `会话 id 非法：${cmd.sessionId}`, code: 'BAD_SESSION_ID' }
@@ -1066,7 +1082,30 @@ export class HostSession {
         history: deps.history,
         callbacks: {
           onText: (t) => this.publish('delta', { turnId, text: t }),
-          onToolStart: (name) => this.publish('item/started', { itemId: `${turnId}-${++this.itemSeq}`, name }),
+          // 活动流 B2（itemId 同源修复，v1.7 §4）：item/started.itemId = 真实 tool_use id——
+          // 旧合成 id（`${turnId}-${++itemSeq}`）与 completed 的真实 id 永不相交，web 按 id 回填恒失败
+          onToolStart: (name, id) => this.publish('item/started', { turnId, itemId: id, name }),
+          // 思考链路（B1 回调 → 协议帧；blockIndex 供客户端按块配对）
+          onThinking: (blockIndex, text) => {
+            if (!this.thinkingStarts.has(blockIndex)) this.thinkingStarts.set(blockIndex, Date.now())
+            this.thinkingBufs.set(blockIndex, (this.thinkingBufs.get(blockIndex) ?? '') + text)
+            this.publish('thinking', { turnId, blockIndex, text })
+          },
+          onThinkingEnd: (blockIndex) => {
+            const started = this.thinkingStarts.get(blockIndex)
+            const durMs = started === undefined ? 0 : Date.now() - started
+            this.thinkingStarts.delete(blockIndex)
+            this.publish('thinking/ended', { turnId, blockIndex, durMs })
+            // D4-B：ThinkingLine 双写（内存镜像 + 落盘——appendRewind 先例；只写一处则
+            // session/read 与 pullTranscript 两源分叉）
+            const line: ThinkingLine = { thinking: true, text: this.thinkingBufs.get(blockIndex) ?? '', durMs, time: new Date().toISOString() }
+            this.thinkingBufs.delete(blockIndex)
+            this.messages.push(line)
+            deps.history.appendThinking(line)
+          },
+          // D9（v1.7 双帧定稿）：执行开始（confirm 后）→ item/executing 带 digest（宿主生成单源
+          // makeToolDigest——净化+60 列截断内建；loading 行「正在执行 <命令>」的数据前提）
+          onToolExecute: (name, id, input) => this.publish('item/executing', { turnId, itemId: id, digest: makeToolDigest(name, input) }),
           onToolResult: (id, name, r) => {
             this.turnHadTools = true
             if (name.startsWith('mcp__')) this.bumpMcp() // M12-P0：MCP 调用计数（随下一条 stats 行落盘）

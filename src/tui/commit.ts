@@ -8,22 +8,25 @@
  *
  * findUse：从 messages 按 id 反查 tool_use（onToolResult 时配对 active.tools 用）。
  */
-import { isBoundary, isRewind, isMessageLine, type HistoryLine, type Message, type TextBlock, type ToolUseBlock, type ToolResultBlock } from '../core/types.js'
+import { isBoundary, isRewind, isThinking, isMessageLine, type HistoryLine, type Message, type TextBlock, type ToolUseBlock, type ToolResultBlock } from '../core/types.js'
 import { CONTINUE_PROMPT } from '../core/loop.js'
 import { stripUntrustedAnsi } from './sanitize.js'
 import type { CommittedItem, CommittedToolCall } from './types.js'
 
 export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
-  const messages = lines.filter((l): l is Message => !isBoundary(l) && !isRewind(l))
+  const messages = lines.filter((l): l is Message => !isBoundary(l) && !isRewind(l) && !isThinking(l))
   // boundary → 压缩标记插入点（key=boundary 前的 Message 数；value=被摘要条数 tailStartIndex）。
   // UI 显示全量原文（投影分离），标记按原序插入，告知「此处之上的消息已摘要进模型上下文」。
   // rewind（M9-P2）同款：⇺ 回退标记按原序插入（新标记变体必须在此消化，否则进 filter 被当 Message 炸 UI）。
   const boundaryMarks = new Map<number, number>()
   const rewindMarks = new Map<number, number>()
+  // 活动流 D4-B：思考行按原序插 item（与 boundary/rewind 同机制——非消息行消化点，B2 接线点②）
+  const thinkingMarks = new Map<number, { durMs: number; text: string }>()
   let msgCount = 0
   for (const line of lines) {
     if (isBoundary(line)) boundaryMarks.set(msgCount, line.tailStartIndex)
     else if (isRewind(line)) rewindMarks.set(msgCount, line.seq)
+    else if (isThinking(line)) thinkingMarks.set(msgCount, { durMs: line.durMs, text: line.text })
     else msgCount++
   }
   const items: CommittedItem[] = []
@@ -57,6 +60,11 @@ export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
     if (rw !== undefined) {
       flush()
       items.push({ kind: 'rewind', id: `r${n++}`, seq: rw })
+    }
+    const th = thinkingMarks.get(i)
+    if (th !== undefined) {
+      flush()
+      items.push({ kind: 'thinking', id: `th${n++}`, durMs: th.durMs, text: th.text })
     }
     if (i === messages.length) break
     const m = messages[i]

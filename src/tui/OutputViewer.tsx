@@ -24,7 +24,7 @@ import { clipWidth, sectionBudget, useViewport } from './viewport.js'
 import { taskRegistry } from '../services/tasks.js'
 import { isAgentActive } from '../services/subagent.js'
 import { stripUntrustedAnsi } from './sanitize.js'
-import { isBoundary, isRewind } from '../core/types.js'
+import { isBoundary, isRewind, isThinking } from '../core/types.js'
 import { CONTINUE_PROMPT } from '../core/loop.js'
 
 // —— LineSource：查看器的数据面（§3.5）——
@@ -205,6 +205,18 @@ export function formatTimelineMessage(m: unknown, width: number): string[] {
     }
     if (isRewind(m as never)) {
       return ['', `${SGR_DIM}⇺ 已回退（快照 seq ${String(rec.seq ?? '')}），此点之后的对话不再进入上下文${SGR_RESET}`, '']
+    }
+    // 活动流 D4-B：思考行（折叠行 + 正文块——面板天然无超限，全文渲染）
+    if (isThinking(m as never)) {
+      const secs = Math.max(1, Math.round(Number(rec.durMs ?? 0) / 1000))
+      const out = ['', `${SGR_DIM}✻ 思考 · 持续了 ${secs} 秒${SGR_RESET}`]
+      const raw = String(rec.text ?? '')
+      if (raw !== '') {
+        out.push('')
+        wrapAll(stripUntrustedAnsi(raw), inner).forEach((l) => out.push(`${SGR_DIM}  ${l}${SGR_RESET}`))
+      }
+      out.push('')
+      return out
     }
     if (rec.role === 'user' && Array.isArray(rec.content)) {
       const blocks = rec.content as Array<{ type?: string; text?: string; content?: unknown }>

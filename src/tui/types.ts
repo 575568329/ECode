@@ -65,6 +65,8 @@ export type CommittedItem =
   | { kind: 'compacted'; id: string; removedCount: number }
   /** M9-P2：/rewind 回退点标记（下方消息不再进模型上下文，原文仍显示） */
   | { kind: 'rewind'; id: string; seq: number }
+  /** 活动流 D4-B：思考行（ThinkingLine 消化——Static 渲染折叠行，正文在 Ctrl+T 面板） */
+  | { kind: 'thinking'; id: string; durMs: number; text: string }
 
 /** 创建空 ActiveState（初始 / commit 后 / clear 后） */
 export function createActive(): ActiveState {

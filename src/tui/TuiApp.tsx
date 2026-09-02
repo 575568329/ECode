@@ -333,6 +333,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const streamStripperRef = useRef(createAnsiStripper())
   // 活动流 B4：时间线归约依赖（id 工厂 ref——reducer 无内部状态，调用侧持有计数器）
   const tlDepsRef = useRef(makeTimelineIdFactory())
+  // G+：delta 16ms 合帧缓冲（timer unmount 清理见 effect）
+  const deltaBufRef = useRef<{ text: string; timer: ReturnType<typeof setTimeout> | null }>({ text: '', timer: null })
   // 活动流 B4：轮开始时间（loading 行轮内耗时——busy 翻转记录）
   const turnStartedAtRef = useRef<number | null>(null)
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
@@ -580,14 +582,42 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const mountedRef = useRef(true) // 审阅 P2：unmount 后 in-flight rescue 不再建新宿主
   const hostEventHandlerRef = useRef<(ev: import('../protocol/types.js').ProtocolEvent) => void>(() => {})
   hostEventHandlerRef.current = (ev) => {
+      // G+ 合帧配套：任何非 delta 帧到达先同步 flush delta 缓冲（thinking/item 等事件与文本的
+      // 时间线顺序不可倒置；turn/completed 收尾也不丢尾部文本）
+      if (ev.type !== 'delta') {
+        const buf = deltaBufRef.current
+        if (buf.timer !== null) {
+          clearTimeout(buf.timer)
+          buf.timer = null
+        }
+        if (buf.text !== '') {
+          const chunk = buf.text
+          buf.text = ''
+          setActive((a) => ({ ...a, timeline: timelineReducer(a.timeline, { type: 'delta', seq: ev.seq - 1, turnId: (ev as { turnId?: string }).turnId ?? '', text: chunk }, { now: Date.now, nextId: tlDepsRef.current.nextId }) }))
+        }
+      }
       switch (ev.type) {
-        case 'delta':
-          // 活动流 B4：净化（stripper）→ 归约（reducer 落 protocol，不 import tui/sanitize）
-          setActive((a) => ({
-            ...a,
-            timeline: timelineReducer(a.timeline, { ...ev, text: streamStripperRef.current.push(ev.text) }, { now: Date.now, nextId: tlDepsRef.current.nextId }),
-          }))
+        case 'delta': {
+          // 活动流 B4：净化（stripper）→ 归约；G+ 四件套之四：16ms 合帧（每 token 一次 setState
+          // 是高频重渲主源——缓冲批量 dispatch；其他帧到达时同步 flush 防时间线乱序）
+          const clean = streamStripperRef.current.push(ev.text)
+          const buf = deltaBufRef.current
+          buf.text += clean
+          if (buf.timer === null) {
+            buf.timer = setTimeout(() => {
+              buf.timer = null
+              const chunk = buf.text
+              buf.text = ''
+              if (chunk !== '') {
+                setActive((a) => ({
+                  ...a,
+                  timeline: timelineReducer(a.timeline, { type: 'delta', seq: ev.seq, turnId: ev.turnId, text: chunk }, { now: Date.now, nextId: tlDepsRef.current.nextId }),
+                }))
+              }
+            }, 16)
+          }
           break
+        }
         case 'thinking':
           setActive((a) => ({ ...a, timeline: timelineReducer(a.timeline, ev, { now: Date.now, nextId: tlDepsRef.current.nextId }) }))
           break

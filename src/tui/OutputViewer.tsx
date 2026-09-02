@@ -25,6 +25,8 @@ import { taskRegistry } from '../services/tasks.js'
 import { isAgentActive } from '../services/subagent.js'
 import { stripUntrustedAnsi } from './sanitize.js'
 import { isBoundary, isRewind, isThinking } from '../core/types.js'
+import { makeToolDigest } from '../protocol/toolDigest.js'
+import { toolIcon } from './symbols.js'
 import { CONTINUE_PROMPT } from '../core/loop.js'
 
 // —— LineSource：查看器的数据面（§3.5）——
@@ -140,14 +142,15 @@ export function taskFileSource(taskId: string, getWidth: () => number): LineSour
 export function timelineSource(getMessages: () => readonly unknown[], getWidth: () => number): LineSource {
   const perMsg = new WeakMap<object, { width: number; lines: string[] }>()
   let cache: { count: number; lastKey: unknown; width: number; lines: string[] } | null = null
-  const formatMsg = (m: unknown, width: number): string[] => {
-    // WeakMap 键必须对象——畸形行（原始字符串等）直格式化不缓存（审阅 D4 补测抓出）
+  const formatMsg = (m: unknown, width: number, results?: Map<string, { isError?: boolean; content?: string }>): string[] => {
+    // WeakMap 键必须对象——畸形行（原始字符串等）直格式化不缓存（审阅 D4 补测抓出）。
+    // 增量②注：results 配对表变化（新结果到达）时同对象缓存可能短暂滞后一行（800ms 轮询窗内自愈）
     const cacheable = m !== null && typeof m === 'object'
     if (cacheable) {
       const hit = perMsg.get(m as object)
       if (hit !== undefined && hit.width === width) return hit.lines
     }
-    const lines = formatTimelineMessage(m, width)
+    const lines = formatTimelineMessage(m, width, results)
     if (cacheable) perMsg.set(m as object, { width, lines })
     return lines
   }
@@ -158,8 +161,20 @@ export function timelineSource(getMessages: () => readonly unknown[], getWidth: 
     if (cache !== null && cache.count === msgs.length && cache.lastKey === last && cache.width === width) {
       return cache.lines
     }
+    // 增量②：预扫 tool_result 配对表（结果在相邻 user 消息——主对话流 commit.ts 同款手法；
+    // 有新消息时重建，WeakMap 行缓存对同消息复用不受影响）
+    const results = new Map<string, { isError?: boolean; content?: string }>()
+    for (const m of msgs) {
+      if (m !== null && typeof m === 'object' && (m as { role?: string }).role === 'user') {
+        for (const b of ((m as { content?: Array<{ type?: string; tool_use_id?: string; is_error?: boolean; content?: string }> }).content ?? [])) {
+          if (b.type === 'tool_result' && b.tool_use_id !== undefined) {
+            results.set(b.tool_use_id, { isError: b.is_error === true, content: b.content })
+          }
+        }
+      }
+    }
     const out: string[] = []
-    for (const m of msgs) out.push(...formatMsg(m, width))
+    for (const m of msgs) out.push(...formatMsg(m, width, results))
     cache = { count: msgs.length, lastKey: last, width, lines: out }
     return out
   }
@@ -191,7 +206,7 @@ const SGR_DIM = `${ESC}[2m`
 
 /** 时间线单条消息 → 物理行（与主对话流同栅格语言：用户 ❯ 背景块、assistant ● markdown、
  *  工具 ▸ 单行摘要；块间空行=对话 GAP.block 边距节奏）。行数安全：虚拟窗口按行滚。 */
-export function formatTimelineMessage(m: unknown, width: number): string[] {
+export function formatTimelineMessage(m: unknown, width: number, results?: Map<string, { isError?: boolean; content?: string }>): string[] {
   const inner = Math.max(10, width - 2)
   const preview = (s: unknown, n = 200): string => {
     const text = String(s ?? '').replace(/\s+/g, ' ').trim()
@@ -259,7 +274,16 @@ export function formatTimelineMessage(m: unknown, width: number): string[] {
           })
           out.push('')
         } else if (b.type === 'tool_use') {
-          out.push(`  ${SGR_DIM}▸ ${String(b.name)}${SGR_RESET}`)
+          // 活动流增量②（G+）：面板工具行与主对话流同构——toolIcon 按类型图标 + makeToolDigest
+          // 单源摘要 + 跨消息 tool_result 配对（✓/✗ + 结果首行 preview；commit.ts:31-39 同款手法）
+          const name = String(b.name ?? '')
+          const digest = makeToolDigest(name, (b as { input?: unknown }).input)
+          const r = results?.get(String((b as { id?: string }).id ?? ''))
+          const tail = r === undefined ? '' : r.isError === true ? ' ✗' : ' ✓'
+          out.push(`  ${sgrFg(theme.tool)}${toolIcon(name)}${SGR_RESET} ${name} ${SGR_DIM}${digest}${SGR_RESET}${tail}`)
+          if (r !== undefined && typeof r.content === 'string' && r.content !== '') {
+            out.push(`    ${SGR_DIM}⎿ ▸ ${preview(stripUntrustedAnsi(r.content), 160)}${SGR_RESET}`)
+          }
         }
       }
       return out

@@ -96,7 +96,7 @@ describe('R5：TuiApp 时间线帧接线（挂账⑩）', () => {
     fire({ type: 'item/executing', seq: 6, turnId: 't1', itemId: 'tu_1', digest: 'grep pattern' })
     fire({ type: 'item/completed', seq: 7, itemId: 'tu_1', name: 'grep', isError: false, summary: 'ok', content: '结果行' })
     fire({ type: 'delta', seq: 8, turnId: 't1', text: '后段结论' })
-    await flush(60)
+    await flush(200) // G+ 16ms 合帧：末尾 delta 靠定时器 flush（非 delta 帧触发同步 flush 不可用）
     const f = lastFrame() ?? ''
     // 24 行默认窗计价紧：老条目（前段/grep）按设计折叠，最新保住——断言折叠形态+最新内容
     expect(f).toContain('已折叠')

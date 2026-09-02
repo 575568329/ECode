@@ -4,7 +4,8 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
-import { OutputViewer, OutputListPage, toolResultSource, taskFileSource, timelineSource, mdBlock, formatAgentLine, __setWheelClockForTest, type LineSource, type RecentTool } from '../../src/tui/OutputViewer.js'
+import { OutputViewer, OutputListPage, toolResultSource, taskFileSource, timelineSource, mdBlock, formatAgentLine, __setWheelClockForTest, type LineSource, type RecentTool, formatTimelineMessage } from '../../src/tui/OutputViewer.js'
+// formatTimelineMessage 见下方增量② describe 前 import 补齐
 import { isMouseInput } from '../../src/tui/PanelShell.js'
 
 afterEach(() => cleanup()) // 批量补：逐测卸载，防跨文件遗留挂载叠加掉帧（fix2 第 1 项）
@@ -318,7 +319,7 @@ describe('timelineSource（输入体验批：与主对话流同构格式化 + �
     ]
     const all = timelineSource(() => msgs, () => 60).lines().join('\n')
     expect(all).toContain('● 结论如下')
-    expect(all).toContain('▸ bash')
+    expect(all).toMatch(/▢.*bash/) // 增量②形态：图标+digest（SGR 色码在图标与名间）
   })
 
   it('非对象消息（原始字符串）不进 WeakMap 原样透出', () => {
@@ -361,5 +362,42 @@ describe('mdBlock 块级 markdown（项 9，方案 A 二期）', () => {
     expect(out[0]).toBe('● 总结如下：')
     expect(out[1]).toBe('  ' + ESC + '[2m```' + ESC + '[22m')
     expect(out[2]).toBe('    ' + ESC + '[2m代码内容' + ESC + '[22m') // mdBlock 缩进 2+formatAgentLine 续行 2
+  })
+})
+
+
+// —— 活动流增量②（G+）：面板工具行 digest/✓✗/结果配对 ——
+describe('formatTimelineMessage 工具行配对（增量②）', () => {
+  const width = 100
+  it('tool_use 带 digest + toolIcon；无结果无尾符', () => {
+    const lines = formatTimelineMessage(
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'grep', input: { pattern: 'foo', path: 'src' } }] },
+      width,
+    )
+    const row = lines.find((l) => l.includes('grep')) ?? ''
+    expect(row).toContain('⌕') // D11 按类型图标
+    expect(row).toContain('src') // makeToolDigest 单源摘要（PATH_FIELDS 优先 path>pattern）
+    expect(row).not.toContain('✓')
+  })
+
+  it('配对 tool_result → ✓ + 结果 preview 行', () => {
+    const results = new Map([['t1', { isError: false, content: 'src/a.ts:3:foo' + String.fromCharCode(10) + 'src/b.ts:7:foo' }]])
+    const lines = formatTimelineMessage(
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'grep', input: { pattern: 'foo' } }] },
+      width,
+      results,
+    )
+    expect(lines.some((l) => l.includes('✓'))).toBe(true)
+    expect(lines.some((l) => l.includes('src/a.ts:3:foo'))).toBe(true)
+  })
+
+  it('is_error 结果 → ✗', () => {
+    const results = new Map([['t2', { isError: true, content: '工具失败' }]])
+    const lines = formatTimelineMessage(
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'bash', input: { command: 'npm test' } }] },
+      width,
+      results,
+    )
+    expect(lines.some((l) => l.includes('✗'))).toBe(true)
   })
 })

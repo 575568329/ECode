@@ -28,6 +28,20 @@ function formatBytes(n: number): string {
 /** 展开输出 head-tail 上限绝对值（对齐 ToolGroupView EXPAND_CAP 语义） */
 const EXPAND_CAP = 12
 
+/** 折行结果缓存（LRU 16 条——OutputViewer cachedWrap 同款；键=内容长度+宽+cap 校验） */
+const foldCache = new Map<string, { len: number; width: number; cap: number; fold: ReturnType<typeof foldLines> }>()
+function foldToolOutput(content: string, cap: number, width: number): ReturnType<typeof foldLines> {
+  const hit = foldCache.get(content)
+  if (hit !== undefined && hit.len === content.length && hit.width === width && hit.cap === cap) return hit.fold
+  const fold = foldLines(content, cap, width, 'head-tail')
+  if (foldCache.size >= 16) {
+    const oldest = foldCache.keys().next().value
+    if (oldest !== undefined) foldCache.delete(oldest)
+  }
+  foldCache.set(content, { len: content.length, width, cap, fold })
+  return fold
+}
+
 export interface ToolLineProps {
   tool: ActiveTool
   mode: 'dynamic' | 'static'
@@ -86,7 +100,9 @@ export function ToolLine({ tool, mode }: ToolLineProps): ReactElement {
         <Box flexDirection="column">
           {showFull ? (
             (() => {
-              const fold = foldLines(content, foldCap, expandWidth, 'head-tail')
+              // G+ 性能四件套之三：diff/输出折行结果缓存（cachedWrap 同款键校验——length+width+cap，
+              // 内容变化自然 miss；D15 自动展开下每 delta 帧全量重跑 wrap-ansi 是帧级开销主源）
+              const fold = foldToolOutput(content, foldCap, expandWidth)
               const head = fold.visible.slice(0, fold.markerAt)
               const tailLines = fold.visible.slice(fold.markerAt)
               const marker = fold.foldedCount > 0 ? (

@@ -184,6 +184,14 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
   // 位于两个 continue 之后，用户看到「已压缩后重试」但重试永不来且无耗尽提示）
   let done = false
   for (let iter = 1; iter <= opts.maxIterations; iter++) {
+    // Ctrl+C 立即停（用户拍板 2026-09-02）：迭代顶部 signal 硬检查——原协作式退出依赖
+    // provider 流/审批收敛等环节自愿响应，审批拒绝回喂后还会起下一迭代（真机实证：
+    // interrupt 到达 5 分钟轮不退）。aborted 即静默退（宿主已广播停止帧，此处不再补事件）
+    if (iter >= 2 && opts.signal?.aborted === true) {
+      opts.logger.info('loop', 'aborted_at_iter_top', { iter }, iter)
+      done = true
+      break
+    }
     // M11-P7：插话步间注入——迭代顶部拉取（模型消化完上轮工具结果才见插话，非打断流中；
     // 顺序天然在 tool_result→afterTools 回喂之后）
     if (iter >= 2) {
@@ -530,6 +538,11 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
 
 /** 工具执行：只读 Promise.all 并行 / 副作用串行（详设 §3.2）。 */
 async function executeTools(uses: ToolUseBlock[], opts: LoopRunOptions): Promise<ToolResultBlock[]> {
+  // Ctrl+C 立即停：工具批前 signal 硬检查——中断后的批不再执行（原只防流中 abort，批入口无检查）
+  if (opts.signal?.aborted === true) {
+    opts.logger.info('loop', 'aborted_before_tools', { count: uses.length })
+    return []
+  }
   const results: ToolResultBlock[] = []
   const readonlys = uses.filter((u) => opts.tools.get(u.name)?.readonly)
   const sideEffects = uses.filter((u) => !opts.tools.get(u.name)?.readonly)

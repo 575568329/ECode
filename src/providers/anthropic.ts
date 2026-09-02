@@ -11,6 +11,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import type { LLMProvider, LLMProviderRunRequest, ThinkingLevel } from './interface.js'
+import { createStallWatchdog, DEFAULT_STREAM_STALL_MS, signalAborted } from './stallWatchdog.js'
 import { DEFAULT_MAX_TOKENS, type Delta, type Message, type StopReason, type ImageBlock, type DocumentBlock } from '../core/types.js'
 
 /** thinking 枚举 → budget_tokens 映射（D9；P0-2 clamp 共用，提常量免散落 P2-1）。 */
@@ -244,39 +245,79 @@ export class AnthropicProvider implements LLMProvider {
     const thinkingField = thinkingToAnthropic(req.thinking)
     const isThinking = (thinkingField.thinking as { type?: string } | undefined)?.type === 'enabled'
 
-    const stream = client.messages.stream({
-      model: req.model,
-      system: req.system,
-      max_tokens: resolveMaxTokens(req.maxTokens, req.thinking),
-      // P1-7：thinking enabled 时禁自定义 temperature/top_p（Anthropic 扩展思考约束，否则 400）
-      ...(isThinking
-        ? {}
-        : {
-            ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-            ...(req.topP !== undefined ? { top_p: req.topP } : {}),
-          }),
-      ...thinkingField,
-      messages: toAnthropicMsgs(req.messages),
-      // P2-10：空 tools 数组不传（Anthropic 对 tools:[] 报 400；MVP 恒注册工具但稳健起见）
-      ...(req.tools.length > 0 ? { tools: req.tools } : {}),
-    } as never)
+    // P0-B 看门狗（方案 §2，openai.ts 同款语义）：零内容性 delta 持续 streamStallMs → 中止流；
+    // 仅零产出首次停滞静默重试 1 次；二次/有产出 → STREAM_STALL error delta（anthropic SDK 把
+    // abort 转 APIUserAbortError 抛出——若不显式转译会被 loop 误判为用户中断）
+    const stallMs = req.streamStallMs ?? DEFAULT_STREAM_STALL_MS
+    for (let attempt = 0; ; attempt++) {
+      if (signalAborted(req.signal)) return
+      const wd = createStallWatchdog(req.signal, stallMs)
+      let produced = false
+      const stream = client.messages.stream({
+        model: req.model,
+        system: req.system,
+        max_tokens: resolveMaxTokens(req.maxTokens, req.thinking),
+        // P1-7：thinking enabled 时禁自定义 temperature/top_p（Anthropic 扩展思考约束，否则 400）
+        ...(isThinking
+          ? {}
+          : {
+              ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+              ...(req.topP !== undefined ? { top_p: req.topP } : {}),
+            }),
+        ...thinkingField,
+        messages: toAnthropicMsgs(req.messages),
+        // P2-10：空 tools 数组不传（Anthropic 对 tools:[] 报 400；MVP 恒注册工具但稳健起见）
+        ...(req.tools.length > 0 ? { tools: req.tools } : {}),
+      } as never)
 
-    // signal 透传：中断时 abort stream（SDK 抛 AbortError，loop 的 try/catch 固化已生成内容）
-    const onAbort = () => stream.abort()
-    if (req.signal) {
-      if (req.signal.aborted) stream.abort()
-      else req.signal.addEventListener('abort', onAbort, { once: true })
-    }
-
-    try {
-      const t = new Translator()
-      for await (const e of stream as AsyncIterable<RawEvent>) {
-        for (const d of t.push(e)) yield d
+      // signal 透传：组合 signal（用户 ∪ 停滞）中断时 abort stream（SDK 抛 AbortError/
+      // APIUserAbortError，loop 的 try/catch 固化已生成内容；停滞触发时由下方显式转译接管）
+      const onAbort = (): void => stream.abort()
+      if (wd.signal) {
+        if (wd.signal.aborted) stream.abort()
+        else wd.signal.addEventListener('abort', onAbort, { once: true })
       }
-      for (const d of t.flush()) yield d
-    } finally {
-      // P1-14：流结束（正常/异常/中断）后摘除 abort 监听器，避免长 REPL 累积监听 + 闭包持有的 stream
-      if (req.signal) req.signal.removeEventListener('abort', onAbort)
+
+      try {
+        const t = new Translator()
+        for await (const e of stream as AsyncIterable<RawEvent>) {
+          for (const d of t.push(e)) {
+            if (d.type === 'text' || d.type === 'thinking' || d.type === 'tool_use_delta') {
+              produced = true
+              wd.feed() // 喂狗锚点=内容性 delta（ping 事件/空帧不算，防假喂狗）
+            }
+            yield d
+          }
+        }
+        if (!wd.fired()) {
+          for (const d of t.flush()) yield d
+          return // 正常完成（用户中断的 APIUserAbortError 抛出由 catch 原样上抛给 loop 分类）
+        }
+        // 停滞 → 落到循环外统一转译
+      } catch (e) {
+        if (!wd.fired()) throw e // 非看门狗错误（含用户中断的 APIUserAbortError）原样上抛
+      } finally {
+        // P1-14：流结束（正常/异常/中断）后摘除 abort 监听器，避免长 REPL 累积监听 + 闭包持有的 stream
+        if (wd.signal) wd.signal.removeEventListener('abort', onAbort)
+        wd.dispose()
+      }
+      if (signalAborted(req.signal)) return // 中断优先于停滞报错
+      const canRetry = attempt === 0 && !produced
+      if (!canRetry) {
+        yield {
+          type: 'error',
+          error: {
+            code: 'STREAM_STALL',
+            message: `响应停滞：连续 ${stallMs}ms 无内容性输出${
+              attempt > 0 ? '（已自动重试 1 次仍停滞）' : '（本轮已有部分产出，为防内容黏连不自动重试）'
+            }——可重发本轮，或检查端点/网络`,
+            recoverable: true,
+            retryable: false,
+          },
+        }
+        return
+      }
+      // 零产出首次停滞 → 静默重试一次（可见性并入终态文案；provider 层无 warn 通道）
     }
   }
 }

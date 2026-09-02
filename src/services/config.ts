@@ -31,6 +31,8 @@ export interface ProviderCfg {
   /** 上下文窗口覆盖（escape hatch；不配则 models.dev 自动探测，M5 §5） */
   contextWindow?: number  /** 定价覆盖（M8 债 #6）：{ "<model>": { input, output, cacheRead?, cacheWrite? } }，¥/Mtok——优先于内置表与 models.dev 同步值 */
   pricing?: Record<string, import('./pricing.js').ModelPricing>
+  /** 流停滞看门狗毫秒（P0-B：缺省 90000；0=关闭——语义见 providers/interface.ts ProviderReq.streamStallMs） */
+  streamStallMs?: number
 
 }
 
@@ -195,7 +197,8 @@ export const CONFIG_TEMPLATE = `{
       "apiKey": "",                                         // ← 必填
       "models": ["glm-5.2"],                                // 可用模型（/model 列这些；可多个）
       "thinking": "medium",                                 // 思考强度：off | low | medium | high
-      "maxTokens": ${DEFAULT_MAX_TOKENS}                    // 单次最大输出 token（8192 配 thinking 极易触顶截断——budget 占额后可见文本更少；单源 core/types DEFAULT_MAX_TOKENS）
+      "maxTokens": ${DEFAULT_MAX_TOKENS},                   // 单次最大输出 token（8192 配 thinking 极易触顶截断——budget 占额后可见文本更少；单源 core/types DEFAULT_MAX_TOKENS）
+      // "streamStallMs": 90000,                            // 流停滞看门狗：连续 N ms 无内容输出→中止+零产出自动重试 1 次（缺省 90000；0=关闭；非流式 thinking 端点可调大）
       // "temperature": 0.7,                                // 采样温度（可选，per-provider）
       // "topP": 0.95                                       // nucleus sampling（可选）
     }
@@ -394,6 +397,7 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
       ...(cfg.maxTokens !== undefined ? { maxTokens: cfg.maxTokens } : {}),
       ...(cfg.thinking !== undefined ? { thinking: cfg.thinking as ThinkingLevel } : {}),
       ...(cfg.contextWindow !== undefined ? { contextWindow: cfg.contextWindow } : {}),
+      ...(cfg.streamStallMs !== undefined ? { streamStallMs: cfg.streamStallMs } : {}),
     }
   }
   // env 覆盖当前 provider 关键字段（dev 场景：.env 注入）
@@ -472,6 +476,7 @@ export function buildProviderReq(config: Config): ProviderReq {
     ...(cfg.maxTokens !== undefined ? { maxTokens: cfg.maxTokens } : {}),
     ...(cfg.thinking !== undefined ? { thinking: cfg.thinking } : {}),
     ...(cfg.contextWindow !== undefined ? { contextWindow: cfg.contextWindow } : {}),
+    ...(cfg.streamStallMs !== undefined ? { streamStallMs: cfg.streamStallMs } : {}),
   }
 }
 
@@ -488,6 +493,7 @@ export function buildProviderReqFor(config: Config, providerName: string, model:
     ...(cfg.maxTokens !== undefined ? { maxTokens: cfg.maxTokens } : {}),
     ...(cfg.thinking !== undefined ? { thinking: cfg.thinking } : {}),
     ...(cfg.contextWindow !== undefined ? { contextWindow: cfg.contextWindow } : {}),
+    ...(cfg.streamStallMs !== undefined ? { streamStallMs: cfg.streamStallMs } : {}),
   }
 }
 

@@ -12,6 +12,7 @@
 
 import OpenAI from 'openai'
 import type { LLMProvider, LLMProviderRunRequest, ThinkingLevel } from './interface.js'
+import { createStallWatchdog, DEFAULT_STREAM_STALL_MS, signalAborted } from './stallWatchdog.js'
 import type { Delta, Message, StopReason, ToolSpec, ToolResultBlock, TextBlock, ImageBlock, DocumentBlock } from '../core/types.js'
 
 /** OpenAI 流式 chunk（宽松结构，鸭子类型；不硬依赖 SDK 内部类型）。 */
@@ -249,30 +250,77 @@ export class OpenaiProvider implements LLMProvider {
     const client = this.clients.get(cacheKey) ?? new OpenAI({ baseURL: req.baseURL, apiKey: req.apiKey })
     if (!this.clients.has(cacheKey)) this.clients.set(cacheKey, client)
 
-    // 2026-09-02 批1a（四角色审阅 P0-1 翻案）：signal 必须传 create() **第二参** RequestOptions——
-    // v7 create(body, options) 不认 body 里的 signal（曾混进 body 形参：signal 从未到达 fetch，
-    // 还以 "signal":{} 污染请求体 JSON；Ctrl+C 34-54s 不收敛的真根因。对照实验：传对位置
-    // abort 后 4ms 断流断 TCP，静默流挂死场景也随之解除）
-    const stream = await client.chat.completions.create(
-      {
-        model: req.model,
-        messages: toOpenaiMsgs(req.messages, req.system),
-        // P2-10：空 tools 数组不传（部分端点对 tools:[] 报 400）
-        ...(req.tools.length > 0 ? { tools: toOpenaiTools(req.tools) } : {}),
-        stream: true,
-        stream_options: { include_usage: true }, // P1-6：否则 final chunk 无 usage
-        ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
-        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-        ...(req.topP !== undefined ? { top_p: req.topP } : {}),
-        ...thinkingToOpenai(req.thinking), // P0-5：thinking → reasoning_effort
-      } as never,
-      req.signal ? { signal: req.signal } : {},
-    )
-
-    const t = new OpenaiTranslator()
-    for await (const chunk of stream as unknown as AsyncIterable<OpenaiChunk>) {
-      for (const d of t.push(chunk)) yield d
+    // P0-B 看门狗（方案 §2）：零内容性 delta 持续 streamStallMs → 中止流。重试约束：
+    // 仅「零产出」首次停滞静默重试 1 次——有产出时透明重发会把「半截+完整重答」黏连成
+    // 一条消息固化进 history（provider.run 共 5 个消费点全中）且 output 白付双计费；
+    // 二次停滞/有产出停滞 → 显式 STREAM_STALL error delta（retryable:false 温和终止，
+    // stall 是端点/网络级故障，loop 层重试与模型自纠都无意义）。重试前必查用户 signal
+    // （已断则不再自发请求）；停滞与用户中断并发时中断优先（直接 return，loop 侧权威判 aborted）
+    const stallMs = req.streamStallMs ?? DEFAULT_STREAM_STALL_MS
+    for (let attempt = 0; ; attempt++) {
+      if (req.signal?.aborted === true) return
+      const wd = createStallWatchdog(req.signal, stallMs)
+      let produced = false // 本轮已产出内容性 delta（text/thinking/tool_use_delta）
+      const t = new OpenaiTranslator()
+      try {
+        // 批1a（四角色审阅 P0-1 翻案）：signal 必须传 create() **第二参** RequestOptions——
+        // v7 create(body, options) 不认 body 里的 signal（曾混进 body 形参：signal 从未到达
+        // fetch 且以 "signal":{} 污染请求体；Ctrl+C 34-54s 不收敛的真根因。传对位置 abort
+        // 后 4ms 断流断 TCP，静默流挂死场景随之解除）。此处恒有 wd.signal（stall 侧常在）
+        const stream = await client.chat.completions.create(
+          {
+            model: req.model,
+            messages: toOpenaiMsgs(req.messages, req.system),
+            // P2-10：空 tools 数组不传（部分端点对 tools:[] 报 400）
+            ...(req.tools.length > 0 ? { tools: toOpenaiTools(req.tools) } : {}),
+            stream: true,
+            stream_options: { include_usage: true }, // P1-6：否则 final chunk 无 usage
+            ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
+            ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+            ...(req.topP !== undefined ? { top_p: req.topP } : {}),
+            ...thinkingToOpenai(req.thinking), // P0-5：thinking → reasoning_effort
+          } as never,
+          wd.signal !== undefined ? { signal: wd.signal } : {},
+        )
+        for await (const chunk of stream as unknown as AsyncIterable<OpenaiChunk>) {
+          for (const d of t.push(chunk)) {
+            if (d.type === 'text' || d.type === 'thinking' || d.type === 'tool_use_delta') {
+              produced = true
+              wd.feed() // 喂狗锚点=内容性 delta（心跳/空帧/纯 usage chunk 不算，防假喂狗）
+            }
+            yield d
+          }
+        }
+        if (!wd.fired()) {
+          // 正常完成（含用户中断的 SDK 静默收尾——loop 侧流末 signal 检查权威判 aborted）
+          for (const d of t.flush()) yield d
+          return
+        }
+        // 看门狗触发后 SDK 吞 AbortError 静默收尾（streaming.mjs "exit without throwing"）
+        // ——落到循环外统一的停滞转译
+      } catch (e) {
+        if (!wd.fired()) throw e // 非看门狗错误原样上抛（loop 既有分类）
+        // 看门狗 abort 的抛出形态（部分路径不吞）同走停滞转译
+      } finally {
+        wd.dispose()
+      }
+      if (signalAborted(req.signal)) return // 中断优先于停滞报错
+      const canRetry = attempt === 0 && !produced
+      if (!canRetry) {
+        yield {
+          type: 'error',
+          error: {
+            code: 'STREAM_STALL',
+            message: `响应停滞：连续 ${stallMs}ms 无内容性输出${
+              attempt > 0 ? '（已自动重试 1 次仍停滞）' : '（本轮已有部分产出，为防内容黏连不自动重试）'
+            }——可重发本轮，或检查端点/网络`,
+            recoverable: true,
+            retryable: false,
+          },
+        }
+        return
+      }
+      // 零产出首次停滞 → 静默重试一次（可见性并入上方终态文案；provider 层无 warn 通道）
     }
-    for (const d of t.flush()) yield d
   }
 }

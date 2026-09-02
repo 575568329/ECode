@@ -31,6 +31,13 @@ export interface ProviderReq {
   thinking?: ThinkingLevel
   /** 上下文窗口覆盖（M5 §5 escape hatch；不配则 models.dev 探测） */
   contextWindow?: number
+  /**
+   * 流停滞看门狗毫秒（P0-B，方案 2026-09-02 真机诊断修复 §2）：流内连续 N ms 零**内容性**
+   * delta（text/thinking/tool_use_delta——协议层心跳/空帧不算）→ 中止流；零产出时 provider
+   * 内自动重试 1 次，仍停滞或有产出则转 STREAM_STALL 错误（retryable:false 温和终止）。
+   * 缺省 90000；0=关闭。非流式 thinking 端点（reasoning 憋到尾部才吐）可调大或关闭。
+   */
+  streamStallMs?: number
 }
 
 /** provider.run 的入参（ProviderReq + loop 内部注入的 system/messages/tools/signal）。 */

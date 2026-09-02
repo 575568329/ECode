@@ -78,10 +78,10 @@ export function ToolLine({ tool, mode }: ToolLineProps): ReactElement {
   // 行数封顶按 mode 区分（P0-1）：static=Infinity 全量；dynamic=expandCap（审阅 T6）
   const showFull = isSideEffect && t.status !== 'running'
   const foldCap = mode === 'static' ? Number.POSITIVE_INFINITY : expandCap
-  // 动态宽度（用户拍板 2026-09-02）：终端宽−左侧图标/悬挂缩进（≈10 列），下限 80——
-  // 收起预览恒占 1 行（与折叠行预算正交），宽终端多显示；Static 打印时刻定格
-  const termColumns = typeof process.stdout.columns === 'number' && process.stdout.columns > 0 ? process.stdout.columns : 80
-  const preview = previewLine(content, Math.max(80, termColumns - 10))
+  // 动态宽度（用户拍板 2026-09-02）：viewport 列宽（共享 resize 监听，真 pty 下=终端实际宽）
+  // −左侧图标/悬挂缩进（≈10 列），下限 80 保底——收起预览恒占 1 行（与折叠行预算正交），
+  // 宽终端多显示；Static 打印时刻定格
+  const preview = previewLine(content, Math.max(80, columns - 10))
 
   return (
     <Box flexDirection="column">

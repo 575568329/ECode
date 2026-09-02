@@ -27,6 +27,30 @@ describe('translateAnthropicStream', () => {
     ])
   })
 
+  it('B1 思考块 → thinking/thinking_end Delta（带 blockIndex）+ 后随文本正常', () => {
+    const events = [
+      { type: 'message_start', message: { usage: { input_tokens: 5, output_tokens: 0 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '先看' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '结构' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '结论' } },
+      { type: 'content_block_stop', index: 1 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 9 } },
+      { type: 'message_stop' },
+    ]
+    const deltas = translateAnthropicStream(events as never)
+    expect(deltas).toEqual([
+      { type: 'thinking', blockIndex: 0, text: '先看' },
+      { type: 'thinking', blockIndex: 0, text: '结构' },
+      { type: 'thinking_end', blockIndex: 0 },
+      { type: 'text', text: '结论' },
+      { type: 'usage', input_tokens: 5, output_tokens: 9 },
+      { type: 'done', stop_reason: 'end' },
+    ])
+  })
+
   it('工具调用 → tool_use_start/delta/end + done(tool_use)', () => {
     const events = [
       { type: 'message_start', message: { usage: { input_tokens: 5, output_tokens: 0 } } },

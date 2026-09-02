@@ -81,7 +81,15 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 export interface LoopCallbacks {
   /** 流式 text 增量（M2: streamText 灰字占位） */
   onText: (text: string) => void
-  onToolStart?: (name: string) => void
+  /** 工具块开始（流式 content_block_start 时机——text 分段的封口信号；D7 补真实 id） */
+  onToolStart?: (name: string, id: string) => void
+  /** 思考增量（B1：Anthropic 扩展思考；blockIndex 供归约按块配对——心脏纯透传不解析内容） */
+  onThinking?: (blockIndex: number, text: string) => void
+  /** 思考块结束（时长由宿主侧自算——Delta 只发边界信号） */
+  onThinkingEnd?: (blockIndex: number) => void
+  /** 工具真正执行前（B1/D9：invokeTool confirm 之后、execute 之前；签名带 input 纯透传，
+   *  digest 不在 loop 生成——loop 解析工具语义=心脏对工具特判，破「加新工具心脏零改动」铁律） */
+  onToolExecute?: (name: string, id: string, input: unknown) => void
   /** 工具执行完成（带 id，便于并发结果精确配对） */
   onToolResult?: (id: string, name: string, result: ToolResult) => void
   onUsage?: (inputTokens: number, outputTokens: number, cache?: { read?: number; creation?: number }) => void
@@ -196,7 +204,17 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     opts.logger.info('loop', 'iter_start', { iter, max: opts.maxIterations, model: opts.providerReq.model }, iter)
     const jsonBuf = new Map<string, { name: string; buf: string }>()
     let textBuf = ''
+    // B1：按 block 原序累积（text 在 tool_use_start 封口成独立块——与流内 content blocks 同构，
+    // 客户端时间线分段与轮末重建天然一致，审阅协议 P2-2）
+    const roundBlocks: ContentBlock[] = []
+    const flushText = (): void => {
+      if (textBuf !== '') {
+        roundBlocks.push({ type: 'text', text: textBuf })
+        textBuf = ''
+      }
+    }
     const newToolUses: ToolUseBlock[] = []
+    let sawThinking = false // B1：thinking-only 轮不算空响应（思考也是输出）
     let stopReason: StopReason = 'end'
     let streamError: AppError | null = null
     let isAborted = false
@@ -220,9 +238,18 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
             textBuf += d.text
             opts.callbacks.onText(d.text)
             break
+          case 'thinking':
+            sawThinking = true
+            opts.callbacks.onThinking?.(d.blockIndex, d.text)
+            break
+          case 'thinking_end':
+            opts.callbacks.onThinkingEnd?.(d.blockIndex)
+            break
           case 'tool_use_start':
+            // B1：text→tool 边界即封口（分段固化，审阅协议 P2-2）+ 真实 id（D7）
+            flushText()
             jsonBuf.set(d.id, { name: d.name, buf: '' })
-            opts.callbacks.onToolStart?.(d.name)
+            opts.callbacks.onToolStart?.(d.name, d.id)
             opts.callbacks.onActivity?.('tool', `调用 ${d.name}...`)
             break
           case 'tool_use_delta': {
@@ -239,7 +266,9 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
               } catch {
                 input = { __parse_error: '工具输入 JSON 解析失败' }
               }
-              newToolUses.push({ type: 'tool_use', id: d.id, name: entry.name, input })
+              const use: ToolUseBlock = { type: 'tool_use', id: d.id, name: entry.name, input }
+              newToolUses.push(use)
+              roundBlocks.push(use)
             }
             break
           }
@@ -280,12 +309,11 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
       if (streamError && !streamError.recoverable && !isAbort && streamError.code !== 'CONTEXT_TOO_LONG')
         throw streamError
     } finally {
-      // 固化已生成内容（无论正常/错误/中断，只要本轮产出了东西就保留）
-      const blocks: ContentBlock[] = []
-      if (textBuf) blocks.push({ type: 'text', text: textBuf })
-      blocks.push(...newToolUses)
-      if (blocks.length > 0) {
-        const assistantMsg: Message = { role: 'assistant', content: blocks }
+      // 固化已生成内容（无论正常/错误/中断，只要本轮产出了东西就保留）——B1：roundBlocks 已按
+      // 流内原序含 text/tool_use 交错块（旧「text 前置+tools 后置」的单串拼装退役）
+      flushText()
+      if (roundBlocks.length > 0) {
+        const assistantMsg: Message = { role: 'assistant', content: roundBlocks }
         messages.push(assistantMsg)
         opts.history.append(assistantMsg)
         pushedThisRound = true
@@ -382,7 +410,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     // 重试风暴），重试由用户发起。aborted/错误流不在此列（各有专属路径）。
     if (
       stopReason === 'end' && streamError === null &&
-      textBuf === '' && newToolUses.length === 0
+      roundBlocks.length === 0 && !sawThinking
     ) {
       opts.callbacks.onWarn?.('模型返回了空响应（本轮零输出——可能是端点断流或网络异常），请重试')
       opts.logger.warn('loop', 'empty_turn', { iter }, iter)
@@ -565,6 +593,10 @@ async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<Tool
       return { type: 'tool_result', tool_use_id: use.id, content: msg, is_error: true }
     }
   }
+
+  // B1/D9：真正执行前通知（confirm 之后——审批挂起/拒绝期不触发；签名带 input 纯透传，
+  // digest 由宿主生成，心脏不解析工具语义）
+  opts.callbacks.onToolExecute?.(use.name, use.id, use.input)
 
   try {
     // M9-P2：包装透传 use.id 给 onBeforeWrite（快照 meta 的投影锚；纯数据转发，心脏不认识 checkpoint）。

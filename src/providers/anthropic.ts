@@ -47,7 +47,7 @@ interface RawEvent {
   index?: number
   message?: { usage?: RawUsage }
   content_block?: { type: string; id?: string; name?: string }
-  delta?: { type: string; text?: string; partial_json?: string; stop_reason?: string }
+  delta?: { type: string; text?: string; partial_json?: string; thinking?: string; stop_reason?: string }
   usage?: RawUsage
   error?: { message?: string }
   [k: string]: unknown
@@ -115,6 +115,9 @@ class Translator {
         if (!d || idx == null) break
         if (d.type === 'text_delta' && d.text != null) {
           out.push({ type: 'text', text: d.text })
+        } else if (d.type === 'thinking_delta' && d.thinking != null && block?.kind === 'thinking') {
+          // B1：思考增量（Anthropic 扩展思考）——blockIndex 供归约按块配对（活动流 §4）
+          out.push({ type: 'thinking', blockIndex: idx, text: d.thinking })
         } else if (d.type === 'input_json_delta' && d.partial_json != null && block?.kind === 'tool_use') {
           out.push({ type: 'tool_use_delta', id: block.id ?? '', partial_json: d.partial_json })
         }
@@ -126,6 +129,9 @@ class Translator {
         const block = this.blocks.get(idx)
         if (block?.kind === 'tool_use' && block.id) {
           out.push({ type: 'tool_use_end', id: block.id })
+        } else if (block?.kind === 'thinking') {
+          // B1：思考块结束（时长由宿主在回调侧算，Delta 只发边界信号）
+          out.push({ type: 'thinking_end', blockIndex: idx })
         }
         this.blocks.delete(idx)
         break

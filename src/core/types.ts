@@ -105,6 +105,8 @@ export type StopReason =
 // usage: token 用量，Provider 在 done 前或流末尾发出。
 export type Delta =
   | { type: 'text'; text: string }
+  | { type: 'thinking'; blockIndex: number; text: string }
+  | { type: 'thinking_end'; blockIndex: number }
   | { type: 'tool_use_start'; id: string; name: string }
   | { type: 'tool_use_delta'; id: string; partial_json: string }
   | { type: 'tool_use_end'; id: string }

@@ -21,7 +21,7 @@ import type { LLMProviderRegistry } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
-import { resurrectDaemonReg } from '../cli/daemon.js' // tui→cli 反向单点（daemon 拉起逻辑归口；无循环依赖——daemon.ts 不 import tui）
+import { resurrectDaemonReg, readServerReg } from '../cli/daemon.js' // tui→cli 反向单点（daemon 拉起逻辑归口；无循环依赖——daemon.ts 不 import tui）
 import { createActive, liveTextOf, toolsOf, type CommittedItem, type ActiveState } from './types.js'
 import { timelineReducer, makeTimelineIdFactory } from '../protocol/timeline.js'
 import { messagesToCommitted } from './commit.js'
@@ -110,6 +110,10 @@ const NO_ALT_SCREEN =
 /** 批2d（§13.1 拍板-1 附）：BEL 终端铃字符（审批卡首次出现时写一次，终端自行决定响/闪标题栏） */
 const BEL_CHAR = '\x07'
 
+/** 本进程 RSS 采样间隔（2026-09-02 内存可见性批）：5s 观测泄漏趋势足够，又不至于
+ *  高频 setState 驱动整帧重算（TuiApp 组件树大，空闲态帧本应完全静止） */
+const MEM_SAMPLE_MS = 5000
+
 /** T 线 T4：形态无关的宿主客户端面——Embedded=HostSession 结构超集，附着=MultiTransport。
  *  TuiApp 只依赖此接口（mountBridges 可选：Embedded 宿主内部桥，附着形态 daemon 侧自挂）。 */
 export interface TuiHost {
@@ -117,7 +121,7 @@ export interface TuiHost {
   subscribe: (handler: (ev: import('../protocol/types.js').ProtocolEvent) => void, opts?: { canAnswer?: boolean }) => () => void
   dispose: () => void
   mountBridges?: () => void
-  /** T5（D-T3 增补）：daemon 连接状态（顶栏「后台运行中/重连中」标识；Embedded 无此面） */
+  /** T5（D-T3 增补）：daemon 连接状态（顶栏 D✓/D…/D⚠ 三态标识；Embedded 无此面） */
   daemonState?: () => 'connecting' | 'open' | 'backoff'
 }
 
@@ -377,6 +381,14 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     return () => clearInterval(timer)
   }, [notices])
   const [tokens, setTokens] = useState(0)
+  // 2026-09-02 用户点名：本进程 RSS 常驻状态栏（孤儿实例堆积 4.8GB 事故后的内存可见性）。
+  // 5s 采样——观测泄漏趋势足够，避免高频 setState 整帧重算；口径是 TUI 进程自身
+  // （客户端进程），宿主/子代理内存不在此段
+  const [memBytes, setMemBytes] = useState(() => process.memoryUsage().rss)
+  useEffect(() => {
+    const timer = setInterval(() => setMemBytes(process.memoryUsage().rss), MEM_SAMPLE_MS)
+    return () => clearInterval(timer)
+  }, [])
   const [sessionCost, setSessionCost] = useState(0)
   // F-44：上下文占用/窗口（usage 帧 API 真值：占用=本轮 prompt 全量 input+cacheRead；
   // 窗口=宿主 resolveContextWindow 解析缓存）——StatusBar ctx 段显示占用与余量
@@ -601,6 +613,10 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const mountedRef = useRef(true) // 审阅 P2：unmount 后 in-flight rescue 不再建新宿主
   const hostEventHandlerRef = useRef<(ev: import('../protocol/types.js').ProtocolEvent) => void>(() => {})
   hostEventHandlerRef.current = (ev) => {
+      // Ctrl+C 立即停：中断后到下一轮 turn/started 之间的动态帧（delta/item/thinking/usage）
+      // 是宿主后台收敛的残渣——丢弃不渲染（transcript 权威在宿主，轮末/下轮重建自纠）
+      if (interruptedAtRef.current && (ev.type === 'delta' || ev.type === 'item/started' || ev.type === 'item/completed' || ev.type === 'item/executing' || ev.type === 'thinking' || ev.type === 'usage')) return
+      if (ev.type === 'turn/started') interruptedAtRef.current = false
       // G+ 合帧配套：任何非 delta 帧到达先同步 flush delta 缓冲（thinking/item 等事件与文本的
       // 时间线顺序不可倒置；turn/completed 收尾也不丢尾部文本）
       if (ev.type !== 'delta') {
@@ -1287,7 +1303,10 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     // 由 cli 侧 localFallback 闭包兜底新 id（本地开新会话继续干活）
     const sid = attachedSidRef.current ?? (deps.history.currentSessionId() || undefined)
     if (localFallback === undefined) {
-      setSystemMsgs(['✗ 后台服务不可达且重拉失败——输入未丢，可稍后重试或重启 ecode'], 'warn')
+      // 审阅 R6/P2-1：dead 也收死轮（不收则 running 恒真、输入全进插话队列=注释宣称不卡实际卡）
+      const tail = closeDeadTurn('后台服务不可达')
+      setSystemMsgs([...tail, '✗ 后台服务不可达且重拉失败——输入已退回，可稍后重试或重启 ecode'], 'warn')
+      rescueDeadLatch.current = true // 熔断：防 tick 每 8s 重拉×15s 超时无限循环
       return 'dead'
     }
     const fbDeps = localFallback(sid, configRef.current) // 审阅 P1：传活 config——/model、/setup 的切换不随降级回退启动快照
@@ -1309,33 +1328,83 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     // 审批卡（降级窗口后重新提权须再确认，防静默提权）；拒绝/失败则显示回落 default 对齐真档
     const degradeMode = sandboxModeRef.current
     if (degradeMode !== 'default') {
-      void localHost.send({ op: 'sandbox/set', mode: degradeMode }).then((r) => {
-        if (!r.ok) applySandboxMode('default')
-      })
+      void localHost
+        .send({ op: 'sandbox/set', mode: degradeMode })
+        .then((r) => {
+          if (!r.ok) applySandboxMode('default')
+        })
+        .catch(() => {})
     }
     // 审阅 P2：直供镜像（走 pullTranscript 会打向刚 dispose 的旧闭包 transport——死链路）
     syncCommitted(diskLines.length > 0 ? diskLines : messagesRef.current)
-    // 轮中降级收场（G3：真机「搜题平台堵死」根因——轮跑在旧宿主里，turn/completed 永不到，
-    // 不收场则 running 恒真、后续输入全进插话队列=表面活着实际全堵）：中断语义收轮 + 时间线
-    // 封口保留已产出 + 排队插话退回提示（本地宿主队列是空的，旧队列永不投递）
+    // 轮收场（reattached/degraded 共用——审阅 R6/P0-1：原轮随宿主死，turn/completed 永不到；
+    // 不收场则 running 恒真 → 斜杠命令门全锁 + 输入全进死队列 = 换了个堵法）
+    const tail = closeDeadTurn('后台服务不可达')
+    // 安全席 P1：同 id 双写警示——降级存活期间他端（手机/飞书/新 daemon）打开同会话会交错落盘。
+    // 审阅 R6/P0-2：单次合并调用（setSystemMsgs 全量替换语义——分两次调用前条被后条覆盖=静默丢退回提示）
+    setSystemMsgs([
+      ...tail,
+      '⚠ 后台服务不可达——已切换本地模式续聊（同 id 续写；期间请勿在其他端打开本会话，/restart 或重启 ecode 回后台）',
+    ], 'warn')
+    return 'local'
+  }
+
+  /** 审阅 R6：死轮收场（降级/重连两路径共用）——中断语义收轮 + 时间线封口 + 挂起审批作废 +
+   * 排队插话退回（单条塞回草稿免重打）。返回追加到提示数组的退回条目（可能为空）。 */
+  const closeDeadTurn = (reason: string): string[] => {
+    const notes: string[] = []
     if (runningRef.current) {
       runningRef.current = false
       setRunning(false)
-      setActive((a) => ({ ...a, streaming: false, timeline: a.timeline.map((e) => (e.kind === 'text' && e.live ? { ...e, live: false } : e)) }))
+      // 审阅 R6/P1-3（渲染）：activity 不收则 spinner 永转（计时已停但 state 停 thinking/tool
+      // 仍转圈）——aborted 空行占位与 onInterrupt 语义对齐
+      setActivity({ state: 'aborted' })
+      if (turnStartedAtRef.current !== null) {
+        turnStartedAtRef.current = null
+        setTurnStartedAt(null)
+      }
+      // 审阅 R6/P2-2（渲染）：deltaBuf 防御清理（封口后 pending timer flush 会 append 新
+      // live 段无人再封——触发窗理论为零，防御一行成本极低）
+      const dbuf = deltaBufRef.current
+      if (dbuf.timer !== null) {
+        clearTimeout(dbuf.timer)
+        dbuf.timer = null
+      }
+      dbuf.text = ''
+      setActive((a) => {
+        // 挂起审批随轮作废（审阅 R6/P1-1：不 resolve 则主输入框恒 inactive + 新宿主 NOT_PENDING 静默吞答）
+        if (a.confirm !== null) {
+          a.confirm.resolve(false)
+          notes.push('⚠ 挂起的审批已随轮作废（原因：' + reason + '）——如需执行请重发指令')
+        }
+        return { ...a, confirm: null, streaming: false, timeline: a.timeline.map((e) => (e.kind === 'text' && e.live ? { ...e, live: false } : e)) }
+      })
+      confirmRef.current = false
       if (queuedInterjects.length > 0) {
-        setSystemMsgs([`⚠ 排队的 ${queuedInterjects.length} 条消息已退回（旧队列随后台失效）——请重新发送`], 'warn')
+        // 审阅 R6/P1-2：最后一条塞回草稿（免凭记忆重打）；其余以摘要列示。图片标签可能已失效
+        //（pendingImages 随 submit 清空）——塞回时剪枝 [图片#N] 防幽灵标签
+        const last = queuedInterjects[queuedInterjects.length - 1] ?? ''
+        const cleaned = last.replace(/\[图片#\d+\]\s*/g, '').trim()
+        if (cleaned !== '') {
+          setInputDraft({ text: cleaned, seq: nextInsertSeq() })
+        }
+        notes.push(
+          `⚠ 排队的 ${queuedInterjects.length} 条消息已退回（旧队列随${reason}失效）：最后一条已放回输入框，其余请重发`,
+          ...queuedInterjects.slice(0, -1).map((q, i) => `  ${i + 1}. ${q.length > 40 ? q.slice(0, 40) + '…' : q}`),
+        )
         setQueuedInterjects([])
       }
     }
-    // 安全席 P1：同 id 双写警示——降级存活期间他端（手机/飞书/新 daemon）打开同会话会交错落盘
-    setSystemMsgs(['⚠ 后台服务不可达——已切换本地模式续聊（同 id 续写；期间请勿在其他端打开本会话，重启 ecode 回后台）'], 'warn')
-    return 'local'
+    return notes
   }
   const rescueDaemon = (): Promise<'reattached' | 'local' | 'dead'> => {
     if (rescueInflightRef.current !== null) return rescueInflightRef.current // 单飞：并发提交共等一次重拉
     const p = (async (): Promise<'reattached' | 'local' | 'dead'> => {
       setSystemMsgs(['后台服务失联——正在重拉…'], 'warn')
       deps.logger.warn('daemon', 'rescue_started', {})
+      // 审阅 R6：拉起前记录注册身份（同实例抖动 vs 新实例判别——同实例活轮还在流，
+      // 收场会冻结流文本=误杀；新实例旧轮必死必须收场）
+      const prevReg = readServerReg()
       const reg = await resurrectDaemonReg(deps.logger)
       const transport = transportRef.current
       if (reg !== null && transport?.reattach !== undefined) {
@@ -1345,13 +1414,28 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           transport.setSessionId?.(attachedSidRef.current)
           const rr = await (hostRef.current ?? host).send({ op: 'session/restore', sessionId: attachedSidRef.current })
           if (rr.ok) syncCommitted()
-          // 审阅 P2：找回失败（会话被归档/删除）不静默——上下文为空续聊比"已找回"假话诚实
-          else setSystemMsgs(['⚠ 后台已重连，但会话找回失败——续聊上下文可能为空，可 /history 重选'], 'warn')
+          // 审阅 R6（原 P2 的假话覆盖修正）：找回失败提前收场返回——原实现在下方被无条件
+          // 「✓ 会话已找回」覆盖，警告从未可见
+          else {
+            const tail = closeDeadTurn('后台服务中断')
+            setSystemMsgs([...tail, '⚠ 后台已重连，但会话找回失败——续聊上下文可能为空，可 /history 重选'], 'warn')
+            return 'reattached'
+          }
         }
         // daemon 重拉=宿主必然重建（档位静默回 config 默认）——无论会话找回成败都拉宿主
         // 真档对齐显示，防「显示 read-only 实际 default」假安全（用户档位记忆随旧宿主死了）
         syncSandboxFromHost()
-        setSystemMsgs(['✓ 后台服务已重连（会话已找回）'])
+        // 审阅 R6/P0-1：新实例（pid 变）旧轮必死——收场防「已重连但 running 恒真」假忙碌；
+        // 同实例（pid 同，SSE 抖动重连）活轮可能还在流——**不收场**（收了=冻结流文本误杀）
+        if (reg.pid !== prevReg?.pid) {
+          const tail = closeDeadTurn('后台服务中断')
+          setSystemMsgs([
+            ...tail,
+            `✓ 后台服务已重连（新实例）${attachedSidRef.current !== undefined ? '，会话已找回' : ''}——原轮已随服务中断，已产出保留`,
+          ])
+        } else {
+          setSystemMsgs(['✓ 后台连接已恢复（服务未中断——流可能仍在继续）'])
+        }
         return 'reattached'
       }
       return degradeToLocal()
@@ -1363,11 +1447,22 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     return p
   }
 
+  /** Ctrl+C 立即停（用户拍板 2026-09-02）：本地中断时刻——此后到达的动态帧（delta/item/
+   *  thinking）一律丢弃直到下一个 turn/started（宿主侧 loop 后台收敛，迟到的流残渣不再渲染） */
+  const interruptedAtRef = useRef(false)
   const { warning } = useInterrupt({
     onInterrupt: () => {
       deps.logger.debug('system', 'interrupt_latency_probe', { stage: 'pressed' }) // 诊断插桩：四点计时起点
-      // 本地 abort（hook 子进程中断）+ 宿主 interrupt（loop 的 signal 在宿主）
+      // 本地 abort（hook 子进程中断）+ 宿主 interrupt（loop 的 signal 在宿主）。
+      // 立即停拍板：本地**当场接管 UI**（不等宿主帧往返）——aborted 态+输入解锁+迟到帧丢弃；
+      // 宿主帧回来（activity aborted/busy false）幂等覆盖
       abortRef.current.abort()
+      interruptedAtRef.current = true
+      runningRef.current = false
+      setRunning(false)
+      setActivity({ state: 'aborted' })
+      setActive((a) => ({ ...a, streaming: false }))
+      setSystemMsgs(['已中断（任务停止中——后台执行正在收敛，输入框已可用）'])
       void host.send({ op: 'interrupt' })
     },
     // P0#1：confirm/picker 覆盖期间不 abort（由覆盖组件独占 Ctrl+C）
@@ -1402,6 +1497,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   // ref 桥防 stale closure（rescueDaemon 每渲染重建）
   const rescueRef = useRef<() => Promise<'reattached' | 'local' | 'dead'>>(() => Promise.resolve('dead'))
   rescueRef.current = rescueDaemon
+  // 审阅 R6/P2-4：dead 熔断（localFallback 缺失形态下防 8s×15s 无限重拉循环刷日志——真机不达，测试态护栏）
+  const rescueDeadLatch = useRef(false)
   useEffect(() => {
     if (attachedHost === undefined) return
     // 每 tick 读 hostRef 当前宿主（自愈降级换宿主后无 daemonState → 顶栏段自然隐藏）
@@ -1411,16 +1508,22 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     const timer = setInterval(() => {
       const st = (hostRef.current as TuiHost | null)?.daemonState?.()
       setDaemonState(st)
-      if (st === 'backoff') {
+      // 审阅 R6/P1-1：非 open 即累加（半死 daemon——进程在事件循环卡——SSE 重连 fetch 挂满
+      // open timeout，connecting 窗口 5s 级，仅计 backoff 会反复清零致 30-60s 延迟触发）
+      if (st !== 'open' && st !== undefined) {
         backoffTicks += 1
-        // 轮运行中 + 持续失联 + 未在自愈 → 主动 rescue（命令路径外的事件流路径触发）
-        if (backoffTicks >= 4 && runningRef.current && !rescuing) {
+        // 轮运行中 + 持续失联 + 未在自愈 + 非 dead 熔断 → 主动 rescue（命令路径外的事件流路径触发）
+        if (backoffTicks >= 4 && runningRef.current && !rescuing && !rescueDeadLatch.current) {
           rescuing = true
           deps.logger.warn('daemon', 'midturn_rescue', {})
-          void rescueRef.current().finally(() => {
-            rescuing = false
-            backoffTicks = 0
-          })
+          // 审阅 R6/P2-2：tick 路径裸奔无 catch——rescue 内部抛（磁盘 IO/装配）会 unhandledRejection 杀 TUI
+          void rescueRef
+            .current()
+            .catch(() => {})
+            .finally(() => {
+              rescuing = false
+              backoffTicks = 0
+            })
         }
       } else {
         backoffTicks = 0
@@ -1588,14 +1691,15 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     { isActive: overlay === null && active.confirm === null && !running },
   )
 
-  // M6 M-P7：StatusBar MCP 段（有启用的 server 才显示；连接中瞬时态）
+  // M6 M-P7：StatusBar MCP 段（有启用的 server 才显示；连接中瞬时态）。
+  // 2026-09-02 精简批：MCP→M 单字母（用户点名「能用单个字母表示的用单个字母」）
   const mcpSegment = useMemo(() => {
     if (mcpSnapshots.length === 0) return undefined
     const enabled = mcpSnapshots.filter((s) => s.status !== 'disabled')
     if (enabled.length === 0) return undefined
-    if (enabled.some((s) => s.status === 'connecting')) return 'MCP 连接中…'
+    if (enabled.some((s) => s.status === 'connecting')) return 'M…'
     const connected = enabled.filter((s) => s.status === 'connected').length
-    return `MCP ${connected}/${enabled.length}`
+    return `M${connected}/${enabled.length}`
   }, [mcpSnapshots])
 
   // placeholder 判据改运行态镜像（streamingText 延迟 commit 常驻的旧病根治）
@@ -1741,15 +1845,17 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       running={running}
       queuedInterjects={queuedInterjects}
       daemon={(() => {
+        // 2026-09-02 精简批：D 单字母三态（✓=后台在跑 / …=连接中 / ⚠=重连中，色随 daemonDanger）
         if (daemonState === undefined) return undefined
-        if (daemonState === 'open') return '后台运行中'
-        if (daemonState === 'backoff') return '后台重连中…'
-        return '后台连接中…'
+        if (daemonState === 'open') return 'D✓'
+        if (daemonState === 'backoff') return 'D⚠'
+        return 'D…'
       })()}
       daemonDanger={daemonState === 'backoff'}
       mcp={mcpSegment}
       sandbox={sandboxMode === 'default' ? undefined : sandboxMode}
       sandboxDanger={sandboxMode === 'full-access'}
+      memBytes={memBytes}
       tokens={tokens}
       ctxUsed={ctxUsed}
       ctxWindow={ctxWindow}

@@ -162,8 +162,8 @@ describe('Ctrl+C 中断（按键 → useInterrupt → 宿主 interrupt → loop 
     stdin.write('长任务')
     await flush()
     stdin.write('\r')
-    await flush(300)
-    expect(lastFrame() ?? '').toContain('开始思考') // 轮已起且在挂起思考
+    // G2 16ms 合帧后首帧上屏链变长（delta 缓冲→timer→渲染），固定 300ms 偶发不足——waitFor 轮询
+    await vi.waitFor(() => expect(lastFrame() ?? '').toContain('开始思考'), { timeout: 3000, interval: 50 }) // 轮已起且在挂起思考
     stdin.write('\x03') // Ctrl+C
     await flush(400)
     const f = lastFrame() ?? ''

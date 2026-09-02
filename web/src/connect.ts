@@ -151,6 +151,29 @@ export function connectMux(
   }
 }
 
+/**
+ * 2026-09-02 用户拍板：归档人专属——session/archive 已从 /cmd 协议面摘除（AI 会话持 token
+ * 也不可归档），web 归档/恢复按钮改走此专用端点（POST /api/archive，仅人交互调用）。
+ * relay 形态暂不支持（归档是低频管理操作，手机端经直连形态使用；挂账 relay 线补通道）。
+ */
+export async function archiveSession(
+  base: string,
+  project: string,
+  sessionId: string,
+  archived: boolean,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${base}api/archive`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${getToken()}` },
+    body: JSON.stringify({ project, sessionId, archived }),
+  })
+  if (res.status === 401) {
+    clearToken()
+    throw new Error('未授权——token 已失效，请重新输入')
+  }
+  return (await res.json()) as { ok: boolean; error?: string }
+}
+
 /** 发命令（信封形态——W5 起统一走信封；回执带 sessionId）。 */
 export async function sendCommand(
   base: string,

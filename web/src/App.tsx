@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Archive, BarChart3, ChevronDown, Pencil, Plus, Search, Smartphone } from 'lucide-react'
 import { groupSessionsByTime, searchSessions, type SidebarSession } from './sessionList'
 import { lastSeqFor } from './store'
-import { addProject, connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
+import { addProject, archiveSession, connectMux, fetchProjects, getToken, setToken, sendCommand, type MuxConnection } from './connect'
 import { relayActive, relayGetCfg, relayLostMessage, clearRelayLost } from './relay'
 import { toConfigView, useApp } from './store'
 import { makeHash, parseHash, type RoutePos } from './routing'
@@ -382,11 +382,12 @@ export function App(): React.JSX.Element {
     if (next) loadArchived()
   }
 
-  /** 归档/恢复：协议落 sidecar + session/updated 帧广播多端；本端乐观刷新两个列表。
-   *  审阅修复：ok:false 不做乐观更新（防幽灵行）；归档时同步剪主列表 sessions */
+  /** 归档/恢复：人专属端点（2026-09-02 拍板——archive 已离开 /cmd 协议面）+ session/updated
+   *  帧广播多端；本端乐观刷新两个列表。审阅修复：ok:false 不做乐观更新（防幽灵行）；
+   *  归档时同步剪主列表 sessions */
   const setSessionArchived = (sessionId: string, archived: boolean): void => {
     if (selectedProject === null) return
-    void sendCommand(BASE, selectedProject, undefined, { op: 'session/archive', sessionId, archived })
+    void archiveSession(BASE, selectedProject, sessionId, archived)
       .then((r) => {
         if (!r.ok) return
         if (archived) {

@@ -511,6 +511,51 @@ export function serveMulti(
         return
       }
 
+      // 2026-09-02 用户拍板：人专属归档端点——session/archive 从协议命令面摘除后，web 归档/
+      // 恢复按钮改走此端点（POST {project, sessionId, archived}）。凭据仍需一等信任
+      // （primary/lan-password；device 档拒收）；意图层面它只服务"人点击的按钮"——无项目级
+      // 会话宿主拉起（直挂注册表 archive 直调，冷项目也能归档历史会话）。
+      // 仍广播 session/updated（走目标活会话的宿主通道——未活则各端下次 session/list 自愈）。
+      if (req.method === 'POST' && url.pathname === '/api/archive') {
+        void (async () => {
+          try {
+            const chunks: Buffer[] = []
+            let size = 0
+            for await (const c of req) {
+              size += (c as Buffer).length
+              if (size > MULTI_BODY_CAP) throw Object.assign(new Error('body 超限'), { statusCode: 413 })
+              chunks.push(c as Buffer)
+            }
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as { project?: unknown; sessionId?: unknown; archived?: unknown }
+            if (credClass === 'device') return json(403, { ok: false, error: '设备凭据不可归档会话（需用户级凭据）' })
+            if (typeof body.project !== 'string' || typeof body.sessionId !== 'string') return json(400, { ok: false, error: '缺少 project/sessionId' })
+            if (typeof body.archived !== 'boolean') return json(400, { ok: false, error: 'archived 必须为 boolean' })
+            // 归属校验：sessionId 拼进 sidecar 路径——白名单（与 isValidSessionId 同源）
+            if (!isValidSessionId(body.sessionId)) return json(400, { ok: false, error: `会话 id 非法：${body.sessionId}` })
+            const cwd = normalizeProjectPath(body.project)
+            // 目标活会话 → 借其宿主执行（session/updated 帧可达各订阅端）；
+            // 冷会话/冷项目 → 借 history 静态路径直接落 sidecar（不拉起会话宿主——归档历史条目
+            // 无需装配；多端列表一致性靠下次 session/list 的冷读自愈）
+            const entry = registry.listActive().find((e) => e.path === cwd)
+            if (entry !== undefined) {
+              const r = await registry.acquire(cwd, { confirm: true })
+              if (r.ok && r.host !== undefined) {
+                const live = r.host.conversation(body.sessionId)
+                if (live !== undefined) return json(200, { ...(await live.archiveSession(body.sessionId, body.archived)) })
+                // 冷会话（项目活但该会话未载入）：用项目宿主的 history 落 sidecar + 日志
+                FileHistoryStore.patchSessionMeta(opts.sessionsDir ?? join(homedir(), '.ecode', 'sessions'), body.sessionId, { archived: body.archived })
+                return json(200, { ok: true })
+              }
+            }
+            FileHistoryStore.patchSessionMeta(opts.sessionsDir ?? join(homedir(), '.ecode', 'sessions'), body.sessionId, { archived: body.archived })
+            return json(200, { ok: true })
+          } catch (e) {
+            json((e as { statusCode?: number }).statusCode ?? 400, { ok: false, error: e instanceof Error ? e.message : String(e) })
+          }
+        })()
+        return
+      }
+
       // 项目维度路由：/api/p/:p/cmd；无前缀=默认项目。
       // M14-C2①：`?confirm=true` 客户端自报退役（豁免随凭据分级派生，见 resolveHost）——
       // 旧客户端仍发此参数被忽略（web 端恒带，无害）。
@@ -550,6 +595,17 @@ export function serveMulti(
                 console.warn('[serve] onStop 回调失败：', e instanceof Error ? e.message : String(e))
               })
               return
+            }
+            // 2026-09-02 用户拍板：归档人专属——/cmd 协议面（AI 可达）一律拒收（进程级拦截，
+            // 不路由进会话 dispatch；宿主层还有第二道 HUMAN_ONLY_COMMAND 兜底）。web 归档按钮
+            // 走下方 /api/archive 人专属端点（直调 host.archiveSession）。
+            if (stopPeek.op === 'session/archive') {
+              if (credClass === 'device') return json(403, { ok: false, error: '设备凭据不可归档会话（需用户级凭据）' })
+              return json(403, {
+                ok: false,
+                error: '归档是人专属操作，不能经 /cmd 协议面发起（web 归档按钮走 /api/archive 人专属端点）',
+                code: 'HUMAN_ONLY_COMMAND',
+              })
             }
             // R4 审阅：device 档 scope 命令面执行（chat=白名单内；full=放行）——user 级凭据不经此门
             if (credClass === 'device') {

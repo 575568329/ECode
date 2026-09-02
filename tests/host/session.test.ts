@@ -707,7 +707,10 @@ describe('M14-C1b 工具全文 summary+read 与 transcript 分页', () => {
     host.dispose()
   })
 
-  it('批 2：session/archive + rename——sidecar 标记、list 过滤归档、session/updated 广播', async () => {
+  it('批 2：session/archive 已划为人专属（协议通道拒绝）+ rename——sidecar 标记、list 过滤、session/updated 广播', async () => {
+    // 2026-09-02 用户拍板：归档不可由 AI/协议通道发起（full-access 会话 curl 静默归档用户
+    // 会话的事故根因）。协议 dispatch 一律 HUMAN_ONLY_COMMAND；归档走宿主 archiveSession()
+    // 直调（serve /api/archive 人专属端点的同款入口）。
     const dir = mkdtempSync(join(tmpdir(), 'ecode-b2-'))
     const sid = `2026-08-30Tb2h-${Date.now()}`
     const p = new MockProvider([[{ type: 'done', stop_reason: 'end' }]])
@@ -721,7 +724,17 @@ describe('M14-C1b 工具全文 summary+read 与 transcript 分页', () => {
     const events: ProtocolEvent[] = []
     host.subscribe((e) => events.push(e))
 
-    await host.send({ op: 'session/archive', sessionId: sid, archived: true })
+    // 协议通道拒绝（AI/客户端不可达）
+    const denied = await host.send({ op: 'session/archive', sessionId: sid, archived: true })
+    expect(denied.ok).toBe(false)
+    if (!denied.ok) expect(denied.code).toBe('HUMAN_ONLY_COMMAND')
+    // 归档未生效（默认列表仍在）
+    const list0 = await host.send({ op: 'session/list' })
+    expect((list0.value as Array<{ sessionId: string }>).some((m) => m.sessionId === sid)).toBe(true)
+
+    // 人专属入口（archiveSession 直调）正常执行
+    const r1 = await host.archiveSession(sid, true)
+    expect(r1.ok).toBe(true)
     // 默认列表过滤归档
     const list = await host.send({ op: 'session/list' })
     expect((list.value as Array<{ sessionId: string }>).some((m) => m.sessionId === sid)).toBe(false)
@@ -738,8 +751,9 @@ describe('M14-C1b 工具全文 summary+read 与 transcript 分页', () => {
     expect((all2.value as Array<{ sessionId: string; title?: string }>).find((m) => m.sessionId === sid)?.title).toBe('手起的名字')
     expect(events.some((e) => e.type === 'session/updated' && e.sessionId === sid && (e as { title?: string }).title === '手起的名字')).toBe(true)
 
-    // 恢复（archived:false）→ 默认列表重新可见
-    await host.send({ op: 'session/archive', sessionId: sid, archived: false })
+    // 恢复（人专属入口 archived:false）→ 默认列表重新可见
+    const r2 = await host.archiveSession(sid, false)
+    expect(r2.ok).toBe(true)
     const list2 = await host.send({ op: 'session/list' })
     expect((list2.value as Array<{ sessionId: string }>).some((m) => m.sessionId === sid)).toBe(true)
     host.dispose()

@@ -9,7 +9,7 @@
  * 宿主正确性由事件序测试 + argv 真跑共同锁定。B2 换审批 Broker、B3 TUI 接入、B4 拆单例。
  *
  * B1 已知偏差（记录在案，后续批收口）：
- * - item/started 无真实工具 id（loop onToolStart 只给 name）——completed 用 onToolResult 的真实 id；
+ * - item/started.itemId = 真实 tool_use id（活动流 B2 itemId 同源修复——旧合成 id 与 completed 不同源曾致 web 回填恒失败）；
  * - 带图插话 mid-turn 不注入正文（pollUserInput 只回文本），持有到轮末兜底以 blocks 起轮——
  *   与 M11「标签随文本注入、图在续投时组装」语义等价但时点后移；
  * - argv 经宿主后新增 Stop hook 分发（原 runOnce 不发）——与 TUI 语义对齐，行为增强非回归。
@@ -1459,6 +1459,10 @@ export class HostSession {
   }
 
   private finishTurn(turnId: string): void {
+    // 活动流审阅 R1/P1-1：思考块计时/累积的轮边界清理——中断轮（abort/断流）thinking_end
+    // 不触发，残留会把上一轮半截思考拼进下一轮且 durMs 虚高（blockIndex 复用从 0 起）
+    this.thinkingStarts.clear()
+    this.thinkingBufs.clear()
     this.deps.logger.debug('system', 'interrupt_latency_probe', { stage: 'turn_finished' }) // 诊断插桩
     if (!this.turnHadTools) this.loopGuardTextTurn() // M13-B2：纯文本轮复读（onWarn 通道）
     this.publish('turn/completed', { turnId })

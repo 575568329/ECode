@@ -171,6 +171,48 @@ describe('B8.2 多项目 serve（G2 验收）', () => {
     }
   })
 
+  it('2026-09-02 归档人专属：/cmd 拒收 session/archive（403 HUMAN_ONLY_COMMAND）；/api/archive 人专属端点可归档', async () => {
+    // 准备一个有历史文件的冷项目（listMetas 读它）
+    const dirE = mkdtempSync(join(tmpdir(), 'ecode-projE-'))
+    const sid = `2026-09-02Tha-${Date.now()}`
+    const sessionsDir = join(tmpdir(), `ecode-sess-ha-${Date.now()}`)
+    const { mkdirSync: mk1, writeFileSync: wf1 } = await import('node:fs')
+    mk1(sessionsDir, { recursive: true })
+    wf1(join(sessionsDir, `${sid}.jsonl`), JSON.stringify({ meta: true, sessionId: sid, createdAt: new Date().toISOString(), model: 'm', cwd: dirE.split(String.fromCharCode(92)).join('/'), firstUser: 'hi' }) + '\n', 'utf8')
+    const srvE = await serveMulti(
+      { registry: new ProjectRegistry(mk), defaultCwd: dirA },
+      { sessionsDir, extraCredentials: [{ secret: deviceToken, class: 'device' }] },
+    )
+    const bE = `http://127.0.0.1:${srvE.port}`
+    const aE = { authorization: `Bearer ${srvE.token}` }
+    try {
+      // ① /cmd 协议面拒收（primary 也不行——归档不属协议命令）
+      const viaCmd = await (await fetch(`${bE}/api/p/${enc(dirE)}/cmd`, { method: 'POST', headers: aE, body: JSON.stringify({ op: { op: 'session/archive', sessionId: sid, archived: true } }) })).json()
+      expect(viaCmd).toMatchObject({ ok: false })
+      if (!viaCmd.ok) expect(viaCmd.code).toBe('HUMAN_ONLY_COMMAND')
+      // device 凭据同拒（403 语义）
+      const viaCmdDev = await (await fetch(`${bE}/api/p/${enc(dirE)}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${deviceToken}` }, body: JSON.stringify({ op: { op: 'session/archive', sessionId: sid, archived: true } }) })).json()
+      expect(viaCmdDev).toMatchObject({ ok: false })
+      // ② 人专属端点归档生效（冷项目直落 sidecar）
+      const arc = await (await fetch(`${bE}/api/archive`, { method: 'POST', headers: aE, body: JSON.stringify({ project: dirE.split(String.fromCharCode(92)).join('/'), sessionId: sid, archived: true }) })).json()
+      expect(arc).toMatchObject({ ok: true })
+      const meta = JSON.parse(wf1.length >= 0 ? (await import('node:fs')).readFileSync(join(sessionsDir, `${sid}.meta.json`), 'utf8') : '{}') as { archived?: boolean }
+      expect(meta.archived).toBe(true)
+      // ③ session/list 默认不显示归档；includeArchived 拉到
+      const coldList = await (await fetch(`${bE}/api/p/${enc(dirE)}/cmd`, { method: 'POST', headers: aE, body: JSON.stringify({ op: { op: 'session/list', includeArchived: true } }) })).json()
+      expect((coldList.value as Array<{ sessionId: string; archived?: boolean }>).find((m) => m.sessionId === sid)?.archived).toBe(true)
+      // ④ 恢复（人专属端点 archived:false）
+      const unarc = await (await fetch(`${bE}/api/archive`, { method: 'POST', headers: aE, body: JSON.stringify({ project: dirE.split(String.fromCharCode(92)).join('/'), sessionId: sid, archived: false }) })).json()
+      expect(unarc).toMatchObject({ ok: true })
+      const meta2 = JSON.parse((await import('node:fs')).readFileSync(join(sessionsDir, `${sid}.meta.json`), 'utf8')) as { archived?: boolean }
+      expect(meta2.archived).toBe(false)
+    } finally {
+      await srvE.close()
+      rmSync(dirE, { recursive: true, force: true })
+      rmSync(sessionsDir, { recursive: true, force: true })
+    }
+  })
+
   it('M14-C2① device 凭据不可注册项目（一等凭据动作）；M14-C2④ health 回显实例 id', async () => {
     const dirD = mkdtempSync(join(tmpdir(), 'ecode-projD-'))
     const r1 = await (

@@ -61,7 +61,7 @@ export type ProtocolEvent =
   | { type: 'item/executing'; seq: number; turnId: string; itemId: string; digest: string }
   | { type: 'item/completed'; seq: number; itemId: string; name: string; isError: boolean; summary: string; content: string; truncated?: boolean; use?: unknown }
   | { type: 'usage'; seq: number; input: number; output: number; cacheRead?: number; cacheCreation?: number; costCny?: number; /** F-44：当前上下文占用（input+cacheRead，API 真值）与模型窗口（resolveContextWindow）——StatusBar ctx 段 */ contextUsed?: number; contextWindow?: number }
-  | { type: 'turn/started'; seq: number; turnId: string }
+  | { type: 'turn/started'; seq: number; turnId: string; userInput?: string; userInputMeta?: PromptMeta }
   | { type: 'turn/completed'; seq: number; turnId: string }
   | { type: 'thread/status'; seq: number; busy: boolean; waitingOn: 'approval' | 'userInput' | null; iter: number; maxIter?: number }
   /** 批 2（2026-08-30）：会话元数据更新广播（归档/恢复/重命名）——多端列表同步 */
@@ -107,6 +107,10 @@ type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K>
 
 /** 插话/排队三态（codex TurnInputMode；M11 双时点插话的协议化） */
 export type PromptMode = 'StartOrSteer' | 'StartIfIdle' | { Steer: { expectedTurnId: string } }
+
+/** prompt 命令的机器消息标记（2026-09-03 归属根治 P2-1/P2-3；叶子模块视图形态——
+ *  收紧点：core/types MessageMeta 迁入协议时合并同构）。宿主侧收窄为 MessageMeta。 */
+export type PromptMeta = { kind: 'task-notify' | 'loop-guard' | 'quality' | 'continue' | 'review-card' | 'interject' | 'system-notice' }
 
 export type PromptRouted = 'Started' | 'Steered' | 'Queued' | 'Rejected' | 'Command'
 
@@ -158,7 +162,7 @@ export interface McpPanelView {
 }
 
 export type ProtocolCommand =
-  | { op: 'prompt'; text: string; mode: PromptMode; images?: ImagePayload[] }
+  | { op: 'prompt'; text: string; mode: PromptMode; images?: ImagePayload[]; meta?: PromptMeta }
   | { op: 'approval/respond'; requestId: string; decision: ApprovalDecision; message?: string }
   | { op: 'approval/claim'; requestId: string; claimant?: string }
   | { op: 'askUser/respond'; requestId: string; answers: unknown }

@@ -166,14 +166,19 @@ describe('任务纠偏审查：HostSession 接线（含审阅修复批）', () =
     const seen = JSON.stringify(p.reviewMessages[0])
     expect(seen).toContain('第5轮')
     expect(seen).not.toContain('第6轮')
-    // 卡去向单消息双锚（测试席 P1）：最后一条 user 消息内同时含第 6 轮文本与中性审查前缀
-    const lastUser = [...hostMessages(host)].reverse().find((m) => m.role === 'user')
-    const lastUserText = JSON.stringify(lastUser)
+    // 卡去向（2026-09-03 归属根治）：卡为独立 user 消息带 meta:review-card（不再拼进用户消息）——
+    // 最后一条 user 是用户输入「第6轮」，倒数第二条是审查卡
+    const userMsgs = [...hostMessages(host)].reverse().filter((m) => m.role === 'user')
+    const lastUserText = JSON.stringify(userMsgs[0])
     expect(lastUserText).toContain('第6轮')
-    expect(lastUserText).toContain('审查器附注')
-    expect(lastUserText).toContain('- 方向：正确')
+    expect(lastUserText).not.toContain('审查器附注') // 用户消息不再携带卡文本
+    const cardMsg = userMsgs.find((m) => (m as { meta?: { kind?: string } }).meta?.kind === 'review-card')
+    expect(cardMsg).toBeDefined()
+    const cardText = JSON.stringify(cardMsg)
+    expect(cardText).toContain('审查器附注')
+    expect(cardText).toContain('- 方向：正确')
     // 内层 [纠偏审查] 标头已剥（防双层）
-    expect(lastUserText).not.toContain('[纠偏审查]\\n- 方向')
+    expect(cardText).not.toContain('[纠偏审查]\\n- 方向')
     host.dispose()
   }, 15_000)
 
@@ -193,10 +198,13 @@ describe('任务纠偏审查：HostSession 接线（含审阅修复批）', () =
     expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('异常信号'))).toBe(true)
     await host.send({ op: 'prompt', text: '继续', mode: 'StartOrSteer' })
     await host.whenIdle()
-    const lastUser = [...hostMessages(host)].reverse().find((m) => m.role === 'user')
-    const t = JSON.stringify(lastUser)
-    expect(t).toContain('继续')
-    expect(t).toContain('审查器附注')
+    // 归属根治：卡独立消息带 meta（不再拼进用户消息）
+    const userMsgs = [...hostMessages(host)].reverse().filter((m) => m.role === 'user')
+    expect(JSON.stringify(userMsgs[0])).toContain('继续')
+    expect(userMsgs[0]).not.toHaveProperty('meta')
+    const cardMsg = userMsgs.find((m) => (m as { meta?: { kind?: string } }).meta?.kind === 'review-card')
+    expect(cardMsg).toBeDefined()
+    expect(JSON.stringify(cardMsg)).toContain('审查器附注')
     host.dispose()
   }, 15_000)
 
@@ -376,6 +384,37 @@ describe('任务纠偏审查：HostSession 接线（含审阅修复批）', () =
     await host.send({ op: 'prompt', text: '又被拦', mode: 'StartOrSteer' })
     await flush()
     expect(p.reviewCalls).toBe(1)
+    host.dispose()
+  }, 15_000)
+})
+
+// 2026-09-03 归属根治 P2-2（方案 §9 拍板项①）：hook additionalContext 不再拼进用户输入——
+// 独立 user 消息带 meta:system-notice（[hook context] 前缀保留，模型侧来源标注不变）。
+describe('机器消息归属 P2-2：hook context meta 化', () => {
+  it('UserPromptSubmit additionalContext → 独立消息带 meta:{kind:system-notice}，用户消息纯净', async () => {
+    const p = new ModelRoutingProvider([[doneDelta]], [])
+    const hookRunner = {
+      hasHandlers: () => true,
+      dispatch: async (_ev: string, _payload: unknown) => ({
+        block: false,
+        additionalContext: ['项目使用 pnpm，不要用 npm'],
+        systemMessages: [],
+      }),
+    } as unknown as NonNullable<HostDeps['hookRunner']>
+    const { deps } = makeDeps(p, undefined, hookRunner)
+    const host = new HostSession(deps)
+    await host.send({ op: 'prompt', text: '帮我装依赖', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    const userMsgs = [...hostMessages(host)].reverse().filter((m) => m.role === 'user')
+    // 最后一条 user = 用户输入（无 meta、不含 hook 文本）
+    expect(JSON.stringify(userMsgs[0])).toContain('帮我装依赖')
+    expect(JSON.stringify(userMsgs[0])).not.toContain('pnpm')
+    expect(userMsgs[0]).not.toHaveProperty('meta')
+    // hook context 独立消息（带 meta，[hook context] 前缀保留）
+    const ctxMsg = userMsgs.find((m) => (m as { meta?: { kind?: string } }).meta?.kind === 'system-notice')
+    expect(ctxMsg).toBeDefined()
+    expect(JSON.stringify(ctxMsg)).toContain('[hook context]')
+    expect(JSON.stringify(ctxMsg)).toContain('pnpm')
     host.dispose()
   }, 15_000)
 })

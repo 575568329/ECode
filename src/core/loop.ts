@@ -12,7 +12,7 @@
  * 心脏永不出现 `if provider === 'xxx'`（铁律）—— 只通过 opts.provider.run 调用。
  */
 
-import { isMessageLine, APPROVAL_TIMEOUT_FEEDBACK } from './types.js'
+import { isMessageLine, APPROVAL_TIMEOUT_FEEDBACK, type MessageMeta } from './types.js'
 import type {
   AppError,
   ContentBlock,
@@ -120,6 +120,9 @@ export interface LoopRunOptions {
   toolCtx: ToolContext
   /** M10-P2b：首条 user 消息的附着块（图片粘贴 ImageBlock；显示层占位符与内容分离） */
   userBlocks?: ContentBlock[]
+  /** 机器消息标记（2026-09-03 归属根治 P2-1）：起轮输入的 meta（queue 机器条目透传）——
+   *  缺省 undefined=用户消息。宿主经 userMeta 透传，loop 纯数据转发 */
+  userMeta?: MessageMeta
   confirm?: (use: ToolUseBlock) => Promise<boolean | string>
   signal?: AbortSignal
   /** M5：每轮 provider.run 前的压缩 hook（投影+压缩+返回子集喂 LLM）。不配则 messages 直接喂。 */
@@ -134,7 +137,7 @@ export interface LoopRunOptions {
    */
   afterTools?: (
     round: { tools: Array<{ name: string; isError: boolean }> },
-  ) => Promise<{ feedback?: string; meta?: import('./types.js').MessageMeta } | void>
+  ) => Promise<{ feedback?: string; meta?: MessageMeta } | void>
   /**
    * M11-P7：主循环插话——迭代顶部拉取（iter≥2：首轮输入即 userInput，避免连续双 user）。
    * 返回非空则追加为普通 user Message（落盘/恢复/rewind 零特殊处理）；多条由宿主合并。
@@ -185,6 +188,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
     const userMsg: Message = {
       role: 'user',
       content: [{ type: 'text', text: userInput }, ...(opts.userBlocks ?? [])],
+      ...(opts.userMeta !== undefined ? { meta: opts.userMeta } : {}),
     }
     messages.push(userMsg)
     opts.history.append(userMsg) // P0-3：初始 user 也要落盘（restore 才完整）

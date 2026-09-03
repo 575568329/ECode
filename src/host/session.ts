@@ -144,6 +144,10 @@ interface QueueEntry {
   /** 中断后到达的输入（审阅修复）：中断广播使 running 仍 true 期间用户的新输入会被当
    *  插话入队——轮末中断分支对本标条目豁免（照常续投=新任务意图，旧插话仍保留不弃） */
   afterAbort?: boolean
+  /** 机器消息标记（2026-09-03 归属根治 P2-1）：queue 条目起轮时透传为起轮消息 meta——
+   *  当前全部条目是用户操作产物（缺省 undefined=用户消息）；为未来机器条目预留透传通道，
+   *  防轮末兜底/排队路径重新引入冒充 */
+  meta?: MessageMeta
 }
 
 export class HostSession {
@@ -873,7 +877,7 @@ export class HostSession {
           // 复查：await 窗口内轮可能已结束（入口判定过时）——此刻已空闲则直接开轮，
           // 防插话入队后滞留无人 drain（whenIdle 死等；原被双开轮 bug 遮蔽的伴生竞态）
           if (!this.running && !this.starting) {
-            void this.startTurn(cmd.text, blocks).catch((e: unknown) => {
+            void this.startTurn(cmd.text, blocks, cmd.meta).catch((e: unknown) => {
               this.publish('error', { message: e instanceof Error ? e.message : String(e) })
               this.deps.logger.error('system', 'start_turn_failed', { message: e instanceof Error ? e.message : String(e) })
             })
@@ -913,7 +917,7 @@ export class HostSession {
           this.publish('queue/snapshot', { items: this.queue.map((q) => (q.kind === 'review' ? '[纠偏审查卡·待注入]' : q.text)) })
           return { ok: true, routed: 'Steered' }
         }
-        void this.startTurn(cmd.text, blocks).catch((e: unknown) => {
+        void this.startTurn(cmd.text, blocks, cmd.meta).catch((e: unknown) => {
           // 不静默吞（本轮实测：fake deps 缺方法时 TypeError 被吞成无响应）
           this.publish('error', { message: e instanceof Error ? e.message : String(e) })
           this.deps.logger.error('system', 'start_turn_failed', { message: e instanceof Error ? e.message : String(e) })
@@ -1230,7 +1234,7 @@ export class HostSession {
     return blocks.length > 0 ? blocks : undefined
   }
 
-  private async startTurn(input: string, blocks?: ImageBlock[]): Promise<void> {
+  private async startTurn(input: string, blocks?: ImageBlock[], entryMeta?: MessageMeta): Promise<void> {
     this.starting = false // M14-C3③：dispatch 已同步置位；startTurn 到首个 await 前同步清（配置不完整早退也不泄漏占位）
     this.cancelIdleNotification() // 批2d：用户开新轮=不再空闲，idle 通知表作废
     const deps = this.deps
@@ -1250,6 +1254,9 @@ export class HostSession {
     // interrupt 全集 abort 兜底双轮并行残留（真机日志：iter 交错=旧轮 controller 被替换后
     // interrupt 打不到它；集合化保证一次 Ctrl+C 停掉本会话所有在跑的轮）
     this.activeAbortControllers.set(turnId, this.abort)
+    // 2026-09-03 归属根治 P2-2：hook additionalContext 收集器（UserPromptSubmit 即时 + SessionStart
+    // 暂存两源合并）——不再拼进 input，统一走 preInjected（meta:system-notice 独立系统行）
+    const hookCtxFromPrompt: string[] = []
     // UserPromptSubmit hook（session_id 用真实会话 id——顺手修 TuiApp 侧硬编码 '' 的同源问题）
     if (deps.hookRunner != null && deps.hookRunner.hasHandlers('UserPromptSubmit')) {
       this.deps.logger.info('hooks', 'dispatch', { event: 'UserPromptSubmit' })
@@ -1263,15 +1270,16 @@ export class HostSession {
         this.finishTurn(turnId)
         return
       }
-      if (verdict.additionalContext.length > 0) input = `${input}\n\n[hook context]\n${verdict.additionalContext.join('\n')}`
+      if (verdict.additionalContext.length > 0) hookCtxFromPrompt.push(...verdict.additionalContext)
     }
     // T 线⑥：SessionStart 产出的 additionalContext 宿主暂存，拼进恢复/新建后首轮输入
     // （原 TUI pendingSessionCtxRef 客户端机制的宿主等价物——附着态 web/TUI 同样生效；
     // 前缀与 UserPromptSubmit 同款 [hook context]——同源 hook 产物，模型视角一致）
-    if (this.pendingSessionContext.length > 0) {
-      input = `${input}\n\n[hook context]\n${this.pendingSessionContext.join('\n')}`
-      this.pendingSessionContext = []
-    }
+    // 2026-09-03 归属根治 P2-2：hook context 不再拼进 input——收集进 preInjected（meta:system-notice，
+    // 独立系统行呈现，不冒充用户气泡；[hook context] 前缀保留——模型侧来源标注不变）
+    const hookCtxFromSession = this.pendingSessionContext
+    this.pendingSessionContext = []
+    for (const c of hookCtxFromSession) hookCtxFromPrompt.push(`[hook context]\n${c}`)
     // 纠偏审查（2026-09-02）：空闲期完成的审查卡随本轮注入（同 additionalContext 模式——
     // 不自动起轮烧 token，用户下一条消息自然携带）。卡文本自带中性前缀（审阅/安全席修复：
     // 去「请按建议校正」服从指令——采纳建议仍须过既有确认与安全栅栏）
@@ -1281,6 +1289,9 @@ export class HostSession {
     const preInjected: Message[] = []
     for (const n of this.tasks.collectNotifications()) {
       preInjected.push({ role: 'user', content: [{ type: 'text', text: n.text }], meta: n.meta })
+    }
+    for (const c of hookCtxFromPrompt) {
+      preInjected.push({ role: 'user', content: [{ type: 'text', text: `[hook context]\n${c}` }], meta: { kind: 'system-notice' } })
     }
     if (this.pendingReviewCard !== null) {
       preInjected.push({ role: 'user', content: [{ type: 'text', text: this.pendingReviewCard }], meta: { kind: 'review-card' } })
@@ -1296,7 +1307,12 @@ export class HostSession {
     this.reviewTurnIterations = 0
     this.reviewSignalFiredThisTurn = false
 
-    this.publish('turn/started', { turnId })
+    // 2026-09-03 归属根治 P2-3：预注入机器消息发 systemMsg 帧（web 实时流可见——消除「TUI 看得到
+    // 通知而 web 看不到」的信息不对称）；turn/started 带 userInput+meta 供 web 分流用户气泡/系统行
+    for (const pre of preInjected) {
+      this.publish('systemMsg', { text: (pre.meta?.kind === 'review-card' ? '◎ ' : '') + (pre.content[0] as { text: string }).text })
+    }
+    this.publish('turn/started', { turnId, userInput: input, ...(entryMeta !== undefined ? { userInputMeta: entryMeta } : {}) })
     this.publish('thread/status', { busy: true, waitingOn: null, iter: 0 })
     try {
       const provider = deps.providerRegistry.getByType(this.cfg().providers[this.cfg().current.name].type)
@@ -1464,6 +1480,8 @@ export class HostSession {
         confirm: (use) => this.hostConfirm(use, this.abort.signal),
         onSensitiveAccess: (description: string) => this.enqueueConfirm(() => this.broker.sensitive('read_file', description, this.abort.signal)),
         ...(blocks !== undefined ? { userBlocks: blocks } : {}),
+        // 2026-09-03 归属根治 P2-1：queue 条目 meta 透传（机器条目起轮时消息带标记；缺省 undefined=用户消息）
+        ...(entryMeta !== undefined ? { userMeta: entryMeta } : {}),
         afterTools: this.makeAfterTools(),
         signal: this.abort.signal,
         pollUserInput: () => {
@@ -1608,7 +1626,7 @@ export class HostSession {
     }
     if (next !== undefined) {
       this.publish('queue/snapshot', { items: this.queue.map((q) => (q.kind === 'review' ? '[纠偏审查卡·待注入]' : q.text)) })
-      void this.startTurn(next.text, next.blocks).catch((e: unknown) => {
+      void this.startTurn(next.text, next.blocks, next.meta).catch((e: unknown) => {
         // 兜底续投失败不留哑轮（与首轮同款：发 error 事件 + 记日志）
         this.publish('error', { message: e instanceof Error ? e.message : String(e) })
         this.deps.logger.error('system', 'turn_failed', { message: e instanceof Error ? e.message : String(e) })

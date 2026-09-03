@@ -18,7 +18,7 @@ interface StatusBarProps {
   mcp?: string
   /** M9-P4：沙箱模式段（default 不显示；档位箭头+短词即语义，不再重复 mode 全名） */
   sandbox?: string
-  /** full-access 危险色（M9-D12） */
+  /** full-access 危险色（M9-D12）；批3（P1-B/B1）：danger 态 sandbox 段恒留（pinnedKeys） */
   sandboxDanger?: boolean
   /** T5：daemon 运行段（'后台运行'/'后台连接中'/'后台重连中'——2026-09-02 精简批回调：D✓ 看不懂；undefined 不显示） */
   daemon?: string
@@ -75,7 +75,11 @@ export function sandboxArrows(mode: string): string {
 
 /** 宽度守卫的丢弃顺序（先丢 → 后丢；model 不在列 = 恒留，超长走 clipWidth 截断）。
  *  原则：观测类（daemon/mcp/mem/cost）先于计量类（tokens/sandbox/iter），ctx 最后丢
- *  （压缩临近警告 ≥90% warn 色，是唯一带行动指引的段）。 */
+ *  （压缩临近警告 ≥90% warn 色，是唯一带行动指引的段）。
+ *  P1-B（批3，2026-09-03）：fitSegments 增 pinnedKeys 参数——危险态（sandboxDanger）把
+ *  sandbox 段提为与 model 同级恒留（安全提示要确定性而非概率性保留——走完牺牲序后无
+ *  非 model 段兜底截断，"挪到最后丢"在极窄下仍会被丢，full-access 不知情放行副作用工具
+ *  的代价 >> 截短 model 名）。正常档维持现序。 */
 const SEG_SACRIFICE_ORDER = ['daemon', 'mcp', 'mem', 'cost', 'sandbox', 'tokens', 'iter', 'ctx'] as const
 
 /** 段分隔符——导出单源（审阅 P2-2：App 层 busy 提示分隔符与守卫宽度计算共用，防两处漂移） */
@@ -89,13 +93,16 @@ interface Seg {
 }
 
 /** 宽度守卫：显示宽超 columns 时按可牺牲度丢段（2026-09-02 用户点名「避免状态太多放不下」——
- *  状态行 wrap 成两行会破坏 allocateDynamic 的帧账（StatusBar 恒 1 行），触发 win32 全清） */
-export function fitSegments<T extends { key: string; text: string }>(segments: T[], columns: number): T[] {
+ *  状态行 wrap 成两行会破坏 allocateDynamic 的帧账（StatusBar 恒 1 行），触发 win32 全清）。
+ *  pinnedKeys：恒留段（不走牺牲序）——model 恒在列（历史同构）；批3 起 sandboxDanger 时
+ *  追加 'sandbox'（P1-B/B1，见 SEG_SACRIFICE_ORDER 头注释）。 */
+export function fitSegments<T extends { key: string; text: string }>(segments: T[], columns: number, pinnedKeys: readonly string[] = []): T[] {
   const totalWidth = (segs: T[]): number =>
     segs.reduce((acc, s, i) => acc + stringWidth(s.text) + (i > 0 ? stringWidth(SEG_SEPARATOR) : 0), 0)
   let kept = segments
   for (const key of SEG_SACRIFICE_ORDER) {
     if (totalWidth(kept) <= columns) break
+    if (pinnedKeys.includes(key)) continue // 恒留段不参与牺牲
     const next = kept.filter((s) => s.key !== key)
     if (next.length === kept.length) continue // 该段不在场（可选段缺省）
     kept = next
@@ -190,10 +197,18 @@ export function StatusBar({
   }
 
   // model 段恒留：超长截断无条件做（审阅 P1：旧实现只在"全段保住"分支截断——丢过段后
-  // 只剩超长 model 时不截 → wrap 破「StatusBar 恒 1 行」帧账触发 win32 全清）
+  // 只剩超长 model 时不截 → wrap 破「StatusBar 恒 1 行」帧账触发 win32 全清）。
+  // 批3（P1-B 宽度账）：danger 态 sandbox 恒留后，model 截断预算改为 **avail 减去其余保留
+  // 段与分隔符的实占**——否则 clip 到全 avail 会叠加恒留段（⚠ full-access 13+分隔符 3=16）
+  // 破行。账恒成立：avail 有 Math.max(20,·) 保底 ≥ 16+4（model 恒得 ≥4 字符）；保命下限 2。
   const avail = Math.max(20, columns - reserveWidth)
-  const kept = fitSegments(segments, avail)
-  const modelShown = clipWidth(model, avail)
+  const pinned = sandboxDanger && arrows !== '' ? (['model', 'sandbox'] as const) : ['model'] as const
+  const kept = fitSegments(segments, avail, pinned)
+  const nonModelW = kept.reduce(
+    (acc, s) => acc + (s.key === 'model' ? 0 : stringWidth(s.text) + stringWidth(SEG_SEPARATOR)),
+    0,
+  )
+  const modelShown = clipWidth(model, Math.max(2, avail - nonModelW))
   if (modelShown !== model) {
     const idx = kept.findIndex((s) => s.key === 'model')
     if (idx >= 0) kept[idx] = { ...kept[idx], text: modelShown, node: <Text bold>{modelShown}</Text> }

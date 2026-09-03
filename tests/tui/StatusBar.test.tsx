@@ -120,6 +120,21 @@ describe('StatusBar', () => {
       ]
       expect(fitSegments(partial, 20)).toEqual([{ key: 'model', text: 'glm-5.3-flash' }])
     })
+    it('批3 P1-B/B1：pinnedKeys 恒留段不走牺牲序（danger sandbox 熬死 tokens/iter/ctx）', () => {
+      // 预算核算：model 13 + sandbox 13 + 分隔符 3 = 29 > 24（20 列下非恒留形态全丢光）
+      const kept = fitSegments(allSegs, 24, ['model', 'sandbox'])
+      const keys = kept.map((s) => s.key)
+      expect(keys).toContain('sandbox') // 恒留：正常序里它排 tokens 前（第 5 个牺牲），这里活到最后
+      expect(keys).not.toContain('ctx')
+      expect(keys).not.toContain('tokens')
+    })
+    it('恒留段无视预算恒活（宽度总账归渲染层收）', () => {
+      // allSegs 含 sandbox：pinned 下它无视 20 列预算活到最后（渲染层把 model 截到剩余宽收总账）
+      expect(fitSegments(allSegs, 20, ['model', 'sandbox'])).toEqual([
+        { key: 'model', text: 'glm-5.3-flash' },
+        { key: 'sandbox', text: allSegs.find((s) => s.key === 'sandbox')?.text ?? '' },
+      ])
+    })
   })
 
   describe('F-44 ctx 段（上下文占用/余量）', () => {
@@ -173,5 +188,31 @@ describe('StatusBar', () => {
     expect(f).toContain('…')
     expect(longest).toBeLessThanOrEqual(99)
     expect((f.split('\n')).length).toBe(1)
+  })
+})
+
+describe('批3 P1-B/B1：sandboxDanger 恒留 + model 剩余宽截断（宽度账）', () => {
+  it('超长 model + danger：⚠ full-access 恒留不丢、model 让宽、单行不 wrap', () => {
+    // ink-testing mock stdout 恒 100 列：model 100 宽 + sandbox 13 + 分隔符 3 = 116 > 100
+    const { lastFrame } = render(
+      React.createElement(StatusBar, { model: 'y'.repeat(100), sandbox: 'full-access', sandboxDanger: true, tokens: 500, iter: 2 }),
+    )
+    const f = lastFrame() ?? ''
+    expect(f).toContain('⚠ full-access') // 恒留：不再先于 tokens 被丢
+    expect(f.split('\n')).toHaveLength(1) // 宽度账成立：model 截到剩余宽（100-16），总宽 ≤100 不破「恒 1 行」
+    const run = f.match(/y+/g)
+    expect(run).not.toBeNull()
+    expect(Math.max(...(run ?? []).map((s) => s.length))).toBeLessThanOrEqual(83) // 100 − 13(sandbox) − 3(分隔符) − 1(…)
+    expect(f).toContain('…')
+  })
+
+  it('正常档（非 danger）sandbox 仍按牺牲序丢——恒留只作用于危险态', () => {
+    // 85 宽 model 逼出丢段：总宽 105>100 → 正常序丢 sandbox（收到 91）而 tokens 存活
+    const { lastFrame } = render(
+      React.createElement(StatusBar, { model: 'm'.repeat(85), sandbox: 'full-access', tokens: 500, iter: 2 }),
+    )
+    const f = lastFrame() ?? ''
+    expect(f).not.toContain('full-access') // 无 danger 标记：sandbox 照旧先于 tokens 牺牲
+    expect(f).toContain('T500') // 计量类活到最后
   })
 })

@@ -26,6 +26,10 @@ interface ActivityBarProps {
   detail?: string
   /** 轮开始时间戳（轮内耗时递增显示——ZCode「工作中 2 分 31 秒」同款强动态信号，审阅产品 P2-1） */
   turnStartedAt?: number
+  /** 持续过程阶段（2026-09-03 拍板：持续性执行的内容不弹 5s 提示，放进 loading 行让用户
+   *  知道 ecode 在工作）——busy 态替换主文案（压缩/重连期间 thinking tail 停滞，显示阶段
+   *  名更准确）；idle 态把空行升级为 spinner+文案+计时（原 compactingSince 的泛化）。 */
+  phase?: { text: string; since: number }
 }
 
 /**
@@ -36,9 +40,17 @@ interface ActivityBarProps {
  * chrome 预算按 1 行记账，40 个 CJK 字 tail 在 80 列必折 2 行直通 3J。
  * 净化（管线审阅 P0-3）：detail 渲染口过无状态 strip（thinking 尾部/命令摘要均不可信面）。
  */
-export function ActivityBar({ state, text, detail, turnStartedAt }: ActivityBarProps): ReactElement {
+export function ActivityBar({ state, text, detail, turnStartedAt, phase }: ActivityBarProps): ReactElement {
   // F-38：marginTop 级联补位；aborted 提示收敛到底部告警行（TuiApp activity case），此处空行占位
   if (state === 'idle' || state === 'aborted') {
+    // 持续过程 loading：空闲无轮但阶段进行中——空行升级为 spinner+文案+计时（黑箱修复）
+    if (phase !== undefined) {
+      return (
+        <Box marginTop={GAP.block}>
+          <ActiveSpinner state="compacting" text={phase.text} turnStartedAt={phase.since} />
+        </Box>
+      )
+    }
     return (
       <Box marginTop={GAP.block}>
         <Text>{' '}</Text>
@@ -47,7 +59,10 @@ export function ActivityBar({ state, text, detail, turnStartedAt }: ActivityBarP
   }
   return (
     <Box marginTop={GAP.block}>
-      <ActiveSpinner state={state} text={text} detail={detail} turnStartedAt={turnStartedAt} />
+      {/* 计时锚随文案走（审阅 P1）：phase 接管主文案时计时同步切到 phase.since——否则轮中自动
+          压缩显示「正在压缩对话 · 12m30s」（轮总耗时冒充压缩耗时，违背「压缩消耗多少时间」
+          点名诉求）；phase 清除后计时跳回轮起点（压缩几十秒内短暂跳变，可接受） */}
+      <ActiveSpinner state={state} text={text} detail={detail} turnStartedAt={phase?.since ?? turnStartedAt} phaseText={phase?.text} />
     </Box>
   )
 }
@@ -66,19 +81,28 @@ function tailLine(text: string, maxColumns: number): string {
   return `…${out}`
 }
 
-function ActiveSpinner({ state, text, detail, turnStartedAt }: { state: ActivityState; text?: string; detail?: string; turnStartedAt?: number }): ReactElement {
+/** 显示态：core ActivityState + TUI 本地压缩态（不进 core 枚举——压缩是旁路操作非轮活动）。 */
+type SpinnerState = ActivityState | 'compacting'
+
+function ActiveSpinner({ state, text, detail, turnStartedAt, phaseText }: { state: SpinnerState; text?: string; detail?: string; turnStartedAt?: number; phaseText?: string }): ReactElement {
   const frame = useClock()
   const spinner = spinnerChar(frame)
+  // phaseText（持续过程——压缩/重连/起草等）优先于状态文案：busy 态显示阶段名比冻结的
+  //「思考中」准确；compacting 态 text 即阶段文案（缺省回退压缩）
   const base =
-    state === 'thinking'
-      ? '思考中'
-      : state === 'retry'
-        ? '重试中'
-        : text ?? '执行中'
+    phaseText ??
+    (state === 'compacting'
+      ? text ?? '正在压缩对话...'
+      : state === 'thinking'
+        ? '思考中'
+        : state === 'retry'
+          ? '重试中'
+          : text ?? '执行中')
   const color = state === 'retry' ? theme.warn : theme.activity
-  // 轮内耗时（每秒 +1——长工具期间 digest 不变但计时在走，用户知道程序还在走）
+  // 轮内耗时（每秒 +1——长工具期间 digest 不变但计时在走，用户知道程序还在走）；
+  // compacting 同款计时（压缩消耗多少时间是用户点名要看的信息）
   const elapsed =
-    turnStartedAt !== undefined && (state === 'thinking' || state === 'tool' || state === 'retry')
+    turnStartedAt !== undefined && (state === 'thinking' || state === 'tool' || state === 'retry' || state === 'compacting')
       ? ` · ${formatElapsed(Date.now() - turnStartedAt)}`
       : ''
   // 用户拍板（2026-09-02 真机）：摘要放行末且灰色——主文案+计时完整优先，剩余宽度给摘要

@@ -26,6 +26,9 @@ export interface NoticeItem {
   text: string
   /** 入队时刻（F-38 TTL 判定基准；测试可注入固定时钟） */
   at: number
+  /** 2026-09-03 拍板（中断提示常驻「直到问题解决」）：sticky=true 的 error 不随轮成功
+   *  自动清（如本地降级警示——续聊期间约束必须持续可见，仅用户 /warnings 清空） */
+  sticky?: boolean
 }
 
 export const NOTICE_LIMIT = 50
@@ -33,14 +36,14 @@ export const NOTICE_LIMIT = 50
 const LEVEL_WEIGHT: Record<NoticeLevel, number> = { error: 3, warn: 2, info: 1 }
 
 /** 追加一条（同 level+text 去重；封顶淘汰：优先丢 info，同级丢最旧）。 */
-export function pushNotice(list: NoticeItem[], id: number, level: NoticeLevel, text: string, at = Date.now()): NoticeItem[] {
+export function pushNotice(list: NoticeItem[], id: number, level: NoticeLevel, text: string, at = Date.now(), sticky = false): NoticeItem[] {
   if (list.some((n) => n.level === level && n.text === text)) return list
-  const next = [...list, { id, level, text, at }]
+  const next = [...list, { id, level, text, at, ...(sticky ? { sticky: true } : {}) }]
   if (next.length <= NOTICE_LIMIT) return next
-  // 淘汰优先级：info 最先，同级最旧
-  const dropIdx = next.findIndex((n) => n.level === 'info')
-  const idx = dropIdx >= 0 ? dropIdx : next.findIndex((n) => n.level === 'warn')
-  if (idx >= 0) return next.filter((_, i) => i !== idx)
+  // 淘汰优先级：info 最先，同级最旧（sticky error 不参与淘汰——先剔出淘汰序列）
+  const pool = next.map((n, i) => ({ n, i })).filter((e) => e.n.sticky !== true)
+  const dropIdx = pool.find((e) => e.n.level === 'info')?.i ?? pool.find((e) => e.n.level === 'warn')?.i ?? pool[0]?.i
+  if (dropIdx !== undefined) return next.filter((_, i) => i !== dropIdx)
   return next.slice(1)
 }
 

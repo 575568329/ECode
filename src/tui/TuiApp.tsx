@@ -223,7 +223,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     // T 线⑥（D-T5a）：插话 hook 宿主化——busy 输入经 prompt(StartOrSteer) 入队时宿主 dispatch
     // UserPromptSubmit（block 拒绝入队/context 注入），客户端不再二次 dispatch（原同进程捷径退役）
     const r = await host.send({ op: 'prompt', text, mode: 'StartOrSteer', ...(images !== undefined && images.length > 0 ? { images } : {}) })
-    if (!r.ok) setSystemMsgs([`插话失败：${r.error}`], 'warn')
+    // 2026-09-03 拍板：插话失败=中断类——error 常驻（5s 消失会让用户漏看为何没进去）
+    if (!r.ok) pushNoticeFn('error', `插话失败：${r.error}`)
   }
   // M11-P4：运行中子代理快照（进度事件驱动）
   const [subagents, setSubagents] = useState<SubagentStatus[]>([])
@@ -411,6 +412,12 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   // 活动流 B4：轮开始时间（loading 行轮内耗时——busy 翻转记录）
   const turnStartedAtRef = useRef<number | null>(null)
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
+  // 持续过程阶段（2026-09-03 拍板：压缩/重连/起草等持续执行不弹 5s 提示，进 loading 行——
+  // 空闲态升级空行为 spinner+文案+计时，busy 态替换主文案；compacted/终态清除。
+  // 原 compactingSince 的泛化）
+  const [phase, setPhase] = useState<{ text: string; since: number } | null>(null)
+  const beginPhase = (text: string): void => setPhase({ text, since: Date.now() })
+  const endPhase = (): void => setPhase(null)
   const [activity, setActivity] = useState<{ state: ActivityState; text?: string }>({
     state: 'idle',
   })
@@ -418,9 +425,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   // M8 告警中心：运行时提示统一队列（onWarn/启动警告/截断提示都进这里；底部单行派生+/warnings 面板）
   const [notices, setNotices] = useState<NoticeItem[]>([])
   const noticeIdRef = useRef(0)
-  const pushNoticeFn = (level: NoticeLevel, text: string): void => {
+  const pushNoticeFn = (level: NoticeLevel, text: string, sticky = false): void => {
     noticeIdRef.current += 1
-    setNotices((prev) => pushNotice(prev, noticeIdRef.current, level, text))
+    setNotices((prev) => pushNotice(prev, noticeIdRef.current, level, text, Date.now(), sticky))
   }
   // F-38：TTL 过期时钟——仅当存在可过期条目（info/warn）时每秒 tick 驱动重渲染，
   // 到期条目从底部行退场（error 常驻不需要时钟；无过期条目时不挂 interval 不空转）
@@ -567,7 +574,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       // =假忙碌换入口复发。本回调挂接在首渲染（闭包须走 ref 桥取每渲染重建的最新实现）
       ;(attachedHost as { onReconnect?: (gap: boolean) => void }).onReconnect = (gap) => { if (gap) gapReconcileRef.current() }
       ;(attachedHost as { onUnauthorized?: () => void }).onUnauthorized = () => {
-        setSystemMsgs(['⚠ 后台服务凭据失效——请重新认证或重启 daemon'], 'warn')
+        // 2026-09-03 拍板：凭据失效=阻断性错误——error 常驻直到用户处理（重新认证/重启）
+        pushNoticeFn('error', '后台服务凭据失效——请重新认证或重启 daemon')
       }
     }
   }
@@ -841,6 +849,10 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           // M2 的延迟 commit（下次 submit 才收）是「留动态区可 Ctrl+O 展开」的交互决策；
           // Static 的工具组本就展开（M3 §7.5），滚轮回看语义更优。error 轮无 completed 帧，
           // submit 开头的兑现兜底保留
+          // 2026-09-03 拍板（中断提示常驻「直到问题解决」）：轮成功完成=阻塞已解除的自动
+          // 判定——清掉非 sticky 的 error 告警（sticky=降级类持续状态警示，续聊期间保留；
+          // warn/info 历史留给 /warnings 回看）
+          setNotices((ns) => (ns.some((n) => n.level === 'error' && n.sticky !== true) ? ns.filter((n) => n.level !== 'error' || n.sticky === true) : ns))
           void pullTranscript().then((l) => {
             setActivity((cur) => (cur.state === 'aborted' ? cur : { state: 'idle' }))
             if (l.length > 0) {
@@ -872,14 +884,19 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           setActivity({ state: 'idle' })
           break
         case 'compacted':
+          setPhase(null)
           syncCommitted()
           setSystemMsgs(['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）'])
           break
         case 'compacting':
-          setSystemMsgs(['正在压缩对话...'])
+          // 2026-09-03 拍板（持续性内容进 loading 行不弹 5s 提示）：压缩统一走 phase——
+          // 空闲态 loading 行接管（spinner+计时）；轮中自动压缩主文案替换为阶段名
+          // （thinking tail 停滞期显示「正在压缩」比冻结的旧内容准确）
+          setPhase({ text: '正在压缩对话', since: Date.now() })
           break
         case 'compactFailed':
-          setSystemMsgs(['（压缩未完成——对话太短或摘要失败，稍后自动重试）'], 'warn')
+          setPhase(null)
+          if (turnStartedAtRef.current !== null) setSystemMsgs(['（压缩未完成——对话太短或摘要失败，稍后自动重试）'], 'warn')
           break
         case 'approval/requested': {
           confirmRef.current = true
@@ -1046,7 +1063,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       }
       if (!nr.ok || nr.sessionId === undefined) {
         setActive((a) => ({ ...a, streaming: false }))
-        setSystemMsgs([`新建会话失败：${nr.ok ? '回执缺 sessionId' : nr.error}`], 'warn')
+        // 2026-09-03 拍板：会话建立失败=中断类——error 常驻
+        pushNoticeFn('error', `新建会话失败：${nr.ok ? '回执缺 sessionId' : nr.error}`)
         setActivity({ state: 'idle' })
         return
       }
@@ -1084,7 +1102,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     }
     if (!r.ok) {
       setActive((a) => ({ ...a, streaming: false }))
-      setSystemMsgs([`发送失败：${r.error}`], 'warn')
+      // 2026-09-03 拍板：发送失败=执行中断——error 常驻（5s 消失=用户漏看为何没反应；
+      // /warnings 回看，下一轮成功自动清）
+      pushNoticeFn('error', `发送失败：${r.error}`)
       setActivity({ state: 'idle' })
       return
     }
@@ -1120,7 +1140,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       runningRef.current = false
       setActivity({ state: 'idle' })
       deps.logger.error('tui', 'submit_failed', { message: e instanceof Error ? e.message : String(e) })
-      setSystemMsgs(['提交失败：' + (e instanceof Error ? e.message : String(e))], 'warn')
+      // 2026-09-03 拍板：提交失败=执行中断——error 常驻
+      pushNoticeFn('error', '提交失败：' + (e instanceof Error ? e.message : String(e)))
     }
   }
 
@@ -1212,16 +1233,19 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       setSystemMsgs(['（MCP 未启用）'], 'warn')
       return
     }
-    setSystemMsgs([`正在重连${name !== undefined && name !== '' ? ` ${name}` : '全部'} MCP server...`])
+    // 2026-09-03 拍板：持续过程进 loading 行（重连期间 phase spinner+计时，不弹 5s 闪现）
+    beginPhase(`正在重连${name !== undefined && name !== '' ? ` ${name}` : '全部'} MCP server`)
     try {
       const r = await deps.mcpManager.reconnect(name)
+      endPhase()
       setSystemMsgs([
         r.failed.length === 0
           ? `✓ MCP 重连完成（${r.ok.length} 个成功）`
           : `MCP 重连：成功 ${r.ok.length} 个 / 失败 ${r.failed.length} 个（${r.failed.map((f) => `${f.name}: ${f.error}`).join('；')}）`,
-      ])
+      ], r.failed.length === 0 ? 'info' : 'warn')
     } catch (e) {
       // 未知 server 名/内部错误透传（审阅 P2：吞错会渲染成「0 个成功」的假成功）
+      endPhase()
       setSystemMsgs(['MCP 重连失败：' + (e instanceof Error ? e.message : String(e))], 'warn')
     }
   }
@@ -1238,7 +1262,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       setSystemMsgs(['（会话为空，先聊几轮再 /skill-create 蒸馏）'])
       return
     }
-    setSystemMsgs(['正在从会话起草 skill...'])
+    // 2026-09-03 拍板：起草/合并两段持续 LLM 执行进 loading 行（交互卡点前清除——等待用户
+    // 输入时 phase 停在「正在起草」会误导）
+    beginPhase('正在从会话起草 skill')
     try {
       const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
       const providerReq = buildProviderReq(config)
@@ -1248,6 +1274,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       })
       const raw = await callLLM(provider, providerReq, DRAFT_SYSTEM, [userMsg(buildDraftUser(serializeSession(msgs)))])
       const candidate = parseCandidate(raw)
+      endPhase()
       const existing = deps.skillRegistry.get(candidate.name)
       if (existing === undefined) {
         // 创建路径：选存储层级（用户级=个人 ~/.ecode/skills；项目级=团队共享 .ecode/skills 入库）
@@ -1266,12 +1293,14 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         setSystemMsgs([`✓ 已创建 skill「${candidate.name}」（${level === 'project' ? '项目级' : '用户级'}：${r.path}）`])
       } else {
         // 升级路径：merger 三态 → 冲突裁决 → diff 预览 → install
+        beginPhase('正在合并升级草稿')
         const mRaw = await callLLM(
           provider,
           providerReq,
           MERGER_SYSTEM,
           [userMsg(buildMergerUser(existing, candidate))],
         )
+        endPhase()
         const verdicts = parseMergerVerdicts(mRaw)
         const conflicts = conflictTitles(verdicts)
         let resolution: 'keep' | 'adopt' = 'keep'
@@ -1302,7 +1331,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         ])
       }
     } catch (e) {
-      setSystemMsgs(['蒸馏失败：' + (e instanceof Error ? e.message : String(e))])
+      endPhase()
+      setSystemMsgs(['蒸馏失败：' + (e instanceof Error ? e.message : String(e))], 'warn')
     }
   }
 
@@ -1310,14 +1340,20 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
    *  完成信号经 systemMsg 帧送达（宿主侧发出）；客户端只刷视图 */
   const compactManual = async (): Promise<void> => {
     if (!config.providers[config.current.name]) return
-    setSystemMsgs(['正在压缩对话...'])
+    // 2026-09-03 拍板：持续过程进 loading 行（宿主 compacting 帧到来时重复置起无害——
+    // 同文本重启计时；帧不来则本地兜底显示）
+    beginPhase('正在压缩对话')
     try {
       const r = await host.send({ op: 'session/compact' })
       // 受理成功≠压缩成功——成败由宿主 systemMsg 帧（「压缩完成」/「压缩失败：…」）呈现；
       // compacted 帧（onCompacted）驱动 committed 重建（事件处理器内 syncCommitted）
-      if (!r.ok) setSystemMsgs([`（压缩未开始——${r.error}）`])
+      if (!r.ok) {
+        endPhase()
+        setSystemMsgs([`（压缩未开始——${r.error}）`], 'warn')
+      }
     } catch (e) {
-      setSystemMsgs([`压缩异常：${e instanceof Error ? e.message : String(e)}`])
+      endPhase()
+      setSystemMsgs([`压缩异常：${e instanceof Error ? e.message : String(e)}`], 'warn')
     }
   }
 
@@ -1357,7 +1393,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       // 恢复失败回滚 transport（目标未载入，事件过滤与信封仍指旧会话）
       const prev = attachedSidRef.current
       if (prev !== undefined) transportRef.current?.setSessionId?.(prev)
-      setSystemMsgs([`⚠ 恢复失败：${r.error}，未切换`])
+      // 2026-09-03 拍板：恢复失败=用户操作的直接失败——error 常驻
+      pushNoticeFn('error', `恢复失败：${r.error}，未切换`)
       return
     }
     // P0 修复（审阅）：消费回执的新 sessionId——后续命令信封与事件帧过滤都以它为准；
@@ -1408,8 +1445,12 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     const sid = attachedSidRef.current ?? (deps.history.currentSessionId() || undefined)
     if (localFallback === undefined) {
       // 审阅 R6/P2-1：dead 也收死轮（不收则 running 恒真、输入全进插话队列=注释宣称不卡实际卡）
+      endPhase()
       const tail = closeDeadTurn('后台服务不可达')
-      setSystemMsgs([...tail, '✗ 后台服务不可达且重拉失败——输入已退回，可稍后重试或重启 ecode'], 'warn')
+      // 2026-09-03 拍板：执行中断类提示常驻（error 级不自动消失——/warnings 回看，轮成功自动清）。
+      // 主提示最后推（底部行只显最新一条——先推会被 tail 条目顶进计数折叠）
+      for (const t of tail) pushNoticeFn('error', t)
+      pushNoticeFn('error', '后台服务不可达且重拉失败——输入已退回，可稍后重试或重启 ecode')
       rescueDeadLatch.current = true // 熔断：防 tick 每 8s 重拉×15s 超时无限循环
       return 'dead'
     }
@@ -1443,13 +1484,14 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     syncCommitted(diskLines.length > 0 ? diskLines : messagesRef.current)
     // 轮收场（reattached/degraded 共用——审阅 R6/P0-1：原轮随宿主死，turn/completed 永不到；
     // 不收场则 running 恒真 → 斜杠命令门全锁 + 输入全进死队列 = 换了个堵法）
+    endPhase()
     const tail = closeDeadTurn('后台服务不可达')
     // 安全席 P1：同 id 双写警示——降级存活期间他端（手机/飞书/新 daemon）打开同会话会交错落盘。
-    // 审阅 R6/P0-2：单次合并调用（setSystemMsgs 全量替换语义——分两次调用前条被后条覆盖=静默丢退回提示）
-    setSystemMsgs([
-      ...tail,
-      '⚠ 后台服务不可达——已切换本地模式续聊（同 id 续写；期间请勿在其他端打开本会话，/restart 或重启 ecode 回后台）',
-    ], 'warn')
+    // 2026-09-03 拍板：降级提示属持续状态语义——error 级常驻+sticky（本地续聊期间需要一直
+    // 可见「勿在他端开同会话」，轮成功也不自动清；/restart 回后台或用户 /warnings 清空）。
+    // 主提示最后推（底部行只显最新一条——先推会被 tail 退回条目顶进计数折叠）
+    for (const t of tail) pushNoticeFn('error', t)
+    pushNoticeFn('error', '后台服务不可达——已切换本地模式续聊（同 id 续写；期间请勿在其他端打开本会话，/restart 或重启 ecode 回后台）', true)
     return 'local'
   }
 
@@ -1513,7 +1555,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const rescueDaemon = (): Promise<'reattached' | 'local' | 'dead'> => {
     if (rescueInflightRef.current !== null) return rescueInflightRef.current // 单飞：并发提交共等一次重拉
     const p = (async (): Promise<'reattached' | 'local' | 'dead'> => {
-      setSystemMsgs(['后台服务失联——正在重拉…'], 'warn')
+      // 2026-09-03 拍板：重拉是持续过程——进 loading 行（spinner+计时），不弹 5s 闪现
+      beginPhase('正在重连后台服务')
       deps.logger.warn('daemon', 'rescue_started', {})
       // 审阅 R6：拉起前记录注册身份（同实例抖动 vs 新实例判别——同实例活轮还在流，
       // 收场会冻结流文本=误杀；新实例旧轮必死必须收场）
@@ -1533,8 +1576,12 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           // 审阅 R6（原 P2 的假话覆盖修正）：找回失败提前收场返回——原实现在下方被无条件
           // 「✓ 会话已找回」覆盖，警告从未可见
           else {
+            endPhase()
             const tail = closeDeadTurn('后台服务中断')
-            setSystemMsgs([...tail, '⚠ 后台已重连，但会话找回失败——续聊上下文可能为空，可 /history 重选'], 'warn')
+            // 2026-09-03 拍板：中断后果=常驻告警（error 级不自动消失——/warnings 回看，轮成功自动清）。
+            // 主提示最后推（底部行只显最新一条）
+            for (const t of tail) pushNoticeFn('error', t)
+            pushNoticeFn('error', '后台已重连，但会话找回失败——续聊上下文可能为空，可 /history 重选')
             return 'reattached'
           }
         }
@@ -1544,12 +1591,14 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         // 审阅 R6/P0-1：新实例（pid 变）旧轮必死——收场防「已重连但 running 恒真」假忙碌；
         // 同实例（pid 同，SSE 抖动重连）活轮可能还在流——**不收场**（收了=冻结流文本误杀）
         if (reg.pid !== prevReg?.pid) {
+          endPhase()
           const tail = closeDeadTurn('后台服务中断')
           setSystemMsgs([
             ...tail,
             `✓ 后台服务已重连（新实例）${attachedSidRef.current !== undefined ? '，会话已找回' : ''}——原轮已随服务中断，已产出保留`,
           ])
         } else {
+          endPhase()
           setSystemMsgs(['✓ 后台连接已恢复（服务未中断——流可能仍在继续）'])
         }
         return 'reattached'
@@ -2028,6 +2077,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         return undefined
       })()}
       turnStartedAt={turnStartedAt ?? undefined}
+      phase={phase ?? undefined}
       running={running}
       queuedInterjects={queuedInterjects}
       daemon={(() => {

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { bashTool, isDangerous, truncateOutput, foldNodeWarnings } from '../../../src/tools/builtin/bash.js'
-import type { Tool, ToolContext } from '../../../src/tools/interface.js'
+import type { ToolContext } from '../../../src/tools/interface.js'
 
 const ctx: ToolContext = { cwd: process.cwd(), signal: new AbortController().signal }
 
@@ -196,10 +196,9 @@ describe('bashTool.execute 进程树终止（孙进程泄漏修复，M10 v1.3）
     const marker = join(dir, 'grandchild.pid').split(String.fromCharCode(92)).join('/')
     let grandPid: number | undefined
     try {
-      // 孙进程：写 pid 后挂起；父命令 sleep 30 保证必超时
+      // 孙进程：写 pid 后挂起；父命令 sleep 30 保证必超时（2026-09-03 等待根治：timeout_ms 已是模型输入参数，非工具元数据）
       const cmd = `node -e "require('fs').writeFileSync('${marker}', String(process.pid)); setInterval(()=>{}, 1<<30)" & sleep 30`
-      const tool: Tool = { ...bashTool, timeout_ms: 1200 }
-      const r = await tool.execute({ command: cmd }, ctx)
+      const r = await bashTool.execute({ command: cmd, timeout_ms: 1200 }, ctx)
       expect(r.is_error).toBe(true)
       expect(r.content).toContain('超时')
       expect(existsSync(marker)).toBe(true)
@@ -221,8 +220,10 @@ describe('bashTool.execute 进程树终止（孙进程泄漏修复，M10 v1.3）
     try {
       const cmd = `node -e "require('fs').writeFileSync('${marker}', String(process.pid)); setInterval(()=>{}, 1<<30)" & sleep 30`
       const controller = new AbortController()
-      const tool: Tool = { ...bashTool, timeout_ms: 30_000 }
-      const p = tool.execute({ command: cmd }, { cwd: ctx.cwd, signal: controller.signal })
+      const p = bashTool.execute(
+        { command: cmd, timeout_ms: 30_000 },
+        { cwd: ctx.cwd, signal: controller.signal },
+      )
       // 等 marker 出现（孙进程已起）再中断
       for (let i = 0; i < 50 && !existsSync(marker); i++) await new Promise((res) => setTimeout(res, 100))
       // 树稳定期：taskkill /T 的树枚举在进程刚出生窗口有偶发漏杀（三层树 bash→中间 sh→node），
@@ -241,4 +242,24 @@ describe('bashTool.execute 进程树终止（孙进程泄漏修复，M10 v1.3）
       rmSync(dir, { recursive: true, force: true })
     }
   }, 20_000)
+})
+
+describe('bash 超时自管（2026-09-03 等待根治：30s 写死 → 输入参数，默认 120s/上限 600s）', () => {
+  it('timeout_ms 输入参数驱动内部定时器：短超时触发并杀树（is_error + 引导文案）', async () => {
+    const r = await bashTool.execute(
+      { command: process.platform === 'win32' ? 'ping -n 30 127.0.0.1' : 'sleep 30', timeout_ms: 600 },
+      ctx,
+    )
+    expect(r.is_error).toBe(true)
+    expect(r.content).toContain('命令超时 (600ms)')
+    expect(r.content).toContain('timeout_ms')
+  }, 10_000)
+
+  it('契约锚：不再声明循环层 timeout_ms 元数据（自管超时——软超时不杀进程成孤儿）；schema 上限 600000', () => {
+    expect(bashTool.timeout_ms).toBeUndefined()
+    const props = bashTool.input_schema as { properties: Record<string, { maximum?: number; description?: string }> }
+    expect(props.properties.timeout_ms?.maximum).toBe(600_000)
+    expect(props.properties.timeout_ms?.description).toContain('120000')
+    expect(props.properties.timeout_ms?.description).toContain('600000')
+  })
 })

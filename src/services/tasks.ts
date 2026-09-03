@@ -41,7 +41,18 @@ export interface TaskOutputResult {
   newOffset: number
   status: BackgroundTask['status']
   exitCode: number | null
+  /** 启动时刻（ms）——task_output 渲染「已运行 Xs」的数据源：running 响应带时长 → 结果
+   *  逐次变化，结果感知的 loop-guard 不再把合法等待判成同参空转（2026-09-03 等待根治） */
+  startedAt: number
 }
+
+/**
+ * task_output 单次等待上限（2026-09-03 等待根治：10s → 5 分钟）。对标：codex write_stdin
+ * 空轮询默认上限 5 分钟（可配 1h）、CC TaskOutput block=true 上限 10 分钟、openclaw poll 30s。
+ * 旧 10s 上限把模型逼进「N 次同参轮询」撞 loop-guard 同参误伤（真机 8 连发实证）——单次可等
+ * 长，等待本身就是一次合法调用。
+ */
+export const TASK_OUTPUT_MAX_WAIT_MS = 300_000
 
 let seq = 0
 
@@ -159,7 +170,7 @@ export class TaskRegistry {
         // 文件暂不可读：空输出
       }
       if (offset === undefined) task.consumedOffset = newOffset
-      return { output: text, newOffset, status: task.status, exitCode: task.exitCode }
+      return { output: text, newOffset, status: task.status, exitCode: task.exitCode, startedAt: task.startedAt }
     }
     if (waitMs !== undefined && waitMs > 0 && task.status === 'running') {
       const deadline = Date.now() + waitMs

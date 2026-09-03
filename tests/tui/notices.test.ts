@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveNoticeLine, groupNotices, isFresh, pushNotice, renderNoticeLine, NOTICE_LIMIT, NOTICE_TTL_MS, type NoticeItem } from '../../src/tui/notices.js'
+import { deriveNoticeLine, groupNotices, isFresh, pushNotice, renderNoticeLine, hasFreshExpirable, NOTICE_LIMIT, NOTICE_TTL_MS, type NoticeItem } from '../../src/tui/notices.js'
 import stringWidth from 'string-width'
 
 function mk(level: NoticeItem['level'], text: string, id: number, at = 1000): NoticeItem {
@@ -43,6 +43,25 @@ describe('pushNotice（队列）', () => {
   it('sticky 字段记录：默认 false 不写字段（序列化干净）', () => {
     const list = pushNotice([], 1, 'error', '普通 error')
     expect(list[0]?.sticky).toBeUndefined()
+  })
+
+  it('2026-09-03 审阅修复批：bornSeq 透传记录（帧序屏障的出生快照）', () => {
+    const list = pushNotice([], 1, 'error', '帧来的 error', 1000, false, 42)
+    expect(list[0]?.bornSeq).toBe(42)
+    const local = pushNotice([], 2, 'error', '本地 push')
+    expect(local[0]?.bornSeq).toBeUndefined()
+  })
+})
+
+describe('hasFreshExpirable（TTL tick 停跳判定——全过期后停重渲）', () => {
+  it('未过期 true；过期+缓冲窗内 true（退场渲染最后机会）；过期+缓冲窗外 false；error-only false', () => {
+    const info = mk('info', 'x', 1, 1000)
+    expect(hasFreshExpirable([info], 4000)).toBe(true) // 未过期（TTL 5s）
+    expect(hasFreshExpirable([info], 5500)).toBe(true) // 过期 0.5s——1s 缓冲窗内（退场渲染）
+    expect(hasFreshExpirable([info], 7000)).toBe(false) // 过期 2s——缓冲窗外，停跳
+    const err = mk('error', '常驻', 2, 1000)
+    expect(hasFreshExpirable([err], 99999)).toBe(false) // error 常驻不需要时钟
+    expect(hasFreshExpirable([], 1000)).toBe(false)
   })
 })
 

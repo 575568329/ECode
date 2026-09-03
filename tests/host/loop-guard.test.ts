@@ -16,6 +16,7 @@ import { NoopHistoryStore } from '../../src/services/history.js'
 import { emptyShellConfig, type Config } from '../../src/services/config.js'
 import { CompactionOrchestrator } from '../../src/services/compaction/orchestrator.js'
 import { SummarizeStrategy } from '../../src/services/compaction/summarize.js'
+import { taskOutputTool } from '../../src/tools/builtin/task_tools.js'
 
 /** 可编程 Mock：script 每项是一轮的 delta 序列（轮数即 provider 被调次数——feedback 注入会续轮） */
 class ScriptProvider implements LLMProvider {
@@ -245,5 +246,64 @@ describe('M13-P1 机器消息 meta', () => {
     expect(fb.length).toBeGreaterThanOrEqual(1)
     const metaLines = fb.filter((l) => (l as { meta?: { kind?: string } }).meta?.kind === 'loop-guard')
     expect(metaLines.length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+// 2026-09-03 等待根治回归锚：真机曾出现 8 轮同参 task_output(t5, wait_ms=10000) 轮询
+// 运行中任务（输出全重定向→日志零增量）撞 SIG_NUDGE 误伤。根治=running 响应带「已运行 Xs」
+// → 结果逐次变化 → M13-P1 结果感知签名天然清零。此处用真 taskOutputTool 驱动（非 fake content）。
+describe('2026-09-03 等待根治：task_output 合法等待豁免', () => {
+  // 同参输入载荷（真机形态：t5/wait_ms=10000 每轮完全相同）——partial_json 进得去 AJV，真工具才会执行
+  const round = (n: number): Delta[] => [
+    { type: 'text', text: `第 ${n} 轮` },
+    { type: 'tool_use_start', id: `w${n}`, name: 'task_output' },
+    { type: 'tool_use_delta', id: `w${n}`, partial_json: '{"task_id":"t5","wait_ms":10000}' },
+    { type: 'tool_use_end', id: `w${n}` },
+    { type: 'done', stop_reason: 'tool_use' },
+  ]
+
+  it('真机场景：running 零输出 + 已运行时长递增 → 连 SIG_NUDGE+6 轮同参零 loop-guard', async () => {
+    let call = 0
+    const fakeRegistry = {
+      output: async () => {
+        call += 1
+        return {
+          output: '',
+          newOffset: 0,
+          status: 'running' as const,
+          exitCode: null,
+          startedAt: Date.now() - call * 10_000, // 时间推进的同构模拟（真机=真实秒表）
+        }
+      },
+    } as unknown as import('../../src/services/tasks.js').TaskRegistry
+    const realTaskOutput: Tool = {
+      ...taskOutputTool,
+      async execute(args, ctx) {
+        return taskOutputTool.execute(args, { ...ctx, tasks: fakeRegistry })
+      },
+    }
+    const N = HostSession.GUARD.SIG_NUDGE + 6
+    const host = makeHost(Array.from({ length: N }, (_, i) => round(i)), [realTaskOutput])
+    const evs = collect(host)
+    await run(host)
+    const guardMsgs = evs.filter((e) => (e.type === 'systemMsg' || e.type === 'warn') && e.text.includes('loop-guard'))
+    expect(guardMsgs, `同参等待 ${N} 轮（结果在变）不应触发 loop-guard——真机误伤回归`).toEqual([])
+  })
+
+  it('对照组：任务已结束后复读静态输出 → 保护不丢（仍触发 abort）', async () => {
+    const fakeRegistry = {
+      output: async () => ({ output: '', newOffset: 0, status: 'completed' as const, exitCode: 0, startedAt: Date.now() - 60_000 }),
+    } as unknown as import('../../src/services/tasks.js').TaskRegistry
+    const realTaskOutput: Tool = {
+      ...taskOutputTool,
+      async execute(args, ctx) {
+        return taskOutputTool.execute(args, { ...ctx, tasks: fakeRegistry })
+      },
+    }
+    const N = HostSession.GUARD.SIG_NUDGE + 4
+    const host = makeHost(Array.from({ length: N }, (_, i) => round(i)), [realTaskOutput])
+    const evs = collect(host)
+    await run(host)
+    expect(evs.some((e) => e.type === 'systemMsg' && e.text.includes('同一工具且提醒无效'))).toBe(true)
   })
 })

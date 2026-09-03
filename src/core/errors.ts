@@ -135,6 +135,29 @@ function fromHttpStatus(status: number, e: unknown): AppError {
     }
   }
   if (status === 429) {
+    // 配额/额度类 429（真机实证：智谱 1308「已达到 5 小时的使用上限…限额将 HH:MM 重置」）——
+    // 与普通限流（退避后自愈）本质不同：重置要等小时级，指数退避 5 次重发（大上下文请求
+    // 每次都是全量 input）既烧不起也无意义，且期间 UI 只有 12s warn 闪现=用户观感「没提示
+    // 就停了」。分流出 QUOTA_EXCEEDED：retryable:false 直接走 loop 的 no_retry 温和终止，
+    // message 保留端点的重置时间文案。
+    // 判定原料双通道：结构化 e.error 与裸字符串 message 里嵌的 JSON 块（briefHttpMessage
+    // 同款解析——部分端点只给拼接字符串）。message 优先取 JSON 块里的（裸 e.message 是
+    // 「429 {json}」全文拼接）
+    const structuredMsg = extractErrorMessage(e)
+    const jsonMsg = extractJsonBlockMessage(raw)
+    const bodyMsg = jsonMsg ?? (structuredMsg !== raw ? structuredMsg : undefined)
+    const bodyCode = extractErrorCode(e) ?? extractJsonBlockCode(raw)
+    if (isQuotaExhausted(bodyMsg, bodyCode)) {
+      return {
+        code: 'QUOTA_EXCEEDED',
+        message: `额度已耗尽（429）：${firstLineClamp(bodyMsg ?? '配额上限，等待窗口重置')}`,
+        // recoverable:true 走 loop 温和终止分支（retryable:false → no_retry：onError 提示
+        // + idle 收轮，已产出保留）；false 会 throw 炸轮次——额度问题不该丢内容
+        recoverable: true,
+        retryable: false,
+        context: { status, raw },
+      }
+    }
     return { code: 'RATE_LIMIT', message: `限流（429）：${brief}`, recoverable: true, retryable: true, context: { status, raw } }
   }
   if (status === 408 || status === 599) {
@@ -193,6 +216,44 @@ function extractErrorCode(e: unknown): string | undefined {
     if (typeof c1 === 'string' && c1 !== '') return c1
   }
   return undefined
+}
+
+/** 配额/额度耗尽判定（429 分流用）：已知厂商 code + 中英文语义关键词宽匹配。
+ *  智谱 1308=「已达到 5 小时的使用上限」；OpenAI 系 insufficent_quota；通用 usage limit/balance。 */
+const QUOTA_CODES = new Set(['1308', 'insufficient_quota', 'quota_exceeded', 'billing_hard_limit_reached'])
+const QUOTA_TEXT_RE = /使用上限|额度|配额|余额不足|insufficient.{0,12}quota|usage.{0,12}limit|balance.{0,12}(low|insufficient)|exceeded.{0,20}(quota|limit|balance)|billing/i
+export function isQuotaExhausted(bodyMsg: string | undefined, bodyCode: string | undefined): boolean {
+  if (bodyCode !== undefined && QUOTA_CODES.has(bodyCode)) return true
+  if (bodyMsg !== undefined && QUOTA_TEXT_RE.test(bodyMsg)) return true
+  return false
+}
+
+/** 裸字符串 message 里嵌的 JSON 块解析（部分端点把 body 拼进 message 无结构化字段——
+ *  briefHttpMessage 同款手法）。返回 error 对象（一层或二层）供 code/message 提取。 */
+function parseJsonBlock(raw: string): Record<string, unknown> | undefined {
+  const jsonStart = raw.indexOf('{')
+  if (jsonStart < 0) return undefined
+  try {
+    const parsed = JSON.parse(raw.slice(jsonStart)) as Record<string, unknown>
+    if (typeof parsed.error === 'object' && parsed.error !== null) {
+      const inner = (parsed.error as Record<string, unknown>).error
+      if (typeof inner === 'object' && inner !== null) return inner as Record<string, unknown>
+      return parsed.error as Record<string, unknown>
+    }
+    return parsed
+  } catch {
+    return undefined
+  }
+}
+
+function extractJsonBlockMessage(raw: string): string | undefined {
+  const m = parseJsonBlock(raw)?.message
+  return typeof m === 'string' && m !== '' ? m : undefined
+}
+
+function extractJsonBlockCode(raw: string): string | undefined {
+  const c = parseJsonBlock(raw)?.code
+  return typeof c === 'string' && c !== '' ? c : undefined
 }
 
 /** 提炼文案长度上限（人话一行够用；原始全文在 context.raw）。 */

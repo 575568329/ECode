@@ -40,6 +40,30 @@ describe('toAppError', () => {
     expect(err.code).toMatch(/RATE/i)
   })
 
+  it('2026-09-03：429 配额类 → QUOTA_EXCEEDED 不重试（真机实证：智谱 1308 五小时窗口上限静默 5 次退避白烧）', () => {
+    // 智谱真机形态：error.error.{code:1308, message:已达到…上限…重置}
+    const zhipu = Object.assign(
+      new Error('429 {"error":{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2026-09-03 18:19:36 重置。"}}'),
+      { status: 429, error: { code: '1308', message: '已达到 5 小时的使用上限。您的限额将在 2026-09-03 18:19:36 重置。' } },
+    )
+    const err = toAppError(zhipu)
+    expect(err.code).toBe('QUOTA_EXCEEDED')
+    expect(err.retryable).toBe(false)
+    expect(err.message).toContain('18:19:36') // 端点重置时间保留在提示里
+
+    // OpenAI 形态：code=insufficient_quota
+    const oai = Object.assign(
+      new Error('429 insufficient quota'),
+      { status: 429, error: { code: 'insufficient_quota', message: 'You exceeded your current quota, please check your plan and billing details.' } },
+    )
+    expect(toAppError(oai).code).toBe('QUOTA_EXCEEDED')
+
+    // 普通限流不受分流影响（无配额语义 body）
+    const plain = Object.assign(new Error('Too many requests'), { status: 429, error: { code: '1001', message: '并发过高，请稍后重试' } })
+    expect(toAppError(plain).code).toBe('RATE_LIMIT')
+    expect(toAppError(plain).retryable).toBe(true)
+  })
+
   it('5xx → recoverable + retryable（上游错误）', () => {
     const e = Object.assign(new Error('server error'), { status: 500 })
     const err = toAppError(e)
@@ -156,7 +180,9 @@ describe('HTTP 错误提炼（message 一行人话 + 原文进 context.raw）', 
       error: { type: 'error', error: { type: 'rate_limit_error', code: '1308', message: bodyMsg } },
     })
     const err = toAppError(e)
-    expect(err.message).toBe(`限流（429）：[1308] ${bodyMsg}`)
+    // 2026-09-03 语义分流：1308=配额类 → QUOTA_EXCEEDED（不再是「限流」前缀）
+    expect(err.code).toBe('QUOTA_EXCEEDED')
+    expect(err.message).toBe(`额度已耗尽（429）：${bodyMsg}`)
     expect(err.message).not.toContain('{"type"') // 不含 JSON body
     expect((err.context as { raw?: string }).raw).toBe(rawMsg) // 原文完整保留（日志可查）
   })
@@ -165,7 +191,7 @@ describe('HTTP 错误提炼（message 一行人话 + 原文进 context.raw）', 
     const rawMsg = '429 {"type":"error","error":{"type":"rate_limit_error","code":"1308","message":"quota exceeded until tomorrow"}}'
     const e = Object.assign(new Error(rawMsg), { status: 429 })
     const err = toAppError(e)
-    expect(err.message).toBe('限流（429）：[1308] quota exceeded until tomorrow')
+    expect(err.message).toBe('额度已耗尽（429）：quota exceeded until tomorrow')
   })
 
   it('非 JSON 消息 → 原文首行截断（超 160 加省略号）', () => {

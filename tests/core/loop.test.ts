@@ -133,6 +133,35 @@ describe('runLoop：afterTools（M9-P3 轮末质量回喂）', () => {
 })
 
 describe('runLoop', () => {
+  it('2026-09-03：QUOTA_EXCEEDED 不退避直接终止 + onError 常驻提示（额度类 429 语义分流）', async () => {
+    // 真机病灶：智谱 1308 五小时窗口上限曾按 RATE_LIMIT 走 5 次指数退避白烧大请求，
+    // 期间 UI 只有 12s warn 闪现——用户观感「没提示就停了」。分流后 no_retry 温和终止
+    const quotaErr = Object.assign(
+      new Error('429 {"error":{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2026-09-03 18:19:36 重置。"}}'),
+      { status: 429, error: { code: '1308', message: '已达到 5 小时的使用上限。您的限额将在 2026-09-03 18:19:36 重置。' } },
+    )
+    let calls = 0
+    const p: LLMProvider = {
+      type: 'quota-mock',
+      async *run(): AsyncIterable<Delta> {
+        calls += 1
+        throw quotaErr
+      },
+    }
+    const onWarn = vi.fn()
+    const onError = vi.fn()
+    const messages = await runLoop([], '问', {
+      ...makeOpts(p, []),
+      callbacks: { onText: vi.fn(), onWarn, onError },
+    })
+    expect(calls).toBe(1) // 不退避重试（旧实现会 5 次）
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(String(onError.mock.calls[0]?.[0])).toContain('18:19:36') // 重置时间上屏
+    expect(String(onError.mock.calls[0]?.[0])).toContain('本轮已终止')
+    expect(onWarn).not.toHaveBeenCalledWith(expect.stringContaining('重试')) // 不走退避路径
+    expect(messages.length).toBeGreaterThan(0)
+  })
+
   it('F-21 迭代上限耗尽：onWarn 提示（不再静默 return）', async () => {
     // 每轮都要求工具调用 → 走满 maxIterations=2（脚本耗尽后 MockProvider 回退 done/end，
     // 但这里显式给两轮 tool_use 保证耗尽路径）

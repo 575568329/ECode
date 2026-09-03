@@ -30,6 +30,10 @@ export interface CheckpointFileRef {
   /** 绝对路径（正斜杠规范化由调用方保证；此处原样存储） */
   path: string
   hash: string
+  /** 审阅修复（2026-09-03 全功能走查）：快照时刻文件不存在（新建前/删除后）——revert 到该点
+   *  = 删除此路径。原实现「无基线可拍，跳过」→ /rewind 对新建文件永远不删（消息回退了文件
+   *  残留，P1 UX 缺口；真机 dogfood 实证）。 */
+  absent?: true
 }
 
 export interface CheckpointMeta {
@@ -149,8 +153,14 @@ export class CheckpointStore {
           await writeFile(objFile, buf)
         }
         refs.push({ path: p, hash })
-      } catch {
-        // 文件不存在（新建）等读失败：无基线可拍，跳过该文件
+      } catch (e) {
+        // 文件不存在（新建前/git 已删）：记 absent 基线——revert 到该点即删除此路径
+        //（原「跳过」致新建文件不可回退）。其他读失败（权限/占用）仍跳过不拍。
+        if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+          refs.push({ path: p, hash: '', absent: true })
+        } else {
+          this.warn(`快照跳过（读取失败 ${String((e as NodeJS.ErrnoException)?.code ?? '')}）：${p}`)
+        }
       }
     }
     if (refs.length === 0) return null
@@ -186,7 +196,7 @@ export class CheckpointStore {
   async detectExternalChanges(sessionId: string, seq: number): Promise<string[]> {
     const metas = (await this.list(sessionId)).filter((m) => m.seq >= seq)
     const latest = new Map<string, string>()
-    for (const m of metas) for (const f of m.files) latest.set(f.path, f.hash)
+    for (const m of metas) for (const f of m.files) if (f.absent !== true) latest.set(f.path, f.hash)
     const changed: string[] = []
     for (const [p, base] of latest) {
       try {
@@ -212,9 +222,14 @@ export class CheckpointStore {
     // 意义就在哈希即身份，对象被篡改/位腐后直接写回即静默写坏数据；且逐文件边验边写会在中途
     // 失败时留下半还原状态。任一哈希不符 → 整体拒绝（写回零执行）。对象缺失保持既有语义
     // （warn 跳过——快照治理边界情况，非篡改特征）。
-    const plans: Array<{ path: string; buf: Buffer }> = []
+    const plans: Array<{ path: string; buf?: Buffer }> = []
     for (const m of [...metas].reverse()) {
       for (const f of m.files) {
+        // absent 基线：revert 到该点=删除此路径（buf 缺省=删除计划；存在才删，force 幂等）
+        if (f.absent === true) {
+          plans.push({ path: f.path })
+          continue
+        }
         let buf: Buffer
         try {
           buf = await readFile(join(this.sessionDir(sessionId), 'objects', f.hash))
@@ -242,6 +257,12 @@ export class CheckpointStore {
     // 穿透。write/edit 工具是 tmp+rename 替换链接本身，还原保持同款行为；tmp 放同目录保证
     // rename 同分区原子性，名带 pid+时间戳防并发互踩。
     for (const p of plans) {
+      if (p.buf === undefined) {
+        // absent 还原=删除（快照时刻不存在；撤销撤销时还原前自动快照已拍下现存内容）
+        await rm(p.path, { force: true })
+        if (!restored.includes(p.path)) restored.push(p.path)
+        continue
+      }
       await mkdir(dirname(p.path), { recursive: true, mode: 0o700 })
       const tmp = join(dirname(p.path), `.${basename(p.path)}.ecode-restore-${process.pid}-${Date.now()}`)
       try {

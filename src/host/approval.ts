@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto'
 import type { InMemoryChannel } from '../protocol/channel.js'
 import { sanitizePreview } from '../services/preview.js'
 import type { ApprovalDecision, ApprovalKind, ProtocolEvent, PublishableEvent } from '../protocol/types.js'
-import { APPROVAL_TIMEOUT_FEEDBACK, type ToolUseBlock } from '../core/types.js'
+import { APPROVAL_TIMEOUT_FEEDBACK, APPROVAL_NO_CHANNEL_FEEDBACK, type ToolUseBlock } from '../core/types.js'
 
 /** argv 审批策略（D1）：ask=默认（无订阅者 fail-closed）；auto-approve=--yes（仅 tool-confirm 豁免） */
 export type ApprovalPolicy = 'ask' | 'auto-approve'
@@ -46,7 +46,7 @@ export type ApprovalPendingNotifier = (info: { requestId: string; kind: string; 
 const CLAIM_TTL_MS = 120_000
 
 /** D-T8：审批超时的模型侧反馈（定义在 core/types——loop 消费层同源识别；此处 re-export 供测试/宿主引用）。 */
-export { APPROVAL_TIMEOUT_FEEDBACK } from '../core/types.js'
+export { APPROVAL_TIMEOUT_FEEDBACK, APPROVAL_NO_CHANNEL_FEEDBACK } from '../core/types.js'
 
 export interface PermissionAnswer {
   allow: boolean
@@ -126,10 +126,12 @@ export class ApprovalBroker {
       decisions,
     }
     if (!this.hasSubscriber) {
-      // fail-closed：无应答渠道。仍留事件轨迹（requested+cancelled）供日志与迟到的重放审计
+      // fail-closed：无应答渠道。仍留事件轨迹（requested+cancelled）供日志与迟到的重放审计。
+      // 09-03 走查：返回专用反馈串（原裸 false 被 loop 冠「用户已取消」——serve 会话无
+      // canAnswer 客户端时模型误读为用户主动取消）
       this.publish(frame)
       this.publish({ type: 'approval/resolved', requestId, outcome: 'cancelled' })
-      return Promise.resolve(false)
+      return Promise.resolve(APPROVAL_NO_CHANNEL_FEEDBACK)
     }
     return this.suspendOnce(frame, (v) => (typeof v === 'string' && v !== '' ? v : v === true), signal)
   }

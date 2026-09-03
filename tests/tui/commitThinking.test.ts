@@ -52,15 +52,21 @@ describe('活动流 B2：ThinkingLine 消化链', () => {
 describe('审查器附注卡拆分（session 拼接的合成指令不冒充用户）', () => {
   const CARD = '[审查器附注（glm-5.3 对近期任务轨迹的纠偏摘要，自动生成非用户消息，仅供参考）]' + String.fromCharCode(10) + '卡内容'
 
-  it('拼接形态：用户部分气泡 + 卡片转 review-card 系统行', () => {
-    const items = messagesToCommitted([msg('user', '帮我改A' + String.fromCharCode(10) + String.fromCharCode(10) + CARD)])
+  // 2026-09-03 归属根治（e268776）：合成指令标记从字符串匹配改为 Message.meta 结构化——
+  // 宿主不再拼接（预注入独立消息带 meta），渲染层按 meta.kind 分流。旧「拼接形态」测例
+  // 随拼接路径退役改为：用户消息 + 独立 review-card meta 消息两条输入。
+  it('meta 标记：用户气泡 + 卡片消息转 review-card 系统行', () => {
+    const items = messagesToCommitted([
+      msg('user', '帮我改A'),
+      { ...msg('user', CARD), meta: { kind: 'review-card' as const } },
+    ])
     expect(items.map((i) => i.kind)).toEqual(['user', 'review-card'])
     expect(items[0]).toMatchObject({ kind: 'user', text: '帮我改A' })
     expect(items[1]).toMatchObject({ kind: 'review-card' })
   })
 
-  it('轮内插话整条卡：无用户气泡', () => {
-    const items = messagesToCommitted([msg('user', CARD)])
+  it('轮内插话整条卡（meta）：无用户气泡', () => {
+    const items = messagesToCommitted([{ ...msg('user', CARD), meta: { kind: 'review-card' as const } }])
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({ kind: 'review-card' })
   })

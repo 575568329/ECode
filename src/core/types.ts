@@ -196,3 +196,9 @@ export const DEFAULT_MAX_TOKENS = 32768
  *  不冠「用户拒绝」前缀）；host/approval re-export（broker 超时收敛 resolve 此串）。 */
 export const APPROVAL_TIMEOUT_FEEDBACK =
   '审批超时：用户当前不在电脑或手机前，未能在时限内应答（并非拒绝）。请自行决策：优先改用无需确认的只读或安全替代方案；确无替代则跳过本操作，并在最终回复中明确记录该待办，等用户回来处理。'
+
+/** 2026-09-03 全功能走查修复：零可应答订阅者 fail-closed 的如实反馈（原裸 false 被 loop
+ *  冠「用户已取消」——serve 会话无 canAnswer 客户端时模型误读为用户主动取消；与超时串同款
+ *  透传语义，不冠「用户拒绝」前缀）。 */
+export const APPROVAL_NO_CHANNEL_FEEDBACK =
+  '当前没有可应答的客户端在线（serve 会话需 web/TUI 等交互端连接才能确认此类操作），操作未执行（并非用户拒绝）。请改用无需确认的只读或安全方式推进，或在回复中记录待办等用户在线时处理。'

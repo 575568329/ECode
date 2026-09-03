@@ -12,7 +12,7 @@
  * 心脏永不出现 `if provider === 'xxx'`（铁律）—— 只通过 opts.provider.run 调用。
  */
 
-import { isMessageLine, APPROVAL_TIMEOUT_FEEDBACK, type MessageMeta } from './types.js'
+import { isMessageLine, APPROVAL_TIMEOUT_FEEDBACK, APPROVAL_NO_CHANNEL_FEEDBACK, type MessageMeta } from './types.js'
 import type {
   AppError,
   ContentBlock,
@@ -694,10 +694,11 @@ async function invokeTool(use: ToolUseBlock, opts: LoopRunOptions): Promise<Tool
     const confirmed = opts.confirm ? await opts.confirm(use) : true
     if (confirmed !== true) {
       // string=带反馈的拒绝（对标 A1：模型知道为什么被拒，可换方法而非瞎猜）；false=无名取消；
-      // D-T8：审批超时反馈串自带完整语义（无人应答+引导模型决策）——原样透传，不冠「用户拒绝」前缀
+      // D-T8：审批超时反馈串自带完整语义（无人应答+引导模型决策）——原样透传，不冠「用户拒绝」前缀；
+      // 09-03 走查：零可应答客户端 fail-closed 同款透传（原被冠「用户已取消」误导模型）
       const msg =
         typeof confirmed === 'string'
-          ? confirmed === APPROVAL_TIMEOUT_FEEDBACK
+          ? confirmed === APPROVAL_TIMEOUT_FEEDBACK || confirmed === APPROVAL_NO_CHANNEL_FEEDBACK
             ? confirmed
             : `用户拒绝了本次操作：${confirmed}`
           : '用户已取消'

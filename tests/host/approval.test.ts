@@ -4,6 +4,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { ApprovalBroker, APPROVAL_TIMEOUT_FEEDBACK } from '../../src/host/approval.js'
+import { APPROVAL_NO_CHANNEL_FEEDBACK } from '../../src/core/types.js'
 import { InMemoryChannel } from '../../src/protocol/channel.js'
 import type { ProtocolEvent } from '../../src/protocol/types.js'
 
@@ -35,9 +36,9 @@ describe('ApprovalBroker（B2 分策略表）', () => {
     expect(events.some((e) => e.type === 'approval/resolved' && e.requestId === req.requestId && e.outcome === 'once')).toBe(true)
   })
 
-  it('fail-closed：零订阅者 confirm 直接拒绝', async () => {
+  it('fail-closed：零订阅者 confirm 直接拒绝（09-03 走查：改回专用反馈串——模型不再误读为「用户已取消」）', async () => {
     const { broker } = setup('ask', false)
-    expect(await broker.confirm(use('write_file'), 'x')).toBe(false)
+    expect(await broker.confirm(use('write_file'), 'x')).toBe(APPROVAL_NO_CHANNEL_FEEDBACK)
     expect(broker.pendingCount).toBe(0) // 不留悬挂
   })
 

@@ -195,11 +195,14 @@ describe('TuiApp hooks 事件（H-P4）', () => {
     stdin.write('\r')
     await flush()
     await flush()
-    const injected = append.mock.calls.some((c) => {
-      const s = JSON.stringify(c[0])
-      return s.includes('[hook context]') && s.includes('env: node22') && s.includes('cwd: tmp')
-    })
-    expect(injected).toBe(true)
+    // 2026-09-03 归属根治 P2-2：hook context 不再拼进用户消息——每条独立 preInjected 消息
+    // （meta:system-notice、[hook context] 单前缀）先落 transcript
+    const all = append.mock.calls.map((c) => JSON.stringify(c[0])).join('\n')
+    expect(all).toContain('[hook context]')
+    expect(all).toContain('env: node22')
+    expect(all).toContain('cwd: tmp')
+    expect(all).toContain('system-notice')
+    expect(all.match(/\[hook context\]\s*\[hook context\]/)).toBeNull() // 双重前缀=回归
   })
 
   it('中断路径 Stop stop_reason=aborted（正常完成仍 turn-complete）', async () => {

@@ -1323,7 +1323,8 @@ export class HostSession {
     // 独立系统行呈现，不冒充用户气泡；[hook context] 前缀保留——模型侧来源标注不变）
     const hookCtxFromSession = this.pendingSessionContext
     this.pendingSessionContext = []
-    for (const c of hookCtxFromSession) hookCtxFromPrompt.push(`[hook context]\n${c}`)
+    // 09-03 走查：前缀由下方统一包装（原此处预加一次=模型侧双重 [hook context] 前缀）
+    for (const c of hookCtxFromSession) hookCtxFromPrompt.push(c)
     // 纠偏审查（2026-09-02）：空闲期完成的审查卡随本轮注入（同 additionalContext 模式——
     // 不自动起轮烧 token，用户下一条消息自然携带）。卡文本自带中性前缀（审阅/安全席修复：
     // 去「请按建议校正」服从指令——采纳建议仍须过既有确认与安全栅栏）

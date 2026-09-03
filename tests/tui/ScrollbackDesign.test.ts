@@ -36,14 +36,15 @@ describe('B2 + 输入体验批：全文进 Static（= 写 scrollback）', () => 
     expect(u?.text).not.toContain('已截断')
   })
 
-  it('CONTINUE_PROMPT 合成指令仍不渲染成用户气泡', () => {
+  it('续写指令（meta:continue）不渲染成用户气泡——e268776 起标记结构化，字符串形态即普通用户消息', () => {
     const lines: Message[] = [
       {
         role: 'user',
+        meta: { kind: 'continue' },
         content: [
           {
             type: 'text',
-            text: '输出已达 max_tokens 上限被截断。请从中断处直接继续输出：不要道歉、不要复述已写内容，必要时把剩余工作拆成更小的步骤分批输出。',
+            text: '输出已达 max_tokens 上限被截断。请从中断处直接续写：不要道歉、不要复述已写内容，必要时把剩余工作拆成更小的步骤分批输出。',
           },
         ],
       },

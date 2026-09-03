@@ -3,6 +3,7 @@
  * 治理上限全部注入小值（maxPerSession/maxSessions/maxFileBytes），不造 10MB 大文件。
  */
 import { mkdtemp, mkdir, readFile, readdir, writeFile, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
@@ -66,11 +67,32 @@ describe('CheckpointStore：快照与 content-addressed 布局', () => {
     expect(await readdir(join(await objectsDirOf(store, 's1')))).toHaveLength(1)
   })
 
-  it('不存在的新文件跳过（无基线）；全空返回 null', async () => {
+  it('不存在的新文件记 absent 基线（09-03 走查修复：新建文件可回退删除）；空 paths 返回 null', async () => {
     const store = makeStore()
-    const seq = await store.snapshot('s1', [join(dir, 'not-exist.ts')], { tool: 'write_file' })
-    expect(seq).toBeNull()
-    expect(await store.list('s1')).toHaveLength(0)
+    const absentPath = join(dir, 'not-exist.ts')
+    const seq = await store.snapshot('s1', [absentPath], { tool: 'write_file' })
+    expect(seq).not.toBeNull() // absent 也是有效基线（原 null=新建文件不可回退）
+    const metas = await store.list('s1')
+    expect(metas[0]?.files[0]).toMatchObject({ path: absentPath, absent: true })
+    expect(await store.snapshot('s1', [], { tool: 'bash' })).toBeNull() // 空 paths（非 git cwd）=无修改集
+  })
+
+  it('absent 回退：新建文件 revert 后被删除；撤销撤销可恢复（09-03 走查回归锁）', async () => {
+    const store = makeStore()
+    const created = join(dir, 'created-by-agent.ts')
+    // 时序：onBeforeWrite 快照（文件不存在→absent）→ 工具创建文件
+    const seq1 = await store.snapshot('s1', [created], { tool: 'write_file' })
+    await writeFile(created, 'agent 内容', 'utf8')
+    // 回退到点1：文件应被删除
+    const r = await store.revert('s1', seq1!)
+    expect(r.restored).toEqual([created])
+    expect(existsSync(created)).toBe(false)
+    // 撤销撤销：revert 前自动快照拍下了「agent 内容」——revert 回自动点=文件恢复
+    const metas = await store.list('s1')
+    const auto = metas.find((m) => m.tool === 'rewind-auto')
+    expect(auto).toBeDefined()
+    await store.revert('s1', auto!.seq)
+    expect(await readFile(created, 'utf8')).toBe('agent 内容')
   })
 
   it('>maxFileBytes 跳过 + warn', async () => {

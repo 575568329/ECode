@@ -2,7 +2,9 @@
  * P0-B 流停滞看门狗（方案 docs/详设/2026-09-02_后续-真机诊断修复方案 §2）。
  * 覆盖：helper 纯函数 + OpenaiProvider 四场景（vi.mock openai，短真 timer）+ anthropic 转译一场景。
  * 场景对照（审阅钉死的形态）：零产出 stall→重试 1 次→二次 retryable:false 温和终止；
- * 慢滴（内容性 delta 间隔 < 阈值）不误杀；有产出 stall 不重试（防黏连）；用户中断优先。
+ * 慢滴（内容性 delta 间隔 < 阈值）不误杀；用户中断优先。
+ * 2026-09-03：有产出 stall 升级为纯文本自动续写（stallContinue.test.ts 详钉）——此处保留
+ * 「续写额度耗尽仍停滞 → STREAM_STALL」的终态收敛锚。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -145,18 +147,20 @@ describe('OpenaiProvider 看门狗（短真 timer）', () => {
     expect(deltas.some((d) => d.type === 'usage')).toBe(true)
   })
 
-  it('有产出 stall → 不重试（防半截+重答黏连）→ 错误文案点名部分产出', async () => {
+  it('有产出 stall → 2026-09-03 升级为纯文本自动续写：两段续写（共 3 请求）后仍停滞 → STREAM_STALL 收敛', async () => {
     createMock.mockImplementation(async (_body: unknown, opts: { signal?: AbortSignal }) =>
       produceThenSilent(opts?.signal as AbortSignal))
     const p = new OpenaiProvider()
     const deltas = await collect(p, makeReq(80))
-    expect(createMock).toHaveBeenCalledTimes(1)
+    // 1 原始 + MAX_STALL_CONTINUATIONS(2) 次续写 = 3 次请求（续写额度封顶后终止）
+    expect(createMock).toHaveBeenCalledTimes(1 + 2)
     const err = deltas.find((d) => d.type === 'error')
     expect(err).toBeDefined()
     if (err?.type !== 'error') throw new Error('unreachable')
     expect(err.error.code).toBe('STREAM_STALL')
     expect(err.error.retryable).toBe(false)
     expect(err.error.message).toContain('部分产出')
+    expect(err.error.message).toContain('续写')
     // 半截 text 已照常流出（消费方自行固化）
     expect(deltas.some((d) => d.type === 'text')).toBe(true)
   })

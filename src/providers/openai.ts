@@ -13,6 +13,7 @@
 import OpenAI from 'openai'
 import type { LLMProvider, LLMProviderRunRequest, ThinkingLevel } from './interface.js'
 import { createStallWatchdog, DEFAULT_STREAM_STALL_MS, signalAborted } from './stallWatchdog.js'
+import { shouldContinueAfterStall, stallContinueReq } from './stallContinue.js'
 import type { Delta, Message, StopReason, ToolSpec, ToolResultBlock, TextBlock, ImageBlock, DocumentBlock } from '../core/types.js'
 
 /** OpenAI 流式 chunk（宽松结构，鸭子类型；不硬依赖 SDK 内部类型）。 */
@@ -257,10 +258,17 @@ export class OpenaiProvider implements LLMProvider {
     // stall 是端点/网络级故障，loop 层重试与模型自纠都无意义）。重试前必查用户 signal
     // （已断则不再自发请求）；停滞与用户中断并发时中断优先（直接 return，loop 侧权威判 aborted）
     const stallMs = req.streamStallMs ?? DEFAULT_STREAM_STALL_MS
+    // 2026-09-03 停滞续写：有纯文本产出的停滞不再终止——半截固化为 assistant 前缀发起续写
+    // （接续非重答，无黏连；策略与上限见 stallContinue.ts）。thinking/tool_use 场景不适用
+    // （sawStructured 即回退旧 STREAM_STALL 终态）。续写段直通产出（transparent passthrough）。
+    let continuationsUsed = 0
+    let accumulatedText = '' // 跨段累计的半截文本（续写请求的 assistant 前缀 + 续写判定）
     for (let attempt = 0; ; attempt++) {
       if (req.signal?.aborted === true) return
       const wd = createStallWatchdog(req.signal, stallMs)
-      let produced = false // 本轮已产出内容性 delta（text/thinking/tool_use_delta）
+      let produced = false // 本段已产出内容性 delta（text/thinking/tool_use_delta）
+      let sawStructured = false // 本段出现过 thinking/tool_use（此类停滞不续写）
+      let segmentText = '' // 本段纯文本累计
       const t = new OpenaiTranslator()
       try {
         // 批1a（四角色审阅 P0-1 翻案）：signal 必须传 create() **第二参** RequestOptions——
@@ -270,7 +278,7 @@ export class OpenaiProvider implements LLMProvider {
         const stream = await client.chat.completions.create(
           {
             model: req.model,
-            messages: toOpenaiMsgs(req.messages, req.system),
+            messages: toOpenaiMsgs(stallContinueReq(req, accumulatedText).messages, req.system),
             // P2-10：空 tools 数组不传（部分端点对 tools:[] 报 400）
             ...(req.tools.length > 0 ? { tools: toOpenaiTools(req.tools) } : {}),
             stream: true,
@@ -288,6 +296,8 @@ export class OpenaiProvider implements LLMProvider {
               produced = true
               wd.feed() // 喂狗锚点=内容性 delta（心跳/空帧/纯 usage chunk 不算，防假喂狗）
             }
+            if (d.type === 'text') segmentText += d.text
+            if (d.type === 'thinking' || d.type === 'tool_use_delta' || d.type === 'tool_use_start') sawStructured = true
             yield d
           }
         }
@@ -305,22 +315,28 @@ export class OpenaiProvider implements LLMProvider {
         wd.dispose()
       }
       if (signalAborted(req.signal)) return // 中断优先于停滞报错
-      const canRetry = attempt === 0 && !produced
-      if (!canRetry) {
-        yield {
-          type: 'error',
-          error: {
-            code: 'STREAM_STALL',
-            message: `响应停滞：连续 ${stallMs}ms 无内容性输出${
-              attempt > 0 ? '（已自动重试 1 次仍停滞）' : '（本轮已有部分产出，为防内容黏连不自动重试）'
-            }——可重发本轮，或检查端点/网络`,
-            recoverable: true,
-            retryable: false,
-          },
-        }
-        return
+      accumulatedText += segmentText
+      // 零产出首次停滞 → 既有静默重试 1 次（不占续写额度）
+      if (!produced && attempt === 0) continue
+      // 2026-09-03：纯文本半截 → 透明续写（接续非重答，黏连安全）；超限/结构化 delta → 旧终态
+      if (shouldContinueAfterStall({ producedText: accumulatedText, sawStructured, continuationsUsed, userAborted: signalAborted(req.signal) })) {
+        continuationsUsed += 1
+        continue
       }
-      // 零产出首次停滞 → 静默重试一次（可见性并入上方终态文案；provider 层无 warn 通道）
+      yield {
+        type: 'error',
+        error: {
+          code: 'STREAM_STALL',
+          // 文案按「有无产出」分支（attempt 维度已失真——attempt>0 可能是续写段停滞）：
+          // 零产出重试后仍死=重试无效；有产出=半截场景（额度耗尽或结构化不续写）
+          message: `响应停滞：连续 ${stallMs}ms 无内容性输出${
+            produced ? '（本轮已有部分产出，自动续写后仍停滞或不可续写）' : '（已自动重试 1 次仍停滞）'
+          }——可重发本轮（建议让 agent 分批写入），或检查端点/网络`,
+          recoverable: true,
+          retryable: false,
+        },
+      }
+      return
     }
   }
 }

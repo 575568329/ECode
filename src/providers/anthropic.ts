@@ -12,6 +12,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { LLMProvider, LLMProviderRunRequest, ThinkingLevel } from './interface.js'
 import { createStallWatchdog, DEFAULT_STREAM_STALL_MS, signalAborted } from './stallWatchdog.js'
+import { shouldContinueAfterStall, stallContinueReq } from './stallContinue.js'
 import { DEFAULT_MAX_TOKENS, type Delta, type Message, type StopReason, type ImageBlock, type DocumentBlock } from '../core/types.js'
 
 /** thinking 枚举 → budget_tokens 映射（D9；P0-2 clamp 共用，提常量免散落 P2-1）。 */
@@ -246,13 +247,19 @@ export class AnthropicProvider implements LLMProvider {
     const isThinking = (thinkingField.thinking as { type?: string } | undefined)?.type === 'enabled'
 
     // P0-B 看门狗（方案 §2，openai.ts 同款语义）：零内容性 delta 持续 streamStallMs → 中止流；
-    // 仅零产出首次停滞静默重试 1 次；二次/有产出 → STREAM_STALL error delta（anthropic SDK 把
-    // abort 转 APIUserAbortError 抛出——若不显式转译会被 loop 误判为用户中断）
+    // 仅零产出首次停滞静默重试 1 次；2026-09-03 起纯文本半截走透明续写（stallContinue.ts——
+    // 半截固化 assistant 前缀 + user 续写指令，接续非重答无黏连）；二次/结构化 delta 场景
+    // → STREAM_STALL error delta（anthropic SDK 把 abort 转 APIUserAbortError 抛出——若不显式
+    // 转译会被 loop 误判为用户中断）
     const stallMs = req.streamStallMs ?? DEFAULT_STREAM_STALL_MS
+    let continuationsUsed = 0
+    let accumulatedText = '' // 跨段累计的半截文本（续写请求的 assistant 前缀 + 续写判定）
     for (let attempt = 0; ; attempt++) {
       if (signalAborted(req.signal)) return
       const wd = createStallWatchdog(req.signal, stallMs)
       let produced = false
+      let sawStructured = false // 本段出现过 thinking/tool_use（此类停滞不续写）
+      let segmentText = '' // 本段纯文本累计
       const stream = client.messages.stream({
         model: req.model,
         system: req.system,
@@ -265,7 +272,7 @@ export class AnthropicProvider implements LLMProvider {
               ...(req.topP !== undefined ? { top_p: req.topP } : {}),
             }),
         ...thinkingField,
-        messages: toAnthropicMsgs(req.messages),
+        messages: toAnthropicMsgs(stallContinueReq(req, accumulatedText).messages),
         // P2-10：空 tools 数组不传（Anthropic 对 tools:[] 报 400；MVP 恒注册工具但稳健起见）
         ...(req.tools.length > 0 ? { tools: req.tools } : {}),
       } as never)
@@ -286,6 +293,8 @@ export class AnthropicProvider implements LLMProvider {
               produced = true
               wd.feed() // 喂狗锚点=内容性 delta（ping 事件/空帧不算，防假喂狗）
             }
+            if (d.type === 'text') segmentText += d.text
+            if (d.type === 'thinking' || d.type === 'tool_use_delta' || d.type === 'tool_use_start') sawStructured = true
             yield d
           }
         }
@@ -302,22 +311,28 @@ export class AnthropicProvider implements LLMProvider {
         wd.dispose()
       }
       if (signalAborted(req.signal)) return // 中断优先于停滞报错
-      const canRetry = attempt === 0 && !produced
-      if (!canRetry) {
-        yield {
-          type: 'error',
-          error: {
-            code: 'STREAM_STALL',
-            message: `响应停滞：连续 ${stallMs}ms 无内容性输出${
-              attempt > 0 ? '（已自动重试 1 次仍停滞）' : '（本轮已有部分产出，为防内容黏连不自动重试）'
-            }——可重发本轮，或检查端点/网络`,
-            recoverable: true,
-            retryable: false,
-          },
-        }
-        return
+      accumulatedText += segmentText
+      // 零产出首次停滞 → 既有静默重试 1 次（不占续写额度）
+      if (!produced && attempt === 0) continue
+      // 2026-09-03：纯文本半截 → 透明续写；超限/结构化 delta → 旧 STREAM_STALL 终态
+      if (shouldContinueAfterStall({ producedText: accumulatedText, sawStructured, continuationsUsed, userAborted: signalAborted(req.signal) })) {
+        continuationsUsed += 1
+        continue
       }
-      // 零产出首次停滞 → 静默重试一次（可见性并入终态文案；provider 层无 warn 通道）
+      yield {
+        type: 'error',
+        error: {
+          code: 'STREAM_STALL',
+          // 文案按「有无产出」分支（attempt 维度已失真——attempt>0 可能是续写段停滞）：
+          // 零产出重试后仍死=重试无效；有产出=半截场景（额度耗尽或结构化不续写）
+          message: `响应停滞：连续 ${stallMs}ms 无内容性输出${
+            produced ? '（本轮已有部分产出，自动续写后仍停滞或不可续写）' : '（已自动重试 1 次仍停滞）'
+          }——可重发本轮（建议让 agent 分批写入），或检查端点/网络`,
+          recoverable: true,
+          retryable: false,
+        },
+      }
+      return
     }
   }
 }

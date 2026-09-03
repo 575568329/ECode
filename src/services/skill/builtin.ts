@@ -144,7 +144,8 @@ providers 下新增 key（type/baseURL/apiKey/models）→ 重启 → /model 切
 - config 不热加载：改完重启生效（/model、/setup 例外，运行时生效）
 - 配置解析失败：启动报 [CONFIG_PARSE_FAILED] 并拒绝启动，**绝不覆盖写坏的文件**——手动修复，或删除后重启重新生成模板
 - 日志：<项目根>/.ecode/logs/<sessionId>.jsonl（cwd 级——serve 形态 serve-<sessionId>.jsonl；logLevel 控制）；会话历史：~/.ecode/sessions/
-- 修改配置保持 JSONC 合法（注释允许）；改前可备份 .bak，改后用 read_file 复查再重启`
+- 修改配置保持 JSONC 合法（注释允许）；改前可备份 .bak，改后用 read_file 复查再重启
+- 「响应停滞 90000ms」告警（STREAM_STALL）：端点连续 90s 不吐字，看门狗中止。零产出会自动重试 1 次；已有部分产出时 provider 自动**续写**（半截固化为前缀继续补尾部，最多 2 次；含工具调用/思考的半截不续写直接报错——参数截断无法安全补齐）。若仍失败：让 agent 分批写入（先骨架后逐节追加），不要原样重发整轮`
 
 export function builtinSkillInfos(): SkillInfo[] {
   return [

@@ -175,7 +175,9 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
   const lastMsg = messages.at(-1)
   const alreadyUser =
     lastMsg && isMessageLine(lastMsg)
-      ? lastMsg.role === 'user' &&
+      ? lastMsg.meta === undefined && // 审阅 P1-1（归属根治四角色）：meta 消息（预注入通知等）不参与去重——
+        // 理论碰撞：用户输入恰等于通知全文时会被吞（防御一行，语义本就只该比对用户消息）
+        lastMsg.role === 'user' &&
         lastMsg.content.some((b) => b.type === 'text' && (b as { text?: string }).text === userInput)
       : false
   if (!alreadyUser) {

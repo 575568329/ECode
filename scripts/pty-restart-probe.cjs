@@ -81,7 +81,8 @@ const run = async () => {
     proc.write('\r')
     const ok = await waitFor(m, /正在重启/, 20_000)
     console.log(`${ok ? 'OK ' : 'FAIL'} R3a /restart 提示出现`)
-    const respawned = await waitFor(m, /ECode · [^\n]*· 0 tok/, 60_000)
+    // 32ce80e（09-02 状态栏精简）：品牌前缀已删、token 段改 T<N> 形态（如 mock-model · T0 · R188M）
+    const respawned = await waitFor(m, /· T0 ·/, 60_000)
     console.log(`${respawned ? 'OK ' : 'FAIL'} R3b 新实例渲染（restart 点后状态栏再现）`)
     if (!respawned) { console.log(lastFrame(18)); process.exit(1) }
   }

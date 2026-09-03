@@ -209,7 +209,12 @@ export class RelayClient {
         return
       }
       if (msg.t === 'conn-open') {
-        void this.dialDataLeg(String(msg.connId), String(msg.ticket))
+        // 审阅修复（开发席 P1-3）：连接级异常兜底——DataLeg 构造链（E2eeHostSession 的
+        // createPrivateKey 等）同步抛会沿 void 的 async 拒绝上抛 unhandledRejection 崩 daemon。
+        // 吞连接级异常记日志：该腿不建，绝不向上抛
+        void this.dialDataLeg(String(msg.connId), String(msg.ticket)).catch((e: unknown) => {
+          this.log('error', 'relay_dial_failed', { connId: msg.connId, message: e instanceof Error ? e.message : String(e) })
+        })
         return
       }
       if (msg.t === 'conn-abort') {
@@ -492,6 +497,9 @@ class DataLeg {
     if (typeof frame.sessionId === 'string' && frame.sessionId !== '') params.set('sessionId', frame.sessionId)
     if (typeof frame.sinceSeq === 'number' && Number.isFinite(frame.sinceSeq)) params.set('sinceSeq', String(frame.sinceSeq))
     const ac = new AbortController()
+    // 审阅修复（开发席 P2）：同 id 重复订阅先 abort 旧控制器——原直接覆盖 Map 槽，旧 SSE
+    // reader 循环跑到腿断（泄漏一条 loopback 连接+重复推帧）
+    this.subs.get(id)?.abort()
     this.subs.set(id, ac)
     try {
       const res = await fetch(`http://127.0.0.1:${this.opts.daemonPort}/api/events.mux?${params.toString()}`, {

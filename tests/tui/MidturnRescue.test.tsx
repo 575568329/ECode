@@ -116,4 +116,36 @@ describe('R6：轮中失联自愈（rescue 收场行为）', () => {
     // running 已收：输入框提示回落（不再是「处理中」占位）
     expect(f).not.toContain('（处理中')
   }, 30000)
+
+  it('挂起审批随轮作废：busy 轮中审批卡挂起 → rescue 收场 resolve(false)+可见提示（R6 五件套回归锁）', async () => {
+    const { host, fire } = makeDeadHost()
+    const { stdin, lastFrame } = render(
+      React.createElement(TuiApp, {
+        deps: makeDeps(),
+        host,
+        localFallback: () => makeDeps() as never,
+      }),
+    )
+    await flush()
+    // 构造「轮运行中 + 审批挂起」：busy 帧随后审批卡（confirm 状态位由事件处理器置起）
+    fire({ type: 'thread/status', seq: 1, busy: true, waitingOn: null, iter: 1 })
+    fire({ type: 'approval/requested', seq: 2, requestId: 'ap1', kind: 'tool', tool: 'bash', preview: 'rm -rf /tmp/x', decisions: ['allow', 'deny'] })
+    await flush(100)
+    expect(lastFrame() ?? '').toContain('rm -rf /tmp/x') // 审批卡已挂起
+    // 触发自愈（tick 路径——busy 态命令路径不可达）→ 降级收场
+    stdin.write('触发')
+    await flush()
+    stdin.write('\r')
+    for (let i = 0; i < 50; i++) {
+      await flush(500)
+      const f = lastFrame() ?? ''
+      if (f.includes('随轮作废')) break
+    }
+    const f = lastFrame() ?? ''
+    if (!f.includes('随轮作废')) console.log('===== DEBUG 帧尾 =====\n' + f.split('\n').filter(Boolean).slice(-12).join('\n'))
+    expect(f).toContain('本地模式')
+    expect(f).toContain('挂起的审批已随轮作废') // 审批 resolve(false) 的可见痕迹（防主输入框恒 inactive 静默死锁）
+    // 审批卡已收口（confirm 清空——残留会吞后续按键）
+    expect(f).not.toContain('（y 允许')
+  }, 45000)
 })

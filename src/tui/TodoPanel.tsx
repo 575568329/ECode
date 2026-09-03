@@ -82,7 +82,9 @@ export function deriveLatestTodos(sources: Array<{ name: string; use?: { input?:
     const t = sources[i]
     if (t.name === 'todo' && t.use !== undefined) {
       const todos = (t.use.input as { todos?: TodoEntry[] }).todos
-      if (Array.isArray(todos) && todos.length > 0) return todos
+      // 审阅修复（开发席 P2）：空数组=清场终态也返回——原 length>0 跳过会把上一轮旧清单
+      // 留在面板（完结清单永不消失、全部完成自动收起也不触发）；TodoPanel 对 [] 自行收起
+      if (Array.isArray(todos)) return todos
     }
   }
   return null

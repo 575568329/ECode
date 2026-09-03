@@ -11,9 +11,9 @@ const http = require('node:http')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { spawn } = require('D:/study/ECode/node_modules/node-pty')
+const { spawn } = require(path.join(__dirname, '..', 'node_modules', 'node-pty'))
 
-const REPO = 'D:/study/ECode'
+const REPO = path.resolve(__dirname, '..') // 审阅修复（测试席 P2）：原硬编码 D:/study/ECode——换目录即崩
 const DELTA_MS = 500
 const N_DELTAS = 60
 const MARK = '流速测试段落内容'
@@ -69,6 +69,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const REAL = process.argv.includes('--real')
 const TOOL = process.argv.includes('--tool')
 async function run() {
+  const t0 = Date.now() // 只认本次运行之后的插桩事件（日志目录残留旧轮事件，跨会话混样出负数段）
   const { server, port } = await startMock()
   const sandbox = makeSandbox(port)
   const proc = spawn('cmd.exe', ['/c', 'npx', 'tsx', 'src/cli/index.ts'], {
@@ -124,15 +125,36 @@ async function run() {
   proc.kill()
   server.close()
 
-  // 5) 从最新日志取四点
-  const logs = fs.readdirSync(path.join(REPO, '.ecode', 'logs')).filter((f) => f.endsWith('.jsonl')).sort((a, b) => fs.statSync(path.join(REPO, '.ecode', 'logs', b)).mtimeMs - fs.statSync(path.join(REPO, '.ecode', 'logs', a)).mtimeMs)
+  // 5) 从日志取四点。T 线后 TUI 默认自动拉起 daemon 并附着（隔离 USERPROFILE 也拦不住——
+  //    沙盒 home 无注册即 spawn）：轮次与 received/surfaced/turn_finished 插桩落在 **daemon 进程**，
+  //    daemon 日志固定用户级（=sandbox home）；pressed 在 TUI 进程（项目级 cwd 日志）。
+  //    两处并读、跨文件扫插桩（attached 与 Embedded 两形态都成立）。daemon 日志在
+  //    logs/serve/ 子目录（用户级 serve 固定前缀）——同扫。
+  const logDirs = [path.join(REPO, '.ecode', 'logs'), path.join(sandbox, '.ecode', 'logs'), path.join(sandbox, '.ecode', 'logs', 'serve')]
   const stages = {}
-  for (const line of fs.readFileSync(path.join(REPO, '.ecode', 'logs', logs[logs.length - 1]), 'utf8').split('\n')) {
-    if (!line.includes('interrupt_latency_probe')) continue
+  for (const dir of logDirs) {
+    let files = []
     try {
-      const e = JSON.parse(line)
-      stages[e.payload.stage] = new Date(e.ts).getTime()
-    } catch { /* 忽略残行 */ }
+      files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
+    } catch {
+      continue // 目录不存在（Embedded 形态无 sandbox 用户级日志）
+    }
+    for (const f of files) {
+      let text = ''
+      try {
+        text = fs.readFileSync(path.join(dir, f), 'utf8')
+      } catch {
+        continue
+      }
+      for (const line of text.split('\n')) {
+        if (!line.includes('interrupt_latency_probe')) continue
+        try {
+          const e = JSON.parse(line)
+          const ts = new Date(e.ts).getTime()
+          if (ts >= t0) stages[e.payload.stage] = ts // 仅本次运行（旧事件混样防护）
+        } catch { /* 忽略残行 */ }
+      }
+    }
   }
   const seg = (a, b) => (stages[a] !== undefined && stages[b] !== undefined ? `${stages[b] - stages[a]}ms` : '缺失')
   console.log('== Ctrl+C 中断迟滞分段 ==')
@@ -140,8 +162,21 @@ async function run() {
   console.log('宿主收到→abort 浮现', seg('received', 'surfaced'))
   console.log('abort 浮现→轮收尾  ', seg('surfaced', 'turn_finished'))
   console.log('按键→UI 回空闲（墙钟）', wallIdle)
-  fs.rmSync(sandbox, { recursive: true, force: true })
-  process.exit(0)
+  // 清理顺序：先杀本探针拉起的 daemon（读 sandbox 注册的 pid——rmSync 后拿不到），
+  // 再删沙盒（此前只删目录不杀进程=泄漏 detached daemon）。DEBUG=1 保留现场排查
+  if (process.env.ILAT_DEBUG !== '1') {
+    try {
+      const reg = JSON.parse(fs.readFileSync(path.join(sandbox, '.ecode', 'server.json'), 'utf8'))
+      if (typeof reg.pid === 'number') process.kill(reg.pid)
+    } catch { /* 无注册/已死——幂等 */ }
+    fs.rmSync(sandbox, { recursive: true, force: true })
+  } else {
+    console.log('[debug] sandbox 保留：', sandbox)
+  }
+  // 审阅修复（测试席 P2）：插桩缺失=探针失能（曾恒 exit 0——被纳入「探针全绿」口径即假绿）。
+  // 四段至少有 pressed+received 才算测到；墙钟不是插桩可达性的证据
+  const measured = stages.pressed !== undefined && stages.received !== undefined && stages.surfaced !== undefined && stages.turn_finished !== undefined
+  process.exit(measured ? 0 : 2)
 }
 
 run().catch((e) => { console.error(e); process.exit(1) })

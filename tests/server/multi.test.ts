@@ -340,7 +340,11 @@ describe('M14-C1 协议与服务端收口', () => {
     const r = await (await fetch(`${base}/api/p/${enc(dirE)}/cmd`, { method: 'POST', headers: auth, body: JSON.stringify({ op: { op: 'session/list' } }) })).json()
     expect(r).toMatchObject({ ok: true, value: [] })
     expect(seenCwds.length).toBe(before) // mk 工厂未被调用=未装配
-    expect((await (await fetch(`${base}/api/projects`, { headers: auth })).json()).active).not.toContain(expect.anything()) || true
+    // 冷项目只读命令不入 active（审阅修复：原 `… || true` 自中和——expect 失败直接抛，
+    // 恒真分支是死代码；且断言 anyting 会误伤其它用例驱动的活跃项目。收敛为定向断言）
+    const activeList = ((await (await fetch(`${base}/api/projects`, { headers: auth })).json()) as { active: Array<string | { path?: string }> }).active
+    const norm = (c: string | { path?: string }): string => String(typeof c === 'string' ? c : (c.path ?? '')).replaceAll('\\', '/')
+    expect(activeList.some((c) => norm(c).endsWith('ecode-projE-'))).toBe(false)
     rmSync(dirE, { recursive: true, force: true })
   })
 
@@ -414,4 +418,70 @@ describe('F-27：POST /api/cmd {op:"stop"}', () => {
     expect(body.ok).toBe(false)
     expect(body.error).toContain('设备凭据')
   })
+})
+
+describe('R 线审阅修复：设备配对快照服务端强制（安全席 P1-1 执行锁）', () => {
+  it('快照外项目 404 / baseline 按快照过滤 / 快照内不受影响', async () => {
+    const { DeviceRegistry } = await import('../../src/server/devices.js')
+    const snapIn = mkdtempSync(join(tmpdir(), 'ecode-snap-in-'))
+    const snapOut = mkdtempSync(join(tmpdir(), 'ecode-snap-out-'))
+    const reg3 = new ProjectRegistry({ createSession: (cwd) => new ProjectHost({ createConversation: () => mk(cwd) }) as never, lockDir: join(tmpdir(), `ecode-snap-lock-${Date.now()}`) })
+    reg3.register(snapIn) // 配对时只有 snapIn 在册——快照=[snapIn]
+    const devices = new DeviceRegistry(join(tmpdir(), `ecode-snap-dev-${Date.now()}.json`))
+    const srv3 = await serveMulti({ registry: reg3, defaultCwd: snapIn }, { devices: { deviceRegistry: devices } })
+    try {
+      // 配对（快照落条目）
+      const pairRes = await fetch(`http://127.0.0.1:${srv3.port}/api/devices`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${srv3.token}` },
+        body: JSON.stringify({ name: 'snap-phone' }),
+      })
+      const pair = (await pairRes.json()) as { ok?: boolean; secret?: string }
+      expect(pair.ok).toBe(true)
+      expect(devices.list()[0]?.allowedProjects).toContain(snapIn.replaceAll('\\', '/'))
+      const devAuth = { authorization: `Bearer ${pair.secret}`, 'content-type': 'application/json' }
+      // 快照内项目：白名单命令正常（session/list 走 resolveHost 放行）
+      const rIn = await fetch(`http://127.0.0.1:${srv3.port}/api/p/${encodeURIComponent(snapIn)}/cmd`, { method: 'POST', headers: devAuth, body: JSON.stringify({ op: { op: 'session/list' } }) })
+      expect(rIn.status).toBe(200)
+      // 配对后用户注册的新项目（快照外）——device 凭据 404（快照拦截）
+      reg3.register(snapOut)
+      const rOut = await fetch(`http://127.0.0.1:${srv3.port}/api/p/${encodeURIComponent(snapOut)}/cmd`, { method: 'POST', headers: devAuth, body: JSON.stringify({ op: { op: 'session/list' } }) })
+      expect(rOut.status).toBe(404)
+      expect(((await rOut.json()) as { error: string }).error).toContain('配对快照')
+      // baseline：device 订阅只看到快照内项目；主凭据对照全量
+      const readBaseline = async (headers: Record<string, string>): Promise<string[]> => {
+        const ac = new AbortController()
+        const res = await fetch(`http://127.0.0.1:${srv3.port}/api/events.mux`, { headers: { ...headers, accept: 'text/event-stream' }, signal: ac.signal })
+        let buf = ''
+        const reader = res.body!.getReader()
+        const timer = setTimeout(() => ac.abort(), 3000)
+        try {
+          while (!buf.includes('session/baseline')) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buf += Buffer.from(value).toString()
+          }
+        } catch { /* abort 即收 */ }
+        clearTimeout(timer)
+        ac.abort()
+        const line = buf.split('\n').find((l) => l.startsWith('data: ') && l.includes('session/baseline'))
+        const env = line !== undefined ? (JSON.parse(line.slice(6)) as { host: { projects: string[] } }) : null
+        return env?.host.projects ?? []
+      }
+      // 先驱动快照内会话活起来（baseline 只含活项目）
+      await fetch(`http://127.0.0.1:${srv3.port}/api/p/${encodeURIComponent(snapIn)}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${srv3.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ op: { op: 'session/list' } }) })
+      // snapOut 用 session/new 激活（冷项目 session/list 走 C1③ 只读捷径不拉宿主）
+      await fetch(`http://127.0.0.1:${srv3.port}/api/p/${encodeURIComponent(snapOut)}/cmd`, { method: 'POST', headers: { authorization: `Bearer ${srv3.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ op: { op: 'session/new' } }) })
+      const devProjects = await readBaseline(devAuth)
+      const mainProjects = await readBaseline({ authorization: `Bearer ${srv3.token}` })
+      const norm = (p: string): string => p.replaceAll('\\', '/')
+      expect(devProjects.map(norm)).toContain(snapIn.replaceAll('\\', '/'))
+      expect(devProjects.map(norm)).not.toContain(snapOut.replaceAll('\\', '/'))
+      expect(mainProjects.map(norm)).toContain(snapOut.replaceAll('\\', '/'))
+    } finally {
+      await srv3.close()
+      rmSync(snapIn, { recursive: true, force: true })
+      rmSync(snapOut, { recursive: true, force: true })
+    }
+  }, 20000)
 })

@@ -86,8 +86,15 @@ server.listen(0, '127.0.0.1', async () => {
   const pos = out.length
   proc.write('\x14')
   ok = false
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('回车 查看') }
-  if (!ok) { console.log('FAIL Ctrl+T 未开面板'); proc.kill(); server.close(); process.exit(1) }
+  // F-50 批 3：Ctrl+T 默认直达执行时间线（output-view），l 键进来源列表——探针两段走
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('执行时间线') || strip(out.slice(pos)).includes('行滚') }
+  if (!ok) { console.log('FAIL Ctrl+T 未开时间线'); proc.kill(); server.close(); process.exit(1) }
+  await sleep(300)
+  const pos2 = out.length
+  proc.write('l')
+  ok = false
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos2)).includes('回车 查看') }
+  if (!ok) { console.log('FAIL Ctrl+T l 列表未开'); proc.kill(); server.close(); process.exit(1) }
   console.log('OK   Ctrl+T 打开输出面板')
   // 面板列表：子代理条目（唯一 description 摘要）
   ok = strip(out.slice(pos)).includes('子代理探针任务')
@@ -98,15 +105,15 @@ server.listen(0, '127.0.0.1', async () => {
   console.log('# 列表 dump:')
   console.log(strip(out.slice(pos)).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => /§|transcript/.test(l)).join('\n'))
   // 回车进查看器 → 格式化内容
-  const pos2 = out.length
+  const pos3 = out.length
   proc.write('\r')
   ok = false
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = /▶ user: 查甲|结论：子代理探针完成/.test(strip(out.slice(pos2))) }
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = /▶ user: 查甲|结论：子代理探针完成/.test(strip(out.slice(pos3))) }
   // 实拍：查看器内容行（人工核对格式）
   console.log('===== 查看器实拍（仅可读行）=====')
-  console.log(strip(out.slice(pos2)).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => /[A-Za-z0-9\u4e00-\u9fff]/.test(l)).join('\n'))
+  console.log(strip(out.slice(pos3)).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => /[A-Za-z0-9\u4e00-\u9fff]/.test(l)).join('\n'))
   console.log(ok ? 'OK   查看器渲染格式化 transcript' : 'FAIL 查看器无格式化内容')
-  if (!ok) console.log(strip(out.slice(pos2)).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-12).join('\n'))
+  if (!ok) console.log(strip(out.slice(pos3)).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-12).join('\n'))
   proc.kill()
   server.close()
   setTimeout(() => process.exit(ok ? 0 : 1), 200)

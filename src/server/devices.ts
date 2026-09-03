@@ -28,10 +28,15 @@ export interface DeviceEntry {
   note?: string
   /** R2：relay invite（配对时经控制腿登记——吊销时同步 revoke 并断活连接）；expiresAt 0=持久 */
   relayInvite?: { token: string; expiresAt: number }
+  /** 审阅修复（安全席 P1-1）：配对时刻的项目快照（规范化路径数组）——服务端强制边界。
+   *  undefined=存量条目（机制上线前配对，语义=不限制——重配对即获得快照保护） */
+  allowedProjects?: string[]
 }
 
 export class DeviceRegistry {
   private devices: DeviceEntry[] = []
+  /** 本实例已删除的条目（墓碑）——persist 合并磁盘时过滤，防吊销被并集复活 */
+  private removedIds = new Set<string>()
   private readonly file: string
 
   constructor(file?: string) {
@@ -48,8 +53,20 @@ export class DeviceRegistry {
     }
   }
 
-  /** persist-before-swap：先落盘（tmp+rename 0600）成功后才提交内存 */
+  /** persist-before-swap：先落盘（tmp+rename 0600）成功后才提交内存。
+   *  审阅修复（开发席 P1-1 lost update）：写前重读磁盘按 deviceId 并集合并——TUI/CLI 离线
+   *  直写与 daemon 内存副本互相覆盖曾静默抹条目（幽灵凭据：secret 已交给用户，条目没了） */
   private persist(): void {
+    try {
+      const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { devices?: DeviceEntry[] }
+      const disk = Array.isArray(parsed.devices) ? parsed.devices : []
+      const known = new Set(this.devices.map((d) => d.deviceId))
+      for (const d of disk) {
+        if (typeof d.deviceId === 'string' && !known.has(d.deviceId) && !this.removedIds.has(d.deviceId)) this.devices.push(d)
+      }
+    } catch {
+      /* 磁盘不可读=按内存全量写（首启/损坏重建） */
+    }
     const tmp = `${this.file}.tmp-${process.pid}`
     writeFileSync(tmp, JSON.stringify({ devices: this.devices }, null, 2), { mode: 0o600 })
     try {
@@ -61,7 +78,7 @@ export class DeviceRegistry {
   }
 
   /** 配对：生成设备条目（192-bit secret），落盘后返回（offer 组装由调用方做） */
-  create(name: string, scope: DeviceScope = 'chat', note?: string): DeviceEntry {
+  create(name: string, scope: DeviceScope = 'chat', note?: string, allowedProjects?: string[]): DeviceEntry {
     const entry: DeviceEntry = {
       deviceId: `dev-${randomBytes(6).toString('hex')}`,
       name,
@@ -69,6 +86,7 @@ export class DeviceRegistry {
       scope,
       pairedAt: new Date().toISOString(),
       ...(note !== undefined && note !== '' ? { note } : {}),
+      ...(allowedProjects !== undefined ? { allowedProjects } : {}),
     }
     this.devices.push(entry)
     this.persist()
@@ -97,6 +115,7 @@ export class DeviceRegistry {
     const before = this.devices.length
     this.devices = this.devices.filter((d) => d.deviceId !== deviceId)
     if (this.devices.length === before) return false
+    this.removedIds.add(deviceId) // 墓碑：persist 合并磁盘时过滤（防并集复活）
     this.persist()
     return true
   }

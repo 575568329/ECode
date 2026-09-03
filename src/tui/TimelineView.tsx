@@ -22,7 +22,7 @@ import { useViewport } from './viewport.js'
 import { MessageRow } from './MessageRow.js'
 import { symbols } from './symbols.js'
 import { WIDTH } from './layout.js'
-import { timelineBudget } from './viewport.js'
+import { timelineBudget, liveWindowLines } from './viewport.js'
 import type { TimelineEntry } from '../protocol/timeline.js'
 
 const LF = '\n'
@@ -118,7 +118,8 @@ export function TimelineView({ timeline, lines, liveMaxLines }: TimelineViewProp
           if (!e.live && budget.finalTextEstimate !== null && i === lastFinalTextIdx && budget.finalTextEstimate > budget.finalTextCap) {
             return <FoldedTextEntry key={e.id} chars={e.text.length} />
           }
-          return <TextEntry key={e.id} text={e.text} live={e.live} maxLines={liveMaxLines} />
+          {/* 审阅修复：渲染窗与计价同源（liveWindowLines）——原用未压缩 liveMaxLines 致帧高越界 */}
+          return <TextEntry key={e.id} text={e.text} live={e.live} maxLines={liveWindowLines(liveMaxLines, Math.floor(lines))} />
         }
         if (e.kind === 'thinking') {
           return <ThinkingEntry key={e.id} durMs={e.durMs ?? 0} />

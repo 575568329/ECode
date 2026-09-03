@@ -94,8 +94,15 @@ server.listen(0, '127.0.0.1', async () => {
   const pos = out.length
   proc.write('\x14') // Ctrl+T
   ok = false
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('回车 查看') }
-  if (!ok) { console.log('FAIL Ctrl+T 未开面板'); proc.kill(); server.close(); process.exit(1) }
+  // F-50 批 3：Ctrl+T 默认直达执行时间线（output-view），l 键进来源列表——探针两段走
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('执行时间线') || strip(out.slice(pos)).includes('行滚') }
+  if (!ok) { console.log('FAIL Ctrl+T 未开时间线'); proc.kill(); server.close(); process.exit(1) }
+  await sleep(300)
+  const pos2 = out.length
+  proc.write('l')
+  ok = false
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos2)).includes('回车 查看') }
+  if (!ok) { console.log('FAIL Ctrl+T l 列表未开'); proc.kill(); server.close(); process.exit(1) }
   // F-49：列表过滤后只显示本会话的甲/乙两条——等 1s 列表轮询把 meta 摘要刷出来
   ok = false
   for (let i = 0; i < 40 && !ok; i++) {
@@ -106,7 +113,7 @@ server.listen(0, '127.0.0.1', async () => {
   console.log(ok ? 'OK   面板列表同时含两条子代理条目' : 'FAIL 列表条目缺失')
   // 回车进子代理条目：列表顺序 = 最近工具调用（task×2）→ 子代理区（甲/乙）。
   // ↓×4 到第一个子代理条目（index 2 起），每个键间隔 250ms 防 escape 合并
-  const pos2 = out.length
+  const pos3 = out.length
   for (let i = 0; i < 4; i++) {
     proc.write('\x1b[B')
     await sleep(250)
@@ -114,7 +121,11 @@ server.listen(0, '127.0.0.1', async () => {
   proc.write('\r')
   await sleep(1200)
   console.log('===== 查看器实拍（子代理条目，仅可读行）=====')
-  console.log(strip(out.slice(pos2)).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => /[A-Za-z0-9]/.test(l)).join('\n'))
+  console.log(strip(out.slice(pos3)).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => /[A-Za-z0-9]/.test(l)).join('\n'))
+  // 结论判据：全程输出含甲/乙回流文本（存量修复：hasA/hasB 原先未定义——ReferenceError 假失败）
+  const full = strip(out)
+  const hasA = full.includes('甲子代理完成')
+  const hasB = full.includes('乙子代理完成')
   console.log('== 结论：' + (hasA && hasB ? '多子代理并发可见性通过 ==' : '存在失败 =='))
   proc.kill()
   server.close()

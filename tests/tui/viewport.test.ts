@@ -121,9 +121,14 @@ describe('M14-V5 allocateDynamic（动态区总守卫分配）', () => {
     expect(a.degraded).toBe(false)
     expect(a.toolGroupCap).toBeGreaterThanOrEqual(1)
     expect(a.streamMaxLines).toBeGreaterThanOrEqual(4)
-    // 条件段感知（审阅 P1-1）：TasksBar+SubagentBar 活跃显式扣减，退化线上移
+    // 条件段感知（审阅 P1-1）：TasksBar+SubagentBar 活跃显式扣减 CHROME、content 收缩
+    // 退化线不含条件段（2bae057 拍板——todo 面板曾把 30 行终端抬进 degraded=时间线整体不渲染）：
+    // 22+双条不退化，改为最小内容分配（1 组+stream 4 保底）
     const b = allocateDynamic(22, { tasksBar: true, subagentBar: true })
-    expect(b.degraded).toBe(true) // 22 < 12+6
+    expect(b.degraded).toBe(false)
+    expect(b.toolGroupCap).toBeGreaterThanOrEqual(1)
+    expect(b.streamMaxLines).toBeGreaterThanOrEqual(4)
+    expect(b.timelineLines).toBeLessThan(allocateDynamic(22).timelineLines) // 条件段真实挤占 content
     const c = allocateDynamic(40, { tasksBar: true })
     expect(c.degraded).toBe(false)
     // 条件段已扣进 CHROME（8=5 骨架+3 任务条）——总和 ≤ content=40−8−8

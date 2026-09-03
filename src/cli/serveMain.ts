@@ -172,7 +172,9 @@ export async function serveMode(): Promise<void> {
   const autoSpawn = process.env.ECODE_AUTO_SPAWN === '1'
   const envOr = (k: string): string | undefined => {
     const fromEnv = process.env[k]
-    if (autoSpawn && (k === 'ECODE_SERVE_HOST' || k === 'ECODE_SERVE_PORT' || k === 'ECODE_SERVER_PASSWORD')) {
+    // 审阅修复（安全席 P2）：ECODE_WEB_DIR 入白名单——auto-spawn 形态下不回退项目 .env，
+    // 否则恶意仓库 .env 可指定 daemon 静态托管任意目录（该目录经 HTTP 可读）
+    if (autoSpawn && (k === 'ECODE_SERVE_HOST' || k === 'ECODE_SERVE_PORT' || k === 'ECODE_SERVER_PASSWORD' || k === 'ECODE_WEB_DIR')) {
       return fromEnv
     }
     return fromEnv ?? dotenvMap[k]

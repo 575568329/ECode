@@ -188,7 +188,9 @@ let everConnected = false
 let sessionReady = false
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 const OP_QUEUE_CAP = 64
-const opQueue: Array<() => void> = [] // sessionReady 前的命令排队（握手先行）
+/** 审阅修复（开发席 P1-2）：排队项带 abort——丢弃路径（clearCreds flush(drop)/队满挤出）必须
+ *  settle 外层 Promise，否则 UI 态（creating 等）永久挂起直到手动刷新 */
+const opQueue: Array<{ run: () => void; abort: (e: Error) => void }> = [] // sessionReady 前的命令排队（握手先行）
 /** 活动事件订阅（重连后重发——daemon 侧新 DataLeg 的 subs 是空的，不重发=实时流永久静默） */
 const activeSubs = new Map<string, { sessionId?: string; sinceSeq?: () => number | null }>()
 const pending = new Map<string, { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>()
@@ -196,12 +198,12 @@ let nextId = 1
 
 function flushQueue(drop = false): void {
   while (opQueue.length > 0) {
-    const op = opQueue.shift()
+    const item = opQueue.shift()
     if (drop) {
-      void op
+      item?.abort(new Error('中继连接已失效——命令未发出（请重新连接后重试）'))
       continue
     }
-    op?.()
+    item?.run()
   }
   if (!drop && sessionReady && activeSubs.size > 0) {
     // 重连后重发订阅（sinceSeq 取最新游标——mux 重放语义原样生效，对齐直连「每次重连重拉 SSE」）
@@ -361,9 +363,10 @@ async function onWireMessage(text: string): Promise<void> {
   }
 }
 
-function enqueueOp(op: () => void): void {
-  if (opQueue.length >= OP_QUEUE_CAP) opQueue.splice(0, 1) // 队列满=连接长期不可用——最老 op 丢弃让位
-  opQueue.push(op)
+function enqueueOp(run: () => void, abort: (e: Error) => void): void {
+  // 队满=连接长期不可用——最老项丢弃让位（丢弃必须 abort——settle 其外层 Promise）
+  if (opQueue.length >= OP_QUEUE_CAP) opQueue.splice(0, 1)[0]?.abort(new Error('中继命令队列已满——最早命令被丢弃'))
+  opQueue.push({ run, abort })
 }
 
 function ensureSocket(): void {
@@ -420,21 +423,24 @@ export function relaySendCommand(
 ): Promise<{ ok: boolean; error?: string; sessionId?: string; value?: unknown; [k: string]: unknown }> {
   return new Promise((resolve, reject) => {
     ensureSocket()
-    enqueueOp(() => {
-      if (ws === null || !sessionReady) {
-        reject(new Error('中继连接不可用'))
-        return
-      }
-      const id = `q${nextId++}`
-      const body: Record<string, unknown> = { op }
-      if (sessionId !== undefined && sessionId !== '') body.sessionId = sessionId
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        reject(new Error('命令超时（中继链路）'))
-      }, 130_000)
-      pending.set(id, { resolve: resolve as (v: Record<string, unknown>) => void, reject, timer })
-      sendFrame({ t: 'cmd', id, project, body })
-    })
+    enqueueOp(
+      () => {
+        if (ws === null || !sessionReady) {
+          reject(new Error('中继连接不可用'))
+          return
+        }
+        const id = `q${nextId++}`
+        const body: Record<string, unknown> = { op }
+        if (sessionId !== undefined && sessionId !== '') body.sessionId = sessionId
+        const timer = setTimeout(() => {
+          pending.delete(id)
+          reject(new Error('命令超时（中继链路）'))
+        }, 130_000)
+        pending.set(id, { resolve: resolve as (v: Record<string, unknown>) => void, reject, timer })
+        sendFrame({ t: 'cmd', id, project, body })
+      },
+      (e) => reject(e), // 丢弃路径同步 settle（审阅修复——外层 Promise 永挂会锁死 creating 等 UI 态）
+    )
     if (ws !== null && ws.readyState === WebSocket.OPEN && sessionReady) flushQueue()
   })
 }
@@ -490,14 +496,19 @@ export function relayConnectMux(
   const subId = `s${nextId++}`
   activeSubs.set(subId, { sessionId, sinceSeq })
   ensureSocket()
-  enqueueOp(() => {
-    if (disposed || ws === null || !sessionReady) return
-    const since = sinceSeq?.()
-    const frame: Record<string, unknown> = { t: 'sub', id: subId }
-    if (sessionId !== undefined && sessionId !== '') frame.sessionId = sessionId
-    if (since !== null && Number.isFinite(since)) frame.sinceSeq = since
-    sendFrame(frame)
-  })
+  enqueueOp(
+    () => {
+      if (disposed || ws === null || !sessionReady) return
+      const since = sinceSeq?.()
+      const frame: Record<string, unknown> = { t: 'sub', id: subId }
+      if (sessionId !== undefined && sessionId !== '') frame.sessionId = sessionId
+      if (since !== null && Number.isFinite(since)) frame.sinceSeq = since
+      sendFrame(frame)
+    },
+    () => {
+      /* 订阅无外层 Promise——丢弃仅静默（activeSubs 表仍在，重连后重发覆盖） */
+    },
+  )
   if (ws !== null && ws.readyState === WebSocket.OPEN && sessionReady) flushQueue()
 
   return {

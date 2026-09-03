@@ -110,10 +110,13 @@ export class MultiTransport implements ClientTransport {
    * （abort 可打断 in-flight fetch 与退避 sleep——连接成功后 backoff 自行重置）；游标清零
    * （新 daemon 的 seq 空间从零开始，旧 lastSeq 会挡掉重放判定）。
    */
-  reattach(baseUrl: string, token: string): void {
+  reattach(baseUrl: string, token: string, keepSeq = false): void {
     this.opts.baseUrl = baseUrl
     this.opts.token = token
-    this.lastSeq = null
+    // 审阅修复（架构席 P1-1）：同实例存活（pid 未变，系统睡眠恢复/长网络抖动）保留 lastSeq——
+    // 重连带 sinceSeq 触发 mux 重放断线窗口帧（收尾帧到达=运行态自愈）；清零仅留给新实例
+    // （新 daemon 的 seq 空间从零开始，旧 lastSeq 会挡掉重放判定）
+    if (!keepSeq) this.lastSeq = null
     this.abort?.abort() // 泵循环 catch 后以新地址重连（退避从 base 重起）
   }
 

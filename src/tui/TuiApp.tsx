@@ -508,13 +508,16 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   // —— M12-B3：宿主会话（数据/执行/审批全权在宿主；TuiApp 只是协议客户端）——
   const hostRef = useRef<TuiHost | null>(null)
   /** 附着形态的 MultiTransport（setSessionId/reattach 用；embedded 下恒 null） */
-  const transportRef = useRef<{ setSessionId?: (sid: string) => void; reattach?: (baseUrl: string, token: string) => void } | null>(null)
+  const transportRef = useRef<{ setSessionId?: (sid: string) => void; reattach?: (baseUrl: string, token: string, keepSeq?: boolean) => void } | null>(null)
   if (attachedHost !== undefined && hostRef.current === null) {
     hostRef.current = attachedHost
     if ('setSessionId' in attachedHost) {
       transportRef.current = attachedHost as { setSessionId?: (sid: string) => void }
-      // T5（P1-2 接线）：mux 重连 gap=true（重放缓冲覆盖不到）→ transcript 全量补拉自愈
-      ;(attachedHost as { onReconnect?: (gap: boolean) => void }).onReconnect = (gap) => { if (gap) syncCommitted() }
+      // T5（P1-2 接线）：mux 重连 gap=true（重放缓冲覆盖不到）→ transcript 全量补拉自愈。
+      // 审阅修复（架构席 P1-1）：gap 还须对账**运行态**——断线窗口的 turn/completed /
+      // busy:false 帧永久丢失时 running 恒真、SSE 已 open（G3 tick 只认非 open 永不再自愈）
+      // =假忙碌换入口复发。本回调挂接在首渲染（闭包须走 ref 桥取每渲染重建的最新实现）
+      ;(attachedHost as { onReconnect?: (gap: boolean) => void }).onReconnect = (gap) => { if (gap) gapReconcileRef.current() }
       ;(attachedHost as { onUnauthorized?: () => void }).onUnauthorized = () => {
         setSystemMsgs(['⚠ 后台服务凭据失效——请重新认证或重启 daemon'], 'warn')
       }
@@ -1422,9 +1425,18 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         dbuf.timer = null
       }
       dbuf.text = ''
+      // 挂起审批随轮作废（审阅 R6/P1-1：不 resolve 则主输入框恒 inactive + 新宿主 NOT_PENDING 静默吞答）。
+      // 审阅修复（09-03 走查实测）：resolve+note 原写在下方 setState **updater 内**——React 延迟执行
+      // updater 时调用方同步读到的 notes 为空，「审批已作废」提示静默丢失（真机复现于审批挂起期
+      // daemon 失联降级）。副作用外提：闭包态同步 resolve+记 note；updater 内只留「同拍新到审批」
+      // 兜底（对象身份比对防双 resolve）
+      const pendingConfirm = active.confirm
+      if (pendingConfirm !== null) {
+        pendingConfirm.resolve(false)
+        notes.push('⚠ 挂起的审批已随轮作废（原因：' + reason + '）——如需执行请重发指令')
+      }
       setActive((a) => {
-        // 挂起审批随轮作废（审阅 R6/P1-1：不 resolve 则主输入框恒 inactive + 新宿主 NOT_PENDING 静默吞答）
-        if (a.confirm !== null) {
+        if (a.confirm !== null && a.confirm !== pendingConfirm) {
           a.confirm.resolve(false)
           notes.push('⚠ 挂起的审批已随轮作废（原因：' + reason + '）——如需执行请重发指令')
         }
@@ -1459,7 +1471,10 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       const reg = await resurrectDaemonReg(deps.logger)
       const transport = transportRef.current
       if (reg !== null && transport?.reattach !== undefined) {
-        transport.reattach(`http://127.0.0.1:${reg.port}`, reg.token)
+        // 审阅修复（架构席 P1-1）：同实例保留 SSE 游标——重连即带 sinceSeq 触发 mux 重放
+        // 断线窗口帧（turn/completed/busy:false 到达=运行态自愈；缓冲覆盖不到走 gap 对账）
+        const sameInstance = reg.pid === prevReg?.pid
+        transport.reattach(`http://127.0.0.1:${reg.port}`, reg.token, sameInstance)
         // daemon 重启后内存会话空——冷拉回当前会话（ensureRestore 同 id 续写，历史文件在同机共享）
         if (attachedSidRef.current !== undefined) {
           transport.setSessionId?.(attachedSidRef.current)
@@ -1548,6 +1563,28 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   // ref 桥防 stale closure（rescueDaemon 每渲染重建）
   const rescueRef = useRef<() => Promise<'reattached' | 'local' | 'dead'>>(() => Promise.resolve('dead'))
   rescueRef.current = rescueDaemon
+  // 审阅修复（架构席 P1-1）：gap 重连对账实现（首渲染挂接的 onReconnect 经此 ref 取最新闭包）——
+  // transcript 补拉之外对账运行态：session/list 的 running 注入明确 not running 即收场
+  const gapReconcileRef = useRef<() => void>(() => {})
+  gapReconcileRef.current = () => {
+    syncCommitted()
+    if (!runningRef.current) return
+    const sid = attachedSidRef.current ?? deps.history.currentSessionId()
+    void (hostRef.current ?? host)
+      .send({ op: 'session/list' })
+      .then((r) => {
+        if (!r.ok || !runningRef.current) return
+        const metas = (r.value ?? []) as Array<{ sessionId?: string; running?: boolean }>
+        const mine = metas.find((m) => m.sessionId === sid)
+        if (mine !== undefined && mine.running === false) {
+          const tail = closeDeadTurn('重连对账')
+          setSystemMsgs([...tail, '✓ 已与后台重新对齐（上一轮在断线期间已结束，已产出保留）'])
+        }
+      })
+      .catch(() => {
+        /* 对账失败不动——留 G3/命令路径自愈 */
+      })
+  }
   // 审阅 R6/P2-4：dead 熔断（localFallback 缺失形态下防 8s×15s 无限重拉循环刷日志——真机不达，测试态护栏）
   const rescueDeadLatch = useRef(false)
   useEffect(() => {
@@ -1830,8 +1867,10 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       ]),
     [committed, active.timeline],
   )
+  // 审阅修复（开发席 P2）：全完成=面板自动收起（实占 0）——预算同口径不再虚扣 ~5 行
+  const todoAllDone = todoEntries !== null && todoEntries.length > 0 && todoEntries.every((t) => t.status === 'completed')
   const todoLines =
-    todoEntries === null
+    todoEntries === null || todoAllDone
       ? 0
       : Math.min(todoEntries.length, TODO_MAX_VISIBLE) + 1 + (todoEntries.length > TODO_MAX_VISIBLE ? 1 : 0)
   const tuiAlloc = allocateDynamic(budget, { tasksBar: tasksActive, subagentBar: subagents.length > 0, todoLines })

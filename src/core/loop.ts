@@ -643,7 +643,8 @@ const TOOL_TIMEOUT = Symbol('tool_timeout')
 /**
  * timeout_ms 兑现（安全审阅 P1 死契约修复）：仅工具声明了 timeout_ms 才由循环统一强制——
  * Promise.race 软超时（超时放弃等待，不强杀后台 execute；进程清理由工具自身的 signal/kill 逻辑负责）。
- * 未声明则不设限（bash/task 等长任务自管超时）。finally 清定时器防泄漏。
+ * 现存声明方=MCP 工具（adapt 注入）；bash 改输入参数 timeout_ms 自管（超时自杀树，2026-09-03）。
+ * finally 清定时器防泄漏。
  */
 async function executeWithTimeout(
   tool: Tool,

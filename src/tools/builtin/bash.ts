@@ -99,8 +99,9 @@ export const bashTool: Tool = {
       command: { type: 'string', description: 'shell 命令' },
       timeout_ms: {
         type: 'number',
+        minimum: 1,
         maximum: BASH_MAX_TIMEOUT_MS,
-        description: `可选超时毫秒数（默认 ${BASH_DEFAULT_TIMEOUT_MS}、最大 ${BASH_MAX_TIMEOUT_MS}）——长命令（全量测试/构建）显式放大；超时杀整树`,
+        description: `可选超时毫秒数（默认 ${BASH_DEFAULT_TIMEOUT_MS}、最大 ${BASH_MAX_TIMEOUT_MS}，仅前台生效——run_in_background 忽略）——长命令（全量测试/构建）显式放大；超时杀整树`,
       },
       run_in_background: {
         type: 'boolean',
@@ -136,10 +137,13 @@ export const bashTool: Tool = {
     } catch {
       /* 快照失败静默继续（装配方 warn 已记） */
     }
-    const timeout = Math.min(
-      (args as { timeout_ms?: number }).timeout_ms ?? BASH_DEFAULT_TIMEOUT_MS,
-      BASH_MAX_TIMEOUT_MS,
-    )
+    // 审阅 P1（三席交叉）：0/负数超时无意义（「0=不限时」心智误传）——schema minimum:1 在
+    // loop 层 AJV 已拒，此处 >0 守卫是绕过校验直调（测试/内部）的防御纵深；上界 Math.min 同理
+    const rawTimeout = (args as { timeout_ms?: number }).timeout_ms
+    const timeout =
+      rawTimeout !== undefined && rawTimeout > 0
+        ? Math.min(rawTimeout, BASH_MAX_TIMEOUT_MS)
+        : BASH_DEFAULT_TIMEOUT_MS
 
     return new Promise<ExecResult>((resolve) => {
       let child: ChildProcess

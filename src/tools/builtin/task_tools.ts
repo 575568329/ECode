@@ -19,7 +19,7 @@ export const taskOutputTool: Tool = {
     properties: {
       task_id: { type: 'string', description: '任务 id（如 t3）' },
       offset: { type: 'number', description: '字节偏移（上次返回的 newOffset；缺省=自动增量）' },
-      wait_ms: { type: 'number', description: `等待新输出/退出的毫秒数（≤${TASK_OUTPUT_MAX_WAIT_MS}；长任务单次给足，如 60000-${TASK_OUTPUT_MAX_WAIT_MS}）` },
+      wait_ms: { type: 'number', maximum: TASK_OUTPUT_MAX_WAIT_MS, description: `等待新输出/退出的毫秒数（≤${TASK_OUTPUT_MAX_WAIT_MS}；长任务单次给足，如 60000-${TASK_OUTPUT_MAX_WAIT_MS}）` },
     },
     required: ['task_id'],
   },
@@ -33,8 +33,14 @@ export const taskOutputTool: Tool = {
     // 已运行时长只在 running 态渲染：等待期结果逐次变化（豁免合法轮询）；终态保持静态
     // （任务已结束后复读同一份输出仍是同参同果，guard 保护不丢）
     const uptime = r.status === 'running' ? ` · 已运行 ${Math.max(1, Math.round((Date.now() - r.startedAt) / 1000))}s` : ''
+    // 审阅 P1（终态零输出文案矛盾）：「仍在跑」指引只给 running——completed/failed/stopped
+    // 且无新输出是正常复读形态（增量已消费完），说「已结束」防模型继续等一个死任务
+    const noNewText =
+      r.status === 'running'
+        ? `（暂无新输出——任务仍在跑，继续等请单次给足 wait_ms（上限 ${TASK_OUTPUT_MAX_WAIT_MS}），勿短间隔连发）`
+        : '（无新输出——任务已结束，如需全文用 offset 重读）'
     return {
-      content: `状态 ${r.status}${uptime}${r.exitCode !== null ? ` · exit ${r.exitCode}` : ''} · newOffset ${r.newOffset}\n${tail === '' ? `（暂无新输出——任务仍在跑，继续等请单次给足 wait_ms（上限 ${TASK_OUTPUT_MAX_WAIT_MS}），勿短间隔连发）` : tail}`,
+      content: `状态 ${r.status}${uptime}${r.exitCode !== null ? ` · exit ${r.exitCode}` : ''} · newOffset ${r.newOffset}\n${tail === '' ? noNewText : tail}`,
     }
   },
 }

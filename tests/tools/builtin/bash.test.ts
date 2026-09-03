@@ -263,3 +263,20 @@ describe('bash 超时自管（2026-09-03 等待根治：30s 写死 → 输入参
     expect(props.properties.timeout_ms?.description).toContain('600000')
   })
 })
+
+// 审阅 P1（三席交叉）：timeout_ms 0/负数此前直通 setTimeout 立即杀树（spawn 已发生、命令零机会执行）
+describe('bash 超时下界（审阅修复批）', () => {
+  it('timeout_ms 0/负数 → 回退默认不立即杀（「0=不限时」心智误传无害化）', async () => {
+    const r0 = await bashTool.execute({ command: 'echo ok-zero', timeout_ms: 0 }, ctx)
+    expect(r0.is_error).toBeFalsy()
+    expect(r0.content).toContain('ok-zero')
+    const rNeg = await bashTool.execute({ command: 'echo ok-neg', timeout_ms: -5 }, ctx)
+    expect(rNeg.is_error).toBeFalsy()
+    expect(rNeg.content).toContain('ok-neg')
+  }, 10_000)
+
+  it('契约锚：schema minimum:1（loop 层 AJV 拒 0/负；运行时 >0 守卫为直调防御纵深）', () => {
+    const props = bashTool.input_schema as { properties: Record<string, { minimum?: number }> }
+    expect(props.properties.timeout_ms?.minimum).toBe(1)
+  })
+})

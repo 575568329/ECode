@@ -61,6 +61,17 @@ const noopHistory = {
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
 
+/** 每测深拷贝 config（审阅 P0-1：模块级共享 config 被 TUI /model 的宿主 handler 就地改写后
+ *  污染后续测试——/model 的 setConfig→send model/set→inline HostSession 改 cfg.current 写穿
+ *  共享对象。深拷贝使每测独立，与 serve 每项目浅克隆治串台同族） */
+function cloneConfig(c: Config): Config {
+  return {
+    ...c,
+    providers: Object.fromEntries(Object.entries(c.providers).map(([k, p]) => [k, { ...p }])),
+    current: { ...c.current },
+  }
+}
+
 function makeDeps(overrides: Partial<{ config: Config }> = {}) {
   const orchestrator = new CompactionOrchestrator()
   orchestrator.register(new SummarizeStrategy())
@@ -69,7 +80,7 @@ function makeDeps(overrides: Partial<{ config: Config }> = {}) {
     tools: new ToolRegistryImpl(),
     logger: noopLogger,
     history: noopHistory,
-    config: overrides.config ?? config,
+    config: overrides.config ?? cloneConfig(config),
     orchestrator,
     lastUsage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
     // M6：tmp 目录实例（不触真实 ~/.ecode/skills；测试不 load，空注册表即可）
@@ -186,7 +197,9 @@ describe('TuiApp /model', () => {
 
     const { stdin } = render(
       React.createElement(TuiApp, {
-        deps: { providerRegistry: spyReg, tools: new ToolRegistryImpl(), logger: noopLogger, history: noopHistory, config, skillRegistry: makeDeps().skillRegistry, mcpManager: null },
+        // 审阅修复：走 makeDeps 副本（原直传模块级 config——切 model 的宿主 handler 就地写穿
+        // 共享源，污染后续图片粘贴测试的 current）
+        deps: { ...makeDeps(), providerRegistry: spyReg },
       }),
     )
     // 切到 deepseek（openai 协议）

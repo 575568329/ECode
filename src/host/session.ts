@@ -87,7 +87,7 @@ export interface HostDeps {
   skillListForPrompt: () => SkillPromptSource
   hookRunner?: HookRunner | null
   checkpoint?: {
-    snapshot(sessionId: string, paths: string[], meta: { tool: string; messageId?: string }): Promise<unknown>
+    snapshot(sessionId: string, paths: string[], meta: { tool: string; messageId?: string }): Promise<number | null>
     /** T1 rewind 宿主接线（协议面 list/exec）——结构兼容 CheckpointStore，装配层传真件 */
     list(sessionId: string): Promise<
       Array<{ seq: number; time: string; tool: string; messageId?: string; files: Array<{ path: string; hash: string }> }>
@@ -96,7 +96,7 @@ export interface HostDeps {
     revert(sessionId: string, seq: number): Promise<{ restored: string[]; externalChanged: string[] }>
     /** 二轮补遗（bash absent 兜底）：近修改集读取 + absent 补录（结构兼容 CheckpointStore） */
     bashDirtyFiles(): Promise<string[]>
-    amendAbsent(sessionId: string, paths: string[]): Promise<void>
+    amendAbsent(sessionId: string, paths: string[], seq?: number | null): Promise<void>
     /** T 线②：fork 续写的快照目录跟随（起新 id 后旧快照仍可用——CC copyFileHistoryForResume 同款） */
     copyForResume(oldSessionId: string, newSessionId: string): Promise<void>
   } | null
@@ -153,6 +153,14 @@ interface QueueEntry {
   meta?: MessageMeta
 }
 
+/** bash absent 兑底基线（实例随调用走，不落共享槽） */
+export interface BashBaseline {
+  sessionId: string
+  pre: string[]
+  /** 写前快照点 seq（null=无点可锚——干區仓库首个 bash，已知局限） */
+  seq: number | null
+}
+
 export class HostSession {
   readonly channel = new InMemoryChannel()
   /** B4：会话级后台任务表（ctx.tasks/ctx.session.tasks——多会话不串台；模块级全局仅兜底）。
@@ -165,8 +173,6 @@ export class HostSession {
   private sandboxMode: SandboxMode
   private readonly messages: HistoryLine[] = []
   private readonly editedFiles = new Set<string>()
-  /** bash absent 兜底（二轮）：bash 前置 git status 快照（执行后差集用） */
-  private bashPreDirty: string[] = []
   /** M13-B1（#4）：已读文件 mtime 表（readFileGuard 数据源——write/edit 后 mtime 变自然放行） */
   private readonly readMtime = new Map<string, number>()
 
@@ -238,19 +244,29 @@ export class HostSession {
     if (deps.mcpPendingApproval !== undefined) this.pendingMcpApprovalGate = deps.mcpPendingApproval
   }
 
-  /** bash absent 兜底（二轮审阅）：bash 前置 git status 暂存，执行后差集补 absent 进最近快照点 */
-  private async bashCapturePre(): Promise<void> {
-    this.bashPreDirty = this.deps.checkpoint != null ? await this.deps.checkpoint.bashDirtyFiles() : []
+  /**
+   * bash absent 兑底（二轮审阅+实施审阅修复）：基线**实例化**——begin 一次 git status
+   * 同时拍写前快照（pre 集即快照路径）并记 seq 锚；end 差集补 absent 进 **seq 锚点**。
+   * 原「最近点」锚在背靠背免确认工具下会错锚到后续写前点（revert 误删 bash 产物）；
+   * 单槽暂存在串行/并发下互踩——两者一并去除（实施审阅 3×P1）。
+   * 干區仓库首个 bash（pre 空无点）：新建文件无基线可记，已知局限披露。
+   */
+  private async bashBaselineBegin(): Promise<BashBaseline | null> {
+    const cp = this.deps.checkpoint
+    if (cp == null) return null
+    const sessionId = this.deps.history.currentSessionId()
+    const pre = await cp.bashDirtyFiles()
+    const seq = await cp.snapshot(sessionId, pre, { tool: 'bash' })
+    return { sessionId, pre, seq }
   }
 
-  private async bashAmendAbsent(): Promise<void> {
+  private async bashBaselineEnd(b: BashBaseline | null): Promise<void> {
     const cp = this.deps.checkpoint
-    if (cp == null) return
+    if (cp == null || b === null || b.seq === null) return
     const post = await cp.bashDirtyFiles()
-    const pre = new Set(this.bashPreDirty)
-    this.bashPreDirty = []
+    const pre = new Set(b.pre)
     const created = post.filter((p) => !pre.has(p))
-    if (created.length > 0) await cp.amendAbsent(this.deps.history.currentSessionId(), created)
+    if (created.length > 0) await cp.amendAbsent(b.sessionId, created, b.seq)
   }
 
   /** .mcp.json 批准门交互（宿主权威）：askSelect 挂起→应答→approve() 二段接入或拒绝留痕 */
@@ -345,10 +361,10 @@ export class HostSession {
       usage: (inp, out, cache) => this.recordUsage(inp, out, cache), // 子代理成本归并（M12-P0 统一收口）
       onBeforeWrite: async (paths, tool, toolUseId) => {
         for (const p of paths) this.editedFiles.add(p)
-        if (tool === 'bash' || tool === 'bash-background') await this.bashCapturePre()
         await this.deps.checkpoint?.snapshot(this.deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
       },
-      onAfterBash: () => this.bashAmendAbsent(),
+      bashBaselineBegin: () => this.bashBaselineBegin(),
+      bashBaselineEnd: (b: BashBaseline | null) => this.bashBaselineEnd(b),
       getProviderReq: () => buildProviderReq(this.cfg()),
       getProvider: () => this.deps.providerRegistry.getByType(this.cfg().providers[this.cfg().current.name].type),
       getSandbox: () =>
@@ -1516,10 +1532,10 @@ export class HostSession {
             // M13 审阅 R1：子代理快照/沙箱会话化（本会话 history.currentSessionId——多会话不串台）
             onBeforeWrite: async (paths, tool, toolUseId) => {
               for (const p of paths) this.editedFiles.add(p)
-              if (tool === 'bash' || tool === 'bash-background') await this.bashCapturePre()
-              await this.deps.checkpoint?.snapshot(this.deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
+                    await this.deps.checkpoint?.snapshot(this.deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
             },
-            onAfterBash: () => this.bashAmendAbsent(),
+            bashBaselineBegin: () => this.bashBaselineBegin(),
+      bashBaselineEnd: (b: BashBaseline | null) => this.bashBaselineEnd(b),
             getSandbox: () =>
               makeSandbox(this.sandboxMode, this.deps.cwd ?? process.cwd(), this.cfg().sandbox?.blockedCommands ?? []),
             // 审阅 P0-3：运行态四 getter 会话化（模块桥单槽进程级会被多项目覆盖——此处随
@@ -1535,10 +1551,10 @@ export class HostSession {
           signal: this.abort.signal,
           onBeforeWrite: async (paths, tool, toolUseId) => {
             for (const p of paths) this.editedFiles.add(p)
-            if (tool === 'bash' || tool === 'bash-background') await this.bashCapturePre()
-            await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
+                await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
           },
-          onAfterBash: () => this.bashAmendAbsent(),
+          bashBaselineBegin: () => this.bashBaselineBegin(),
+      bashBaselineEnd: (b: BashBaseline | null) => this.bashBaselineEnd(b),
           model: this.cfg().current.model,
           // F-33：轮初快照改访问器属性——运行中 Tab 切档立即生效（工具侧每次 ctx.sandbox
           // 读取都实时 makeSandbox，与 hostConfirm 读 this.sandboxMode 同源无口径分裂；

@@ -125,27 +125,39 @@ export const bashTool: Tool = {
     }
     // M10-P3：后台分流（危险命令与沙箱校验照走——黑名单不因后台豁免）
     if (run_in_background === true) {
-      // 审阅修复（安全席 P2·二轮）：后台命令同样补写前快照——原分流早于快照，
+      // 审阅修复（安全席 P2·二轮）+实施审阅重设：后台命令同样走基线对（begin 拍写前快照记 seq 锚）——原分流早于快照，
       // npm install/构建类后台写文件对 /rewind 完全失明（走 gitDirtyFiles 兑底同款）
-      try {
-        await ctx.onBeforeWrite?.([], 'bash-background')
-      } catch {
-        /* 快照失败静默继续 */
+      let bgBaseline: { sessionId: string; pre: string[]; seq: number | null } | null = null
+      if (ctx.bashBaselineBegin !== undefined) {
+        bgBaseline = await ctx.bashBaselineBegin().catch(() => null)
+      } else {
+        try {
+          await ctx.onBeforeWrite?.([], 'bash-background')
+        } catch {
+          /* 快照失败静默继续 */
+        }
       }
       const started = (ctx.tasks ?? taskRegistry).start(command, ctx.cwd)
       if (!started.ok) return { content: started.reason, is_error: true }
       // 二轮补遗：后台命令同样补录启动期差集（长跑命令后续产物由 task_output 轮外的
       // 下一次写前快照自然吸收；此钩子覆盖「先写文件再长跑」的常见形态）
-      void ctx.onAfterBash?.().catch(() => {})
+      void ctx.bashBaselineEnd?.(bgBaseline).catch(() => {})
       return {
         content: `后台任务已启动：#${started.task.id}（输出文件 ${started.task.outputFile}）——用 task_output("${started.task.id}") 读增量输出，等新输出用大 wait_ms（≤${TASK_OUTPUT_MAX_WAIT_MS}）一次等到、勿短间隔连发（会触发 loop-guard 同参检测）；完成时会在下轮通知`,
       }
     }
-    // M9-P1：写前快照——bash 不可解析目标，传空数组由服务端 git status 近修改集兜底（无 git 跳过+warn）
-    try {
-      await ctx.onBeforeWrite?.([], 'bash')
-    } catch {
-      /* 快照失败静默继续（装配方 warn 已记） */
+    // M9-P1 写前快照 + 二轮 absent 兜底基线合一：begin 一次 git status 同时拍写前快照
+    // （pre 集即快照路径）并记 seq 锚——基线实例随调用走不落共享槽（实施审阅 3×P1 重设）。
+    // 兼容：未提供基线对的装配方（旧测试 fake ctx）回退原 onBeforeWrite 路径
+    let bashBaseline: { sessionId: string; pre: string[]; seq: number | null } | null = null
+    if (ctx.bashBaselineBegin !== undefined) {
+      bashBaseline = await ctx.bashBaselineBegin().catch(() => null)
+    } else {
+      try {
+        await ctx.onBeforeWrite?.([], 'bash')
+      } catch {
+        /* 快照失败静默继续（装配方 warn 已记） */
+      }
     }
     // 审阅 P1（三席交叉）：0/负数超时无意义（「0=不限时」心智误传）——schema minimum:1 在
     // loop 层 AJV 已拒，此处 >0 守卫是绕过校验直调（测试/内部）的防御纵深；上界 Math.min 同理
@@ -180,7 +192,7 @@ export const bashTool: Tool = {
         void killTree(child)
         // 二轮补遗（bash absent 兜底）：执行后差集补录（新建文件进最近快照点 absent 基线）。
         // fire-and-forget——结果已定，兜底失败不阻塞返回（amendAbsent 内部链上串行）
-        void ctx.onAfterBash?.().catch(() => {})
+        void ctx.bashBaselineEnd?.(bashBaseline).catch(() => {})
         resolve(res)
       }
 

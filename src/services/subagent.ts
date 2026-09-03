@@ -55,6 +55,9 @@ interface SessionPort {
     countMcpCall?(): void
     /** M13 审阅 R1：写前快照会话化（多会话 checkpoint 归属发起会话） */
     onBeforeWrite?(paths: string[], tool: string, toolUseId?: string): Promise<void>
+    /** 二轮补遗+实施审阅修复（P1 断链）：bash absent 兜底经会话端口随子代理传递 */
+    bashBaselineBegin?(): Promise<{ sessionId: string; pre: string[]; seq: number | null } | null>
+    bashBaselineEnd?(b: { sessionId: string; pre: string[]; seq: number | null } | null): Promise<void>
     /** M13 审阅 R1：沙箱档随发起会话（sandbox/set 切档后子代理跟随） */
     getSandbox?(): import('./sandbox.js').Sandbox
     /** 审阅 P0-3：运行态四 getter 会话化（模块桥单槽是进程级——serve 多项目下被后启动项目
@@ -107,7 +110,9 @@ export interface SubagentBridge {
    * cli deps 的 onBeforeWrite 只做快照，够不到 TuiApp 闭包，故必经桥） */
   onBeforeWrite?: (paths: string[], tool: string, toolUseId?: string) => Promise<void>
   /** 二轮补遗（bash absent 兜底）：子代理 bash 执行后差集补录（主链同款语义） */
-  onAfterBash?: () => Promise<void>
+  /** 二轮补遗+实施审阅修复：基线实例化对（begin 拍前快照记 seq 锚，end 差集补 absent 进锚点） */
+  bashBaselineBegin?: () => Promise<{ sessionId: string; pre: string[]; seq: number | null } | null>
+  bashBaselineEnd?: (b: { sessionId: string; pre: string[]; seq: number | null } | null) => Promise<void>
   /** 审阅 P1-1/P1-2：运行态 getter——TuiApp 挂（/model·/config 运行中切换、Tab 切沙箱档后
    * 子代理取新值；缺省回退 deps 静态值=argv 单次模式） */
   getProviderReq?: () => ProviderReq
@@ -369,6 +374,14 @@ export function makeSubagentOpts(
       signal,
       // M13 审阅 R1：sess 端口优先（多会话不串台）——模块桥降单会话兜底（argv/旧路径）
       onBeforeWrite: sessPort?.onBeforeWrite ?? bridge?.onBeforeWrite ?? deps.onBeforeWrite,
+      // 二轮补遗+实施审阅修复（P1 断链）：bash absent 兜底基线对——同款三级缺省链
+      //（此前只在桥对象上挂了字段、此处没接=子代理 bash 兜底完全不生效）
+      ...(sessPort?.bashBaselineBegin !== undefined || bridge?.bashBaselineBegin !== undefined
+        ? {
+            bashBaselineBegin: sessPort?.bashBaselineBegin ?? bridge?.bashBaselineBegin,
+            bashBaselineEnd: sessPort?.bashBaselineEnd ?? bridge?.bashBaselineEnd,
+          }
+        : {}),
       ...((sessPort?.getSandbox?.() ?? (bridge?.getSandbox !== undefined ? bridge.getSandbox() : deps.sandbox)) !== undefined
         ? { sandbox: sessPort?.getSandbox?.() ?? (bridge?.getSandbox !== undefined ? bridge.getSandbox() : deps.sandbox) }
         : {}),

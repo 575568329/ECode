@@ -89,10 +89,38 @@ describe('CheckpointStore：快照与 content-addressed 布局', () => {
     expect(r.restored).toContain(created)
     expect(existsSync(created)).toBe(false)
     expect(await readFile(a, 'utf8')).toBe('v1') // 原有文件不受影响
-    // 已有记录的路径不覆盖（幂等）：再次 amend 同路径 → 基线不变
-    await store.amendAbsent('s1', [created])
-    const metas = await store.list('s1')
-    void metas
+    // 已有记录的路径不覆盖（幂等——实施审阅 P2 空断言补实）：再次 amend 同路径 → 基线不变
+    const before = (await store.list('s1')).find((m) => m.seq === seq1)
+    await store.amendAbsent('s1', [created], seq1)
+    const after = (await store.list('s1')).find((m) => m.seq === seq1)
+    expect(after?.files.filter((f) => f.absent === true)).toHaveLength(before?.files.filter((f) => f.absent === true).length ?? 0)
+  })
+
+  it('amendAbsent seq 锚（实施审阅 P1-2）：补进指定点而非最近点——背靠背下不会错锚到后续写前点', async () => {
+    const store = makeStore()
+    const a = await write('a.ts', 'v1')
+    // bash 时序：写前点 N（seq1，pre=[a]）→ bash 新建 x → 后续 write 的写前点 N+1（seq2）
+    const seq1 = await store.snapshot('s1', [a], { tool: 'bash' })
+    const x = await write('x.txt', 'bash 产物')
+    await writeFile(a, 'v2', 'utf8')
+    const seq2 = await store.snapshot('s1', [a], { tool: 'edit_file' })
+    // amend 锚 seq1（bashBaselineEnd 的语义）——x 的 absent 应落在 seq1 而非最近点 seq2
+    await store.amendAbsent('s1', [x], seq1)
+    const m1 = (await store.list('s1')).find((m) => m.seq === seq1)
+    const m2 = (await store.list('s1')).find((m) => m.seq === seq2)
+    expect(m1?.files.some((f) => f.path === x && f.absent === true)).toBe(true)
+    expect(m2?.files.some((f) => f.path === x)).toBe(false) // 最近点未被污染
+    // revert 到 seq2（用户只想撤销那次 write）：bash 产物不删（absent 在 seq1，不在 >=seq2 范围…等等
+    // seq1 < seq2 → revert(seq2) 范围 [seq2, seq2] 不含 seq1 的 absent → x 保留 ✓
+    const r2 = await store.revert('s1', seq2)
+    expect(r2.restored).not.toContain(x)
+    expect(existsSync(x)).toBe(true)
+    expect(await readFile(a, 'utf8')).toBe('v2') // write 被撤销——v1 基线写回？v2 是 write 前内容…
+    // 注：seq2 基线是 v2（写前），revert(seq2) 写回 v2（内容不变），只验证不误删 x 即可
+    // revert 到 seq1（撤销 bash）：x 删除 ✓
+    const r1 = await store.revert('s1', seq1)
+    expect(existsSync(x)).toBe(false)
+    expect(r1.restored).toContain(x)
   })
 
   it('absent 回退：新建文件 revert 后被删除；撤销撤销可恢复（09-03 走查回归锁）', async () => {

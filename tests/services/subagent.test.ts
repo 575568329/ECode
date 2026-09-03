@@ -113,6 +113,30 @@ describe('makeSubagentOpts（隔离面断言）', () => {
     expect(opts.onBeforeRequest).toBeDefined()
     expect(opts.tools.list().map((t) => t.name)).not.toContain('task')
   })
+  it('实施审阅 P1 断链锁：sessPort 提供 bash 基线对 → 子代理 toolCtx 接通（不再死字段）', async () => {
+    const calls: string[] = []
+    const fakeBaseline = { sessionId: 's-sub', pre: [], seq: 7 }
+    const sessPort = {
+      onBeforeWrite: async () => {},
+      bashBaselineBegin: async () => {
+        calls.push('begin')
+        return fakeBaseline
+      },
+      bashBaselineEnd: async (b: unknown) => {
+        calls.push('end:' + JSON.stringify((b as { seq: number | null }).seq))
+      },
+    }
+    const opts = makeSubagentOpts(makeDeps(), 'a-bash', '描述', 'general', ctx.signal, undefined, undefined, sessPort)
+    expect(opts.toolCtx.bashBaselineBegin).toBeDefined()
+    expect(opts.toolCtx.bashBaselineEnd).toBeDefined()
+    const b = await opts.toolCtx.bashBaselineBegin?.()
+    expect(b).toEqual(fakeBaseline)
+    await opts.toolCtx.bashBaselineEnd?.(b ?? null)
+    expect(calls).toEqual(['begin', 'end:7'])
+    // 无 sessPort/bridge 时缺省不注入（旧装配方零扰动）
+    const bare = makeSubagentOpts(makeDeps(), 'a-bare', '描述', 'general', ctx.signal)
+    expect(bare.toolCtx.bashBaselineBegin).toBeUndefined()
+  })
   it('getMaxIterations 注入与显式入参两路轮数（deps getter > 兜底 50）；system getter 轮数感知', () => {
     const viaDeps = makeSubagentOpts(makeDeps({ getMaxIterations: () => 30 }), 'a-x', '描述', 'general', ctx.signal)
     expect(viaDeps.maxIterations).toBe(30)

@@ -326,17 +326,18 @@ export class CheckpointStore {
    * 链上串行；只补该点尚无记录的路径（已有 present/absent 基线不覆盖）；无快照点时静默跳过
    *（无点可锚——bash 前无任何写入，差集文件也不存在，删除它们无基线语义可依）。
    */
-  async amendAbsent(sessionId: string, paths: string[]): Promise<void> {
+  async amendAbsent(sessionId: string, paths: string[], seq?: number | null): Promise<void> {
     if (paths.length === 0) return
     await this.enqueueChain(async () => {
       const metas = await this.list(sessionId)
-      const latest = metas[metas.length - 1]
-      if (latest === undefined) return
-      const known = new Set(latest.files.map((f) => f.path))
+      // seq 锚（实施审阅 P1-2）：缺省回退最近点（旧语义兜底）；显式 null=无点可锚跳过
+      const target = seq === undefined ? metas[metas.length - 1] : seq !== null ? metas.find((m) => m.seq === seq) : undefined
+      if (target === undefined) return
+      const known = new Set(target.files.map((f) => f.path))
       const add = paths.filter((p) => !known.has(p))
       if (add.length === 0) return
-      latest.files = [...latest.files, ...add.map((p) => ({ path: p, hash: '', absent: true as const }))]
-      await writeFile(join(this.sessionDir(sessionId), String(latest.seq), 'meta.json'), JSON.stringify(latest, null, 2), 'utf8')
+      target.files = [...target.files, ...add.map((p) => ({ path: p, hash: '', absent: true as const }))]
+      await writeFile(join(this.sessionDir(sessionId), String(target.seq), 'meta.json'), JSON.stringify(target, null, 2), 'utf8')
     })
   }
 

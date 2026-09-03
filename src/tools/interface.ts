@@ -37,7 +37,9 @@ export interface ToolContext {
    * git status 近修改集拍不到「执行中新建」的文件（revert 无从删）；执行后差集补 absent
    * 基线进最近快照点。由宿主桥接 checkpoint（工具侧零依赖）。
    */
-  onAfterBash?: () => Promise<void>
+  /** 二轮补遗+实施审阅修复（bash absent 兑底）：基线实例化对——begin 拍写前快照记 seq 锚，end 差集补 absent 进锚点（不落共享槽） */
+  bashBaselineBegin?: () => Promise<{ sessionId: string; pre: string[]; seq: number | null } | null>
+  bashBaselineEnd?: (b: { sessionId: string; pre: string[]; seq: number | null } | null) => Promise<void>
   /**
    * M12-B4（D5）：宿主会话引用（HostSession 窄接口——结构类型，工具侧按需判读）。
    * 多会话并发（serve 多项目/双 HostSession）时，会话级状态（后台任务表/子代理进度）经此解析；
@@ -64,7 +66,9 @@ export interface ToolContext {
     /** M13 审阅 R1：子代理写前快照会话化（多会话下 checkpoint 归属发起会话——模块桥最后挂载者不再误导向） */
     onBeforeWrite?(paths: string[], tool: string, toolUseId?: string): Promise<void>
     /** 二轮补遗：bash absent 兜底（子代理 bash 同享主会话 checkpoint） */
-    onAfterBash?(): Promise<void>
+    /** 二轮补遗+实施审阅修复（bash absent 兑底）：基线实例化对——begin 拍写前快照记 seq 锚，end 差集补 absent 进锚点（不落共享槽） */
+    bashBaselineBegin?: () => Promise<{ sessionId: string; pre: string[]; seq: number | null } | null>
+    bashBaselineEnd?: (b: { sessionId: string; pre: string[]; seq: number | null } | null) => Promise<void>
     /** M13 审阅 R1：子代理沙箱档随发起会话（sandbox/set 切档后子代理跟随本会话档位） */
     getSandbox?(): import('../services/sandbox.js').Sandbox
     /** 审阅 P0-3：运行态四 getter 会话化（模块桥单槽是进程级，serve 多项目被后启动项目

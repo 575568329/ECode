@@ -302,6 +302,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   }
   // 同步 picker 覆盖状态给 useInterrupt（同 confirm：覆盖期间 Ctrl+C 由 picker 处理，不中断 loop）
   const pickerRef = useRef(false)
+  // 审阅 P1-1：/model 切换意图序号——快速连切时落后的 model/set 回执按序丢弃（附着态 HTTP 并发乱序）
+  const modelPickSeqRef = useRef(0)
   // 批2d（§13.1 拍板-1 附）：已响铃的审批 requestId 留痕（同一审批不重复响——Set 随会话生命周期，无需清理）
   const bellRungRef = useRef(new Set<string>())
   // ctxWindow 缓存（S-P4：submit 热路径同步用，启动解析一次 + 切模型刷新；默认 200k 兜底）
@@ -2185,10 +2187,29 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           entries={entries}
           current={config.current}
           onPick={(e) => {
+            const prev = config.current // 宿主拒绝时的回滚基准（审阅 P2-1：防「显示已切实际未切」二次骗）
             setConfig((c) => ({ ...c, current: { name: e.name, model: e.model } }))
             pickerRef.current = false
             setOverlay(null)
             void checkModelWindow(e.model, e.name)
+            // 2026-09-03 根因修复：请求在宿主侧执行——本地 setConfig 只改 TUI state
+            // （附着 daemon 宿主读自己的 config，够不到；**产品 REPL embedded 同病**——装配
+            // getConfig 持 makeDeps 原始 config 对象，setConfig 换 state 不同步。发本帧让宿主
+            // handler 就地改宿主 config，是两形态共同的真同步面；测试 fake 的 configRef 路径
+            // 幂等）。失败回滚本地显示并 sticky 提示
+            modelPickSeqRef.current += 1
+            const seq = modelPickSeqRef.current
+            host.send({ op: 'model/set', provider: e.name, model: e.model })
+              .then((r) => {
+                // 审阅 P1-1：仅最后一次意图有效——快速连切 A→B 时落后的 A 回执丢弃
+                // （附着态 HTTP 并发乱序，否则静默停在 A）
+                if (seq !== modelPickSeqRef.current) return
+                if (!r.ok) {
+                  setConfig((c) => ({ ...c, current: prev }))
+                  pushNoticeFn('error', `${e.name} 切换未送达宿主：${r.error}（daemon 常需重启加载新配置）`, true)
+                }
+              })
+              .catch(() => {})
           }}
           onCancel={() => {
             pickerRef.current = false

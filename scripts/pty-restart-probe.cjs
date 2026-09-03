@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * /restart 真机探针 v2（用户报：npm run dev 下 /restart 后新实例渲染正常但无法输入）。
  *
@@ -95,12 +96,12 @@ const run = async () => {
   }
 
   console.log(`\n# 结论：${alive1 ? '未复现——新实例输入活' : '复现——/restart 后输入死'}（restart 前=${alive0 ? '活' : '死'}）`)
-  proc.kill()
+  killPty(proc)
   process.exit(alive1 ? 0 : 2)
 }
 
 run().catch((e) => {
   console.error('driver error:', e)
-  if (proc != null) proc.kill()
+  if (proc != null) killPty(proc)
   process.exit(1)
 })

@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * F-46 真机探针：busy 中（bash 长命令运行）按 Ctrl+T → 输出面板打开（运行期看 transcript 的入口）。
  * 跑法：node scripts/pty-ctrlt-probe.cjs
@@ -43,18 +44,18 @@ server.listen(0, '127.0.0.1', async () => {
   const has = (s) => strip(out).includes(s)
   let ok = false
   for (let i = 0; i < 100 && !ok; i++) { await sleep(150); ok = has('输入消息') }
-  if (!ok) { console.log('FAIL 未就绪'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 未就绪'); killPty(proc); server.close(); process.exit(1) }
   await sleep(1200)
   proc.write('跑个长命令')
   await sleep(500)
   proc.write('\r')
   ok = false
   for (let i = 0; i < 60 && !ok; i++) { await sleep(200); ok = has('执行 bash') }
-  if (!ok) { console.log('FAIL 审批卡未弹出'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 审批卡未弹出'); killPty(proc); server.close(); process.exit(1) }
   proc.write('y') // 应答审批（默认 y）——bash 真跑进入 busy
   ok = false
   for (let i = 0; i < 60 && !ok; i++) { await sleep(200); ok = has('调用 bash') }
-  if (!ok) { console.log('FAIL 工具未开始'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 工具未开始'); killPty(proc); server.close(); process.exit(1) }
   console.log('OK   busy 中（bash 运行）')
   const pos = out.length
   proc.write('\x14') // Ctrl+T
@@ -76,7 +77,7 @@ server.listen(0, '127.0.0.1', async () => {
   for (let i = 0; i < 25 && !sawUser; i++) { await sleep(200); sawUser = strip(out.slice(pos2)).includes('跑个长命令') }
   console.log(sawUser ? 'OK   busy 中时间线含当前轮用户消息' : 'WARN busy 中时间线未见当前轮（轮末才同步）')
   console.log(strip(out.slice(pos2)).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-12).join('\n'))
-  proc.kill()
+  killPty(proc)
   server.close()
   setTimeout(() => process.exit(allOk ? 0 : 1), 200)
 })

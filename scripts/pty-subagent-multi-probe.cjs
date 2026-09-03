@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * F-46 多子代理并发真机探针：主循环单轮派两个 task（readonly 并行池 Promise.all）→
  * 面板列表出现两条子代理条目 → 回车逐个查看（dump 实拍格式化输出）。
@@ -77,7 +78,7 @@ server.listen(0, '127.0.0.1', async () => {
   const has = (s) => strip(out).includes(s)
   let ok = false
   for (let i = 0; i < 100 && !ok; i++) { await sleep(150); ok = has('输入消息') }
-  if (!ok) { console.log('FAIL 未就绪'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 未就绪'); killPty(proc); server.close(); process.exit(1) }
   await sleep(1200)
   proc.write('并发探针跑起来')
   await sleep(500)
@@ -87,7 +88,7 @@ server.listen(0, '127.0.0.1', async () => {
   if (!ok) {
     console.log('FAIL 双子代理结论未回流')
     console.log(strip(out).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-14).join('\n'))
-    proc.kill(); server.close(); process.exit(1)
+    killPty(proc); server.close(); process.exit(1)
   }
   console.log('OK   双子代理并行完成且结论都回流')
   await sleep(500)
@@ -96,13 +97,13 @@ server.listen(0, '127.0.0.1', async () => {
   ok = false
   // F-50 批 3：Ctrl+T 默认直达执行时间线（output-view），l 键进来源列表——探针两段走
   for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('执行时间线') || strip(out.slice(pos)).includes('行滚') }
-  if (!ok) { console.log('FAIL Ctrl+T 未开时间线'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL Ctrl+T 未开时间线'); killPty(proc); server.close(); process.exit(1) }
   await sleep(300)
   const pos2 = out.length
   proc.write('l')
   ok = false
   for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos2)).includes('回车 查看') }
-  if (!ok) { console.log('FAIL Ctrl+T l 列表未开'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL Ctrl+T l 列表未开'); killPty(proc); server.close(); process.exit(1) }
   // F-49：列表过滤后只显示本会话的甲/乙两条——等 1s 列表轮询把 meta 摘要刷出来
   ok = false
   for (let i = 0; i < 40 && !ok; i++) {
@@ -127,7 +128,7 @@ server.listen(0, '127.0.0.1', async () => {
   const hasA = full.includes('甲子代理完成')
   const hasB = full.includes('乙子代理完成')
   console.log('== 结论：' + (hasA && hasB ? '多子代理并发可见性通过 ==' : '存在失败 =='))
-  proc.kill()
+  killPty(proc)
   server.close()
   setTimeout(() => process.exit(hasA && hasB ? 0 : 1), 200)
 })

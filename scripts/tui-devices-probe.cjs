@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * /devices TUI 冒烟探针（面板形态）：真 pty 起 TUI（embedded）→ /devices 开面板 →
  * 回车「配对新设备」→ 断言终端二维码渲染 + 深链 → Esc 返回 → Esc 关面板。
@@ -67,7 +68,7 @@ async function cleanupProbeDevices() {
   if (!panelOpen) {
     console.error('✗ 面板未打开')
     console.error('[DBG tail]', JSON.stringify(strip(out).slice(-300)))
-    proc.kill()
+    killPty(proc)
     await cleanupProbeDevices()
     process.exit(1)
   }
@@ -92,7 +93,7 @@ async function cleanupProbeDevices() {
   proc.write('\x03')
   await sleep(800)
   try {
-    proc.kill()
+    killPty(proc)
   } catch {
     /* conpty 收尾竞态（AttachConsole）——断言已完成，不掩盖结果 */
   }

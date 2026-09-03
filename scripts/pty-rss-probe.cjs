@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀
 /**
  * TUI 客户端 RSS 专项探针（批2c，P1-A——方案 docs/详设/2026-09-02_后续-真机诊断修复方案 §3.3）。
  *
@@ -40,7 +41,7 @@ function runOnce() {
       else resolve(buf)
     })
     setTimeout(() => {
-      try { term.kill() } catch { /* 已退 */ }
+      try { killPty(term) } catch { /* 已退 */ }
       reject(new Error('probe timeout（200s——满程 3750 tick 实测 ~28ms/tick 含漂移）'))
     }, 200_000)
   })

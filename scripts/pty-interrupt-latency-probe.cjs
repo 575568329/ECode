@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * Ctrl+C 中断迟滞探针（用户反馈「按一下要等一会才中断」的诊断）：
  *   假 SSE 慢流（Anthropic 流式格式，500ms/delta）驱动真机 TUI 流式轮次，
@@ -97,7 +98,7 @@ async function run() {
   // 1) 等 TUI 就绪 → 发 prompt
   let ok = false
   for (let i = 0; i < 100 && !ok; i++) { await sleep(150); ok = has('输入消息') }
-  if (!ok) { console.log('FAIL TUI 未就绪'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL TUI 未就绪'); killPty(proc); server.close(); process.exit(1) }
   proc.write(REAL ? '详细介绍一下 TypeScript 的类型系统演进，从早期的 any 到现在的条件类型' : '随便说点什么长一点')
   await sleep(600)
   proc.write('\r')
@@ -106,7 +107,7 @@ async function run() {
   const streamSignal = REAL ? '（处理中' : (TOOL ? 'bash' : MARK)
   ok = false
   for (let i = 0; i < 200 && !ok; i++) { await sleep(100); ok = has(streamSignal) }
-  if (!ok) { console.log('FAIL 流式未出现'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 流式未出现'); killPty(proc); server.close(); process.exit(1) }
   await sleep(1200)
 
   // 3) 单发 Ctrl+C，计墙钟
@@ -122,7 +123,7 @@ async function run() {
   const wallIdle = tIdle === null ? 'TIMEOUT' : `${tIdle - tPress}ms`
 
   await sleep(800) // 等 logstore flush
-  proc.kill()
+  killPty(proc)
   server.close()
 
   // 5) 从日志取四点。T 线后 TUI 默认自动拉起 daemon 并附着（隔离 USERPROFILE 也拦不住——

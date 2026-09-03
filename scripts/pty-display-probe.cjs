@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 显示宽度动态化真 pty 探针（2026-09-02 用户拍板批的实机验证）：
  *   P1 收起预览动态宽度：cols=120 时 120a 截到 109a+…（110 列）；cols=200 时不截（120a 全显）
@@ -35,7 +36,7 @@ function runScene(cols, scene) {
       else resolve(stripAnsi(buf))
     })
     setTimeout(() => {
-      try { term.kill() } catch { /* 已退 */ }
+      try { killPty(term) } catch { /* 已退 */ }
     }, 20_000)
   })
 }

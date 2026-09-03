@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * D9 回归探针（2026-08-31 走查）：并行只读批次的多张 sensitive 卡必须串行出现在桌面上。
  * 此前缺陷：两张卡同时挂起，TUI 审批卡单槽——后帧顶掉前帧且不再渲染，未应答挂起悬空
@@ -96,7 +97,7 @@ const run = async () => {
   proc.write('y')
   check('S3 轮完成（收尾文本）', await waitFor(/两个文件都看完了/, mark, 20000))
 
-  proc.kill()
+  killPty(proc)
   server.close()
   const pass = checks.every(([, ok]) => ok)
   if (!pass) {
@@ -106,4 +107,4 @@ const run = async () => {
   console.log(pass ? '# 结论：sensitive 卡串行化全过' : '# 结论：存在失败项')
   process.exit(pass ? 0 : 1)
 }
-run().catch((e) => { console.error(e); try { proc.kill() } catch {} server.close(); process.exit(1) })
+run().catch((e) => { console.error(e); try { killPty(proc) } catch {} server.close(); process.exit(1) })

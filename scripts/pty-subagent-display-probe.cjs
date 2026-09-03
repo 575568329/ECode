@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 子代理进度行显示形态观测探针（2026-08-30 用户问「子代理一直显示 1s/ls 是什么」）：
  * 复现 SubagentBar 在「上一工具已返回、下一轮 LLM 还没响应」窗口期的显示——
@@ -79,7 +80,7 @@ server.listen(0, '127.0.0.1', async () => {
   proc.onData((d) => (out += d))
   let ready = false
   for (let i = 0; i < 100 && !ready; i++) { await sleep(150); ready = strip(out).includes('输入消息') }
-  if (!ready) { console.log('FAIL 未就绪'); proc.kill(); server.close(); process.exit(1) }
+  if (!ready) { console.log('FAIL 未就绪'); killPty(proc); server.close(); process.exit(1) }
   await sleep(1200)
   proc.write('派个子代理')
   await sleep(500)
@@ -101,7 +102,7 @@ server.listen(0, '127.0.0.1', async () => {
   await sleep(800)
   const ok = done
   console.log(ok ? 'OK   全程采样完成' : 'FAIL 未观察到收尾')
-  proc.kill()
+  killPty(proc)
   server.close()
   setTimeout(() => process.exit(ok ? 0 : 1), 200)
 })

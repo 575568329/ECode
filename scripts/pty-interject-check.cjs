@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 const fs = require('node:fs')
 const os = require('node:os')
 /** 一次性验证：插话轮内留痕（排队行→注入→轮末 commit）。跑法：node scripts/pty-interject-check.cjs */
@@ -93,7 +94,7 @@ const run = async () => {
     console.log('---- 末 25 行现场 ----')
     console.log(all.split('\n').map((l) => l.replace(/\r/g, '').trimEnd()).filter(Boolean).slice(-25).join('\n'))
   }
-  proc.kill()
+  killPty(proc)
   server.close()
   process.exit(queued && trace ? 0 : 1)
 }

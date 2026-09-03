@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * F-48 alt-screen 真机探针：验证全屏面板的进入/退出序列与内容归属——
  *   ① Ctrl+T 后 pty 流出现 ?1049h（进入序列），且面板文本在其后
@@ -47,14 +48,14 @@ server.listen(0, '127.0.0.1', async () => {
   const has = (s) => strip(out).includes(s)
   let ok = false
   for (let i = 0; i < 100 && !ok; i++) { await sleep(150); ok = has('输入消息') }
-  if (!ok) { console.log('FAIL 未就绪'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 未就绪'); killPty(proc); server.close(); process.exit(1) }
   await sleep(1200)
   proc.write('打个招呼')
   await sleep(500)
   proc.write('\r')
   ok = false
   for (let i = 0; i < 60 && !ok; i++) { await sleep(200); ok = has('问候回复') }
-  if (!ok) { console.log('FAIL 轮未完成'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 轮未完成'); killPty(proc); server.close(); process.exit(1) }
   console.log('OK   轮完成')
 
   // Ctrl+T 进入全屏面板
@@ -74,7 +75,7 @@ server.listen(0, '127.0.0.1', async () => {
     fs.writeFileSync(require('os').tmpdir() + '/alt-fail.bin', strip(out.slice(pos)))
     console.log('FAIL 面板未打开——dump:')
     console.log(strip(out.slice(pos)).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-12).join('\n'))
-    proc.kill(); server.close(); process.exit(1)
+    killPty(proc); server.close(); process.exit(1)
   }
   const seg = out.slice(pos)
   const enterIdx = seg.indexOf('?1049h')
@@ -109,7 +110,7 @@ server.listen(0, '127.0.0.1', async () => {
   console.log('OK   二次进入面板（toggle 往返）')
 
 
-  proc.kill()
+  killPty(proc)
   server.close()
   fs.writeFileSync('/tmp/alt-full.bin', out)
   setTimeout(() => process.exit(0), 200)

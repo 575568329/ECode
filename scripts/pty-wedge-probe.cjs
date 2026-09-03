@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 楔死专项探针（开放 P0：流式轮结束后 reconciler 永久楔死）。
  *
@@ -145,7 +146,7 @@ const run = async () => {
   await round('W5 第四轮渲染', '消息D', /这是第4轮唯一回复/)
 
   console.log('\n# 结论：4 轮（含 80-delta 长流）+ 3 次轮末探针全过——未复现楔死')
-  proc.kill()
+  killPty(proc)
   server.close()
   server.closeAllConnections()
   process.exit(0)
@@ -153,6 +154,6 @@ const run = async () => {
 
 run().catch((e) => {
   console.error('driver error:', e)
-  if (proc != null) proc.kill()
+  if (proc != null) killPty(proc)
   process.exit(1)
 })

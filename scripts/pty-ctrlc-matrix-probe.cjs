@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * Ctrl+C 状态矩阵探针（用户报告「Ctrl+C 不生效连提示都不显示」的诊断）：
  * 八个状态逐态实测按键归属（S7=覆盖层兜底）——任何一态「按了没反应」即复现用户症状。
@@ -154,7 +155,7 @@ const run = async () => {
   await sleep(3000)
   check('S2 空闲窗口内双发优雅退出', exited !== undefined && exited !== null)
 
-  try { proc.kill() } catch {}
+  try { killPty(proc) } catch {}
   server.close()
   const pass = checks.every(([, ok]) => ok)
   if (!pass) {
@@ -165,4 +166,4 @@ const run = async () => {
   process.exit(pass ? 0 : 1)
 }
 // @ts-ignore
-run().catch((e) => { console.error(e); try { proc.kill() } catch {} server.close(); process.exit(1) })
+run().catch((e) => { console.error(e); try { killPty(proc) } catch {} server.close(); process.exit(1) })

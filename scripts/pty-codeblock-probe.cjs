@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * F-36 栅格真机帧眼验（一次性脚本）：mock SSE 回一段长中文 markdown（含代码块），
  * pty 起源码 TUI，轮末抓终帧——核对：assistant 正文 ◆ 槽（a46e50f D3 二次翻案后）、折行续行对齐第 2 列、无第 0 列裸文字。
@@ -73,14 +74,14 @@ server.listen(0, '127.0.0.1', async () => {
 
   let ok = false
   for (let i = 0; i < 100 && !ok; i++) { await sleep(150); ok = has('输入消息') }
-  if (!ok) { console.log('FAIL TUI 未就绪'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL TUI 未就绪'); killPty(proc); server.close(); process.exit(1) }
   await sleep(1500) // 与 overscreen-probe 同款缓冲：首帧渲染≠stdin 就绪（pretool 冷启动）
   proc.write('grid-check') // 文本与 \r 必须分开 write——合并发被 Ink 判为粘贴内嵌不提交（探针坑惯例）
   await sleep(600)
   proc.write('\r')
   ok = false
   for (let i = 0; i < 100 && !ok; i++) { await sleep(150); ok = has('收尾一句话') }
-  if (!ok) { console.log('FAIL 回复未到达'); console.log('===== TUI 输出 dump ====='); console.log(strip(out).slice(-2500)); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 回复未到达'); console.log('===== TUI 输出 dump ====='); console.log(strip(out).slice(-2500)); killPty(proc); server.close(); process.exit(1) }
   await sleep(1200) // 等 commit 进 Static + 状态回 idle
 
   const frame = strip(out)
@@ -107,7 +108,7 @@ server.listen(0, '127.0.0.1', async () => {
   if (headLine !== undefined) console.log('OK   正文挂 ◆ 槽：', JSON.stringify(headLine.slice(0, 24)))
   else if (contLine === undefined) { console.log('FAIL 未找到 ◆ 槽正文行'); pass = false }
   console.log(pass ? '== 结论：正文栅格达标 ==' : '== 结论：栅格未达标 ==')
-  proc.kill()
+  killPty(proc)
   server.close()
   setTimeout(() => process.exit(pass ? 0 : 1), 200)
 })

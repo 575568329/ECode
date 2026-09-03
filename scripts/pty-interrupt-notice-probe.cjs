@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * F-38 中断提示真机探针：mock SSE 慢流（拖住轮次）→ Ctrl+C 中断 → 验证——
  *   ① 内容区无黄字横幅（ActivityBar aborted 已收敛）
@@ -59,7 +60,7 @@ server.listen(0, '127.0.0.1', async () => {
 
   let ok = false
   for (let i = 0; i < 100 && !ok; i++) { await sleep(150); ok = has('输入消息') }
-  if (!ok) { console.log('FAIL TUI 未就绪'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL TUI 未就绪'); killPty(proc); server.close(); process.exit(1) }
   await sleep(1500)
   proc.write('开始一个长任务')
   await sleep(600)
@@ -67,7 +68,7 @@ server.listen(0, '127.0.0.1', async () => {
 
   ok = false
   for (let i = 0; i < 60 && !ok; i++) { await sleep(200); ok = has('分段输出第2片') }
-  if (!ok) { console.log('FAIL 流未开始'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 流未开始'); killPty(proc); server.close(); process.exit(1) }
 
   // === 关键动作：流中途 Ctrl+C ===
   const before = out.length
@@ -97,7 +98,7 @@ server.listen(0, '127.0.0.1', async () => {
   const afterLastIdle = lastIdle >= 0 ? delta.slice(lastIdle) : delta
   console.log(afterLastIdle.includes('已中断，内容已保留') ? 'FAIL 提示 6.5s 后仍在（TTL 未生效）' : 'OK   提示 5s TTL 后消失（末次重绘无提示行）')
 
-  proc.kill()
+  killPty(proc)
   server.close()
   setTimeout(() => process.exit(0), 200)
 })

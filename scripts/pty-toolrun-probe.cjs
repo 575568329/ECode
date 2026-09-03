@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 同名工具折叠批真 pty 探针（2026-09-03 用户拍板「相同的工具能折叠也折叠」）：
  *   A toolrun-dyn  cols=100：7 连发 bash（done）动态区 → 「bash ×6 已折叠」摘要 +
@@ -30,7 +31,7 @@ function runScene(cols, scene) {
       else resolve(stripAnsi(buf))
     })
     setTimeout(() => {
-      try { term.kill() } catch { /* 已退 */ }
+      try { killPty(term) } catch { /* 已退 */ }
     }, 20_000)
   })
 }

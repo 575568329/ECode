@@ -904,7 +904,11 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           applySandboxMode(ev.mode)
           break
         case 'notice':
-          pushNoticeFn(ev.level, ev.text, false, ev.seq)
+          // 审阅修复批（P0）：宿主 notice 帧的 error 恒 sticky——QUOTA_EXCEEDED 等温和终止轮
+          // 的错误通知（notice 先于 turn/completed 到达）若非 sticky 会被同轮完成帧的自动清
+          // 即时抹掉（亚秒闪现，「常驻直到问题解决」落空）；与本地 push 的发送/提交失败类
+          // （保留自动清——轮成功即代表瞬时失败已过去）口径分界：帧通道=宿主权威判定
+          pushNoticeFn(ev.level, ev.text, ev.level === 'error', ev.seq)
           break
         case 'systemMsg':
           setSystemMsgs([ev.text])

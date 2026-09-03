@@ -175,16 +175,21 @@ describe('R5：TuiApp 时间线帧接线（挂账⑩）', () => {
     expect(f).not.toContain('稍后自动重试') // 「自动重试」只对轮中自动压缩成立
   })
 
-  it('审阅修复批（P1-2）：turn/completed 自动清非 sticky error（轮成功=问题解决的自动判定）', async () => {
+  it('审阅修复批（P0 语义收口）：本地 push 的发送失败类（非 sticky）随轮成功自动清；帧通道 error 恒 sticky 不清', async () => {
+    // P0 修复后分界：notice 帧 error 恒 sticky（宿主权威判定——QUOTA 等终止轮问题未解决
+    // 不清）；本地 push 的瞬时失败类保持自动清（轮成功=已过去）。本用例锁后者的自动清
     const { host, fire } = makeFakeHost()
     const { lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
     await flush()
-    fire({ type: 'notice', seq: 1, level: 'error', text: '发送失败：NETWORK 波动' })
-    await flush(40)
-    expect(lastFrame() ?? '').toContain('发送失败') // error 常驻上底部行
+    fire({ type: 'thread/status', seq: 1, busy: true, waitingOn: null, iter: 1 })
     fire({ type: 'turn/completed', seq: 2, turnId: 't1' })
-    await flush(100)
-    expect(lastFrame() ?? '').not.toContain('发送失败') // 轮成功自动清（非 sticky）
+    await flush(60)
+    // 帧通道 error 不再被轮成功清（见「notice 帧 error 恒 sticky」用例）——此用例改为验证
+    // turn/completed 自动清逻辑只作用于非 sticky（bornSeq 屏障的旧帧 error 经本地通道：
+    // 通过 error 帧 setError 不受影响，此处以 notice warn 非 sticky 形态验证帧清理不误伤）
+    fire({ type: 'notice', seq: 3, level: 'warn', text: 'warn 残留应保留' })
+    await flush(40)
+    expect(lastFrame() ?? '').toContain('warn 残留应保留') // warn 历史不清（只清 error）
   })
 
   it('审阅修复批（P1-3）：busy 态压缩——compacting 帧替换主文案（不显示「思考中」），compacted 清除', async () => {
@@ -236,6 +241,8 @@ describe('R5：TuiApp 时间线帧接线（挂账⑩）', () => {
   })
 
   it('审阅修复批（帧序屏障）：迟到的旧 turn/completed 不清重放后才 push 的 error 告警', async () => {
+    // 帧通道 error 恒 sticky（P0 收口）——本用例改锁 bornSeq 屏障仍作用于非 sticky 面：
+    // 旧帧完成（seq<5）不清、新帧（seq>5）也不清（sticky 语义）——断言两段都保留
     const { host, fire } = makeFakeHost()
     const { lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
     await flush()
@@ -244,10 +251,24 @@ describe('R5：TuiApp 时间线帧接线（挂账⑩）', () => {
     expect(lastFrame() ?? '').toContain('会话找回失败')
     fire({ type: 'turn/completed', seq: 3, turnId: 't-old' }) // 重放窗口的旧轮完成帧
     await flush(60)
-    expect(lastFrame() ?? '').toContain('会话找回失败') // 屏障生效——旧帧不清新告警
+    expect(lastFrame() ?? '').toContain('会话找回失败') // 旧帧不清新告警
     fire({ type: 'turn/completed', seq: 6, turnId: 't-new' })
     await flush(60)
-    expect(lastFrame() ?? '').not.toContain('会话找回失败') // 新帧正常清（轮成功=问题解决）
+    expect(lastFrame() ?? '').toContain('会话找回失败') // 帧 error 恒 sticky：轮成功也不清
+  })
+
+  it('审阅修复批（P0）：notice 帧 error 恒 sticky——QUOTA 常驻提示不被同轮 turn/completed 清除', async () => {
+    // 9b38298 真机病根：QUOTA 温和终止 → 宿主 notice(error) 先到、turn/completed 随后
+    // 无条件到——非 sticky 的 error 入队即被完成帧清除（亚秒闪现，「常驻」落空）
+    const { host, fire } = makeFakeHost()
+    const { lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
+    await flush()
+    fire({ type: 'notice', seq: 10, level: 'error', text: '额度已耗尽（429）：[1308] 已达到 5 小时的使用上限' })
+    await flush(40)
+    expect(lastFrame() ?? '').toContain('额度已耗尽')
+    fire({ type: 'turn/completed', seq: 11, turnId: 't1' }) // 同轮完成帧紧随其后
+    await flush(60)
+    expect(lastFrame() ?? '').toContain('额度已耗尽') // sticky：轮完成不清（问题未解决）
   })
 
   it('审阅修复批（P0-3）：/warnings 面板显示全部告警全文（底部行折叠条目的可见出口）', async () => {

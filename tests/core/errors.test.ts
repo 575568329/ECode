@@ -40,7 +40,50 @@ describe('toAppError', () => {
     expect(err.code).toMatch(/RATE/i)
   })
 
-  it('2026-09-03：429 配额类 → QUOTA_EXCEEDED 不重试（真机实证：智谱 1308 五小时窗口上限静默 5 次退避白烧）', () => {
+  it('2026-09-03 审阅修复批：误伤反例——普通限流（自愈信号/非耗尽语义）不进分流', () => {
+    // Azure 形态：exceeded token rate limit + retry after 20 seconds（审阅实测旧正则必误伤）
+    const azure = Object.assign(
+      new Error('429 You have exceeded the token rate limit of your current OpenAI S0 pricing tier. Please retry after 20 seconds.'),
+      { status: 429 },
+    )
+    expect(toAppError(azure).code).toBe('RATE_LIMIT')
+    expect(toAppError(azure).retryable).toBe(true)
+    // 中文普通限流：「并发额度已满，请稍后重试」（裸「额度」+自愈信号——旧正则误伤形态）
+    const oneapi = Object.assign(
+      new Error('429 {"error":{"code":"1002","message":"当前并发额度已满，请稍后重试"}}'),
+      { status: 429, error: { code: '1002', message: '当前并发额度已满，请稍后重试' } },
+    )
+    expect(toAppError(oneapi).code).toBe('RATE_LIMIT')
+    // billing 裸词形态：「Too many requests, see billing portal」
+    const billing = Object.assign(new Error('429 Too many requests, see billing portal'), { status: 429 })
+    expect(toAppError(billing).code).toBe('RATE_LIMIT')
+    // OpenAI TPM 短形态
+    const tpm = Object.assign(new Error('429 Rate limit reached for gpt-4 in organization. Please try again in 36s.'), { status: 429 })
+    expect(toAppError(tpm).code).toBe('RATE_LIMIT')
+  })
+
+  it('2026-09-03 审阅修复批：纯文本配额 429（无 JSON 无结构化——openai SDK 非 JSON body 形态）', () => {
+    // 旧实现的 structuredMsg===raw 守卫把纯文本通道整体挡掉（实测漏判回退避白烧）
+    const plain = Object.assign(new Error('429 You exceeded your current quota, please check your plan and billing details.'), { status: 429 })
+    const err = toAppError(plain)
+    expect(err.code).toBe('QUOTA_EXCEEDED')
+    expect(err.retryable).toBe(false)
+    // 中文纯文本（剥状态码前缀后命中「使用上限」）
+    const zh = Object.assign(new Error('429 您已达到本时段使用上限'), { status: 429 })
+    expect(toAppError(zh).code).toBe('QUOTA_EXCEEDED')
+  })
+
+  it('2026-09-03 审阅修复批：数字型 code（"code":1308 非 string）也认 + message 带 [code] 前缀', () => {
+    const num = Object.assign(
+      new Error('429 {"error":{"code":1308,"message":"已达到 5 小时的使用上限。"}}'),
+      { status: 429, error: { code: 1308, message: '已达到 5 小时的使用上限。' } },
+    )
+    const err = toAppError(num)
+    expect(err.code).toBe('QUOTA_EXCEEDED')
+    expect(err.message).toContain('[1308]') // 厂商码前缀保留（排障检索锚）
+  })
+
+  it('2026-09-03：429 配额类 → QUOTA_EXCEEDED 不重试（真机实证：智谱 1308 五小时窗口上限退避白烧）', () => {
     // 智谱真机形态：error.error.{code:1308, message:已达到…上限…重置}
     const zhipu = Object.assign(
       new Error('429 {"error":{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2026-09-03 18:19:36 重置。"}}'),
@@ -180,9 +223,11 @@ describe('HTTP 错误提炼（message 一行人话 + 原文进 context.raw）', 
       error: { type: 'error', error: { type: 'rate_limit_error', code: '1308', message: bodyMsg } },
     })
     const err = toAppError(e)
-    // 2026-09-03 语义分流：1308=配额类 → QUOTA_EXCEEDED（不再是「限流」前缀）
+    // 2026-09-03 语义分流：1308=配额类 → QUOTA_EXCEEDED（不再是「限流」前缀）；
+    // 审阅修复批：message 统一带 [code] 前缀（该用例 bodyMsg 自身以 [1308] 开头——前缀与
+    // brief 同款行为，双 [1308] 可接受：厂商码是检索锚不是排版）
     expect(err.code).toBe('QUOTA_EXCEEDED')
-    expect(err.message).toBe(`额度已耗尽（429）：${bodyMsg}`)
+    expect(err.message).toBe(`额度已耗尽（429）：[1308] ${bodyMsg}`)
     expect(err.message).not.toContain('{"type"') // 不含 JSON body
     expect((err.context as { raw?: string }).raw).toBe(rawMsg) // 原文完整保留（日志可查）
   })
@@ -191,7 +236,7 @@ describe('HTTP 错误提炼（message 一行人话 + 原文进 context.raw）', 
     const rawMsg = '429 {"type":"error","error":{"type":"rate_limit_error","code":"1308","message":"quota exceeded until tomorrow"}}'
     const e = Object.assign(new Error(rawMsg), { status: 429 })
     const err = toAppError(e)
-    expect(err.message).toBe('额度已耗尽（429）：quota exceeded until tomorrow')
+    expect(err.message).toBe('额度已耗尽（429）：[1308] quota exceeded until tomorrow')
   })
 
   it('非 JSON 消息 → 原文首行截断（超 160 加省略号）', () => {

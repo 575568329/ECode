@@ -420,10 +420,12 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         // 直接终止本轮（保留已固化内容，onWarn 告知；与 MAX_RETRIES 耗尽同款温和终止）
         if (streamError.retryable === false) {
           opts.callbacks.onActivity?.('idle')
-          // 额度耗尽走 onError（UI 常驻 ErrorBanner——按 2026-09-03「中断类提示不 5s 消失」
-          // 口径：重置前用户每次输入都该看到为什么不动）；其余客户端错 onWarn 即可
+          // 额度耗尽走 onError（UI 常驻——按 2026-09-03「中断类提示不 5s 消失」口径：重置前
+          // 用户每次输入都该看到为什么不动）；其余客户端错 onWarn 即可。
+          // 审阅修复批（P1-1）：onError 未接线方（子代理内循环等）回退 onWarn——防「子代理
+          // 撞配额全静默」且 text 非空仍按正常结果返回（loop.ts:541 截断耗尽先例同款写法）
           if (streamError.code === 'QUOTA_EXCEEDED') {
-            opts.callbacks.onError?.(`${streamError.message}——本轮已终止；等窗口重置后再试，或切备用 provider/model`)
+            ;(opts.callbacks.onError ?? opts.callbacks.onWarn)?.(`${streamError.message}——本轮已终止；等窗口重置后再试，或切备用 provider/model`)
           } else {
             opts.callbacks.onWarn?.(`${streamError.message}${hasImagePayload(messages.filter(isMessageLine)) ? IMAGE_POISON_HINT : ''}`)
           }

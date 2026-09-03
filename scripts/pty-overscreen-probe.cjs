@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * M14-V5 真机验收探针：超屏防护硬指标——全 会话字节流不出现 ESC[3J
  * （Ink 帧高 ≥ rows 时的全屏兜底会清 scrollback——用户视角=跳顶滚不动）。
@@ -206,7 +207,7 @@ const run = async () => {
   await toolPhase()
   if (exited) { console.log('FAIL 子进程意外退出'); ok = false }
 
-  proc.kill()
+  killPty(proc)
   server.close()
   if (ok) { console.log('== 全过：超屏防护硬指标达成（全程无 ESC[3J）=='); process.exit(0) }
   console.log('== 存在失败项 ==')

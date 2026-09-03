@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 输入体验批探针（2026-08-31）：双击 Esc 清空草稿（armed 确认式）+ 输入框查看窗。
  * 断言（strip 后流内指纹，禁用常驻 UI 文本作判定）：
@@ -105,7 +106,7 @@ const run = async () => {
   await sleep(800)
   check('C4c PgDn 不再产生折叠指示', absentIn(/已折叠/, mark))
 
-  proc.kill()
+  killPty(proc)
   server.close()
   const pass = checks.every(([, ok]) => ok)
   if (!pass) {
@@ -115,4 +116,4 @@ const run = async () => {
   console.log(pass ? '# 结论：输入体验批探针全过' : '# 结论：存在失败项')
   process.exit(pass ? 0 : 1)
 }
-run().catch((e) => { console.error(e); try { proc.kill() } catch {} server.close(); process.exit(1) })
+run().catch((e) => { console.error(e); try { killPty(proc) } catch {} server.close(); process.exit(1) })

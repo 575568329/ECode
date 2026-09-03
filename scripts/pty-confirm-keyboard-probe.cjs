@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 批2b 验收探针：审批卡键盘交互五条真机断言（pty）。
  * 场景（mock SSE 轮 1 回 tool_use bash → default 档审批卡）：
@@ -83,7 +84,7 @@ const lastFrame = (n = 14) =>
 const fail = (label, detail) => {
   console.log(`FAIL ${label}${detail ? '：' + detail : ''}`)
   console.log('---- 末 18 帧 ----\n' + lastFrame(18))
-  if (alive && proc != null) proc.kill()
+  if (alive && proc != null) killPty(proc)
   expectExit = true
   process.exit(1)
 }
@@ -185,7 +186,7 @@ const run = async () => {
   if (!(await waitFor(m7, /问候回复|执行完毕/, 60_000))) console.log('# （拒绝后收尾回复未捕获——可能仍在跑，不算失败）')
 
   console.log('\n# 结论：B1/B2/B2b/B3/B4 五项全过——批2b 审批卡键盘交互真机验收通过')
-  proc.kill()
+  killPty(proc)
   expectExit = true
   server.close()
   server.closeAllConnections()
@@ -195,6 +196,6 @@ const run = async () => {
 
 run().catch((e) => {
   console.error('driver error:', e)
-  if (alive && proc != null) proc.kill()
+  if (alive && proc != null) killPty(proc)
   process.exit(1)
 })

@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 栅格探针（2026-08-30 布局排查）：转写面各行首列位实测。
  * 场景：提交任务 → mock 回 tool_use(read_file) → 真实工具执行 → 助手文本（慢响应窗口内插话）。
@@ -97,7 +98,7 @@ const run = async () => {
     console.log('---- 相关行现场 ----')
     console.log(lines.filter((l) => /❯|●/.test(l)).slice(-14).join('\n'))
   }
-  proc.kill()
+  killPty(proc)
   server.close()
   process.exit(pass ? 0 : 1)
 }

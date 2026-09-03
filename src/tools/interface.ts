@@ -107,7 +107,9 @@ export interface Tool {
   readonly: boolean
   /**
    * 可选：执行超时（毫秒）。声明了才由循环统一强制（软超时——超时放弃等待转
-   * recoverable 错误，不强杀后台 execute）；未声明则不设限（bash/task 等长任务自管超时）。
+   * recoverable 错误，不强杀后台 execute）。现存用户：MCP 工具（adapt 按 server config
+   * 注入）。bash 自管超时（timeout_ms 输入参数，2026-09-03 等待根治——超时自杀树）；
+   * task 子代理无超时（轮数上限+Ctrl+C 防御，硬超时已废）——两者均不声明本字段。
    */
   timeout_ms?: number
   /**

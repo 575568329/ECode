@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 import { Box, Text } from 'ink'
+import stringWidth from 'string-width'
 import { ToolLine, formatBytes } from './ToolLine.js'
 import { mergeToolGroup, previewLine } from './toolview.js'
 import { theme } from './theme.js'
@@ -109,10 +110,12 @@ function CompactToolGroup({ tools, maxTools, columns }: { tools: ActiveTool[]; m
   const { visible, overflow } = mergeToolGroup(toolsShown)
   const name = tools[0]!.name
   const errors = tools.filter((t) => t.status === 'error').length
-  // 单行宽度预算：toolOutput 口径（columns−10）内 digest 与 preview 六四开（扣状态符+箭头 4 列）
+  // 单行宽度预算：toolOutput 口径（columns−10）内 digest 与 preview 六四开。
+  // 分隔符实占 5 列（" ✓"2 + " ▸ "3——审阅修复：原按 4 计差 1 列击穿单行）；
+  // truncated 尾巴/媒体标记在 preview 内预扣（见行内），不再追加在外
   const avail = WIDTH.toolOutput(columns)
   const digestW = Math.floor(avail * 0.55)
-  const previewW = Math.max(6, avail - digestW - 4)
+  const previewW = Math.max(6, avail - digestW - 5)
 
   return (
     <Box flexDirection="column" marginTop={GAP.block}>
@@ -136,9 +139,20 @@ function CompactToolGroup({ tools, maxTools, columns }: { tools: ActiveTool[]; m
         )
         // 净化出口（审阅 S1 惯例）：工具输出=不可信面（OSC 52/OSC 8 注入主通道）
         const content = stripUntrustedAnsi(t.result?.content ?? '')
-        const preview = previewLine(content, previewW)
+        // 审阅 P1（truncated 尾巴击穿单行）：preview 先粗算判 truncated，再扣除尾部标记
+        // （⋯(NKB)）与媒体标记的实际宽度重算——digest 顶满 + truncated 时尾巴追加在
+        // preview 之外会把行撑破成 2 行。媒体标记（[图片]/[PDF]）同扣（审阅 P2：多模态
+        // 结果在紧凑行不再隐形）
+        const mediaTag =
+          (t.result?.blocks?.length ?? 0) > 0
+            ? ` [${(t.result?.blocks ?? []).map((b) => (b.type === 'image' ? '图片' : 'PDF')).join(' ')}]`
+            : ''
+        const rough = previewLine(content, previewW)
+        const bytesTag =
+          content.length > rough.length ? ` ${symbols.trunc}(${formatBytes(Buffer.byteLength(t.result?.content ?? '', 'utf8'))})` : ''
+        const reserve = stringWidth(`${bytesTag}${mediaTag}`)
+        const preview = previewLine(content, Math.max(4, previewW - reserve))
         const truncated = content.length > preview.length
-        const bytes = formatBytes(Buffer.byteLength(t.result?.content ?? '', 'utf8'))
         const isError = t.status === 'error'
         return (
           <Box key={t.use?.id ?? `_${i}`}>
@@ -151,7 +165,8 @@ function CompactToolGroup({ tools, maxTools, columns }: { tools: ActiveTool[]; m
                 {isError ? ` ${symbols.error}` : ` ${symbols.success}`}
               </Text>
               {content !== '' ? ` ${symbols.foldCollapsed} ${preview}` : ''}
-              {truncated ? ` ${symbols.trunc}(${bytes})` : ''}
+              {mediaTag}
+              {truncated ? bytesTag : ''}
             </Text>
           </Box>
         )

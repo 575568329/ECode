@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * D2 回归探针（2026-08-31 走查）：空闲态双击 Esc（<500ms）直达 /rewind 面板。
  * 此前回归根因：TuiApp 消费 @ 下拉端口时写 `port !== null`（端口挂载期注册永非 null）
@@ -102,7 +103,7 @@ const run = async () => {
   doubleEsc()
   check('E7 关下拉清字符后双击恢复', await waitFor(/回退到哪个改动之前/, mark, 4000))
 
-  proc.kill()
+  killPty(proc)
   server.close()
   const pass = checks.every(([, ok]) => ok)
   if (!pass) {
@@ -112,4 +113,4 @@ const run = async () => {
   console.log(pass ? '# 结论：双击 Esc 全过' : '# 结论：存在失败项')
   process.exit(pass ? 0 : 1)
 }
-run().catch((e) => { console.error(e); try { proc.kill() } catch {} server.close(); process.exit(1) })
+run().catch((e) => { console.error(e); try { killPty(proc) } catch {} server.close(); process.exit(1) })

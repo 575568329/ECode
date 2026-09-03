@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 「突然停止连思考都不显示」复现探针（用户报障：别的设备、无现场日志）。
  *
@@ -104,7 +105,7 @@ const run = async () => {
     console.log('---- R2 增量帧（去控制序列） ----')
     console.log(delta.split('\n').map((l) => l.replace(/\r/g, '').trimEnd()).filter(Boolean).slice(-10).join('\n') || '(空)')
     console.log(`\n# 结论：${backIdle && !hasWarning ? '复现——空收尾轮静默结束，零提示（用户看到的「突然停止连思考都不显示」）' : '未按假设复现——见上方帧'}`)
-    proc.kill()
+    killPty(proc)
     server.close()
     process.exit(0)
   }
@@ -112,6 +113,6 @@ const run = async () => {
 
 run().catch((e) => {
   console.error('driver error:', e)
-  if (proc != null) proc.kill()
+  if (proc != null) killPty(proc)
   process.exit(1)
 })

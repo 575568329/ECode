@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 端到端 dogfood 探针（2026-08-31 输入体验批）：真轮次组合场景 + 服务端请求体捕获。
  * 与单点机制探针（input-clear/doublesc）的区别：断言「LLM 实收什么」——数据级验证，不只看 TUI 显示。
@@ -134,11 +135,11 @@ const run = async () => {
   check('D2 历史无 token 残留', !persisted.includes('[粘贴#1'))
   check('D3 被清草稿未落盘', !persisted.includes('被清掉的草稿'))
 
-  proc.kill()
+  killPty(proc)
   server.close()
   const pass = checks.filter(Boolean).length
   console.log(`# 结论：端到端 dogfood ${pass}/${checks.length} ${pass === checks.length ? '全过' : '有失败'}`)
   process.exit(pass === checks.length ? 0 : 1)
 }
 
-run().catch((e) => { console.error('探针异常:', e); try { proc.kill() } catch {} server.close(); process.exit(1) })
+run().catch((e) => { console.error('探针异常:', e); try { killPty(proc) } catch {} server.close(); process.exit(1) })

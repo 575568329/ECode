@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 半活楔死专项探针（F-08 复测裁决 · 方案 §3.1）。
  *
@@ -183,7 +184,7 @@ const ctrlCProbe = async (label) => {
   console.log(`${exited ? 'OK  Ctrl+C 优雅退出' : 'FAIL Ctrl+C 键消费死（半活实锤）'} ${label}`)
   if (!exited) {
     await evidence(label)
-    proc.kill()
+    killPty(proc)
     failed = true
     // kill 触发的 onExit 是异步事件——此处不复位 expectExit（否则兜底把探针自杀，矩阵中断），
     // 由下一次 spawnTui 开头统一复位
@@ -254,14 +255,14 @@ const runScenario = async (label, fn) => {
     console.log(`FAIL ${label} 异常：${e && e.message ? e.message : e}`)
     await evidence(label)
     failed = true
-    try { proc.kill() } catch {}
+    try { killPty(proc) } catch {}
   }
   // ctrlCProbe 已杀/已退 → 下场景前确保干净重生。
   // 判定用 alive 布尔（onExit 置 false）——旧版查 proc.exitCode/pid：node-pty 的 IPty
   // 没有 exitCode 属性且 pid 退出后仍保留，三条件恒 false → respawn 永不触发 →
   // S2/S3 对死进程 write 必假 FAIL（角色C P1-2/角色D P0-1——此前"S2/S3 场景级问题"的真凶）
   if (proc == null || !alive) {
-    try { proc.kill() } catch {}
+    try { killPty(proc) } catch {}
     await spawnTui()
     const ok = await waitFor(0, /输入消息|Ctrl\+J 换行/, 90_000)
     console.log(`${ok ? 'OK ' : 'FAIL'} respawn（${label} 后）`)
@@ -328,7 +329,7 @@ const run = async () => {
 
   // ---- 结论（六修 #4：结尾统一 exit 汇总——0 全过 / 2 存在 FAIL）----
   settling = true
-  try { proc.kill() } catch {}
+  try { killPty(proc) } catch {}
   server.close()
   server.closeAllConnections()
   console.log(failed ? '\n# 结论：存在 FAIL —— F-08 未治愈（或探针仍有假信号，按末 20 帧甄别），按机理 A/B 定位实修' : '\n# 结论：S1-S3 全过 —— 半活楔死未复现，F-08 可销案（新版 dist）')
@@ -338,6 +339,6 @@ const run = async () => {
 run().catch((e) => {
   console.error('driver error:', e)
   settling = true
-  if (proc != null) try { proc.kill() } catch {}
+  if (proc != null) try { killPty(proc) } catch {}
   process.exit(1)
 })

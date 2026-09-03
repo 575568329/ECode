@@ -11,6 +11,7 @@ import React from 'react'
 import { TimelineView } from '../../src/tui/TimelineView.js'
 import { ToolGroupView } from '../../src/tui/ToolGroupView.js'
 import { collapseSameToolRuns, TOOL_RUN_FOLD_MIN } from '../../src/tui/viewport.js'
+import { WIDTH } from '../../src/tui/layout.js'
 import type { TimelineEntry } from '../../src/protocol/timeline.js'
 import type { ActiveTool } from '../../src/tui/types.js'
 
@@ -142,3 +143,51 @@ describe('同名工具折叠：ToolGroupView 静态紧凑态', () => {
     expect(lastFrame() ?? '').toContain('2 个工具')
   })
 })
+
+// 审阅修复批补测：maxTools×紧凑组共存（真实可达路径 allocateDynamic.toolGroupCap 1-6）/
+// 紧凑行 truncated 尾巴宽度预扣（80 列无溢出）/ confirm 压缩 lines=2 × run 折叠共存
+describe('同名工具折叠：审阅修复批补测', () => {
+  it('maxTools=1 预算折叠共存：组头仍 ×4 全量计数 + 只见 1 条 + 「因终端预算折叠」行', () => {
+    const tools = ['a', 'b', 'c', 'd'].map((id) => call(id, 'bash', `out-${id}`))
+    const { lastFrame } = render(React.createElement(ToolGroupView, { tools, maxTools: 1 }))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('bash ×4')
+    expect(f).toContain('cmd-a')
+    expect(f).not.toContain('cmd-b')
+    expect(f).toContain('因终端预算折叠')
+  })
+
+  it('紧凑行无溢出：digest 顶满 + 长 content（truncated 尾巴）下每行不破宽度预算', () => {
+    const tools = ['a', 'b', 'c'].map((id) => ({
+      ...call(id, 'bash', `web/src/store.ts:1${id}: appendUser ${'长'.repeat(120)}`),
+      digest: `cd D:/Study/ECode && grep -rn "kw-${id}" web/src/ --include=*.ts -S ${'x'.repeat(30)}`,
+    }))
+    const { lastFrame } = render(React.createElement(ToolGroupView, { tools }))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('bash ×3')
+    // 预算口径与组件同源：ink-testing mock stdout 恒 100 列（digest 实际被切在 49 列=
+    // digestW(90×0.55) 实证）；行宽上限 = gutter(5) + WIDTH.toolOutput(100)
+    const cap = 5 + WIDTH.toolOutput(100)
+    const overflow = f
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .filter((l) => visibleWidth(l) > cap)
+    expect(overflow, `溢出行: ${JSON.stringify(overflow)}`).toEqual([])
+  })
+
+  it('confirm 压缩（lines=2）× run 折叠共存：全进「已折叠：本轮前段」摘要，计数含 run 还原', () => {
+    const timeline = ['t1', 't2', 't3', 't4'].map((id) => bashEntry(id))
+    const { lastFrame } = render(React.createElement(TimelineView, { timeline, lines: 2, liveMaxLines: 4 }))
+    const f = lastFrame() ?? ''
+    expect(f).toContain('已折叠：本轮前段')
+    expect(f).toContain('4 个调用') // tool-run count 3 + 最新 1 —— 计数不因折叠漏报
+    expect(f).not.toContain('"kt4"') // 放不下的条目不渲
+  })
+})
+
+/** 显示宽（CJK=2）——测试内自算，避免引入额外依赖口径 */
+function visibleWidth(s: string): number {
+  let w = 0
+  for (const ch of s) w += ch.charCodeAt(0) > 0x1100 && /[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFF60]/.test(ch) ? 2 : 1
+  return w
+}

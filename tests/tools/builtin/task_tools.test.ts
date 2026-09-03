@@ -54,6 +54,20 @@ describe('task_output 等待根治（2026-09-03）', () => {
     expect(r2.content).not.toContain('已运行')
   })
 
+  // 审阅 P1（终态零输出文案矛盾）：completed 且无新输出是正常复读形态——不得自称「仍在跑」
+  it('终态+空输出：文案说「已结束」，不说「仍在跑」（防模型继续等死任务）', async () => {
+    const doneEmpty = { output: '', newOffset: 3, status: 'completed' as const, exitCode: 0, startedAt: Date.now() - 60_000 }
+    const { registry } = fakeTasks(() => doneEmpty)
+    const r = await taskOutputTool.execute({ task_id: 't1' }, { ...ctx, tasks: registry })
+    expect(r.content).toContain('任务已结束')
+    expect(r.content).not.toContain('仍在跑')
+  })
+
+  it('契约锚：wait_ms schema 带 maximum（模型从 schema 学硬上限，与 bash timeout_ms 同风格）', () => {
+    const props = taskOutputTool.input_schema as { properties: Record<string, { maximum?: number }> }
+    expect(props.properties.wait_ms?.maximum).toBe(TASK_OUTPUT_MAX_WAIT_MS)
+  })
+
   it('本批核心：已运行时长随调用推进 → 响应内容逐次不同（loop-guard 同参同果签名被天然打破）', async () => {
     let call = 0
     const { registry } = fakeTasks(() => running(Date.now() - (call + 1) * 10_000))

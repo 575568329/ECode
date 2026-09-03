@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 真机验证（技能第 5 层 pty）：回车提交 / Ctrl+J 换行 / Ctrl+C 中断思考轮。
  *
@@ -133,13 +134,13 @@ const run = async () => {
   server.close()
   const failed = results.filter((r) => !r.ok)
   console.log(`\n# 结果：${results.length - failed.length}/${results.length} 通过`)
-  if (proc != null) proc.kill()
+  if (proc != null) killPty(proc)
   server.closeAllConnections()
   process.exit(failed.length > 0 ? 1 : 0)
 }
 
 run().catch((e) => {
   console.error('driver error:', e)
-  if (proc != null) proc.kill()
+  if (proc != null) killPty(proc)
   process.exit(1)
 })

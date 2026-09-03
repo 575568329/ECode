@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * F-46 子代理完整链真机探针：主循环派 task → 子代理执行（事件行落盘）→ 完成 →
  * Ctrl+T 打开面板 → 面板列表含子代理条目 → 回车进入查看器 → 帧出现格式化内容。
@@ -71,7 +72,7 @@ server.listen(0, '127.0.0.1', async () => {
   const has = (s) => strip(out).includes(s)
   let ok = false
   for (let i = 0; i < 100 && !ok; i++) { await sleep(150); ok = has('输入消息') }
-  if (!ok) { console.log('FAIL 未就绪'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 未就绪'); killPty(proc); server.close(); process.exit(1) }
   await sleep(1200)
   proc.write('派个子代理')
   await sleep(500)
@@ -79,7 +80,7 @@ server.listen(0, '127.0.0.1', async () => {
   // task 工具 readonly:true 免确认（并行池设计）——直接等子代理跑完+结论回流
   ok = false
   for (let i = 0; i < 80 && !ok; i++) { await sleep(250); ok = has('子代理探针完成') }
-  if (!ok) { console.log('FAIL 子代理结论未回流'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 子代理结论未回流'); killPty(proc); server.close(); process.exit(1) }
   console.log('OK   子代理跑完且结论回流主循环')
   await sleep(500)
   // Ctrl+T → 根菜单（2026-09-03 拍板：两级菜单——数字直达；旧「直落时间线+l 键」路径退役）
@@ -87,7 +88,7 @@ server.listen(0, '127.0.0.1', async () => {
   proc.write('\x14')
   ok = false
   for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('详情查看') && strip(out.slice(pos)).includes('数字直达') }
-  if (!ok) { console.log('FAIL Ctrl+T 未开根菜单'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL Ctrl+T 未开根菜单'); killPty(proc); server.close(); process.exit(1) }
   console.log('OK   Ctrl+T 打开根菜单')
   await sleep(300)
   // 数字 2 直达子代理类别（根菜单第 1 项恒为时间线，本会话有子代理 → 子代理段在第 2 位）
@@ -95,7 +96,7 @@ server.listen(0, '127.0.0.1', async () => {
   proc.write('2')
   ok = false
   for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos2)).includes('子代理 transcript（本会话）') && strip(out.slice(pos2)).includes('回车 查看') }
-  if (!ok) { console.log('FAIL 数字 2 未进子代理类别列表'); proc.kill(); server.close(); process.exit(1) }
+  if (!ok) { console.log('FAIL 数字 2 未进子代理类别列表'); killPty(proc); server.close(); process.exit(1) }
   console.log('OK   数字直达进入子代理类别列表')
   // 类别列表：子代理条目（唯一 description 摘要）
   // 判定（F-49）：摘要=meta description（终态重写保留 meta 首行）；currentSid 过滤后
@@ -114,7 +115,7 @@ server.listen(0, '127.0.0.1', async () => {
   console.log(strip(out.slice(pos3)).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => /[A-Za-z0-9\u4e00-\u9fff]/.test(l)).join('\n'))
   console.log(ok ? 'OK   查看器渲染格式化 transcript' : 'FAIL 查看器无格式化内容')
   if (!ok) console.log(strip(out.slice(pos3)).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-12).join('\n'))
-  proc.kill()
+  killPty(proc)
   server.close()
   setTimeout(() => process.exit(ok ? 0 : 1), 200)
 })

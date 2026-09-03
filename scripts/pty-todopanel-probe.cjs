@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * TodoPanel 集成实测：mock SSE 让模型调用 todo 工具 → 观察输入区上方常驻面板
  * （头部完成度 + ASCII 状态符逐项清单）。对标 CC/harness/opencode「清单不进对话流」。
@@ -91,13 +92,13 @@ const run = async () => {
   console.log(`${hasItems ? 'OK ' : 'FAIL'} T4 逐项状态符渲染（✓/▸/○）`)
   console.log('---- 末帧 ----\n' + lastFrame(14))
   console.log(`\n# 结论：${hasPanel && hasItems ? 'TodoPanel 集成实证通过' : '见上方帧排查'}`)
-  proc.kill()
+  killPty(proc)
   server.close()
   process.exit(hasPanel && hasItems ? 0 : 1)
 }
 
 run().catch((e) => {
   console.error('driver error:', e)
-  if (proc != null) proc.kill()
+  if (proc != null) killPty(proc)
   process.exit(1)
 })

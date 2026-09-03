@@ -29,14 +29,39 @@ describe('TaskRegistry', () => {
     const r = reg.start('echo uptime-src', process.cwd())
     if (!r.ok) return
     const t0 = Date.now()
-    const running = await reg.output(r.task.id)
-    if ('error' in running) throw new Error('bad')
-    expect(running.startedAt).toBeGreaterThan(t0 - 60_000) // 真实启动时刻（毫秒）
+    const first = await reg.output(r.task.id)
+    if ('error' in first) throw new Error('bad')
+    // 审阅收紧：真实启动时刻=start 内赋值（必 ≤ 读时刻 t0），且不会早于 start 调用 5s——
+    // 旧断言 t0-60_000 几乎恒真，实现若退化为「返回读取时刻」仍绿
+    expect(first.startedAt).toBeLessThanOrEqual(t0)
+    expect(first.startedAt).toBeGreaterThan(t0 - 5_000)
     await waitFor(async () => (await reg.output(r.task.id, 0)).status !== 'running', 5000)
     const done = await reg.output(r.task.id)
     if ('error' in done) throw new Error('bad')
-    expect(done.startedAt).toBe(running.startedAt) // 终态仍带（消费端按 status 决定是否渲染）
+    expect(done.startedAt).toBe(first.startedAt) // 终态仍带（消费端按 status 决定是否渲染）
   })
+
+  // 审阅 P1（等待路径零直接测试）：waitMs 机制本体两条路径补真子进程锚
+  it('waitMs 等待：running 中新输出到达提前返回（一次等到，不空转）', async () => {
+    const reg = new TaskRegistry(dir)
+    const r = reg.start('sleep 1 && echo late-output', process.cwd())
+    if (!r.ok) return
+    const out = await reg.output(r.task.id, 0, 8000)
+    if ('error' in out) throw new Error('bad')
+    expect(out.output).toContain('late-output')
+  }, 12_000)
+
+  it('waitMs 到期：全程无输出 → 返回 running 态空输出（不抛错、不误报完成）', async () => {
+    const reg = new TaskRegistry(dir)
+    const r = reg.start('sleep 5', process.cwd())
+    if (!r.ok) return
+    const out = await reg.output(r.task.id, 0, 300)
+    if ('error' in out) throw new Error('bad')
+    expect(out.status).toBe('running')
+    expect(out.output).toBe('')
+    reg.stop(r.task.id)
+    reg.cleanup()
+  }, 10_000)
 
   it('增量读：两次读不重复（consumedOffset 推进）', async () => {
     const reg = new TaskRegistry(dir)

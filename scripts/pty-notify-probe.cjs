@@ -1,3 +1,4 @@
+const { killPty } = require("./pty-treekill.cjs"); // 2026-09-03 孤儿根治：kill 升级树杀（term.kill 只杀 cmd.exe 一层，tsx 孙进程变孤儿）
 /**
  * 批2d 验收探针：Notification hook（第七事件）+ BEL 响铃真机断言。
  *
@@ -152,7 +153,7 @@ const fail = (label, detail) => {
   console.log(`FAIL ${label}${detail ? '：' + detail : ''}`)
   console.log('---- 末 16 帧 ----\n' + lastFrame(16))
   console.log('---- notify.log ----\n' + notifyLines().join('\n'))
-  if (alive && proc != null) proc.kill()
+  if (alive && proc != null) killPty(proc)
   expectExit = true
   process.exit(1)
 }
@@ -222,7 +223,7 @@ const run = async () => {
   console.log('OK  S2c 新轮完成 idle 重新起表')
 
   // ===== 会话二：BEL 关 =====
-  proc.kill()
+  killPty(proc)
   expectExit = true
   await new Promise((r) => setTimeout(r, 1500))
   writeConfig(false)
@@ -238,7 +239,7 @@ const run = async () => {
   console.log('OK  S3 bellOnApproval:false 审批卡无 BEL')
   proc.write('\r') // 收尾批准
   await new Promise((r) => setTimeout(r, 1500))
-  proc.kill()
+  killPty(proc)
 
   console.log(`\n# 结论：S1/S1b/S2/S2b/S2c/S3 六项全过——Notification hook 与 BEL 真机验收通过`)
   server.close()
@@ -249,6 +250,6 @@ const run = async () => {
 
 run().catch((e) => {
   console.error('driver error:', e)
-  if (alive && proc != null) proc.kill()
+  if (alive && proc != null) killPty(proc)
   process.exit(1)
 })

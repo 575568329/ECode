@@ -12,6 +12,8 @@ import { renderSkillListing, listingBudget } from '../services/skill/listing.js'
 import { ECODE_CONFIG_SKILL_NAME, ECODE_FEATURES_SKILL_NAME } from '../services/skill/builtin.js'
 import { loadInstructions, renderInstructions } from '../services/instructions.js'
 import { loadMemoryIndexes, renderMemory } from '../services/memory.js'
+import { TASK_OUTPUT_MAX_WAIT_MS } from '../services/tasks.js'
+import { BASH_DEFAULT_TIMEOUT_MS, BASH_MAX_TIMEOUT_MS } from '../tools/builtin/bash.js'
 
 /** 动态段注入选项（M8：上限从 config 透传——maxInstructionsKB 可调）。 */
 export interface SystemPromptOpts {
@@ -35,13 +37,13 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number, opts
 - read_file <path>：读单个文件的完整内容
 - write_file <path> <content>：写新文件或覆盖（会请求确认）
 - edit_file <path> <oldString> <newString>：改文件中的某段（会请求确认）
-- bash <command>：执行 shell 命令（长命令如全量测试/构建传 timeout_ms 放大——默认 120000、最大 600000，超时杀整树）
+- bash <command>：执行 shell 命令（长命令如全量测试/构建传 timeout_ms 放大——默认 ${BASH_DEFAULT_TIMEOUT_MS}、最大 ${BASH_MAX_TIMEOUT_MS}，超时杀整树）
 - Skill <skill>：加载工作流手册（available_skills 清单里匹配时调用，返回步骤照做）
 - ask_user：需求模糊且调查后仍无法推断时向用户提问（选项框；能推断就别问）
 - web_fetch <url>：抓公开网页转文本（查最新文档；优先读本地，线上不确定才用）
 - web_search <query>：联网搜索（不知道 URL 时先搜；拿到结果常配合 web_fetch 抓全文；可带 domain/recency 收窄）
 - bash run_in_background=true：持续型/长命令后台跑（dev server 等不退出进程，或预计超 2 分钟同步跑会拖慢轮次的构建）——立即返回 task_id（仅此类命令用；秒级返回的短命令如 git show/grep 直接同步跑，转后台徒增 task_output 往返）
-- task_output <task_id>：读后台任务增量输出（wait_ms 单次给足等新输出或退出，上限 300000=5 分钟，有新输出或任务结束提前返回；勿短间隔同参连发）
+- task_output <task_id>：读后台任务增量输出（wait_ms 单次给足等新输出或退出，上限 ${TASK_OUTPUT_MAX_WAIT_MS}=${TASK_OUTPUT_MAX_WAIT_MS / 1000 / 60} 分钟，有新输出或任务结束提前返回；勿短间隔同参连发）
 - task_stop <task_id>：终止后台任务（统一杀树，孙进程一并终止）
 - task <description> <prompt>：把独立子任务委派给并发子代理（大范围调研/多视角审阅/可并行的独立子任务；prompt 必须自包含。单调用阻塞至返回结论；同轮发出多个 task 调用即并行执行——能并行的独立工作不要串行自己做）
 - todo <todos>：维护多步任务清单（3 步以上才建；全量替换；完成一项立即更新）

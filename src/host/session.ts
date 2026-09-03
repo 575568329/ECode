@@ -36,7 +36,7 @@ import { isSensitivePath, isProjectEcodeSettings } from '../tools/sensitive.js'
 import { buildMediaBlock } from '../services/media.js'
 import { tokensToCost } from '../services/pricing.js'
 import { callReviewer, buildReviewMessages, shouldReviewAtTurnEnd, longestConsecutiveErrorRun, shouldReviewOnSignal, DEFAULT_REVIEW_GATE_TIMEOUT_MS, type ReviewTrigger } from '../services/review/reviewer.js'
-import { TaskRegistry } from '../services/tasks.js'
+import { TaskRegistry, TASK_OUTPUT_MAX_WAIT_MS } from '../services/tasks.js'
 import type { LLMProviderRegistry, LLMProvider, ProviderReq } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
 import type { HookRunner } from '../services/hooks/runner.js'
@@ -1831,7 +1831,7 @@ export class HostSession {
       this.deps.logger.warn('loop-guard', 'same-args', { streak: this.sigStreak })
       // 等待根治（2026-09-03）：wait_ms 上限已提至 5 分钟（TASK_OUTPUT_MAX_WAIT_MS），
       // 「加大 wait_ms」从死路变活路——合法等待本身就是一次长调用而非 N 次短轮询
-      feedback = `[loop-guard] 最近 ${this.sigStreak} 轮在以完全相同的参数调用相同工具且结果毫无变化，请重新判断这是否必要（如等待后台任务请单次给足 wait_ms，上限 300000）。`
+      feedback = `[loop-guard] 最近 ${this.sigStreak} 轮在以完全相同的参数调用相同工具且结果毫无变化，请重新判断这是否必要（如等待后台任务请单次给足 wait_ms，上限 ${TASK_OUTPUT_MAX_WAIT_MS}）。`
     }
 
     // ② 连续空错：全 isError 非空轮

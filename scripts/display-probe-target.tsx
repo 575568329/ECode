@@ -18,6 +18,7 @@ import { ToolLine } from '../src/tui/ToolLine.js'
 import { ActivityBar } from '../src/tui/ActivityBar.js'
 import { StatusBar } from '../src/tui/StatusBar.js'
 import { TimelineView } from '../src/tui/TimelineView.js'
+import { ToolGroupView } from '../src/tui/ToolGroupView.js'
 import { foldStreamText } from '../src/tui/stream.js'
 import { BUSY_HINT } from '../src/tui/ShortcutHint.js'
 import type { ActiveTool } from '../src/tui/types.js'
@@ -168,6 +169,37 @@ if (scene.startsWith('preview-')) {
     }, 20)
   } else {
     render(React.createElement(RssApp))
+  }
+} else if (scene === 'toolrun-dyn' || scene === 'toolrun-static') {
+  // 同名工具折叠批（2026-09-03 用户拍板「相同的工具能折叠也折叠」）：真 pty 断言
+  // 动态区 run 折叠（×N 摘要 + 最新完整）与静态紧凑组（×N 组头 + 单行/条 + 还有 N 条）。
+  // digest 带 cd 前缀长命令——顺带压紧凑行 clipWidth 真实性（无 wrap 溢出由探针断言）
+  const dynEntries = ['t1', 't2', 't3', 't4', 't5', 't6', 't7'].map((id) => ({
+    kind: 'tool' as const,
+    id,
+    tool: {
+      name: 'bash',
+      id,
+      status: 'done' as const,
+      digest: `cd D:/Study/ECode && grep -rn "kw-${id}" web/src/`,
+      content: `web/src/store.ts:1${id}: appendUser hit-${id} ——一段够长的中文输出以压 preview 截断${'余'.repeat(40)}`,
+    },
+  }))
+  if (scene === 'toolrun-dyn') {
+    render(React.createElement(TimelineView, { timeline: dynEntries, lines: 14, liveMaxLines: 4 }))
+  } else {
+    const tools = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((id) => ({
+      name: 'bash',
+      use: { type: 'tool_use' as const, id: `u-${id}`, name: 'bash', input: { command: `cmd-${id}` } },
+      result: {
+        type: 'tool_result' as const,
+        tool_use_id: `u-${id}`,
+        content: `web/src/store.ts:1${id}: appendUser hit-${id} ——一段够长的中文输出以压 preview 截断${'余'.repeat(40)}`,
+      },
+      status: 'done' as const,
+      digest: `cd D:/Study/ECode && grep -rn "kw-${id}" web/src/`,
+    }))
+    render(React.createElement(ToolGroupView, { tools }))
   }
 } else {
   process.stderr.write(`unknown scene: ${scene}\n`)

@@ -250,13 +250,21 @@ describe('runLoop', () => {
     // 提示词明示「同轮多个 task 调用即并行执行」——本用例锁 executeTools 的 readonly
     // Promise.all 底座：两个 120ms 慢 readonly 工具同轮执行，墙钟必须 < 2×（串行则 ≥240ms）。
     // 若未来 executeTools 被重构为串行，提示词对模型撒谎且本测试变红
+    // 审阅修复（测试席 P2·二轮补遗）：墙钟断言（<240ms 贴串行边界）改**并发计数哨兵**——
+    // 执行中段观察到 in-flight ≥2 才是真并行（CI 慢机毫秒抖动不再假红；串行退化仍必红：
+    // 串行时 slowA 结束 slowB 才开始，in-flight 峰值恒 1）
+    let inFlight = 0
+    let maxSeen = 0
     const slow = (name: string): Tool => ({
       name,
       description: name,
       input_schema: { type: 'object', properties: {} },
       readonly: true,
       async execute() {
+        inFlight += 1
+        maxSeen = Math.max(maxSeen, inFlight)
         await new Promise((r) => setTimeout(r, 120))
+        inFlight -= 1
         return { content: 'ok' }
       },
     })
@@ -270,10 +278,8 @@ describe('runLoop', () => {
       ],
       [{ type: 'text', text: 'done' }, { type: 'done', stop_reason: 'end' }],
     ])
-    const t0 = Date.now()
     await runLoop([], '问', { ...makeOpts(p, [slow('slowA'), slow('slowB')]) })
-    const wall = Date.now() - t0
-    expect(wall).toBeLessThan(240) // 并行：两工具墙钟重叠（120ms + 调度余量）
+    expect(maxSeen).toBeGreaterThanOrEqual(2) // 并行：两工具执行期真实重叠
   })
 
   it('F-21（审阅 P1-5①）：最后一轮撞 CONTEXT_TOO_LONG 压缩重试（continue 路径）仍有耗尽提示', async () => {

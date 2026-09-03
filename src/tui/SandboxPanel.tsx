@@ -1,6 +1,6 @@
 /**
  * /sandbox 面板（M9-P4/D13/D12）：四档列表，Tab/↑↓ 循环，Enter 选定。
- * full-access 二级确认（切档防误触——全免确认是危险态；内置黑名单与 blockedCommands 仍硬拒）。
+ * full-access 二级确认（切档防误触——全免确认是危险态；内置黑名单与 blockedCommands 按常见形态拦截）。
  * Tab 在面板内专职循环切档（M9-D13）；Esc 取消。
  */
 
@@ -16,7 +16,7 @@ const MODE_DESC: Record<SandboxMode, string> = {
   'accept-edits': '纯编辑（edit_file/write_file）免确认放行；bash/其他副作用仍每次确认；写路径仍限工作目录内',
   'read-only': 'write/edit/bash 全部拒绝；读类照常',
   'workspace-write': '写/改仅限工作目录内（越界直接拒绝，拦 .. 逃逸）；bash 每次确认',
-  'full-access': '全部免确认（危险）；内置黑名单与 blockedCommands 仍硬拒',
+  'full-access': '全部免确认（危险）；内置黑名单与 blockedCommands 按常见形态拦截',
 }
 
 interface SandboxPanelProps {
@@ -54,7 +54,7 @@ export function SandboxPanel({ current, onPick }: SandboxPanelProps): ReactEleme
         <Text color={theme.error} bold> ⚠ 进入 full-access？</Text>
         <Box marginTop={1}>
           <Text dimColor>
-            {' '}全部工具免确认执行；仅内置八条危险黑名单与 sandbox.blockedCommands 仍硬拒。
+            {' '}全部工具免确认执行；仅内置八条危险黑名单与 sandbox.blockedCommands 按常见形态拦截（防常规误操作，非对抗性防线）。
             确信当前任务可信再继续。
           </Text>
         </Box>

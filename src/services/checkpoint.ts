@@ -319,6 +319,27 @@ export class CheckpointStore {
     return { restored, externalChanged, ...(failed.length > 0 ? { failed } : {}) }
   }
 
+  /**
+   * absent 基线补录（二轮审阅·bash absent 兜底）：把「执行 bash 前不存在」的路径补进
+   * **最近一个快照点**（bash 的写前快照）——revert 到该点即可删除 bash 新建的文件
+   *（npm install/构建脚本类写路径原对 /rewind 完全失明）。
+   * 链上串行；只补该点尚无记录的路径（已有 present/absent 基线不覆盖）；无快照点时静默跳过
+   *（无点可锚——bash 前无任何写入，差集文件也不存在，删除它们无基线语义可依）。
+   */
+  async amendAbsent(sessionId: string, paths: string[]): Promise<void> {
+    if (paths.length === 0) return
+    await this.enqueueChain(async () => {
+      const metas = await this.list(sessionId)
+      const latest = metas[metas.length - 1]
+      if (latest === undefined) return
+      const known = new Set(latest.files.map((f) => f.path))
+      const add = paths.filter((p) => !known.has(p))
+      if (add.length === 0) return
+      latest.files = [...latest.files, ...add.map((p) => ({ path: p, hash: '', absent: true as const }))]
+      await writeFile(join(this.sessionDir(sessionId), String(latest.seq), 'meta.json'), JSON.stringify(latest, null, 2), 'utf8')
+    })
+  }
+
   /** 恢复会话跟随（M9-P2 断链修复）：restoreSession 起新 sessionId，旧快照目录整体拷贝跟随。
    *  审阅修复（架构席 P2·二轮）：入串行链——防拷到链上正写一半的 meta.json。 */
   async copyForResume(oldSessionId: string, newSessionId: string): Promise<void> {
@@ -328,6 +349,11 @@ export class CheckpointStore {
   }
 
   /** bash 近修改集：git status 变更文件（绝对路径）；非 git 仓库返回空 + warn。 */
+  /** bash absent 兜底（二轮补遗）：近修改集公开包装——session 桥在 bash 前后各取一次做差集 */
+  async bashDirtyFiles(): Promise<string[]> {
+    return this.gitDirtyFiles()
+  }
+
   private async gitDirtyFiles(): Promise<string[]> {
     try {
       // windowsHide：本函数在每次 bash/编辑工具前触发（daemon 无控制台形态下 git.exe

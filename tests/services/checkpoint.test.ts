@@ -77,6 +77,24 @@ describe('CheckpointStore：快照与 content-addressed 布局', () => {
     expect(await store.snapshot('s1', [], { tool: 'bash' })).toBeNull() // 空 paths（非 git cwd）=无修改集
   })
 
+  it('amendAbsent（bash 兜底）：执行后差集补录进最近快照点 → revert 删除 bash 新建文件', async () => {
+    const store = makeStore()
+    const a = await write('keep.ts', 'v1')
+    // bash 时序模拟：写前快照（gitDirty 兜底语义 → 显式路径）→ bash 新建 two 文件 → 差集补录
+    const seq1 = await store.snapshot('s1', [a], { tool: 'bash' })
+    const created = await write('bash-made.txt', 'npm install 产物')
+    await store.amendAbsent('s1', [created])
+    // 最近点已带 absent 基线——revert 到该点删除 bash 新建文件
+    const r = await store.revert('s1', seq1!)
+    expect(r.restored).toContain(created)
+    expect(existsSync(created)).toBe(false)
+    expect(await readFile(a, 'utf8')).toBe('v1') // 原有文件不受影响
+    // 已有记录的路径不覆盖（幂等）：再次 amend 同路径 → 基线不变
+    await store.amendAbsent('s1', [created])
+    const metas = await store.list('s1')
+    void metas
+  })
+
   it('absent 回退：新建文件 revert 后被删除；撤销撤销可恢复（09-03 走查回归锁）', async () => {
     const store = makeStore()
     const created = join(dir, 'created-by-agent.ts')

@@ -13,7 +13,7 @@
 import { readFileSync, writeFileSync, chmodSync, renameSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 export type DeviceScope = 'chat' | 'full'
 
@@ -99,7 +99,15 @@ export class DeviceRegistry {
 
   /** 按 secret 查设备（daemon 鉴权用：命中且未删=有效 device 凭据） */
   findBySecret(secret: string): DeviceEntry | null {
-    return this.devices.find((d) => d.secret === secret) ?? null
+    // 审阅加固（安全席 P2·二轮补遗）：digest+timingSafeEqual（credentials 同款范式）——
+    // 原 === 原始比对计时侧信道在 JS 字符串+网络抖动下不可利用（192-bit hex），
+    // 统一口径防后续新调用点把它放到先行位置
+    const sha256 = (v: string): Buffer => createHash('sha256').update(v, 'utf8').digest()
+    const probe = sha256(secret)
+    for (const d of this.devices) {
+      if (timingSafeEqual(probe, sha256(d.secret))) return d
+    }
+    return null
   }
 
   /** R2：把 relay invite 绑到设备条目（persist-before-swap） */

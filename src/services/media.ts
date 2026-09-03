@@ -87,17 +87,20 @@ export function imageDimensions(buf: Buffer, mediaType: string): { w: number; h:
   return null
 }
 
-/** PDF 页数粗判（字节计数 /Type /Page 且非 /Pages——容器链解析不可靠，粗计数够守卫用）。 */
+/** PDF 页数粗判（字节计数 /Type/Page 且非 /Pages——容器链解析不可靠，粗计数够守卫用）。
+ *  审阅修复（开发席 P2·二轮补遗）：needle 兼容无空格形态 `/Type/Page`（部分生成器省略空格）；
+ *  压缩 object stream 内的页对象不可见——fail-open 方向由 32MB 硬顶兜底（既有披露）。 */
 export function pdfPageCount(buf: Buffer): number {
   let count = 0
-  let idx = 0
-  const needle = Buffer.from('/Type /Page')
-  while (idx < buf.length) {
-    const found = buf.indexOf(needle, idx)
-    if (found === -1) break
-    // '/Type /Pages' 的前 11 字节与本 needle 相同——其后第 12 字节是 's'(0x73) 则跳过
-    if (buf[found + 11] !== 0x73) count += 1
-    idx = found + 11
+  for (const needle of [Buffer.from('/Type /Page'), Buffer.from('/Type/Page')]) {
+    let idx = 0
+    while (idx < buf.length) {
+      const found = buf.indexOf(needle, idx)
+      if (found === -1) break
+      // '/Type /Pages' 与 '/Type/Pages' 的前若干字节与 needle 相同——其后一字节是 's'(0x73) 则跳过
+      if (buf[found + needle.length] !== 0x73) count += 1
+      idx = found + needle.length
+    }
   }
   return count
 }

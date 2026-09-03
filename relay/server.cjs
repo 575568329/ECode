@@ -483,7 +483,17 @@ phoneHttp.on('upgrade', (req, socket, head) => {
     .filter(Boolean)
   const invite =
     protos.includes('ecode-relay') && protos.length > 1 ? protos[protos.indexOf('ecode-relay') + 1] : protos[0] || url.searchParams.get('token') || ''
-  const inv = st !== undefined ? st.invites.get(invite) : undefined
+  // 审阅加固（安全席 P2·二轮补遗）：invite 验证走常量时比较（constantEqual 现成）——
+  // Map.get 原始比对在 24B token 下计时侧信道不可利用，统一口径防后续前置化复用
+  let inv
+  if (st !== undefined) {
+    for (const [k, v] of st.invites) {
+      if (constantEqual(invite, k)) {
+        inv = v
+        break
+      }
+    }
+  }
   if (st === undefined || st.control === null || st.control.readyState !== 1) {
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n') // 线上形态：升级前拒绝只能 HTTP 层表达
     return socket.destroy()

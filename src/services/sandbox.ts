@@ -8,7 +8,8 @@
  * - read-only：write/edit/bash 全拒（is_error）；读类照常
  * - workspace-write：write/edit 仅 cwd 内（resolve 后前缀校验，天然拦 .. 逃逸）；bash 确认
  * - full-access：全免确认；内置八条危险黑名单（proc.ts，任何档无条件）+
- *   用户可配 sandbox.blockedCommands 通配清单仍硬拒（deny 语义；对齐 CC bypassPermissions）
+ *   用户可配 sandbox.blockedCommands 通配清单拦截（对齐 CC bypassPermissions；分词归一防常规形态，
+ *   shell 元字符拼接（引号/变量/转义）固有绕过——口径为「常见形态拦截」非对抗性防线，二轮审阅收口）
  *
  * 诚实声明（软沙箱边界）：bash 命令无法可靠解析写目标——read-only 档整体拒绝、其余档靠
  * 确认弹窗兜底，不假装拦得住；进程级 OS 沙箱维持后置（M9-D7）。
@@ -28,7 +29,7 @@ export interface Sandbox {
   mode: SandboxMode
   /** 写路径校验（write/edit execute 前置）：read-only 拒；accept-edits/workspace-write 仅 cwd 内 */
   checkWrite(absPath: string): WriteCheck
-  /** bash 校验：blockedCommands 命中全档硬拒；read-only 拒；full-access 免确认；其余确认 */
+  /** bash 校验：blockedCommands 命中即拦（全档；常见形态匹配）；read-only 拒；full-access 免确认；其余确认 */
   checkBash(command: string): BashCheck
 }
 

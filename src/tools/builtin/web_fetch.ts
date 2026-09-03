@@ -13,8 +13,9 @@ import type { Tool } from '../interface.js'
 
 const FETCH_TIMEOUT_MS = 15_000
 const MAX_REDIRECTS = 3
-/** 响应体硬顶（M8 补充交付③）：超过即放弃——超大页面的内容不进上下文
- *  （res.text() 已读入内存，本顶防的是后续处理与回喂，非内存保护；真流式后置） */
+/** 响应体硬顶（M8 补充交付③）：超过即放弃——超大页面的内容不进上下文。
+ *  审阅修复（安全席 P2·二轮补遗）：真流式截断——原 res.text() 全量读入后才查上限，
+ *  恶意/超大响应可在超时窗内推 GB 级数据全驻内存（内存 DoS 面）；现按已读字节边读边截。 */
 const BODY_HARD_CAP_BYTES = 512 * 1024
 const DEFAULT_MAX_CONTENT_BYTES = 30 * 1024
 /** 回喂上限（cli 启动时从 config webFetchMaxKB 注入；默认 30KB） */
@@ -131,6 +132,8 @@ export type FetchLike = (url: string, init: { redirect: 'manual'; signal: AbortS
   status: number
   headers: { get(name: string): string | null }
   text(): Promise<string>
+  /** 审阅修复（二轮）：流式读取口（undici 原生有）——body 上限边读边截；缺省回退 text() */
+  body?: { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(): Promise<void> } } | null
 }>
 
 export function createWebFetchTool(fetchImpl: FetchLike = fetch as unknown as FetchLike): Tool {
@@ -189,7 +192,7 @@ export function createWebFetchTool(fetchImpl: FetchLike = fetch as unknown as Fe
           if (res.status >= 400) {
             return { content: `HTTP ${res.status} ${current.toString()}`, is_error: true }
           }
-          const body = await readBodyCapped(res.text.bind(res), BODY_HARD_CAP_BYTES)
+          const body = await readBodyCapped(res, BODY_HARD_CAP_BYTES)
           if (body === null) {
             return { content: `页面内容超过 ${BODY_HARD_CAP_BYTES} 字节硬顶，已放弃抓取：${current.toString()}`, is_error: true }
           }
@@ -220,9 +223,44 @@ export function createWebFetchTool(fetchImpl: FetchLike = fetch as unknown as Fe
 
 export const webFetchTool: Tool = createWebFetchTool()
 
-/** 响应体上限读取（M8 补充③）：字节数（Buffer.byteLength——字符数对中文页会低估 3 倍）
- *  超 hardCap 返回 null（调用方放弃）。 */
-async function readBodyCapped(readText: () => Promise<string>, hardCap: number): Promise<string | null> {
-  const body = await readText()
+/** 响应体上限读取（M8 补充③）：字节数口径（字符数对中文页会低估 3 倍），超 hardCap 返回
+ *  null（调用方放弃）。有 body 流时**边读边截**（超限即 cancel——服务端无法继续推流占内存）；
+ *  无流（测试 mock/旧实现）回退 text() 全读后校验。 */
+async function readBodyCapped(
+  res: { body?: { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(): Promise<void> } } | null; text(): Promise<string> },
+  hardCap: number,
+): Promise<string | null> {
+  if (res.body != null) {
+    const reader = res.body.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    let over = false
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value !== undefined) {
+        total += value.byteLength
+        if (total > hardCap) {
+          over = true
+          break
+        }
+        chunks.push(value)
+      }
+    }
+    if (over) {
+      void reader.cancel().catch(() => {
+        /* 连接已断/竞态 */
+      })
+      return null
+    }
+    const merged = new Uint8Array(total)
+    let off = 0
+    for (const c of chunks) {
+      merged.set(c, off)
+      off += c.byteLength
+    }
+    return new TextDecoder('utf-8').decode(merged)
+  }
+  const body = await res.text()
   return Buffer.byteLength(body, 'utf8') > hardCap ? null : body
 }

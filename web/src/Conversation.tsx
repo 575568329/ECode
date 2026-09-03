@@ -275,6 +275,16 @@ export function Conversation({ project, sessionId }: { project: string; sessionI
         return sendCommand('', project, sessionId, { op: 'session/read', sessionId }).then((r2) => {
           if (r2.ok) loadHistory(sessionId, r2.value)
           else setLoadError(sessionId, `历史读取失败：${String(r2.error ?? '未知错误')}`)
+          // 二轮审阅（TUI 同构）：resync 只补 transcript 不对账运行态——断线窗口丢收尾帧时
+          // 会话列表恒转圈；session/list 的 running 注入（宿主冷热合并）为权威值
+          if (r2.ok) {
+            void sendCommand('', project, sessionId, { op: 'session/list' })
+              .then((r3) => {
+                const mine = (Array.isArray(r3.value) ? (r3.value as Array<{ sessionId?: string; running?: boolean }>) : []).find((m) => m.sessionId === sessionId)
+                if (mine !== undefined) useApp.getState().setSessionRunning(sessionId, mine.running === true)
+              })
+              .catch(() => {})
+          }
         })
       })
       .catch((e) => setLoadError(sessionId, e instanceof Error ? e.message : String(e)))

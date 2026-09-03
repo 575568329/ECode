@@ -106,6 +106,8 @@ export interface SubagentBridge {
   /** 审阅 P0-2：写前钩子（TuiApp 版含 editedFilesRef 归主——父轮末 autoCommit 提交集；
    * cli deps 的 onBeforeWrite 只做快照，够不到 TuiApp 闭包，故必经桥） */
   onBeforeWrite?: (paths: string[], tool: string, toolUseId?: string) => Promise<void>
+  /** 二轮补遗（bash absent 兜底）：子代理 bash 执行后差集补录（主链同款语义） */
+  onAfterBash?: () => Promise<void>
   /** 审阅 P1-1/P1-2：运行态 getter——TuiApp 挂（/model·/config 运行中切换、Tab 切沙箱档后
    * 子代理取新值；缺省回退 deps 静态值=argv 单次模式） */
   getProviderReq?: () => ProviderReq

@@ -42,7 +42,15 @@ export const webSearchTool: Tool = {
       }
       return { content: formatForTool(r.results, r.footer) }
     } catch (e) {
-      return { content: `搜索失败：${e instanceof Error ? e.message : String(e)}`, is_error: true }
+      // 审阅修复（开发席 P2·二轮补遗）：超时/网络中断原文案「This operation was aborted」
+      // 对 LLM 不可行动——归一为可重试指引（非 abort 错误保留原文供诊断）
+      const msg = e instanceof Error ? e.message : String(e)
+      const isAbort = e instanceof Error && (e.name === 'AbortError' || msg.includes('aborted'))
+      const isNet = e instanceof Error && (e.name === 'TypeError' || msg.includes('fetch failed') || msg.includes('ECONNRESET') || msg.includes('ENOTFOUND'))
+      if (isAbort || isNet) {
+        return { content: '搜索超时或网络异常，本次未获得结果——可直接重试一次；若连续失败请换用 web_fetch 直接抓取已知站点。', is_error: true }
+      }
+      return { content: `搜索失败：${msg}`, is_error: true }
     }
   },
 }

@@ -141,7 +141,7 @@ describe('OpenaiProvider 看门狗（短真 timer）', () => {
   it('慢滴活流（内容 delta 间隔 < 阈值）不误杀：正常收尾 done end + usage', async () => {
     createMock.mockImplementation(async () => dripStream(6, 20))
     const p = new OpenaiProvider()
-    const deltas = await collect(p, makeReq(120))
+    const deltas = await collect(p, makeReq(240)) // 滴间 20ms，阈值 240ms=滴距 12× 余量
     expect(deltas.some((d) => d.type === 'error')).toBe(false)
     expect(deltas.some((d) => d.type === 'done' && d.stop_reason === 'end')).toBe(true)
     expect(deltas.some((d) => d.type === 'usage')).toBe(true)
@@ -169,8 +169,8 @@ describe('OpenaiProvider 看门狗（短真 timer）', () => {
     createMock.mockImplementation(async (_body: unknown, opts: { signal?: AbortSignal }) => silentStream(opts?.signal))
     const user = new AbortController()
     const p = new OpenaiProvider()
-    const collectP = collect(p, makeReq(200, user.signal)) // 看门狗 200ms，用户 60ms 先断
-    setTimeout(() => user.abort(), 60)
+    const collectP = collect(p, makeReq(400, user.signal)) // 看门狗 400ms，用户 50ms 先断（8× 余量防 CI 慢机假红）
+    setTimeout(() => user.abort(), 50)
     const deltas = await collectP
     expect(createMock).toHaveBeenCalledTimes(1)
     expect(deltas.some((d) => d.type === 'error')).toBe(false)

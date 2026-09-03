@@ -191,4 +191,68 @@ describe('截断上限可配（setWebFetchLimits）', () => {
     expect(r.is_error).toBe(true)
     expect(r.content).toContain('硬顶')
   })
+
+  it('二轮审阅：body 流式截断——超限时 cancel 流且不读完全部 chunk（内存 DoS 面）', async () => {
+    let cancelled = false
+    let reads = 0
+    // 3 个 200KB chunk（共 600KB > 512KB 硬顶）——旧实现 text() 全读后才弃；流式应在第 3 块 cancel
+    const chunk = new Uint8Array(200 * 1024).fill(0x61)
+    const stream = {
+      getReader() {
+        let i = 0
+        return {
+          read: async () => {
+            reads += 1
+            if (i < 3) {
+              i += 1
+              return { done: false, value: chunk }
+            }
+            return { done: true }
+          },
+          cancel: async () => {
+            cancelled = true
+          },
+        }
+      },
+    }
+    const tool = createWebFetchTool(
+      (async () => ({ status: 200, headers: { get: () => 'text/plain' }, text: async () => { throw new Error('不应走 text() 全读') }, body: stream })) as unknown as FetchLike,
+    )
+    const r = await tool.execute({ url: 'https://example.com/stream-huge' }, ctx)
+    expect(r.is_error).toBe(true)
+    expect(r.content).toContain('硬顶')
+    expect(cancelled).toBe(true) // 流被显式 cancel——服务端无法继续推流
+    expect(reads).toBeLessThanOrEqual(3) // 未读第 4 次（done 探测也不发生——超限即断）
+  })
+
+  it('二轮审阅：body 流式在限内——多 chunk 合并解码正确（UTF-8 跨 chunk 边界）', async () => {
+    // '字' 的 UTF-8 是 3 字节——拆成 [前 2 字节 | 后 1 字节 + 其余] 两 chunk，合并解码须还原
+    const text = '字'.repeat(10)
+    const bytes = new TextEncoder().encode(text)
+    const stream = {
+      getReader() {
+        let i = 0
+        return {
+          read: async () => {
+            if (i === 0) {
+              i += 1
+              return { done: false, value: bytes.slice(0, 5) } // 切在多字节序列中间
+            }
+            if (i === 1) {
+              i += 1
+              return { done: false, value: bytes.slice(5) }
+            }
+            return { done: true }
+          },
+          cancel: async () => {},
+        }
+      },
+    }
+    const tool = createWebFetchTool(
+      (async () => ({ status: 200, headers: { get: () => 'text/plain' }, text: async () => { throw new Error('不应走 text()') }, body: stream })) as unknown as FetchLike,
+    )
+    const r = await tool.execute({ url: 'https://example.com/stream-ok' }, ctx)
+    expect(r.is_error).toBeUndefined()
+    expect(r.content).toContain(text)
+  })
 })

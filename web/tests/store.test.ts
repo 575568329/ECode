@@ -342,3 +342,17 @@ describe('活动流：thinking/executing 帧消费', () => {
     expect(v?.thinkingTail).toBe('')
   })
 })
+
+describe('二轮审阅：运行态对账（gap 重连）', () => {
+  it('setSessionRunning 以服务端回执为权威翻新会话列表 running', () => {
+    const st = useApp.getState()
+    st.upsertSession({ sessionId: 's1', project: 'p1', title: 't', updatedAt: '', running: true })
+    expect(useApp.getState().sessions.find((s) => s.sessionId === 's1')?.running).toBe(true)
+    useApp.getState().setSessionRunning('s1', false)
+    expect(useApp.getState().sessions.find((s) => s.sessionId === 's1')?.running).toBe(false)
+    // 未匹配的 id 不动其它会话
+    useApp.getState().upsertSession({ sessionId: 's2', project: 'p1', title: 't2', updatedAt: '', running: true })
+    useApp.getState().setSessionRunning('s1', true)
+    expect(useApp.getState().sessions.find((s) => s.sessionId === 's2')?.running).toBe(true)
+  })
+})

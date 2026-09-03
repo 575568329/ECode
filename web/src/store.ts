@@ -118,6 +118,9 @@ interface AppState {
   setProjects: (ps: string[]) => void
   select: (project: string | null, session: string | null) => void
   upsertSession: (b: SessionBrief) => void
+  /** 二轮审阅（架构席同构）：gap 重连后的运行态对账——断线窗口丢 turn/completed/thread:busy:false
+   *  帧时 running 恒真（会话列表转圈）；session/list 回执的 running 注入为权威值 */
+  setSessionRunning: (sessionId: string, running: boolean) => void
   setConfigView: (c: ConfigView) => void
   /** W6a：历史补拉（session/read 返回的 HistoryLine 投影为 entries——含工具调用配对投影） */
   loadHistory: (sessionId: string, lines: unknown) => void
@@ -209,6 +212,8 @@ export const useApp = create<AppState>((set) => ({
   setProjects: (projects) => set({ projects }),
   select: (selectedProject, selectedSession) => set({ selectedProject, selectedSession }),
   setConfigView: (configView) => set({ configView }),
+  setSessionRunning: (sessionId, running) =>
+    set((st) => ({ sessions: st.sessions.map((s) => (s.sessionId === sessionId ? { ...s, running } : s)) })),
   upsertSession: (b) =>
     set((st) => {
       const i = st.sessions.findIndex((s) => s.sessionId === b.sessionId)

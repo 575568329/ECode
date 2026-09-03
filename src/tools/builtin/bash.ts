@@ -134,6 +134,9 @@ export const bashTool: Tool = {
       }
       const started = (ctx.tasks ?? taskRegistry).start(command, ctx.cwd)
       if (!started.ok) return { content: started.reason, is_error: true }
+      // 二轮补遗：后台命令同样补录启动期差集（长跑命令后续产物由 task_output 轮外的
+      // 下一次写前快照自然吸收；此钩子覆盖「先写文件再长跑」的常见形态）
+      void ctx.onAfterBash?.().catch(() => {})
       return {
         content: `后台任务已启动：#${started.task.id}（输出文件 ${started.task.outputFile}）——用 task_output("${started.task.id}") 读增量输出，等新输出用大 wait_ms（≤${TASK_OUTPUT_MAX_WAIT_MS}）一次等到、勿短间隔连发（会触发 loop-guard 同参检测）；完成时会在下轮通知`,
       }
@@ -175,6 +178,9 @@ export const bashTool: Tool = {
         ctx.signal.removeEventListener('abort', onAbort)
         // 杀整树（孙进程一并终止——npm 类命令的子进程不再泄漏；已退出幂等）。不阻塞返回
         void killTree(child)
+        // 二轮补遗（bash absent 兜底）：执行后差集补录（新建文件进最近快照点 absent 基线）。
+        // fire-and-forget——结果已定，兜底失败不阻塞返回（amendAbsent 内部链上串行）
+        void ctx.onAfterBash?.().catch(() => {})
         resolve(res)
       }
 

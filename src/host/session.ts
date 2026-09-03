@@ -94,6 +94,9 @@ export interface HostDeps {
     >
     detectExternalChanges(sessionId: string, seq: number): Promise<string[]>
     revert(sessionId: string, seq: number): Promise<{ restored: string[]; externalChanged: string[] }>
+    /** 二轮补遗（bash absent 兜底）：近修改集读取 + absent 补录（结构兼容 CheckpointStore） */
+    bashDirtyFiles(): Promise<string[]>
+    amendAbsent(sessionId: string, paths: string[]): Promise<void>
     /** T 线②：fork 续写的快照目录跟随（起新 id 后旧快照仍可用——CC copyFileHistoryForResume 同款） */
     copyForResume(oldSessionId: string, newSessionId: string): Promise<void>
   } | null
@@ -162,6 +165,8 @@ export class HostSession {
   private sandboxMode: SandboxMode
   private readonly messages: HistoryLine[] = []
   private readonly editedFiles = new Set<string>()
+  /** bash absent 兜底（二轮）：bash 前置 git status 快照（执行后差集用） */
+  private bashPreDirty: string[] = []
   /** M13-B1（#4）：已读文件 mtime 表（readFileGuard 数据源——write/edit 后 mtime 变自然放行） */
   private readonly readMtime = new Map<string, number>()
 
@@ -231,6 +236,21 @@ export class HostSession {
     // 捷径退役（附着态 MCP manager 在 daemon，此门必须过协议——D-T7 拍板）。
     // 发起延迟到首次订阅（构造期零订阅者时 askSelect 走 fail-closed 立即 null——时序同 T1⑪）
     if (deps.mcpPendingApproval !== undefined) this.pendingMcpApprovalGate = deps.mcpPendingApproval
+  }
+
+  /** bash absent 兜底（二轮审阅）：bash 前置 git status 暂存，执行后差集补 absent 进最近快照点 */
+  private async bashCapturePre(): Promise<void> {
+    this.bashPreDirty = this.deps.checkpoint != null ? await this.deps.checkpoint.bashDirtyFiles() : []
+  }
+
+  private async bashAmendAbsent(): Promise<void> {
+    const cp = this.deps.checkpoint
+    if (cp == null) return
+    const post = await cp.bashDirtyFiles()
+    const pre = new Set(this.bashPreDirty)
+    this.bashPreDirty = []
+    const created = post.filter((p) => !pre.has(p))
+    if (created.length > 0) await cp.amendAbsent(this.deps.history.currentSessionId(), created)
   }
 
   /** .mcp.json 批准门交互（宿主权威）：askSelect 挂起→应答→approve() 二段接入或拒绝留痕 */
@@ -325,8 +345,10 @@ export class HostSession {
       usage: (inp, out, cache) => this.recordUsage(inp, out, cache), // 子代理成本归并（M12-P0 统一收口）
       onBeforeWrite: async (paths, tool, toolUseId) => {
         for (const p of paths) this.editedFiles.add(p)
+        if (tool === 'bash' || tool === 'bash-background') await this.bashCapturePre()
         await this.deps.checkpoint?.snapshot(this.deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
       },
+      onAfterBash: () => this.bashAmendAbsent(),
       getProviderReq: () => buildProviderReq(this.cfg()),
       getProvider: () => this.deps.providerRegistry.getByType(this.cfg().providers[this.cfg().current.name].type),
       getSandbox: () =>
@@ -1494,8 +1516,10 @@ export class HostSession {
             // M13 审阅 R1：子代理快照/沙箱会话化（本会话 history.currentSessionId——多会话不串台）
             onBeforeWrite: async (paths, tool, toolUseId) => {
               for (const p of paths) this.editedFiles.add(p)
+              if (tool === 'bash' || tool === 'bash-background') await this.bashCapturePre()
               await this.deps.checkpoint?.snapshot(this.deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
             },
+            onAfterBash: () => this.bashAmendAbsent(),
             getSandbox: () =>
               makeSandbox(this.sandboxMode, this.deps.cwd ?? process.cwd(), this.cfg().sandbox?.blockedCommands ?? []),
             // 审阅 P0-3：运行态四 getter 会话化（模块桥单槽进程级会被多项目覆盖——此处随
@@ -1511,8 +1535,10 @@ export class HostSession {
           signal: this.abort.signal,
           onBeforeWrite: async (paths, tool, toolUseId) => {
             for (const p of paths) this.editedFiles.add(p)
+            if (tool === 'bash' || tool === 'bash-background') await this.bashCapturePre()
             await deps.checkpoint?.snapshot(deps.history.currentSessionId(), paths, { tool, messageId: toolUseId })
           },
+          onAfterBash: () => this.bashAmendAbsent(),
           model: this.cfg().current.model,
           // F-33：轮初快照改访问器属性——运行中 Tab 切档立即生效（工具侧每次 ctx.sandbox
           // 读取都实时 makeSandbox，与 hostConfirm 读 this.sandboxMode 同源无口径分裂；

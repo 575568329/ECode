@@ -209,7 +209,10 @@ export function makeZhipuProvider(opts: ZhipuProviderOpts): WebSearchProvider {
           return { results: [], footer: `搜索被限流（429）${fuse.tripped ? '——已达熔断阈值' : '，稍后重试'}。` }
         }
         if (!res.ok) {
-          return { results: [], footer: `搜索失败（HTTP ${res.status}）——检查 webSearch.apiKey 配置。` }
+          // 审阅修复（开发席 P2·二轮补遗）：非 429 的 HTTP 失败也计入熔断（原只 429/空结果记，
+          // 端点持续 5xx 时熔断门永远不触发=免费层退避失效）；401/400（配置错）不记——非容量信号
+          if (res.status >= 500 || res.status === 429) fuse.recordFailure()
+          return { results: [], footer: `搜索失败（HTTP ${res.status}）——${res.status === 401 || res.status === 400 ? '检查 webSearch.apiKey 配置' : '服务暂不可用，稍后重试'}。` }
         }
         const json = (await res.json()) as ZhipuResponse
         const items = (json.search_result ?? [])

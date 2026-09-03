@@ -114,7 +114,7 @@ export const bashTool: Tool = {
       const started = (ctx.tasks ?? taskRegistry).start(command, ctx.cwd)
       if (!started.ok) return { content: started.reason, is_error: true }
       return {
-        content: `后台任务已启动：#${started.task.id}（输出文件 ${started.task.outputFile}）——用 task_output("${started.task.id}") 读增量输出；完成时会在下轮通知`,
+        content: `后台任务已启动：#${started.task.id}（输出文件 ${started.task.outputFile}）——用 task_output("${started.task.id}") 读增量输出，等新输出用大 wait_ms（≤10000）一次等到、勿短间隔连发（会触发 loop-guard 同参检测）；完成时会在下轮通知`,
       }
     }
     // M9-P1：写前快照——bash 不可解析目标，传空数组由服务端 git status 近修改集兜底（无 git 跳过+warn）

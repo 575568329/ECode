@@ -162,7 +162,8 @@ export class HostSession {
   private readonly readMtime = new Map<string, number>()
 
   // —— M13-B2 loopGuard（#2 无效轮次检测：复读/同参/空错——阈值常量集中一处，D5 不入 config） ——
-  private static readonly GUARD = { FP_WINDOW: 3, REPEAT_NUDGE: 1, REPEAT_ABORT: 3, SIG_NUDGE: 8, ERR_NUDGE: 5, ERR_ABORT: 8, TEXT_HEAD: 500 }
+  // 审阅 P2-3：非 private——测试按 SIG_NUDGE 派生轮数（阈值调整不破测试）
+  static readonly GUARD = { FP_WINDOW: 3, REPEAT_NUDGE: 1, REPEAT_ABORT: 3, SIG_NUDGE: 8, ERR_NUDGE: 5, ERR_ABORT: 8, TEXT_HEAD: 500 }
   private readonly guardFingerprints: string[] = [] // 最近 N 轮 assistant 文本指纹环
   private repeatStreak = 0
   private lastToolSig = ''
@@ -171,6 +172,7 @@ export class HostSession {
   private errStreak = 0
   private turnHadTools = false
   private lastRoundLen = 0
+  /** M13-B2：本轮工具签名原料（onToolResult 采集——M13-P1 起含 resultHead，签名=同参且同果） */
   private roundUses: string[] = []
   private readonly queue: QueueEntry[] = []
   /** 活跃轮 controller 集合（startTurn 登记/finishTurn 注销；interrupt 全集 abort——2026-09-02 Ctrl+C 立即停兜底） */
@@ -461,6 +463,11 @@ export class HostSession {
     })
     const hook = makeOnBeforeRequest(deps.orchestrator, provider, providerReq, system, {
       onCompacted: () => this.publish('compacted', {}),
+      // 手动压缩 loading（2026-09-03 用户点名）：进压缩分支即发 compacting 帧——空闲态
+      // TUI ActivityBar 显示「正在压缩对话...」+实时计时（与 startTurn 装配点同款两行；
+      // 此前 compactManual 缺这两行，手动压缩几十秒摘要期间 UI 全黑箱像死掉）
+      onCompacting: () => this.publish('compacting', {}),
+      onCompactFail: () => this.publish('compactFailed', {}),
       history: deps.history,
       tools: deps.tools.specs(),
       onUsage: (inp, out, cache) => this.recordUsage(inp, out, cache), // M12-P0：压缩漏账修复
@@ -1349,7 +1356,9 @@ export class HostSession {
               .find((b) => b.type === 'tool_use' && b.id === id)
             // M13-B2：同参检测原料（name+input 精确签名——D3 同款精确匹配零误伤；D4 记变体：
             // use 块在事件翻译层现成，免 PostToolUse hook 的项目级跨会话路由）
-            if (use !== undefined && use.type === 'tool_use') this.roundUses.push(`${use.name}:${JSON.stringify(use.input)}`)
+            // M13-P1 结果感知：签名升级为 name+input+resultHead——参数同且结果同才算空转；
+            // 结果变=有新信息=签名变=清零重计（观测轮询不再被误杀，零产出等待仍受保护）
+            if (use !== undefined && use.type === 'tool_use') this.roundUses.push(`${use.name}:${JSON.stringify(use.input)}:${r.content.slice(0, 200)}`)
             // M14-C1⑤ 工具全文 summary+read 分野：帧内 content 截断 4KB（mux 全文出帧=LAN 旁听面，
             // MB 级输出也拖累每连接带宽）；全文走 item/read 按需（transcript 权威源）
             const full = r.content as string
@@ -1707,7 +1716,8 @@ export class HostSession {
 
   /**
    * M13-B2（#2）三检测器（工具轮——afterTools 时点；纯文本轮复读在 finishTurn）：
-   * 跨 Turn 复读（指纹环精确匹配，D3）/ 同参工具（name+input 签名连续相同）/ 连续空错。
+   * 跨 Turn 复读（指纹环精确匹配，D3）/ 同参工具（name+input+resultHead 签名连续相同——
+   * M13-P1 结果感知：参数同且结果同才算空转，结果变=新信息=清零）/ 连续空错。
    * 阈值：复读提醒 ×2 后第 3 次 abort；同参连 8 提醒后仍不变 abort；空错连 5 提醒连 8 abort。
    * 公共约束（文章同款）：指纹/签名/错误形态一变即清零重计；触发记 LogStore(loop-guard)；abort 前
    * systemMsg 给用户可读原因；feedback 带 [loop-guard] 前缀（transcript 可识别）。
@@ -1733,7 +1743,7 @@ export class HostSession {
       }
       this.sigNudged = true
       this.deps.logger.warn('loop-guard', 'same-args', { streak: this.sigStreak })
-      feedback = `[loop-guard] 最近 ${this.sigStreak} 轮在以完全相同的参数调用相同工具，请重新判断这是否必要。`
+      feedback = `[loop-guard] 最近 ${this.sigStreak} 轮在以完全相同的参数调用相同工具且结果毫无变化，请重新判断这是否必要（如等待后台任务请加大 wait_ms）。`
     }
 
     // ② 连续空错：全 isError 非空轮

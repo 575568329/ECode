@@ -203,6 +203,7 @@ export const CONFIG_TEMPLATE = `{
       "thinking": "medium",                                 // 思考强度：off | low | medium | high
       "maxTokens": ${DEFAULT_MAX_TOKENS},                   // 单次最大输出 token（8192 配 thinking 极易触顶截断——budget 占额后可见文本更少；单源 core/types DEFAULT_MAX_TOKENS）
       // "streamStallMs": 90000,                            // 流停滞看门狗：连续 N ms 无内容输出→中止+零产出自动重试 1 次（缺省 90000；0=关闭；非流式 thinking 端点可调大）
+      // "contextWindow": 200000,                           // 上下文窗口覆盖（escape hatch；缺省 models.dev 自动探测）
       // "temperature": 0.7,                                // 采样温度（可选，per-provider）
       // "topP": 0.95                                       // nucleus sampling（可选）
     }
@@ -234,6 +235,7 @@ export const CONFIG_TEMPLATE = `{
   // },
 
   "maxIterations": 50,        // Agent 循环最大轮数
+  // "subagentMaxIterations": 50, // 子代理（task 工具）迭代上限；缺省=跟 maxIterations
   "bashMaxOutputBytes": 50000, // bash 输出截断阈值（50KB 头尾中截，超限落盘 .outputs/ 可回看——对标 CC 50K chars）
   // M9：编辑后自动 lint/test（空串/缺省=关闭——不会自动探测 package.json，安全默认）
   "lintCommand": "",

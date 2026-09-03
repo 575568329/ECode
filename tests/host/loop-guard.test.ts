@@ -107,6 +107,58 @@ describe('M13-B2 loopGuard 三检测器', () => {
     expect(evs.some((e) => e.type === 'systemMsg' && e.text.includes('同一工具且提醒无效'))).toBe(true)
   })
 
+  // M13-P1 结果感知（方案验收 2·核心）：同参**异果**不累计——观测轮询（task_output 有增量）不再被误杀
+  it('同参异果：连续多轮同参但结果有变化 → 不触发同参检测', async () => {
+    const N = HostSession.GUARD.SIG_NUDGE + 4 // P2-3：轮数按阈值派生，不硬编码字面量
+    const round = (n: number): Delta[] => [
+      { type: 'text', text: `第 ${n} 轮` },
+      { type: 'tool_use_start', id: `o${n}`, name: 'poll' },
+      { type: 'tool_use_end', id: `o${n}` },
+      { type: 'done', stop_reason: 'tool_use' },
+    ]
+    // 单工具按调用序号递增输出：同参（每轮输入同）但 resultHead 逐轮不同 → 签名逐轮变 → 清零
+    let call = 0
+    const pollTool: Tool = {
+      name: 'poll',
+      description: 'poll',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: true,
+      async execute() {
+        return { content: `增量输出 #${call++}` }
+      },
+    }
+    const host = makeHost(Array.from({ length: N }, (_, i) => round(i)), [pollTool])
+    const evs = collect(host)
+    await run(host)
+    const guardMsgs = evs.filter((e) => (e.type === 'systemMsg' || e.type === 'warn') && e.text.includes('loop-guard'))
+    expect(guardMsgs, `同参异果连续 ${N} 轮不应触发 loop-guard（结果变=新信息=清零）`).toEqual([])
+  })
+
+  // 验收 1（回归锚）：同参同果（零产出等待形态）仍触发——P1 后签名含 resultHead，等待保护不丢
+  it('同参同果：连续 SIG_NUDGE+4 轮（零产出等待）→ nudge 后 abort', async () => {
+    const N = HostSession.GUARD.SIG_NUDGE + 4
+    const round = (n: number): Delta[] => [
+      { type: 'text', text: `第 ${n} 轮` },
+      { type: 'tool_use_start', id: `z${n}`, name: 'wait' },
+      { type: 'tool_use_end', id: `z${n}` },
+      { type: 'done', stop_reason: 'tool_use' },
+    ]
+    const host = makeHost(Array.from({ length: N }, (_, i) => round(i)), [
+      {
+        name: 'wait',
+        description: 'wait',
+        input_schema: { type: 'object', properties: {}, required: [] },
+        readonly: true,
+        async execute() {
+          return { content: '（暂无新输出）' } // 每轮恒同——真零产出等待
+        },
+      },
+    ])
+    const evs = collect(host)
+    await run(host)
+    expect(evs.some((e) => e.type === 'systemMsg' && e.text.includes('同一工具且提醒无效'))).toBe(true)
+  })
+
   it('连续空错：连 5 提醒、连 8 abort', async () => {
     const round = (n: number): Delta[] => [
       { type: 'tool_use_start', id: `e${n}`, name: 'bad' },

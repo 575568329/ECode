@@ -81,6 +81,8 @@ export interface Config {
     minTurns?: number
     /** 异常信号提前触发（默认 true）：连续工具失败 / 单轮迭代过长 */
     onSignals?: boolean
+    /** 信号 gate 超时 ms（默认 60000）：signal 审查同步化——下一工具批前等审查，超时放行继续 */
+    timeoutMs?: number
   }
   /** M13-W8 飞书 IM gateway（企业自建应用凭据——配了才激活；长连接免公网） */
   /** 飞书 IM gateway（企业自建应用凭据——配了才激活；长连接免公网）。
@@ -162,6 +164,7 @@ interface ConfigFile {
     intervalTurns?: number
     minTurns?: number
     onSignals?: boolean
+    timeoutMs?: number
   }
   /** M13-W8：飞书凭据（jsonc 透传） */
   /** 飞书 IM gateway（企业自建应用凭据——配了才激活；长连接免公网）。
@@ -281,7 +284,8 @@ export const CONFIG_TEMPLATE = `{
   //   "model": "glm-5.3",     //   多流向一个端点，自担）；审查费用在 /stats 按模型可见
   //   "intervalTurns": 5,     //   定时兜底：每 N 个用户轮审查一次（默认 5）
   //   "minTurns": 3,          //   长任务才启动：前 N 轮不审（默认 3）
-  //   "onSignals": true       //   异常信号提前触发：连续工具失败/单轮迭代过长（默认 true；每轮最多一次）
+  //   "onSignals": true,      //   异常信号提前触发：连续工具失败/单轮迭代过长（默认 true；每轮最多一次）
+  //   "timeoutMs": 60000      //   信号 gate 超时 ms（默认 60000）：超时放行继续，审查结果稍后到达
   // }
 }
 `
@@ -433,6 +437,12 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     }
     if (file.review.model === undefined || file.review.model === '') {
       throw new Error('[CONFIG_REVIEW_INVALID] review.enabled=true 但未配 review.model——请补全或设 enabled=false')
+    }
+    if (
+      file.review.timeoutMs !== undefined &&
+      (!Number.isFinite(file.review.timeoutMs) || file.review.timeoutMs <= 0)
+    ) {
+      throw new Error(`[CONFIG_REVIEW_INVALID] review.timeoutMs 必须为正数（收到 ${file.review.timeoutMs}）——信号 gate 超时后放行继续`)
     }
   }
   return {

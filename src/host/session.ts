@@ -35,7 +35,7 @@ import { makeSandbox, resolveReal, type SandboxMode } from '../services/sandbox.
 import { isSensitivePath, isProjectEcodeSettings } from '../tools/sensitive.js'
 import { buildMediaBlock } from '../services/media.js'
 import { tokensToCost } from '../services/pricing.js'
-import { callReviewer, buildReviewMessages, shouldReviewAtTurnEnd, longestConsecutiveErrorRun, shouldReviewOnSignal, type ReviewTrigger } from '../services/review/reviewer.js'
+import { callReviewer, buildReviewMessages, shouldReviewAtTurnEnd, longestConsecutiveErrorRun, shouldReviewOnSignal, DEFAULT_REVIEW_GATE_TIMEOUT_MS, type ReviewTrigger } from '../services/review/reviewer.js'
 import { TaskRegistry } from '../services/tasks.js'
 import type { LLMProviderRegistry, LLMProvider, ProviderReq } from '../providers/interface.js'
 import type { ToolRegistry } from '../tools/interface.js'
@@ -638,6 +638,47 @@ export class HostSession {
       this.publish('systemMsg', { text: '（纠偏审查未完成——任务不受影响）' })
     } finally {
       this.reviewInflight = false
+    }
+  }
+
+  /**
+   * 信号 gate（2026-09-03 拍板）：signal 审查同步化——在 afterTools 回调内 await（loop
+   * await afterTools ⇒ 天然挡在下一工具批/LLM 请求之前，纠偏卡赶上下一个动作）。
+   * 三路竞速：审查完成（照常分派）/ 超时 fail-open / abort 直通。
+   * - 超时不取消底层审查：晚到的卡仍走既有异步路径（同轮 midTurn / 跨轮 pending），不浪费；
+   *   放弃等待的 promise 挂 no-op catch（防 unhandled rejection）。
+   * - interval 兜底不 gate（轮末触发本无本轮时机），维持 void 异步。
+   * - reviewing 帧：gate 窗口 active true/false——TUI loading 行显示「正在纠偏审查」+计时
+   *   （不黑箱）；web/旧客户端 default 无视。
+   */
+  private async gateSignalReview(): Promise<void> {
+    const reviewCfg = this.cfg().review
+    if (reviewCfg === undefined || reviewCfg.enabled !== true) return
+    if (this.reviewInflight) return // 已有审查在跑（理论不可达：单飞+每轮一次双守卫）——不叠加等待
+    if (this.resolveReviewer() === null) return // 未启用/配置失效——快速过不闪帧
+    const timeoutMs = reviewCfg.timeoutMs ?? DEFAULT_REVIEW_GATE_TIMEOUT_MS
+    this.publish('reviewing', { active: true })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const core = this.maybeRunReview('signal')
+      const timeoutP = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), timeoutMs)
+        timer.unref?.()
+      })
+      const abortP = new Promise<'aborted'>((resolve) => {
+        if (this.abort.signal.aborted) resolve('aborted')
+        else this.abort.signal.addEventListener('abort', () => resolve('aborted'), { once: true })
+      })
+      // 内部已 catch（失败静默降级）——rejection 映射 'done' 纯防御（gate 释放语义等价，不炸 afterTools）
+      const winner = await Promise.race([core.then(() => 'done' as const, () => 'done' as const), timeoutP, abortP])
+      if (winner === 'timeout') {
+        void core.catch(() => {}) // 底层继续跑（晚到卡照常注入）；防弃等后 unhandled rejection
+        this.publish('systemMsg', { text: `（纠偏审查超时 ${Math.round(timeoutMs / 1000)}s——已继续执行，结果稍后到达）` })
+      }
+      // 'aborted'：轮将被中断收场，无需提示
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+      this.publish('reviewing', { active: false })
     }
   }
 
@@ -1695,10 +1736,11 @@ export class HostSession {
         this.editedFiles.clear()
         return undefined
       }
-      // 纠偏审查·异常信号（2026-09-02 用户拍板）：连续工具失败（模型在绕圈/踩同一坑）或
-      // 单轮迭代过长（空转）→ 提前请高级模型介入（异步 void——审查卡稍后经插话队列注入
-      // 当前轮，止住绕圈；不阻塞本轮回喂路径）。信号关（onSignals=false）不触发；
-      // reviewSignalFiredThisTurn 每轮一次（审阅修复：长失败轮批批命中，无上限会连环审查烧钱）
+      // 纠偏审查·异常信号（2026-09-02 用户拍板；2026-09-03 gate 化）：连续工具失败（模型在
+      // 绕圈/踩同一坑）或单轮迭代过长（空转）→ 同步等审查完成再继续（用户实证：异步审查回来
+      // 时轮已结束=马后炮；此场景暂停就是止损）。gate 三路竞速：完成（卡经 midTurn 队列在
+      // 下一迭代顶部注入=下一动作前）/超时 fail-open/abort 直通。信号关（onSignals=false）
+      // 不触发；reviewSignalFiredThisTurn 每轮一次（审阅修复：长失败轮批批命中会连环审查烧钱）
       if (this.cfg().review?.enabled === true && this.cfg().review?.onSignals !== false && !this.reviewSignalFiredThisTurn) {
         this.reviewTurnIterations += 1
         if (
@@ -1708,7 +1750,7 @@ export class HostSession {
           )
         ) {
           this.reviewSignalFiredThisTurn = true
-          void this.maybeRunReview('signal')
+          await this.gateSignalReview()
         }
       }
       // M13-B2：无效轮次检测先行（feedback/abort 注入在 quality 之前——止损优先）

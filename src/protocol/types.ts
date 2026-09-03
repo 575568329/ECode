@@ -91,6 +91,9 @@ export type ProtocolEvent =
   | { type: 'compacting'; seq: number; detail?: string }
   | { type: 'compacted'; seq: number; detail?: string }
   | { type: 'compactFailed'; seq: number; detail?: string }
+  /** 信号 gate（2026-09-03）：审查同步等待期——active true 开始/false 结束（含超时与异常）。
+   *  TUI 映射到 loading 行 phase（spinner+计时）；web/旧客户端 default 无视（协议容错）。 */
+  | { type: 'reviewing'; seq: number; active: boolean }
   | { type: 'config/changed'; seq: number; config: unknown } // B3 接 config 权威源时收紧为 ConfigView
   | { type: 'mcp/status'; seq: number; servers: McpServerStatusView[] }
   /** 档位变更广播（会话级——用户拍板 2026-09-02：同项目不同对话不互相影响，档位属活动

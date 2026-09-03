@@ -17,6 +17,13 @@ export const DEFAULT_REVIEW_MIN_TURNS = 3
 export const REVIEW_SIGNAL_CONSECUTIVE_ERRORS = 2
 /** 信号阈值：单轮迭代（工具批）数——超过视为长轮（可能在空转） */
 export const REVIEW_SIGNAL_LONG_TURN_ITERATIONS = 12
+/**
+ * 信号 gate 超时（2026-09-03 拍板：signal 审查同步化）：gate 最多等这么久，超时 fail-open
+ * 继续执行（底层审查不取消——晚到的卡仍走异步路径注入）。实测真机审查耗时 2~30s（4 次
+ * signal 卡事件轴推算），60s 为 2 倍以上余量；端点慢尾（188s 个案）由 fail-open 兜底，
+ * 不调大默认值——gate 的价值在「及时」，等 3 分钟才到的纠偏已无意义。
+ */
+export const DEFAULT_REVIEW_GATE_TIMEOUT_MS = 60_000
 /** 审查上下文预算：尾部消息条数（控制审查轮 input——审查不需要全量历史） */
 export const REVIEW_CONTEXT_MESSAGES = 40
 /** 审查上下文体量预算（审阅修复·架构席③）：条数不限体量——一次大工具输出（bash 50KB/

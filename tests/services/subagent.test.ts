@@ -104,16 +104,40 @@ describe('subagentSystem / makeAgentLogger', () => {
 })
 
 describe('makeSubagentOpts（隔离面断言）', () => {
-  it('maxIterations=25 / NoopHistory / confirm=deps.confirm / afterTools 注入', () => {
+  it('maxIterations 缺省=50（2026-09-03 拍板跟主代理）/ NoopHistory / confirm=deps.confirm / afterTools 注入', () => {
     const deps = makeDeps({ makeAfterTools: () => async () => ({ feedback: undefined }) })
     const opts = makeSubagentOpts(deps, 'a-x', '描述', 'general', ctx.signal)
-    expect(opts.maxIterations).toBe(25)
+    expect(opts.maxIterations).toBe(50)
     expect(typeof opts.confirm).toBe('function')
     expect(opts.afterTools).toBeDefined()
     expect(opts.onBeforeRequest).toBeDefined()
     expect(opts.tools.list().map((t) => t.name)).not.toContain('task')
   })
+  it('getMaxIterations 注入与显式入参两路轮数（deps getter > 兜底 50）；system getter 轮数感知', () => {
+    const viaDeps = makeSubagentOpts(makeDeps({ getMaxIterations: () => 30 }), 'a-x', '描述', 'general', ctx.signal)
+    expect(viaDeps.maxIterations).toBe(30)
+    const explicit = makeSubagentOpts(makeDeps(), 'a-x', '描述', 'general', ctx.signal, undefined, undefined, undefined, null, 12)
+    expect(explicit.maxIterations).toBe(12)
+    // system getter：onIter 计数喂「当前第 N/M 轮」——LLM 实时自知轮数（2026-09-03 拍板）
+    expect(typeof opts_system(explicit)).toBe('string')
+    expect(opts_system(explicit)).toContain('第 0/12 轮')
+    explicit.callbacks.onIter?.(5, 12)
+    expect(opts_system(explicit)).toContain('第 5/12 轮')
+  })
+  it('onExhausted 挂进 callbacks（task 工具耗尽标注的数据通道）', () => {
+    let fired = 0
+    const opts = makeSubagentOpts(makeDeps(), 'a-x', '描述', 'general', ctx.signal, undefined, undefined, undefined, null, 10, () => {
+      fired += 1
+    })
+    opts.callbacks.onExhausted?.(10)
+    expect(fired).toBe(1)
+  })
 })
+
+/** opts.system 求值（string | getter 统一——子代理为 getter 形态） */
+function opts_system(opts: ReturnType<typeof makeSubagentOpts>): string {
+  return typeof opts.system === 'function' ? opts.system() : opts.system
+}
 
 describe('makeTaskTool.execute（返回契约 + transcript）', () => {
   const transcriptDir = join(homedir(), '.ecode', 'agents')
@@ -130,6 +154,26 @@ describe('makeTaskTool.execute（返回契约 + transcript）', () => {
     // 返回文案是展示路径（~/ 字面量），实际落盘在（本测试已 mock 的）homedir 下
     const body = readFileSync((m?.[1] as string).replace(/^~/, homedir()), 'utf8')
     expect(body).toContain('查 src 结构')
+  })
+
+  it('2026-09-03：轮数耗尽标注返回值（task 入参钳 config 上限——999 钳到 2）', async () => {
+    // 每轮 text+tool_use：跑满 maxIterations 后 lastAssistantText 非空 → 正常返回 +
+    // 耗尽标注（父代理可分辨截断 vs 正常完成）；入参 999 只能往下钳到 config 2
+    const round = [
+      { type: 'text' as const, text: '部分结论' },
+      { type: 'tool_use_start' as const, id: 't', name: 'read_file' },
+      { type: 'tool_use_end' as const, id: 't' },
+      { type: 'done' as const, stop_reason: 'tool_use' as const },
+    ]
+    const deps = makeDeps({
+      getMaxIterations: () => 2,
+      getProvider: () => new MockProvider([round, structuredClone(round)]),
+    })
+    const tool = makeTaskTool(deps)
+    const r = await tool.execute({ description: '钳制探针', prompt: 'x', max_iterations: 999 }, ctx)
+    expect(r.is_error).toBeFalsy()
+    expect(r.content).toContain('部分结论')
+    expect(r.content).toContain('轮数耗尽 2/2')
   })
 
   it('F-46 运行期事件行逐条落盘（/output 运行期可见性）', async () => {

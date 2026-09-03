@@ -44,6 +44,9 @@ export interface PanelShellProps<T> {
   tabs?: string[]
   activeTabIndex?: number
   onTabChange?: (index: number) => void
+  /** 数字直达（2026-09-03 Ctrl+T 根菜单拍板）：未搜索时 1-9 直接选中第 N 个可见条目。
+   *  仅菜单类面板开——其他面板数字首字符是合法搜索词（如任务 id），开了会截走 */
+  numericPick?: boolean
 }
 
 /** 从 rows 提取 label 的纯文本（默认搜索匹配用；ReactNode 取字符串叶子）。 */
@@ -79,6 +82,7 @@ export function PanelShell<T>({
   tabs,
   activeTabIndex,
   onTabChange,
+  numericPick,
 }: PanelShellProps<T>): ReactElement {
   const [query, setQuery] = useState('')
   const [idx, setIdx] = useState(0)
@@ -205,6 +209,11 @@ export function PanelShell<T>({
       // 审阅 T2：列表页宣称「q 退出」（pager 惯例）但无分支——q 落进 catch-all 进搜索词。
       // 仅未在搜索态时生效（搜索中 q 是普通字符）
       onCancel()
+    } else if (numericPick === true && query === '' && /^[1-9]$/.test(input ?? '')) {
+      // 数字直达：未搜索时 1-9 选中第 N 个可见条目（搜索态数字继续进词——纯数字搜索
+      // 如任务 id 只在已输入其他字符后出现，首字符数字被直达消费的损失可接受）
+      const target = items[Number(input) - 1]
+      if (target !== undefined && !target.disabled) onPick(target.value)
     } else if (key.backspace || key.delete) {
       setQuery((q) => q.slice(0, -1))
     } else if (input !== '' && !key.ctrl && !key.meta && !key.return && !key.escape && !key.tab && !isMouseInput(input)) {

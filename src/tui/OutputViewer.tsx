@@ -22,7 +22,6 @@ import { theme } from './theme.js'
 import { PanelShell, isMouseInput, type PanelRow } from './PanelShell.js'
 import { clipWidth, sectionBudget, useViewport } from './viewport.js'
 import { taskRegistry } from '../services/tasks.js'
-import { isAgentActive } from '../services/subagent.js'
 import { stripUntrustedAnsi } from './sanitize.js'
 import { isBoundary, isRewind, isThinking } from '../core/types.js'
 import { makeToolDigest } from '../protocol/toolDigest.js'
@@ -94,12 +93,13 @@ export function toolResultSource(getTool: () => RecentTool | undefined, getWidth
 }
 
 /** ② 后台任务日志：读 outputFile 全量 + mtime 轮询增量通知。
- *  边界：TaskRegistry dispose 会 unlink 日志——只能 attach 现存任务（文件没了显示空）。 */
-export function taskFileSource(taskId: string, getWidth: () => number): LineSource {
-  const snap = taskRegistry.snapshot().find((t) => t.id === taskId)
-  const file = snap?.outputFile ?? ''
-  const growing = snap?.status === 'running'
+ *  边界：TaskRegistry dispose 会 unlink 日志——只能 attach 现存任务（文件没了显示空）。
+ *  2026-09-03：快照 getter 化（attach 态任务在 daemon 进程，客户端须传协议快照活值；
+ *  缺省回退本地单例——embedded 直连）。 */
+export function taskFileSource(taskId: string, getWidth: () => number, getTask?: () => TaskSnap | undefined): LineSource {
+  const findTask = (): TaskSnap | undefined => getTask?.() ?? taskRegistry.snapshot().find((t) => t.id === taskId)
   const readLines = (): string[] => {
+    const file = findTask()?.outputFile ?? ''
     if (file === '') return []
     try {
       // 审阅 P1-6：cachedWrap（内容长度校验——日志追加自然 miss 重建）
@@ -111,11 +111,13 @@ export function taskFileSource(taskId: string, getWidth: () => number): LineSour
   }
   return {
     lines: readLines,
-    isGrowing: () => growing && taskRegistry.snapshot().find((t) => t.id === taskId)?.status === 'running',
+    isGrowing: () => findTask()?.status === 'running',
     subscribe: (cb) => {
       let lastMtime = 0
       const timer = setInterval(() => {
         try {
+          const file = findTask()?.outputFile ?? ''
+          if (file === '') return
           const m = statSync(file).mtimeMs
           if (m !== lastMtime) {
             lastMtime = m
@@ -369,10 +371,17 @@ export function formatAgentLine(line: string, width: number): string[] {
     return text.length > n ? text.slice(0, n) + '…' : text
   }
   const kind = j.kind
+  // 2026-09-03 拍板：折叠行只显示总时长，阶段节奏在 transcript 展开里看——事件行带时刻
+  // （HH:MM:SS，相邻行时刻差即该阶段耗时）
+  const clock = (ts: unknown): string => {
+    const t = new Date(Number(ts))
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    return Number.isFinite(t.getTime()) ? `${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}` : ''
+  }
   if (kind === 'meta') return [`▶ 子任务 [${String(j.type ?? 'general')}] ${preview(j.description)}`]
-  if (kind === 'tool_start') return [`  ⚙ ${String(j.name)}`]
-  if (kind === 'tool_result') return [`  ✓ ${String(j.name)} 完成`]
-  if (kind === 'warn') return [`  ⚠ ${preview(j.text)}`]
+  if (kind === 'tool_start') return [`  ⚙ ${String(j.name)} ${clock(j.ts)}`]
+  if (kind === 'tool_result') return [`  ✓ ${String(j.name)} 完成 ${clock(j.ts)}`]
+  if (kind === 'warn') return [`  ⚠ ${preview(j.text)} ${clock(j.ts)}`]
   if (kind === 'event') return [line.slice(0, width)]
   // 终态 messages 行（role/content）
   const role = j.role
@@ -580,12 +589,10 @@ function memoOffset(key: string, value: number): void {
 interface OutputViewerProps {
   title: string
   source: LineSource
-  /** 返回列表页（Esc 逐级回退） */
+  /** 返回上一级（Esc 逐级回退） */
   onBack: () => void
   /** F-48：alt-screen 全屏模式——总帧高恒 rows−2（满屏分支/win32 每帧全清的规避，架构审阅 P0-1），chrome 收起 */
   altMode?: boolean
-  /** F-50：l 键打开来源列表（OutputListPage）——时间线内跳转子代理/任务详情 */
-  onList?: () => void
 }
 
 /** 搜索态：null=未搜索；string=已确认词（n/N 跳转） */
@@ -604,7 +611,7 @@ function wheelBaseSpeed(): number {
   return Number.isFinite(v) && v > 0 ? v : 1
 }
 
-export function OutputViewer({ title, source, onBack, altMode, onList }: OutputViewerProps): ReactElement {
+export function OutputViewer({ title, source, onBack, altMode }: OutputViewerProps): ReactElement {
   const { budget, rows, columns } = useViewport()
   // F-51：滚轮加速状态（ref 免重渲）；基础倍率=ECODE_SCROLL_SPEED 旋钮（默认 1，
   // 对齐 CC CLAUDE_CODE_SCROLL_SPEED）
@@ -727,11 +734,8 @@ export function OutputViewer({ title, source, onBack, altMode, onList }: OutputV
       onBack()
       return
     }
-    // F-50：l 打开来源列表（子代理/任务/工具条目级选择）
-    if (input === 'l' && onList !== undefined) {
-      onList()
-      return
-    }
+    // 2026-09-03 拍板：l 键废除（小写 L 与数字 1 终端字体无法区分，真机误按实证）——
+    // 详情导航统一 Ctrl+T 根菜单（数字直达 + ↑↓ 选择）
     if (key.escape) {
       onBack()
       return
@@ -781,16 +785,12 @@ export function OutputViewer({ title, source, onBack, altMode, onList }: OutputV
   const statusParts = [`L${offset + 1}-L${Math.min(total, offset + height)} / ${total}`]
   if (source.isGrowing()) statusParts.push(followed ? '[F]跟随中' : '[F]跟随(off)')
   if (matches !== null) statusParts.push(`匹配 ${matches.length}${query !== '' ? ` "/${query}"` : ''}`)
-  // F-50：l 进来源列表（时间线视图内跳转子代理/任务详情）——审阅 P2：仅在 onList 接线时提示
-  // （曾是死键恒提示）；整行按显示宽度截断（窄终端 wrap 会再 +1 行叠进帧账）。
+  // 键位提示（2026-09-03：l 列表键废除——形近坑，导航统一 Ctrl+T 根菜单）
+  // 整行按显示宽度截断（窄终端 wrap 会再 +1 行叠进帧账）。
   // 项 5：alt 全屏期间鼠标被面板捕获——明示「退出恢复拖选复制」（用户曾困惑复制失效）
   const hint = altMode === true
-    ? (onList !== undefined
-        ? '↑↓/滚轮 行滚 · /搜索 · l 列表 · Esc 退出（恢复拖选复制）'
-        : '↑↓ 行滚 · /搜索 · Esc 退出（恢复拖选复制）')
-    : (onList !== undefined
-        ? '↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · l 列表 · Esc 返回'
-        : '↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · Esc 返回')
+    ? '↑↓/滚轮 行滚 · /搜索 · Esc 退出（恢复拖选复制）'
+    : '↑↓ 行滚 · PgUp/PgDn 翻页 · g/G 首尾 · /搜索 · Esc 返回'
   statusParts.push(clipWidth(hint, Math.max(20, columns - 4)))
 
   return (
@@ -816,35 +816,100 @@ export function OutputViewer({ title, source, onBack, altMode, onList }: OutputV
   )
 }
 
-// —— OutputListPage：/output 列表页 ——
+// —— OutputRootPage：Ctrl+T 根菜单（2026-09-03 拍板：详情查看统一入口） ——
 
-/** 列表项 → 查看器入口（TuiApp 侧据此构造 LineSource） */
-export type OutputEntry = { kind: 'tool'; tool: RecentTool } | { kind: 'task'; id: string } | { kind: 'agent'; id: string }
+/** 根菜单类别（数字直达 1-4，空类隐藏后数字顺延） */
+export type OutputCategory = 'timeline' | 'agents' | 'tasks' | 'tools'
 
-export interface OutputListPageProps {
-  /** TuiApp 的最近工具调用环形缓冲（新→旧） */
-  recentTools: RecentTool[]
-  onOpen: (entry: OutputEntry) => void
+export interface OutputRootPageProps {
+  /** 三类计数（1s 轮询刷新——子代理/任务运行期条目实时出现） */
+  getCounts: () => { agents: number; tasks: number; tools: number }
+  onPick: (c: OutputCategory) => void
   onExit: () => void
-  /** F-49：当前会话 id——子代理列表只列本会话（用户拍板「只想看当前这个对话的」） */
-  currentSid?: string
   /** F-48：alt-screen 全屏模式 */
   altMode?: boolean
 }
 
-export function OutputListPage({ recentTools, onOpen, onExit, altMode, currentSid }: OutputListPageProps): ReactElement {
+export function OutputRootPage({ getCounts, onPick, onExit, altMode }: OutputRootPageProps): ReactElement {
+  const [counts, setCounts] = useState(getCounts)
+  useEffect(() => {
+    const timer = setInterval(() => setCounts(getCounts()), 1000)
+    timer.unref?.()
+    return () => clearInterval(timer)
+  }, [getCounts])
+  const rows = useMemo<Array<PanelRow<OutputCategory>>>(() => {
+    let n = 0
+    const out: Array<PanelRow<OutputCategory>> = []
+    out.push({ type: 'item', value: 'timeline', label: `${++n} 执行时间线（主对话全文）` })
+    if (counts.agents > 0) out.push({ type: 'item', value: 'agents', label: `${++n} 子代理 transcript（${counts.agents}）` })
+    if (counts.tasks > 0) out.push({ type: 'item', value: 'tasks', label: `${++n} 后台任务（${counts.tasks}）` })
+    if (counts.tools > 0) out.push({ type: 'item', value: 'tools', label: `${++n} 最近工具调用（${counts.tools}）` })
+    return out
+  }, [counts])
+  return (
+    <PanelShell
+      title="详情查看"
+      rows={rows}
+      onPick={onPick}
+      onCancel={onExit}
+      numericPick
+      emptyHint="暂无可查看的输出"
+      keyHints={altMode === true ? '数字直达 · ↑↓ 选择 · 回车 进入 · q/Esc 退出（恢复拖选复制）' : '数字直达 · ↑↓ 选择 · 回车 进入 · Esc 退出'}
+    />
+  )
+}
+
+// —— OutputListPage：类别条目列表（根菜单选中后进入） ——
+
+/** 列表项 → 查看器入口（TuiApp 侧据此构造 LineSource） */
+export type OutputEntry = { kind: 'tool'; tool: RecentTool } | { kind: 'task'; id: string } | { kind: 'agent'; id: string }
+
+/** 任务快照 shape（embedded=taskRegistry.snapshot()；attached=协议 panel/data 'tasks'——
+ *  客户端进程 taskRegistry 单例在 attach 态查不到 daemon 侧任务） */
+export interface TaskSnap {
+  id: string
+  command: string
+  outputFile: string
+  status: string
+  exitCode: number | null
+  startedAt: number
+}
+
+/** 类别列表页（2026-09-03：原三段合一列表按 page 拆分——根菜单选定类别后只显示该段） */
+export type OutputListPageKind = 'agents' | 'tasks' | 'tools'
+
+export interface OutputListPageProps {
+  /** 显示的类别段（缺省三段合一——兼容旧调用面） */
+  page?: OutputListPageKind
+  /** TuiApp 的最近工具调用环形缓冲（新→旧） */
+  recentTools: RecentTool[]
+  onOpen: (entry: OutputEntry) => void
+  onExit: () => void
+  /** F-49：当前会话 id（2026-09-03 改 getter——attach 态真 id 在 ref 不触发重渲，
+   *  轮询闭包须每次调用取活值，否则首帧后恒用旧 id 过滤） */
+  getSid?: () => string
+  /** 任务快照 getter（embedded=单例直读；attached=TuiApp 协议轮询缓存的 ref 活值） */
+  getTasks?: () => TaskSnap[]
+  /** 运行中子代理 id 集合（subagent/progress 帧派生——跨进程权威；模块级 isAgentActive
+   *  在 attach 态恒 false 已弃用） */
+  activeAgentIds?: ReadonlySet<string>
+  /** F-48：alt-screen 全屏模式 */
+  altMode?: boolean
+}
+
+export function OutputListPage({ page, recentTools, onOpen, onExit, getSid, getTasks, activeAgentIds, altMode }: OutputListPageProps): ReactElement {
   // 任务快照 + 轮询（运行中状态实时；F-46：子代理列表同样每次打开面板刷新——
   // 原实现 useState 快照=TuiApp 挂载时一次，本会话新起的子代理永不在列）
-  const [tasks, setTasks] = useState(() => taskRegistry.snapshot())
-  const [agents, setAgents] = useState(() => listSubagentTranscripts(30, currentSid))
+  const [tasks, setTasks] = useState<TaskSnap[]>(() => getTasks?.() ?? taskRegistry.snapshot())
+  const [agents, setAgents] = useState(() => listSubagentTranscripts(30, getSid?.()))
   useEffect(() => {
     const timer = setInterval(() => {
-      setTasks(taskRegistry.snapshot())
-      setAgents(listSubagentTranscripts(30, currentSid))
+      setTasks(getTasks?.() ?? taskRegistry.snapshot())
+      setAgents(listSubagentTranscripts(30, getSid?.()))
     }, 1000)
     timer.unref?.()
     return () => clearInterval(timer)
-  }, [])
+  }, [getSid, getTasks])
   const { columns } = useViewport()
 
   const rows = useMemo<Array<PanelRow<OutputEntry>>>(() => {
@@ -852,56 +917,63 @@ export function OutputListPage({ recentTools, onOpen, onExit, altMode, currentSi
     // 终端普遍超宽，Ink wrap 成 2 物理行使 PanelShell 窗口化预算翻倍失效
     const max = Math.max(20, columns - 4)
     const out: Array<PanelRow<OutputEntry>> = []
-    if (tasks.length > 0) {
-      out.push({ type: 'header', label: '后台任务（运行中可实时跟随）' })
-      for (const t of tasks) {
-        const mark = t.status === 'running' ? '◉' : t.status === 'failed' ? '✗' : '○'
-        out.push({
-          type: 'item',
-          value: { kind: 'task', id: t.id },
-          label: clipWidth(`${mark} ${t.id} ${stripUntrustedAnsi(t.command)}（${t.status}${t.exitCode !== null ? ` exit ${t.exitCode}` : ''}）`, max),
-        })
+    if (page === undefined || page === 'tasks') {
+      if (tasks.length > 0) {
+        out.push({ type: 'header', label: '后台任务（运行中可实时跟随）' })
+        for (const t of tasks) {
+          const mark = t.status === 'running' ? '◉' : t.status === 'failed' ? '✗' : '○'
+          out.push({
+            type: 'item',
+            value: { kind: 'task', id: t.id },
+            label: clipWidth(`${mark} ${t.id} ${stripUntrustedAnsi(t.command)}（${t.status}${t.exitCode !== null ? ` exit ${t.exitCode}` : ''}）`, max),
+          })
+        }
       }
     }
-    if (recentTools.length > 0) {
-      out.push({ type: 'header', label: '最近工具调用' })
-      for (const tool of recentTools.slice(0, 20)) {
-        const preview = tool.content.split('\n')[0]?.slice(0, 48) ?? ''
-        out.push({
-          type: 'item',
-          value: { kind: 'tool', tool },
-          label: clipWidth(`${tool.isError ? '✗' : '·'} ${tool.name} ${stripUntrustedAnsi(preview)}${tool.truncated === true ? ' 〔已截断〕' : ''}`, max),
-        })
+    if (page === undefined || page === 'tools') {
+      if (recentTools.length > 0) {
+        out.push({ type: 'header', label: '最近工具调用' })
+        for (const tool of recentTools.slice(0, 20)) {
+          const preview = tool.content.split('\n')[0]?.slice(0, 48) ?? ''
+          out.push({
+            type: 'item',
+            value: { kind: 'tool', tool },
+            label: clipWidth(`${tool.isError ? '✗' : '·'} ${tool.name} ${stripUntrustedAnsi(preview)}${tool.truncated === true ? ' 〔已截断〕' : ''}`, max),
+          })
+        }
       }
     }
-    if (agents.length > 0) {
-      // F-49 后列表已按 currentSid 过滤（非跨项目）——审阅 P2：标签与 slice 对齐（曾写
-      // 「跨项目最近 30 条」实显 10 条）；PanelShell 窗口化渲染，全量列出即可
-      out.push({ type: 'header', label: '子代理 transcript（本会话）' })
-      for (const a of agents) {
-        // F-26：裸 id → 时间 + 首行摘要（历史条目不再是一串无意义 id）
-        const t = new Date(a.mtimeMs)
-        const pad = (n: number): string => String(n).padStart(2, '0')
-        const when = `${t.getMonth() + 1}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`
-        // F-46e：◉ 运行中 / ○ 已完成标记 + id 尾段——并发多个子代理时可区分哪个是哪个
-        const mark = isAgentActive(a.id) ? '◉' : '○'
-        const idTail = a.id.length > 4 ? a.id.slice(-4) : a.id
-        const sum = a.summary === '' ? a.id : a.summary
-        out.push({ type: 'item', value: { kind: 'agent', id: a.id }, label: clipWidth(`§${mark} ${when} ${sum} (${idTail})`, max) })
+    if (page === undefined || page === 'agents') {
+      if (agents.length > 0) {
+        // F-49 后列表已按 currentSid 过滤（非跨项目）——审阅 P2：标签与 slice 对齐（曾写
+        // 「跨项目最近 30 条」实显 10 条）；PanelShell 窗口化渲染，全量列出即可
+        out.push({ type: 'header', label: '子代理 transcript（本会话）' })
+        for (const a of agents) {
+          // F-26：裸 id → 时间 + 首行摘要（历史条目不再是一串无意义 id）
+          const t = new Date(a.mtimeMs)
+          const pad = (n: number): string => String(n).padStart(2, '0')
+          const when = `${t.getMonth() + 1}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`
+          // F-46e：◉ 运行中 / ○ 已完成标记 + id 尾段——并发多个子代理时可区分哪个是哪个
+          // 2026-09-03：运行中判定改 props（帧派生集合）——isAgentActive 跨进程恒 false
+          const mark = activeAgentIds?.has(a.id) === true ? '◉' : '○'
+          const idTail = a.id.length > 4 ? a.id.slice(-4) : a.id
+          const sum = a.summary === '' ? a.id : a.summary
+          out.push({ type: 'item', value: { kind: 'agent', id: a.id }, label: clipWidth(`§${mark} ${when} ${sum} (${idTail})`, max) })
+        }
       }
     }
     return out
-  }, [tasks, recentTools, agents, columns])
+  }, [tasks, recentTools, agents, columns, page, activeAgentIds])
 
   return (
     <PanelShell
-      title="输出查看"
+      title={page === 'agents' ? '子代理 transcript（本会话）' : page === 'tasks' ? '后台任务' : page === 'tools' ? '最近工具调用' : '输出查看'}
       subtitle="Enter 查看全文 · 运行中任务实时跟随"
       rows={rows}
       onPick={onOpen}
       onCancel={onExit}
-      emptyHint="暂无可查看的输出（工具调用/后台任务/子代理）"
-      keyHints={altMode === true ? '↑↓ 选择 · 回车 查看 · q/Esc 退出（恢复拖选复制）' : '↑↓ 选择 · 回车 查看 · Esc 返回'}
+      emptyHint={page === 'agents' ? '本会话暂无子代理' : page === 'tasks' ? '暂无后台任务' : page === 'tools' ? '暂无工具调用' : '暂无可查看的输出（工具调用/后台任务/子代理）'}
+      keyHints={altMode === true ? '↑↓ 选择 · 回车 查看 · q/Esc 返回（恢复拖选复制）' : '↑↓ 选择 · 回车 查看 · Esc 返回'}
     />
   )
 }

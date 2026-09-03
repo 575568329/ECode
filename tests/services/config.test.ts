@@ -164,6 +164,36 @@ describe('loadConfig', () => {
     expect(cfg.maxIterations).toBe(30)
   })
 
+  it('2026-09-03 subagentMaxIterations：显式配置读取；缺省 undefined（消费侧跟主代理）；非法值忽略', () => {
+    writeConfig(
+      JSON.stringify({
+        default: { provider: 'astron', model: 'glm-5.2' },
+        providers: { astron: { type: 'anthropic', baseURL: 'http://x', apiKey: 'sk-c', models: ['glm-5.2'] } },
+        maxIterations: 30,
+        subagentMaxIterations: 20,
+      }),
+    )
+    const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
+    expect(cfg.subagentMaxIterations).toBe(20)
+    // 缺省：undefined（跟主代理的语义由消费侧 ?? maxIterations 兑现——不落默认值保持一处真相）
+    writeConfig(
+      JSON.stringify({
+        default: { provider: 'astron', model: 'glm-5.2' },
+        providers: { astron: { type: 'anthropic', baseURL: 'http://x', apiKey: 'sk-c', models: ['glm-5.2'] } },
+      }),
+    )
+    expect(loadConfig({ configPath: cfgPath, loadDotenv: false }).subagentMaxIterations).toBeUndefined()
+    // 非法（负数/NaN）：忽略（走缺省语义）
+    writeConfig(
+      JSON.stringify({
+        default: { provider: 'astron', model: 'glm-5.2' },
+        providers: { astron: { type: 'anthropic', baseURL: 'http://x', apiKey: 'sk-c', models: ['glm-5.2'] } },
+        subagentMaxIterations: -5,
+      }),
+    )
+    expect(loadConfig({ configPath: cfgPath, loadDotenv: false }).subagentMaxIterations).toBeUndefined()
+  })
+
   it('环境变量覆盖 apiKey/baseURL/model（env > config）', () => {
     writeConfig(
       JSON.stringify({

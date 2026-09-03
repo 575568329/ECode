@@ -1,33 +1,58 @@
 /**
- * SubagentBar 测：等待期秒数渲染（waitingSince → 「思考中 Ns」递增标签）+ 基础行。
- * 秒数换算在渲染期（本地时钟−waitingSince），组件无轮询依赖——直接断言帧文本。
+ * SubagentBar 测（2026-09-03 拍板批）：折叠行只显示总时长（startedAt 起算 m:ss）——
+ * 阶段耗时（waitingSince）不进折叠行，transcript 展开的事件行时刻承担。
  */
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, cleanup } from 'ink-testing-library'
 import React from 'react'
-import { SubagentBar } from '../../src/tui/SubagentBar.js'
+import { SubagentBar, formatDuration } from '../../src/tui/SubagentBar.js'
 import type { SubagentStatus } from '../../src/services/subagent.js'
 
 afterEach(() => cleanup())
 
-describe('SubagentBar', () => {
-  it('waitingSince 存在：显示 思考中 + 已等待秒数', () => {
+describe('formatDuration（总时长 m:ss / h:mm:ss）', () => {
+  it('0-59s 秒段；60s+ m:ss；1h+ h:mm:ss；负数钳 0', () => {
+    expect(formatDuration(0)).toBe('0:00')
+    expect(formatDuration(59)).toBe('0:59')
+    expect(formatDuration(172)).toBe('2:52')
+    expect(formatDuration(3725)).toBe('1:02:05')
+    expect(formatDuration(-3)).toBe('0:00')
+  })
+})
+
+describe('SubagentBar 总时长显示（2026-09-03）', () => {
+  it('行内显示 startedAt 起的总时长（不再是 waitingSince 阶段秒数）', () => {
+    const now = Date.now()
     const agents: SubagentStatus[] = [
-      { id: 'a1', description: '调研', activity: '思考中', waitingSince: Date.now() - 5200 },
+      { id: 'a-1', description: '架构审阅', activity: '思考中', startedAt: now - 172_000, waitingSince: now - 5_000 },
     ]
     const { lastFrame } = render(React.createElement(SubagentBar, { agents }))
-    const f = lastFrame() ?? ''
-    expect(f).toContain('「调研」')
-    // 区间断言：组合跑下构造→渲染间隔可能 >300ms，5.2s 会舍入到 6s（单跑恒 5）
-    expect(f).toMatch(/思考中 [4-7]s/)
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('「架构审阅」')
+    expect(frame).toContain('思考中')
+    expect(frame).toContain('2:52') // 172s 总时长（旧实现显示 5s 阶段秒数）
+    expect(frame).not.toMatch(/思考中 \d+s/) // 阶段秒数形态不再出现
   })
 
-  it('waitingSince 缺省（工具运行中）：只显示工具名不显示秒数', () => {
-    const agents: SubagentStatus[] = [{ id: 'a2', description: '调研', activity: 'read_file' }]
+  it('无 startedAt（旧宿主帧兼容）：退化为无时长段——不显示 0:00 假值', () => {
+    const agents: SubagentStatus[] = [{ id: 'a-2', description: '旧任务', activity: '启动中' }]
     const { lastFrame } = render(React.createElement(SubagentBar, { agents }))
-    const f = lastFrame() ?? ''
-    expect(f).toContain('read_file')
-    expect(f).not.toMatch(/read_file \d+s/)
+    expect(lastFrame()).toContain('「旧任务」')
+    expect(lastFrame() ?? '').not.toContain('0:00')
+  })
+
+  it('超 3 个折叠为合计行 + 最久总时长', () => {
+    const now = Date.now()
+    const agents: SubagentStatus[] = Array.from({ length: 4 }, (_, i) => ({
+      id: `a-${i}`,
+      description: `任务${i}`,
+      activity: '思考中',
+      startedAt: now - (60 + i * 60) * 1000,
+    }))
+    const { lastFrame } = render(React.createElement(SubagentBar, { agents }))
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('4 个子代理运行中')
+    expect(frame).toContain('最久 4:00')
   })
 
   it('空列表渲染 null', () => {

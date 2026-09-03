@@ -150,7 +150,7 @@ export class HostSession {
   readonly channel = new InMemoryChannel()
   /** B4：会话级后台任务表（ctx.tasks/ctx.session.tasks——多会话不串台；模块级全局仅兜底） */
   private readonly tasks = new TaskRegistry()
-  private readonly subagentView = new Map<string, { id: string; description: string; activity: string }>()
+  private readonly subagentView = new Map<string, { id: string; description: string; activity: string; startedAt?: number; waitingSince?: number }>()
   private readonly broker: ApprovalBroker
   /** 运行态沙箱档（Tab 切档经 sandbox/set 命令改此字段——B5 接线；confirm 策略消费） */
   private sandboxMode: SandboxMode
@@ -326,7 +326,7 @@ export class HostSession {
     }
     setSubagentBridge(this.installedBridge)
     this.installedProgress = (agents) =>
-      this.publish('subagent/progress', { agents: agents.map((a) => ({ id: a.id, description: a.description, activity: a.activity })) })
+      this.publish('subagent/progress', { agents: agents.map((a) => ({ id: a.id, description: a.description, activity: a.activity, ...(a.startedAt !== undefined ? { startedAt: a.startedAt } : {}), ...(a.waitingSince !== undefined ? { waitingSince: a.waitingSince } : {}) })) })
     setSubagentProgressHandler(this.installedProgress)
   }
 
@@ -360,8 +360,10 @@ export class HostSession {
     return this.channel.lastSeq
   }
 
-  /** B4（D5）：会话级子代理进度上报（task 工具经 ctx.session 调用；发布 subagent/progress 事件） */
-  updateSubagent(st: { id: string; description: string; activity: string }): void {
+  /** B4（D5）：会话级子代理进度上报（task 工具经 ctx.session 调用；发布 subagent/progress 事件）。
+   *  2026-09-03：类型补全 startedAt/waitingSince（运行时对象本就透传——类型窄化曾致
+   *  SubagentBar 折叠行总时长拿不到起点） */
+  updateSubagent(st: { id: string; description: string; activity: string; startedAt?: number; waitingSince?: number }): void {
     this.subagentView.set(st.id, st)
     this.publish('subagent/progress', { agents: [...this.subagentView.values()] })
   }
@@ -475,7 +477,7 @@ export class HostSession {
   private installedAsker: ((owner: string, event: string) => Promise<import('../services/permissions.js').PermissionAnswer>) | null = null
   private installedAskUser: AskUserHandler | null = null
   private installedBridge: SubagentBridge | null = null
-  private installedProgress: ((list: { id: string; description: string; activity: string }[]) => void) | null = null
+  private installedProgress: ((list: { id: string; description: string; activity: string; startedAt?: number; waitingSince?: number }[]) => void) | null = null
 
   send(cmd: ProtocolCommand): Promise<CommandResult> {
     return this.channel.send(cmd)
@@ -1118,6 +1120,9 @@ export class HostSession {
       }
       case 'panel/data': {
         // T1：面板读面（View 契约冻结 protocol/types；plugin 挂账 D-T2，doctor 非面板）
+        // 2026-09-03：tasks 分支不经 deps.panelData——任务快照是 this.tasks（ToolContext 同源
+        // registry）直读，attach 态客户端进程单例查不到 daemon 侧任务（Ctrl+T 详情/TasksBar 数据源）
+        if (cmd.panel === 'tasks') return { ok: true, value: this.tasks.snapshot() }
         const pd = this.deps.panelData
         if (pd === undefined) return { ok: false, error: '面板数据未装配', code: 'NOT_IMPLEMENTED' }
         return cmd.panel === 'skill' ? { ok: true, value: await pd.skill() } : { ok: true, value: await pd.mcp() }

@@ -76,6 +76,38 @@ describe('PanelShell', () => {
     expect(onPick).toHaveBeenCalledWith(items[0])
   })
 
+  it('2026-09-03 numericPick：未搜索时数字 1-9 直达第 N 项；搜索态数字继续进词', async () => {
+    const onPick = vi.fn()
+    const items = [
+      { name: 'a', desc: '' },
+      { name: 'b', desc: '' },
+      { name: 'c', desc: '' },
+    ]
+    const { stdin, lastFrame } = render(N(items, { onPick, numericPick: true }))
+    await flush()
+    stdin.write('2')
+    await flush()
+    expect(onPick).toHaveBeenCalledWith(items[1])
+    // 搜索态（先输入字母后）数字不截——进搜索词
+    const onPick2 = vi.fn()
+    const r2 = render(N(items, { onPick: onPick2, numericPick: true }))
+    await flush()
+    r2.stdin.write('a')
+    await flush()
+    r2.stdin.write('1')
+    await flush()
+    expect(onPick2).not.toHaveBeenCalled()
+    expect(r2.lastFrame()).toContain('a1')
+    // 未开 numericPick 的面板：数字恒进搜索词（默认行为不破坏）
+    const onPick3 = vi.fn()
+    const r3 = render(N(items, { onPick: onPick3 }))
+    await flush()
+    r3.stdin.write('1')
+    await flush()
+    expect(onPick3).not.toHaveBeenCalled()
+    expect(r3.lastFrame()).toContain('1')
+  })
+
   it('即时搜索：字符过滤 + 无匹配提示 + backspace 恢复', async () => {
     const items = [
       { name: 'commit', desc: '提交' },

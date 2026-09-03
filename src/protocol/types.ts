@@ -177,8 +177,10 @@ export type ProtocolCommand =
   | { op: 'rewind/list' }
   /** T1 契约（2026-08-31）：回执 value=RewindListResult（快照列表+各点外部修改标注）；
    *  exec 回执 value=RewindExecResult（restored 文件列表）；busy 守卫拒绝运行中执行 */
-  | { op: 'rewind/exec'; target: number }  /** T1：面板数据（plugin 挂账 D-T2；doctor 是 prompt 注入命令非面板） */
-  | { op: 'panel/data'; panel: 'skill' | 'mcp' }
+  | { op: 'rewind/exec'; target: number }  /** T1：面板数据（plugin 挂账 D-T2；doctor 是 prompt 注入命令非面板）。
+   *  2026-09-03 扩 'tasks'：宿主 TaskRegistry.snapshot()——attach 态客户端进程单例查不到
+   *  daemon 侧任务（Ctrl+T 详情根菜单/TasksBar 数据源）。 */
+  | { op: 'panel/data'; panel: 'skill' | 'mcp' | 'tasks' }
   /** T1：MCP 面板写动作（reconnect/close 单 server） */
   | { op: 'mcp/action'; action: 'reconnect' | 'close'; server: string }
   /** T1：项目 .mcp.json 首用批准门（附着态 MCP manager 在 daemon，此门必须过协议） */

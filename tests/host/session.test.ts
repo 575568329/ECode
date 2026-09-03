@@ -393,6 +393,11 @@ describe('HostSession（B1 宿主会话）', () => {
     const mc = await host.send({ op: 'panel/data', panel: 'mcp' })
     expect(mc.value).toMatchObject({ servers: [{ name: 'srv1', status: 'ready' }] })
 
+    // 2026-09-03：tasks 面板（attach 态客户端单例查不到 daemon 任务——协议快照数据源）
+    const tk = await host.send({ op: 'panel/data', panel: 'tasks' })
+    expect(tk.ok).toBe(true)
+    expect(Array.isArray(tk.value)).toBe(true)
+
     // mcp/action：close 成功带 output；reconnect 失败收敛 ok:false
     const closed = await host.send({ op: 'mcp/action', action: 'close', server: 'srv1' })
     expect(closed).toMatchObject({ ok: true, output: '已关闭：srv1' })

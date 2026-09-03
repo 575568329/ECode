@@ -61,7 +61,7 @@ import { nextSandboxMode, SANDBOX_MODES, type SandboxMode } from '../services/sa
 import type { SubagentStatus } from '../services/subagent.js'
 import { SubagentBar } from './SubagentBar.js'
 import { TasksBar } from './TasksBar.js'
-import { OutputListPage, OutputViewer, panelWidth, toolResultSource, taskFileSource, subagentSource, timelineSource, type OutputEntry, type RecentTool } from './OutputViewer.js'
+import { OutputListPage, OutputRootPage, OutputViewer, panelWidth, toolResultSource, taskFileSource, subagentSource, timelineSource, listSubagentTranscripts, type OutputCategory, type OutputListPageKind, type OutputEntry, type RecentTool, type TaskSnap } from './OutputViewer.js'
 import { taskRegistry } from '../services/tasks.js'
 import { undoEcodeCommit } from '../services/git.js'
 import { readClipboardImage } from '../services/clipboard.js'
@@ -164,6 +164,9 @@ export interface TuiAppDeps {
 function generalConfigItems(config: import('../services/config.js').Config): ConfigItem[] {
   return [
     { key: 'maxIterations', label: 'maxIterations（每轮最大迭代）', value: String(config.maxIterations), options: ['20', '50', '100', '200'], kind: 'enum' },
+    // 2026-09-03 拍板：子代理轮数（缺省跟主代理——显示生效值并注明；保存即覆盖，
+    // 恢复「跟主代理」需 config.json 删键）
+    { key: 'subagentMaxIterations', label: 'subagentMaxIterations（子代理轮数上限）', value: `${config.subagentMaxIterations ?? config.maxIterations}${config.subagentMaxIterations === undefined ? '（跟主代理）' : ''}`, options: ['20', '50', '100', '200'], kind: 'enum' },
     { key: 'autoCommit', label: 'autoCommit（编辑轮末自动 git 提交）', value: String(config.autoCommit === true), options: ['false', 'true'], kind: 'toggle' },
     { key: 'webSearch.provider', label: 'webSearch.provider（搜索引擎）', value: config.webSearch?.provider ?? 'bing', options: ['bing', 'zhipu'], kind: 'enum' },
     // 默认沙箱档：启动即生效（宿主构造取它——daemon 重拉/新会话都回此档），会话内 Tab 临时切换不落盘
@@ -225,13 +228,35 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   }
   // M11-P4：运行中子代理快照（进度事件驱动）
   const [subagents, setSubagents] = useState<SubagentStatus[]>([])
-  // 审阅 P1-1：TasksBar 活跃态（allocateDynamic 条件段扣减用——与 TasksBar 同源 1s 轮询）
-  const [tasksActive, setTasksActive] = useState(false)
+  /** 运行中子代理 id 集合（Ctrl+T 子代理列表 ◉ 标记数据源——subagent/progress 帧派生，
+   *  跨进程权威；原 isAgentActive 模块级 Map 在 attach 态恒空已弃用） */
+  const activeAgentIds = useMemo(() => new Set(subagents.map((a) => a.id)), [subagents])
+  // 2026-09-03：任务快照统一源（批 B attach 修复）——embedded=本地单例直读；attached=宿主
+  // 协议 panel/data 'tasks' 1s 轮询（客户端进程 taskRegistry 单例查不到 daemon 侧任务）。
+  // TasksBar/根菜单计数/类别列表/taskFileSource 四处消费同一 ref 活值
+  const [taskSnaps, setTaskSnaps] = useState<TaskSnap[]>(() => taskRegistry.snapshot())
+  const taskSnapsRef = useRef(taskSnaps)
+  taskSnapsRef.current = taskSnaps
   useEffect(() => {
-    const timer = setInterval(() => setTasksActive(taskRegistry.snapshot().length > 0), 1000)
+    const timer = setInterval(() => {
+      if (transportRef.current !== null) {
+        void hostRef.current?.send({ op: 'panel/data', panel: 'tasks' })
+          .then((r) => {
+            if (r.ok) setTaskSnaps(r.value as unknown as TaskSnap[])
+          })
+          .catch(() => {}) // 失联保旧快照（TasksBar 自愈链另有职责）
+      } else {
+        setTaskSnaps(taskRegistry.snapshot())
+      }
+    }, 1000)
     timer.unref?.()
     return () => clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（host/transport ref 活值）
   }, [])
+  // 审阅 P1-1：TasksBar 活跃态（allocateDynamic 条件段扣减用——与 TasksBar 同源快照派生）
+  const tasksActive = taskSnaps.length > 0
+  /** 任务快照 getter（TasksBar/OutputListPage/taskFileSource 消费——ref 活值不闭包快照） */
+  const getTaskSnaps = useCallback((): TaskSnap[] => taskSnapsRef.current, [])
 
   /** usage 记录（submit 与子代理桥共用——成本归并；「本轮」语义被并发稀释为最后到达者，文档化） */
   const recordUsage = (inp: number, out: number, cache?: { read?: number; creation?: number }) => {
@@ -452,11 +477,12 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     | { kind: 'rewind-panel' }
     | { kind: 'sandbox-panel' }
     | { kind: 'config-panel' }
-    | { kind: 'output-panel' }
-    // backToList（输入体验批 Ctrl+C 矩阵探针抓出）：视图层 Esc/q/Ctrl+C 的 onBack 语义按入口
-    // 分流——/output 列表进入=回列表；Ctrl+T 直达（缺省 false）=关闭整面板回主界面。
-    // 旧实现一律回列表，Ctrl+T 用户按 Ctrl+C 落在列表页再被「输入即搜索」吞键=按键黑洞
-    | { kind: 'output-view'; source: import('./OutputViewer.js').LineSource; title: string; backToList?: boolean }
+    /** 2026-09-03 拍板：Ctrl+T 详情统一入口——两级菜单。page 缺省 'root'（根菜单：
+     *  时间线/子代理/任务/工具四类数字直达）；类别页（OutputListPage 只显示该段） */
+    | { kind: 'output-panel'; page?: 'root' | OutputListPageKind }
+    /** backTo：查看器 Esc/q/Ctrl+C 的回退目标（缺省 'root' 根菜单——逐级回退 hub 模式；
+     *  从类别列表进入时为该类别页）。旧 backToList boolean 语义并入（true≈列表页） */
+    | { kind: 'output-view'; source: import('./OutputViewer.js').LineSource; title: string; backTo?: 'root' | OutputListPageKind }
     | { kind: 'select'; title: string; options: string[]; resolve: (v: string | undefined) => void }
     // M8 ask_user：工具发起的提问面板（Promise 桥——resolve 回工具 execute）
     | { kind: 'question-panel'; questions: AskUserQuestion[]; resolve: (r: AskUserResult) => void }
@@ -1668,8 +1694,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   useInput(
     (input, key) => {
       // F-46/F-48：Ctrl+T 双向 toggle——output 系面板开着时再按=退出（CC「进来的键就是
-      // 出去的键」）；否则进入全屏面板（enterAltScreen 同步先于 setOverlay 的 React 提交，
-      // 架构审阅 P0-3 时序铁律）
+      // 出去的键」）；否则进入根菜单（2026-09-03 拍板：详情统一入口两级菜单——时间线/
+      // 子代理/任务/工具四类数字直达；原直落时间线+l 进列表的路径退役——l/1 形近真机误按实证）
       if (key.ctrl && input === 't') {
         if (overlay?.kind === 'output-panel' || overlay?.kind === 'output-view') {
           closeOutputPanel()
@@ -1678,14 +1704,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           // → 不写 1049 序列、altActiveRef 保持 false，面板树走嵌入式分支（审阅 P0-4）
           if (!NO_ALT_SCREEN) enterAltScreen()
           altActiveRef.current = !NO_ALT_SCREEN
-          // F-50：Ctrl+T 默认落地执行时间线（按执行顺序展示全部流程与模型路径）；
-          // l 键进来源列表（子代理/任务/单工具条目级查看）
-          setOverlay({
-            kind: 'output-view',
-            title: '执行时间线（全部流程）',
-            // 项 4：width getter 化——面板内 resize 折行宽度实时跟随（缓存按 width 自动重建）
-            source: timelineSource(() => messagesRef.current, panelWidth),
-          })
+          setOverlay({ kind: 'output-panel' })
         }
       }
     },
@@ -1800,34 +1819,71 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   // 审阅 P0-4：降级链（NO_ALT_SCREEN）下恒 false——altContent undefined 走嵌入式分支，
   // <AltScreen/> 不挂载（否则其 useInsertionEffect 补写 ENTER，降级照样进 alt buffer）
   const altActive = !NO_ALT_SCREEN && (overlay?.kind === 'output-panel' || overlay?.kind === 'output-view')
+  /** Ctrl+T 子代理列表过滤 id（2026-09-03 批 B：attach 态真会话 id 在 attachedSidRef——
+   *  本地 history 是客户端自建 id，与 daemon 侧 transcript meta.sid 永不相等会滤空；
+   *  embedded 两形态同源。getter 形态——轮询闭包每次调用取活值） */
+  const getOutputSid = useCallback((): string => attachedSidRef.current ?? deps.history.currentSessionId(), [deps.history])
+  /** 根菜单三类计数（1s 轮询消费——ref 活值 + transcript 目录扫描带 mtime 缓存） */
+  const getRootCounts = useCallback(
+    () => ({
+      agents: listSubagentTranscripts(30, attachedSidRef.current ?? deps.history.currentSessionId()).length,
+      tasks: taskSnapsRef.current.length,
+      tools: recentToolsRef.current.length,
+    }),
+    [deps.history],
+  )
+  const openOutputEntry = (entry: OutputEntry, backTo: 'root' | OutputListPageKind): void => {
+    if (entry.kind === 'tool') {
+      setOverlay({
+        kind: 'output-view',
+        title: `${entry.tool.name}（${entry.tool.itemId}）${entry.tool.truncated === true ? ' 〔截断，补全中〕' : ''}`,
+        source: toolResultSource(() => recentToolsRef.current.find((t) => t.itemId === entry.tool.itemId), panelWidth),
+        backTo,
+      })
+    } else if (entry.kind === 'task') {
+      const snap = getTaskSnaps().find((t) => t.id === entry.id)
+      setOverlay({
+        kind: 'output-view',
+        title: `task ${entry.id}：${snap?.command.slice(0, 50) ?? ''}（${snap?.status ?? '?'}）`,
+        source: taskFileSource(entry.id, panelWidth, () => getTaskSnaps().find((t) => t.id === entry.id)),
+        backTo,
+      })
+    } else {
+      setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, panelWidth), backTo })
+    }
+  }
+
   const altContent: ReactNode = altActive ? (
     <>
       <AltScreen />
-      {overlay?.kind === 'output-panel' && (
-        <OutputListPage
-          recentTools={recentTools}
-          onOpen={(entry: OutputEntry) => {
-            if (entry.kind === 'tool') {
+      {overlay?.kind === 'output-panel' && (overlay.page === undefined || overlay.page === 'root') && (
+        <OutputRootPage
+          getCounts={getRootCounts}
+          onPick={(c: OutputCategory) => {
+            if (c === 'timeline') {
               setOverlay({
                 kind: 'output-view',
-                title: `${entry.tool.name}（${entry.tool.itemId}）${entry.tool.truncated === true ? ' 〔截断，补全中〕' : ''}`,
-                source: toolResultSource(() => recentToolsRef.current.find((t) => t.itemId === entry.tool.itemId), panelWidth),
-                  backToList: true,
-              })
-            } else if (entry.kind === 'task') {
-              const snap = taskRegistry.snapshot().find((t) => t.id === entry.id)
-              setOverlay({
-                kind: 'output-view',
-                title: `task ${entry.id}：${snap?.command.slice(0, 50) ?? ''}（${snap?.status ?? '?'}）`,
-                source: taskFileSource(entry.id, panelWidth),
-                  backToList: true,
+                title: '执行时间线（全部流程）',
+                // 项 4：width getter 化——面板内 resize 折行宽度实时跟随（缓存按 width 自动重建）
+                source: timelineSource(() => messagesRef.current, panelWidth),
               })
             } else {
-              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, panelWidth), backToList: true })
+              setOverlay({ kind: 'output-panel', page: c })
             }
           }}
           onExit={() => closeOutputPanel()}
-          currentSid={deps.history.currentSessionId()}
+          altMode
+        />
+      )}
+      {overlay?.kind === 'output-panel' && overlay.page !== undefined && overlay.page !== 'root' && (
+        <OutputListPage
+          page={overlay.page}
+          recentTools={recentTools}
+          onOpen={(entry: OutputEntry) => openOutputEntry(entry, overlay.page as OutputListPageKind)}
+          onExit={() => setOverlay({ kind: 'output-panel' })}
+          getSid={getOutputSid}
+          getTasks={getTaskSnaps}
+          activeAgentIds={activeAgentIds}
           altMode
         />
       )}
@@ -1835,12 +1891,12 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         <OutputViewer
           title={overlay.title}
           source={overlay.source}
-          // onBack 按入口分流（backToList）：列表进入=回列表；Ctrl+T 直达=关整面板回主界面
+          // onBack 逐级回退（backTo）：类别列表进入=回类别页；根菜单进入/缺省=回根菜单
           onBack={() =>
-            overlay.backToList === true ? setOverlay({ kind: 'output-panel' }) : closeOutputPanel()
+            overlay.backTo !== undefined && overlay.backTo !== 'root'
+              ? setOverlay({ kind: 'output-panel', page: overlay.backTo })
+              : setOverlay({ kind: 'output-panel' })
           }
-          // F-50：l 键进来源列表（审阅 T3：曾无调用点=死键但状态行恒提示）
-          onList={() => setOverlay({ kind: 'output-panel', })}
           altMode
         />
       )}
@@ -1983,7 +2039,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       {!altActive && (
         <>
           <SubagentBar agents={subagents} />
-          <TasksBar />
+          <TasksBar getTasks={getTaskSnaps} />
           {error ? <ErrorBanner error={error} /> : null}
         </>
       )}
@@ -2125,30 +2181,32 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           }}
         />
       )}
-      {overlay?.kind === 'output-panel' && altContent === undefined && (
-        <OutputListPage
-          recentTools={recentTools}
-          onOpen={(entry: OutputEntry) => {
-            if (entry.kind === 'tool') {
+      {overlay?.kind === 'output-panel' && altContent === undefined && (overlay.page === undefined || overlay.page === 'root') && (
+        <OutputRootPage
+          getCounts={getRootCounts}
+          onPick={(c: OutputCategory) => {
+            if (c === 'timeline') {
               setOverlay({
                 kind: 'output-view',
-                title: `${entry.tool.name}（${entry.tool.itemId}）${entry.tool.truncated === true ? ' 〔截断，补全中〕' : ''}`,
-                source: toolResultSource(() => recentToolsRef.current.find((t) => t.itemId === entry.tool.itemId), panelWidth),
-                  backToList: true,
-              })
-            } else if (entry.kind === 'task') {
-              const snap = taskRegistry.snapshot().find((t) => t.id === entry.id)
-              setOverlay({
-                kind: 'output-view',
-                title: `task ${entry.id}：${snap?.command.slice(0, 50) ?? ''}（${snap?.status ?? '?'}）`,
-                source: taskFileSource(entry.id, panelWidth),
-                  backToList: true,
+                title: '执行时间线（全部流程）',
+                source: timelineSource(() => messagesRef.current, panelWidth),
               })
             } else {
-              setOverlay({ kind: 'output-view', title: `子代理 ${entry.id} transcript`, source: subagentSource(entry.id, panelWidth), backToList: true })
+              setOverlay({ kind: 'output-panel', page: c })
             }
           }}
-          onExit={() => setOverlay(null)}
+          onExit={() => closeOutputPanel()}
+        />
+      )}
+      {overlay?.kind === 'output-panel' && altContent === undefined && overlay.page !== undefined && overlay.page !== 'root' && (
+        <OutputListPage
+          page={overlay.page}
+          recentTools={recentTools}
+          onOpen={(entry: OutputEntry) => openOutputEntry(entry, overlay.page as OutputListPageKind)}
+          onExit={() => setOverlay({ kind: 'output-panel' })}
+          getSid={getOutputSid}
+          getTasks={getTaskSnaps}
+          activeAgentIds={activeAgentIds}
         />
       )}
       {overlay?.kind === 'output-view' && altContent === undefined && (
@@ -2156,7 +2214,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           title={overlay.title}
           source={overlay.source}
           onBack={() =>
-            overlay.backToList === true ? setOverlay({ kind: 'output-panel' }) : closeOutputPanel()
+            overlay.backTo !== undefined && overlay.backTo !== 'root'
+              ? setOverlay({ kind: 'output-panel', page: overlay.backTo })
+              : setOverlay({ kind: 'output-panel' })
           }
         />
       )}

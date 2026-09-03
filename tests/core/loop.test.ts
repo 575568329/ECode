@@ -160,6 +160,42 @@ describe('runLoop', () => {
     expect(onWarn).not.toHaveBeenCalledWith(expect.stringContaining('迭代上限'))
   })
 
+  it('2026-09-03：onExhausted 结构化回调（耗尽触发；正常结束不触发）', async () => {
+    const toolRound = [
+      { type: 'tool_use_start' as const, id: 't', name: 'echo' },
+      { type: 'tool_use_delta' as const, id: 't', partial_json: '{"msg":"x"}' },
+      { type: 'tool_use_end' as const, id: 't' },
+      { type: 'done' as const, stop_reason: 'tool_use' as const },
+    ]
+    const p = new MockProvider([toolRound, structuredClone(toolRound)])
+    const onExhausted = vi.fn()
+    await runLoop([], '问', { ...makeOpts(p, [echoTool]), maxIterations: 2, callbacks: { onText: vi.fn(), onExhausted } })
+    expect(onExhausted).toHaveBeenCalledWith(2)
+    const p2 = new MockProvider([[{ type: 'text', text: 'ok' }, { type: 'done', stop_reason: 'end' }]])
+    const onExhausted2 = vi.fn()
+    await runLoop([], '问', { ...makeOpts(p2, []), callbacks: { onText: vi.fn(), onExhausted: onExhausted2 } })
+    expect(onExhausted2).not.toHaveBeenCalled()
+  })
+
+  it('2026-09-03：system 函数形态每轮请求时求值（子代理轮数感知通道——静态串不受影响）', async () => {
+    const seen: string[] = []
+    class CaptureProvider implements LLMProvider {
+      readonly type = 'capture'
+      async *run(req: LLMProviderRunRequest): AsyncIterable<Delta> {
+        seen.push(req.system)
+        yield { type: 'text', text: 'ok' }
+        yield { type: 'done', stop_reason: 'end' }
+      }
+    }
+    let n = 0
+    await runLoop([], '问', {
+      ...makeOpts(new CaptureProvider(), []),
+      system: () => `base-第${++n}轮`,
+    })
+    expect(seen[0]).toBe('base-第1轮')
+    expect(n).toBe(1)
+  })
+
   it('F-21（审阅 P1-5①）：最后一轮撞 CONTEXT_TOO_LONG 压缩重试（continue 路径）仍有耗尽提示', async () => {
     // 每轮都 CONTEXT_TOO_LONG 且压缩成功 → continue 重试；maxIterations=2 走完 → 必须报耗尽
     // （修复前 exhausted 赋值在 continue 之后：用户看到「已压缩对话后重试」但重试永不来且无耗尽提示）

@@ -14,12 +14,14 @@ describe('formatAgentLine（子代理 transcript 格式化）', () => {
       '▶ 子任务 [general] 审阅代码',
     ])
   })
-  it('tool_start/tool_result 事件行 → ⚙/✓ 缩进行', () => {
-    expect(formatAgentLine(JSON.stringify({ kind: 'tool_start', name: 'bash', ts: 1 }), W)).toEqual(['  ⚙ bash'])
-    expect(formatAgentLine(JSON.stringify({ kind: 'tool_result', name: 'bash', ts: 1 }), W)).toEqual(['  ✓ bash 完成'])
+  it('tool_start/tool_result 事件行 → ⚙/✓ 缩进行 + 时刻（2026-09-03：阶段节奏在展开里可见）', () => {
+    const ts = new Date('2026-09-03T09:08:07').getTime()
+    expect(formatAgentLine(JSON.stringify({ kind: 'tool_start', name: 'bash', ts }), W)).toEqual(['  ⚙ bash 09:08:07'])
+    expect(formatAgentLine(JSON.stringify({ kind: 'tool_result', name: 'bash', ts }), W)).toEqual(['  ✓ bash 完成 09:08:07'])
   })
-  it('warn 事件行 → ⚠ 行', () => {
-    expect(formatAgentLine(JSON.stringify({ kind: 'warn', text: '快照跟随失败', ts: 1 }), W)).toEqual(['  ⚠ 快照跟随失败'])
+  it('warn 事件行 → ⚠ 行 + 时刻', () => {
+    const ts = new Date('2026-09-03T09:08:07').getTime()
+    expect(formatAgentLine(JSON.stringify({ kind: 'warn', text: '快照跟随失败', ts }), W)).toEqual(['  ⚠ 快照跟随失败 09:08:07'])
   })
   it('user 纯文本消息 → ▶ user:', () => {
     expect(formatAgentLine(JSON.stringify({ role: 'user', content: '查 src 结构' }), W)).toEqual(['▶ user: 查 src 结构'])

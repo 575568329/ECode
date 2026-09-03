@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {render, cleanup } from 'ink-testing-library'
 import React from 'react'
-import { OutputViewer, OutputListPage, toolResultSource, taskFileSource, timelineSource, mdBlock, formatAgentLine, __setWheelClockForTest, type LineSource, type RecentTool, formatTimelineMessage } from '../../src/tui/OutputViewer.js'
+import { OutputViewer, OutputListPage, OutputRootPage, toolResultSource, taskFileSource, timelineSource, mdBlock, formatAgentLine, __setWheelClockForTest, type LineSource, type RecentTool, formatTimelineMessage } from '../../src/tui/OutputViewer.js'
 // formatTimelineMessage 见下方增量② describe 前 import 补齐
 import { isMouseInput } from '../../src/tui/PanelShell.js'
 
@@ -146,6 +146,73 @@ describe('OutputListPage（M14-V3）', () => {
     const { lastFrame } = render(<OutputListPage recentTools={[]} onOpen={() => {}} onExit={() => {}} />)
     expect(lastFrame()).toContain('暂无可查看的输出')
   })
+
+  it('2026-09-03：page 类别化——agents 页只出子代理段 + activeAgentIds ◉ 标记 + 标题切换', async () => {
+    const home = join(tmpdir(), 'ecode-ov-test-home')
+    const dir = join(home, '.ecode', 'agents')
+    mkdirSync(dir, { recursive: true })
+    try {
+      writeFileSync(join(dir, 'a-run.jsonl'), JSON.stringify({ role: 'user', content: [{ type: 'text', text: '运行中的任务' }] }) + '\n', 'utf8')
+      const tools: RecentTool[] = [{ itemId: 'i1', name: 'bash', content: 'x', isError: false, at: 0 }]
+      const { lastFrame } = render(
+        <OutputListPage page="agents" recentTools={tools} onOpen={() => {}} onExit={() => {}} activeAgentIds={new Set(['a-run'])} />,
+      )
+      const frame = lastFrame() ?? ''
+      expect(frame).toContain('子代理 transcript（本会话）')
+      expect(frame).toContain('◉') // 运行中标记（帧派生集合——attach 态权威）
+      expect(frame).toContain('运行中的任务')
+      expect(frame).not.toContain('最近工具调用') // 类别隔离：工具段不出现
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('2026-09-03：getSid getter 活值（attach 态 ref 更新后轮询取新值过滤）', async () => {
+    const home = join(tmpdir(), 'ecode-ov-test-home')
+    const dir = join(home, '.ecode', 'agents')
+    mkdirSync(dir, { recursive: true })
+    try {
+      writeFileSync(join(dir, 'a-s1.jsonl'), JSON.stringify({ kind: 'meta', sid: 'sess-1', description: '会话一任务' }) + '\n' + JSON.stringify({ role: 'user', content: 'x' }) + '\n', 'utf8')
+      let sid = 'sess-1'
+      const { lastFrame, rerender } = render(
+        <OutputListPage page="agents" recentTools={[]} onOpen={() => {}} onExit={() => {}} getSid={() => sid} />,
+      )
+      expect(lastFrame()).toContain('会话一任务')
+      sid = 'sess-other' // ref 活值变化（attach 态真会话 id 到达——不重渲，轮询闭包取新值）
+      rerender(
+        <OutputListPage page="agents" recentTools={[]} onOpen={() => {}} onExit={() => {}} getSid={() => sid} />,
+      )
+      await sleep(1100) // 1s 轮询周期后按新 sid 过滤
+      expect(lastFrame()).toContain('本会话暂无子代理') // 换会话后旧条目被过滤
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('2026-09-03 OutputRootPage（Ctrl+T 根菜单）', () => {
+  it('四类条目 + 计数徽标；空类隐藏后数字顺延', () => {
+    const { lastFrame } = render(
+      <OutputRootPage getCounts={() => ({ agents: 2, tasks: 0, tools: 18 })} onPick={() => {}} onExit={() => {}} />,
+    )
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('1 执行时间线（主对话全文）')
+    expect(frame).toContain('2 子代理 transcript（2）')
+    expect(frame).not.toContain('后台任务') // tasks=0 整段隐藏
+    expect(frame).toContain('3 最近工具调用（18）') // 数字顺延（不跳 4）
+    expect(frame).toContain('数字直达')
+  })
+
+  it("数字直达：按 2 进入子代理类别（onPick agents）", async () => {
+    const onPick = vi.fn()
+    const { stdin } = render(
+      <OutputRootPage getCounts={() => ({ agents: 1, tasks: 1, tools: 1 })} onPick={onPick} onExit={() => {}} />,
+    )
+    await flush()
+    stdin.write('2')
+    await flush()
+    expect(onPick).toHaveBeenCalledWith('agents')
+  })
 })
 // —— F-26：/output 子代理列表上下文 ——
 describe('F-26：listSubagentTranscripts 摘要（裸 id → 时间+首行摘要）', () => {
@@ -165,6 +232,16 @@ describe('F-26：listSubagentTranscripts 摘要（裸 id → 时间+首行摘要
     expect(listSubagentTranscripts(1).length).toBe(1)
     // 清场：防污染同文件其他用例（OutputListPage 共享同一假 home 的模块级 homedir mock）
     rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('2026-09-03：formatAgentLine 事件行带时刻（阶段节奏在 transcript 展开里可见）', () => {
+    const ts = new Date('2026-09-03T10:20:30').getTime()
+    const start = formatAgentLine(JSON.stringify({ kind: 'tool_start', name: 'grep', ts }), 80)
+    expect(start[0]).toContain('⚙ grep')
+    expect(start[0]).toMatch(/10:20:30/)
+    const done = formatAgentLine(JSON.stringify({ kind: 'tool_result', name: 'grep', ts }), 80)
+    expect(done[0]).toContain('✓ grep 完成')
+    expect(done[0]).toMatch(/10:20:30/)
   })
 })
 

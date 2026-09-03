@@ -101,6 +101,9 @@ export interface LoopCallbacks {
   onActivity?: (state: ActivityState, text?: string) => void
   /** 迭代轮数同步（StatusBar 显示 iter/maxIter） */
   onIter?: (iter: number, maxIter: number) => void
+  /** 迭代上限耗尽（2026-09-03：子代理据此在 task 返回值标注截断——主循环语义仍是
+   *  onWarn「输入继续」，onExhausted 只补结构化信号不替代） */
+  onExhausted?: (maxIterations: number) => void
 }
 
 export interface LoopRunOptions {
@@ -110,7 +113,9 @@ export interface LoopRunOptions {
   history: HistoryStore
   callbacks: LoopCallbacks
   providerReq: ProviderReq
-  system: string
+  /** system 提示词。函数形态=每轮请求时求值（2026-09-03：子代理轮数感知「当前第 N/M 轮」
+   *  ——基串前缀稳定保 KV 缓存，动态段恒在尾部）；字符串形态=静态（主循环等既有调用面不变） */
+  system: string | (() => string)
   maxIterations: number
   toolCtx: ToolContext
   /** M10-P2b：首条 user 消息的附着块（图片粘贴 ImageBlock；显示层占位符与内容分离） */
@@ -253,7 +258,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
       opts.logger.debug('provider', 'request', { messageCount: ctx.length, total: messages.length }, iter)
       for await (const d of opts.provider.run({
         ...opts.providerReq,
-        system: opts.system,
+        system: typeof opts.system === 'function' ? opts.system() : opts.system,
         messages: ctx,
         tools: opts.tools.specs(),
         signal: opts.signal,
@@ -564,6 +569,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
   // 用户可输入「继续」开新轮续跑）
   if (!done) {
     opts.callbacks.onWarn?.(`已达到迭代上限（maxIterations=${opts.maxIterations}），本轮提前终止——输入「继续」可接着跑`)
+    opts.callbacks.onExhausted?.(opts.maxIterations)
     opts.logger.warn('loop', 'max_iterations_exhausted', { maxIterations: opts.maxIterations })
   }
 

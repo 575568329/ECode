@@ -216,6 +216,8 @@ export function makeProjectParts(
       .map((b) => b.content)
       .join('\n'),
     getModel: () => config.current.model,
+    // 2026-09-03 拍板：子代理轮数缺省跟主代理一致（subagentMaxIterations 覆盖；argv/cli 静态 config）
+    getMaxIterations: () => config.subagentMaxIterations ?? config.maxIterations,
   }))
   return {
     providerReg,

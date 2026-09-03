@@ -29,10 +29,10 @@ import { SummarizeStrategy } from './compaction/summarize.js'
 import { makeOnBeforeRequest, type SummaryRole } from './compaction/hook.js'
 import type { Sandbox } from './sandbox.js'
 
-/** 子代理默认迭代上限（方案 D6：钳 min(父,25) 的常数半边；跑飞防御） */
-const SUB_MAX_ITERATIONS = 25
-/** 单子代理硬超时（方案 D6：execute 自实现——task 未声明 timeout_ms，loop 层软超时对内嵌 runLoop 不适用） */
-const SUB_TIMEOUT_MS = 10 * 60_000
+/** 子代理迭代上限缺省兜底（2026-09-03 拍板：轮数缺省**跟主代理一致**——此处为
+ *  deps.getMaxIterations 未注入时的对齐值（主代理 DEFAULT_MAX_ITERATIONS=50）；正常
+ *  装配（宿主/cli）恒注入 getter：() => cfg().subagentMaxIterations ?? cfg().maxIterations） */
+const SUB_DEFAULT_MAX_ITERATIONS = 50
 /** M13-B4：超时自总结一次性调用参数（独立信号 60s——不占用也不继承子循环的已断信号） */
 const RESUME_SUMMARY_TIMEOUT_MS = 60_000
 const RESUME_SUMMARY_MAX_TOKENS = 2048
@@ -85,6 +85,9 @@ export interface SubagentDeps {
   projectInstructions: string
   /** 当前模型名（toolCtx.model 预留入口——视觉名门已拆 78873ab，现无消费方；缺省不传） */
   getModel?: () => string
+  /** 2026-09-03 拍板：子代理轮数上限（缺省跟主代理一致；宿主/cli 装配注入活 getter——
+   *  () => cfg().subagentMaxIterations ?? cfg().maxIterations；未注入兜底 50） */
+  getMaxIterations?: () => number
 }
 
 // —— UI 桥（confirm/warn/usage 三合一）：cli 装配工具、TuiApp 挂回调（setPermissionAsker 同款）。
@@ -131,8 +134,11 @@ export interface SubagentStatus {
   description: string
   /** 最近工具活动（折叠行动态段） */
   activity: string
+  /** 子代理启动时刻（2026-09-03 拍板：折叠行显示总时长——SubagentBar 据此逐秒递增；
+   *  阶段节奏走 Ctrl+T transcript 展开的事件行时刻差） */
+  startedAt?: number
   /** 等待 LLM 响应的起点（onToolResult 置「思考中」时打点，onToolStart 清除）——
-   *  SubagentBar 据此逐秒递增，消解「上一工具名冻结整个 LLM 等待期」的假死观感 */
+   *  折叠行不再消费（只显总时长），transcript 展开的事件时刻可推每阶段耗时 */
   waitingSince?: number
 }
 
@@ -183,11 +189,14 @@ function appendAgentEvent(agentId: string, ev: Record<string, unknown>): Promise
     .catch(() => {})
 }
 
-/** 子代理 system 骨架（方案 §2 两型；type=explore 叠加只读宣言）。 */
+/** 子代理 system 骨架（方案 §2 两型；type=explore 叠加只读宣言）。
+ *  2026-09-03：轮数感知不再进基串——makeSubagentOpts 用 system getter 每轮动态拼
+ *  「当前第 N/M 轮」（onIter 计数，loop 每轮请求时求值；基串稳定保 KV 前缀缓存）。 */
 export function subagentSystem(type: SubagentType, projectInstructions: string): string {
   const base = `你是独立子任务代理，prompt 是你的全部背景，缺信息用工具自查不要猜。只做 prompt 说的事。
 完成后只输出结论：结果/关键发现/产物路径三段——调用者只拿这段文字，过程细节不会被看到。
 你不能向用户提问；有疑问就把不确定点写进结论。你不能派子任务。
+你有有限的迭代轮数预算，耗尽即被截断（结论尾部会被标注）——规划好搜索范围，先窄后宽，别把预算花在漫无目的的扫描上。
 通用准则：广搜窄读（先 grep/glob 圈范围再精读）；除非 prompt 明确要求，不新建文档文件（报告写在结论里）。`
   const readonly = type === 'explore'
     ? `\n你是只读调研代理：没有写类工具（尝试会失败）。返回的文件引用一律绝对路径。调研彻底度跟随 prompt 的指示（quick/medium/very thorough）。`
@@ -262,13 +271,17 @@ export function makeSubagentOpts(
   sessPort?: SessionPort['session'],
   /** M14-C5②：宿主桥解析好的摘要角色（roles.summary 换笔——子代理独立压缩链与主链同源；null=回退主模型） */
   summaryRole?: SummaryRole | null,
+  /** 2026-09-03 拍板：本子代理迭代上限（task 入参已钳 config；缺省兜底跟主代理一致） */
+  maxIterations: number = deps.getMaxIterations?.() ?? SUB_DEFAULT_MAX_ITERATIONS,
+  /** 轮数耗尽通知（task 工具据此在返回值尾部标注——父代理可分辨截断 vs 正常完成） */
+  onExhausted?: () => void,
 ): LoopRunOptions {
   // 审阅 P0-3：会话端口优先（宿主随身携带，多项目/多会话不串台）；模块桥单槽是进程级
   // （serve 多项目被后启动者覆盖）降 argv 单会话兜底；构造时取一次=子代理生命周期内
   // 配置快照（中途切换影响下一批，优于 cli 静态闭包的永远旧值）
   const providerReq = sessPort?.getProviderReq?.() ?? (bridge?.getProviderReq !== undefined ? bridge.getProviderReq() : deps.getProviderReq())
   const provider = sessPort?.getProvider?.() ?? (bridge?.getProvider !== undefined ? bridge.getProvider() : deps.getProvider())
-  const system = subagentSystem(type, deps.projectInstructions)
+  const baseSystem = subagentSystem(type, deps.projectInstructions)
   const tools = buildSubRegistry(deps.registry, type)
   // 独立压缩链：boundary 只进子内存 messages（NoopHistory 不落盘，onCompacted 不配——无 UI 可重建）
   const orchestrator = new CompactionOrchestrator()
@@ -278,7 +291,7 @@ export function makeSubagentOpts(
     if (sessPort?.recordUsage !== undefined) sessPort.recordUsage(i, o, c)
     else bridge?.usage?.(i, o, c)
   }
-  const onBeforeRequest = makeOnBeforeRequest(orchestrator, provider, providerReq, system, {
+  const onBeforeRequest = makeOnBeforeRequest(orchestrator, provider, providerReq, baseSystem, {
     history: new NoopHistoryStore(),
     signal,
     tools: tools.specs(),
@@ -286,18 +299,29 @@ export function makeSubagentOpts(
     onUsage: reportUsage,
     ...(summaryRole != null ? { summary: summaryRole } : {}), // M14-C5②：roles.summary 换笔
   })
+  // 2026-09-03 拍板（子代理 LLM 实时知轮数）：system 走 getter——loop 每轮请求时求值，
+  // 尾部拼「当前第 N/M 轮」。onIter 在每轮 provider.run 之前触发（loop.ts 循环体开头），
+  // 故首轮请求求值时已是第 1 轮。基串前缀稳定，GLM 端点按 message 粒度自动 KV 缓存
+  // 仅 system 尾段失效（M12 B0 实证），成本可控。
+  let currentIter = 0
+  const system: () => string = () =>
+    `${baseSystem}\n\n迭代预算：当前第 ${currentIter}/${maxIterations} 轮（每轮刷新）。`
   return {
     provider,
     tools,
     logger: makeAgentLogger(deps.logger, agentId),
     history: new NoopHistoryStore(),
     callbacks: {
-      // 进度缓冲与 UI 转发——绝不 setActive（不与父抢渲染）；onActivity/onIter 不配
+      // 进度缓冲与 UI 转发——绝不 setActive（不与父抢渲染）；onActivity 不配（SubagentBar
+      // 经 updateSubagent 桥）；onIter 2026-09-03 起只喂 system getter 的轮数计数
       // F-46：运行期可见性——事件逐条追加进 agents/<id>.jsonl（meta/tool_start/tool_result/
       // warn 事件行，异步 fire-and-forget），父端 /output 面板运行期打开即可看子代理在干什么；
       // 结束仍全量重写 messages JSONL（权威可重放终态，事件行被覆盖）。同步 IO 会冻结
       // 主循环渲染（P2 修复先例），故 void appendFile + catch 静默（落盘失败不影响执行）。
       onText: () => {},
+      onIter: (iter) => {
+        currentIter = iter
+      },
       onToolStart: (name) => {
         void appendAgentEvent(agentId, { kind: 'tool_start', name, ts: Date.now() })
         const st = activeAgents.get(agentId)
@@ -326,10 +350,12 @@ export function makeSubagentOpts(
         void appendAgentEvent(agentId, { kind: 'warn', text: m.slice(0, 200), ts: Date.now() })
         bridge?.warn?.(`「${description}」${m}`)
       },
+      // 2026-09-03：轮数耗尽回调（loop 耗尽分支触发——task 工具据此标注返回值）
+      ...(onExhausted !== undefined ? { onExhausted } : {}),
     },
     providerReq,
     system,
-    maxIterations: SUB_MAX_ITERATIONS,
+    maxIterations,
     toolCtx: {
       cwd: deps.cwd,
       signal,
@@ -454,6 +480,7 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
         description: { type: 'string', description: '3-5 词任务摘要（进度行与告警前缀用）' },
         prompt: { type: 'string', description: '任务书：目标与原因/涉及文件/验收标准/期望返回格式（自包含）' },
         type: { type: 'string', description: 'general（默认，全能）| explore（只读调研）' },
+        max_iterations: { type: 'number', description: `迭代轮数上限（1 到配置上限之间，默认跟主代理配置；子代理知道自己每轮的轮数进度，耗尽即截断）` },
       },
       required: ['description', 'prompt'],
     },
@@ -461,6 +488,14 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
     async execute(args, ctx: ToolContext) {
       const { description, prompt } = args as { description: string; prompt: string; type?: string }
       const type: SubagentType = (args as { type?: string }).type === 'explore' ? 'explore' : 'general'
+      // 2026-09-03 拍板：轮数缺省跟主代理一致（config.subagentMaxIterations ?? maxIterations）；
+      // 入参只能往下钳（小任务省成本——LLM 不可拉满放大跑飞面；跑飞防御从 10min 硬超时
+      // 改由轮数上限承担，同拍板废除）
+      const configuredMax = deps.getMaxIterations?.() ?? SUB_DEFAULT_MAX_ITERATIONS
+      const rawIter = (args as { max_iterations?: number }).max_iterations
+      const maxIterations =
+        rawIter !== undefined && Number.isFinite(rawIter) ? Math.max(1, Math.min(Math.floor(rawIter), configuredMax)) : configuredMax
+      let exhausted = false
       const agentId = makeAgentId()
       const sess = (ctx as SessionPort).session
       const up = (st: SubagentStatus): void => {
@@ -477,19 +512,21 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
           notifyProgress()
         }
       }
-      up({ id: agentId, description, activity: '启动中', waitingSince: Date.now() })
+      const startedAt = Date.now()
+      up({ id: agentId, description, activity: '启动中', startedAt })
       // F-46：meta 行先行落盘——父端 /output 列表（按 mtime）运行期即可见本子代理。
       // F-49：meta 带发起会话 sid——面板「只看当前会话」的过滤依据（argv 兜底无 sid 留空）
       void appendAgentEvent(agentId, { kind: 'meta', description, type, ts: Date.now(), sid: sess?.getSessionId?.() ?? '' })
-      // 硬超时与用户中断取或（Node 20+ AbortSignal.any）
-      const timeout = AbortSignal.timeout(SUB_TIMEOUT_MS)
-      const signal = AbortSignal.any([ctx.signal, timeout])
+      // 2026-09-03 拍板：废除 10min 硬超时——中断只认用户 Ctrl+C（ctx.signal 透传）；
+      // 跑飞防御=轮数上限（上方钳制）。AbortSignal.any 引用随硬超时一并退役
+      const signal = ctx.signal
       // 审阅 P0-3/C5②：摘要角色经会话端口优先（与主链同源——resolveSummaryRole 含缓存/floor
       // 告警，roles.summary 配了换笔）；模块桥降兜底；都无（argv 单次/旧测试）=null 回退子代理主模型
       const summaryRole = await (sess?.getSummaryRole?.() ?? bridge?.getSummaryRole?.() ?? null)
       const opts = makeSubagentOpts(deps, agentId, description, type, signal, (act) => {
         if (sess?.updateSubagent !== undefined) {
-          sess.updateSubagent({ id: agentId, description, activity: act.activity, waitingSince: act.waitingSince })
+          // startedAt 随每次全量覆盖回传（宿主 subagentView.set 整对象替换——漏字段会抹掉总时长起点）
+          sess.updateSubagent({ id: agentId, description, activity: act.activity, startedAt, ...(act.waitingSince !== undefined ? { waitingSince: act.waitingSince } : {}) })
         } else {
           const st = activeAgents.get(agentId)
           if (st !== undefined) {
@@ -499,7 +536,9 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
             notifyProgress()
           }
         }
-      }, sess?.confirmTool, sess, summaryRole)
+      }, sess?.confirmTool, sess, summaryRole, maxIterations, () => {
+        exhausted = true
+      })
       const messages: HistoryLine[] = []
       try {
         await runLoop(messages, prompt, opts)
@@ -528,8 +567,10 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
             is_error: true,
           }
         }
-        return { content: `${clampResult(text)}
-（完整过程：~/.ecode/agents/${agentId}.jsonl）` }
+        return {
+          content: `${clampResult(text)}
+${exhausted ? `（⚠ 轮数耗尽 ${maxIterations}/${maxIterations}，任务可能未完成——可拆小任务或下次带更大的 max_iterations 再派）\n` : ''}（完整过程：~/.ecode/agents/${agentId}.jsonl）`,
+        }
       } catch (e) {
         // 双保险之一：子代理超窗/致命错误不上抛炸父循环（独立压缩链是第一道）
         const msg = e instanceof Error ? e.message : String(e)

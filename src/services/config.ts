@@ -40,6 +40,8 @@ export interface Config {
   providers: Record<string, ProviderCfg> // 多 provider map
   current: { name: string; model: string } // 当前激活（/model 改这个）
   maxIterations: number
+  /** 2026-09-03 拍板：子代理迭代上限（undefined=跟主代理 maxIterations——消费侧 `?? maxIterations`） */
+  subagentMaxIterations?: number
   bashMaxOutputBytes: number
   /** M9-P3：编辑后自动 lint/test（仅认显式配置；undefined/''=关闭，不自动探测——安全默认） */
   lintCommand?: string
@@ -125,6 +127,8 @@ interface ConfigFile {
   default?: { provider?: string; model?: string }
   providers?: Record<string, Partial<ProviderCfg>>
   maxIterations?: number
+  /** 2026-09-03 拍板：子代理迭代上限（缺省=跟主代理 maxIterations 一致——读取侧 `?? maxIterations` 兜底） */
+  subagentMaxIterations?: number
   bashMaxOutputBytes?: number
   /** M9-P3：编辑后自动 lint/test 命令（仅认显式配置；空串/缺省=关闭，不自动探测 package.json） */
   lintCommand?: string
@@ -439,6 +443,9 @@ export function loadConfig(opts: LoadConfigOpts = {}): Config {
     ...(file.relay !== undefined && file.relay.server !== '' && file.relay.hostToken !== '' ? { relay: file.relay } : {}),
     ...(file.wechat !== undefined && file.wechat.botToken !== '' ? { wechat: file.wechat } : {}),
     maxIterations: file.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+    ...(file.subagentMaxIterations !== undefined && Number.isFinite(file.subagentMaxIterations) && file.subagentMaxIterations > 0
+      ? { subagentMaxIterations: Math.floor(file.subagentMaxIterations) }
+      : {}),
     bashMaxOutputBytes: file.bashMaxOutputBytes ?? DEFAULT_BASH_MAX_BYTES,
     lintCommand: file.lintCommand,
     webSearch: file.webSearch,

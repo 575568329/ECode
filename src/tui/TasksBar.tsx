@@ -1,7 +1,9 @@
 /**
  * 任务状态行（M14 §3.5，V3）：运行中后台任务在 ActivityBar 上方常驻 ≤3 行
  * （照 SubagentBar 折叠模式）——零操作知道"还活着、在干什么"。
- * 数据源：taskRegistry 模块单例快照 + 2s 轮询（日志尾行仅 mtime 变化时重读）。
+ * 数据源（2026-09-03 批 B）：TuiApp 统一任务快照 getter——embedded=taskRegistry 单例；
+ * attached=宿主协议 panel/data 'tasks' 轮询缓存（客户端进程单例在 attach 态查不到
+ * daemon 侧任务）。日志尾行仅 mtime 变化时重读。
  * 审阅 P1-7：行内容按显示宽度截断（超宽 wrap 会使 ≤3 行预算翻倍失效）。
  */
 import { useEffect, useState } from 'react'
@@ -9,8 +11,8 @@ import type { ReactElement } from 'react'
 import { Box, Text } from 'ink'
 import { readFileSync, statSync } from 'node:fs'
 import { theme } from './theme.js'
-import { taskRegistry } from '../services/tasks.js'
 import { clipWidth } from './viewport.js'
+import type { TaskSnap } from './OutputViewer.js'
 
 /** 常驻行上限（与 SubagentBar MAX_LINES 同款定值；超限折叠为合计行） */
 const MAX_LINES = 3
@@ -33,13 +35,13 @@ function lastLineOf(path: string): string {
   }
 }
 
-export function TasksBar(): ReactElement | null {
-  const [running, setRunning] = useState(() => taskRegistry.snapshot().filter((t) => t.status === 'running'))
+export function TasksBar({ getTasks }: { getTasks: () => TaskSnap[] }): ReactElement | null {
+  const [running, setRunning] = useState<TaskSnap[]>(() => getTasks().filter((t) => t.status === 'running'))
   useEffect(() => {
-    const timer = setInterval(() => setRunning(taskRegistry.snapshot().filter((t) => t.status === 'running')), 2000)
+    const timer = setInterval(() => setRunning(getTasks().filter((t) => t.status === 'running')), 2000)
     timer.unref?.()
     return () => clearInterval(timer)
-  }, [])
+  }, [getTasks])
 
   if (running.length === 0) return null
   // 截断宽度：终端列数 − 边距（非 TTY 兜底 80）

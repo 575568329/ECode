@@ -24,6 +24,20 @@ describe('TaskRegistry', () => {
     if ('output' in out) expect(out.output).toContain('hello-task')
   })
 
+  it('output() 带 startedAt（2026-09-03 等待根治：task_output 渲染已运行时长的数据源）', async () => {
+    const reg = new TaskRegistry(dir)
+    const r = reg.start('echo uptime-src', process.cwd())
+    if (!r.ok) return
+    const t0 = Date.now()
+    const running = await reg.output(r.task.id)
+    if ('error' in running) throw new Error('bad')
+    expect(running.startedAt).toBeGreaterThan(t0 - 60_000) // 真实启动时刻（毫秒）
+    await waitFor(async () => (await reg.output(r.task.id, 0)).status !== 'running', 5000)
+    const done = await reg.output(r.task.id)
+    if ('error' in done) throw new Error('bad')
+    expect(done.startedAt).toBe(running.startedAt) // 终态仍带（消费端按 status 决定是否渲染）
+  })
+
   it('增量读：两次读不重复（consumedOffset 推进）', async () => {
     const reg = new TaskRegistry(dir)
     const r = reg.start('echo line1', process.cwd())

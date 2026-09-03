@@ -1768,7 +1768,9 @@ export class HostSession {
       }
       this.sigNudged = true
       this.deps.logger.warn('loop-guard', 'same-args', { streak: this.sigStreak })
-      feedback = `[loop-guard] 最近 ${this.sigStreak} 轮在以完全相同的参数调用相同工具且结果毫无变化，请重新判断这是否必要（如等待后台任务请加大 wait_ms）。`
+      // 等待根治（2026-09-03）：wait_ms 上限已提至 5 分钟（TASK_OUTPUT_MAX_WAIT_MS），
+      // 「加大 wait_ms」从死路变活路——合法等待本身就是一次长调用而非 N 次短轮询
+      feedback = `[loop-guard] 最近 ${this.sigStreak} 轮在以完全相同的参数调用相同工具且结果毫无变化，请重新判断这是否必要（如等待后台任务请单次给足 wait_ms，上限 300000）。`
     }
 
     // ② 连续空错：全 isError 非空轮

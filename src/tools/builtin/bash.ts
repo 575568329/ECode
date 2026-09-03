@@ -2,7 +2,9 @@
  * bash 工具（副作用）：执行 shell 命令。
  *
  * 详设 §2.3 安全约束。M1 最小版（plan 决策）：
- *   ✅ timeout 30s（超时杀进程、转 is_error）
+ *   ✅ timeout 自管（输入 timeout_ms，默认 120s/上限 600s；超时杀整树转 is_error——
+ *      2026-09-03 等待根治：30s 写死曾把模型逼进后台化+短 wait 轮询撞 loop-guard 误伤；
+ *      去掉循环层 timeout_ms 元数据同时消除「软超时不杀进程」的孤儿面）
  *   ✅ cwd 约束（在 ctx.cwd 执行）
  *   ✅ 退出码非 0 正常返回（含 stderr + 退出码，交 LLM 判断，recoverable）
  *   ✅ AbortSignal（中断杀进程）
@@ -18,9 +20,16 @@ import os from 'node:os'
 import path from 'node:path'
 import type { Tool } from '../interface.js'
 import { isDangerousCommand, killTree, spawnShellCommand } from '../../services/proc.js'
-import { taskRegistry } from '../../services/tasks.js'
+import { taskRegistry, TASK_OUTPUT_MAX_WAIT_MS } from '../../services/tasks.js'
 
-const DEFAULT_TIMEOUT_MS = 30_000
+/**
+ * 前台命令超时（2026-09-03 等待根治）：30s → 默认 120s（对标 CC DEFAULT_TIMEOUT_MS /
+ * opencode 默认 2min）+ 模型可传 timeout_ms 放大到 600s（对标 CC MAX_TIMEOUT_MS）。
+ * 全量测试/构建此前因 30s 写死必然超时 → 模型被迫 run_in_background + 短 wait 轮询 →
+ * 撞 loop-guard 同参误伤（真机 8 连发实证）。
+ */
+export const BASH_DEFAULT_TIMEOUT_MS = 120_000
+export const BASH_MAX_TIMEOUT_MS = 600_000
 
 interface ExecResult {
   content: string
@@ -88,15 +97,19 @@ export const bashTool: Tool = {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'shell 命令' },
+      timeout_ms: {
+        type: 'number',
+        maximum: BASH_MAX_TIMEOUT_MS,
+        description: `可选超时毫秒数（默认 ${BASH_DEFAULT_TIMEOUT_MS}、最大 ${BASH_MAX_TIMEOUT_MS}）——长命令（全量测试/构建）显式放大；超时杀整树`,
+      },
       run_in_background: {
         type: 'boolean',
-        description: 'true=后台运行（长命令 npm test/build/dev server 不阻塞当前轮）：立即返回 task_id，用 task_output 读输出、task_stop 停止',
+        description: 'true=后台运行（dev server 等持续进程不阻塞当前轮）：立即返回 task_id，用 task_output 读输出、task_stop 停止',
       },
     },
     required: ['command'],
   },
   readonly: false,
-  timeout_ms: DEFAULT_TIMEOUT_MS,
 
   async execute(args, ctx) {
     const { command, run_in_background } = args as { command: string; run_in_background?: boolean }
@@ -114,7 +127,7 @@ export const bashTool: Tool = {
       const started = (ctx.tasks ?? taskRegistry).start(command, ctx.cwd)
       if (!started.ok) return { content: started.reason, is_error: true }
       return {
-        content: `后台任务已启动：#${started.task.id}（输出文件 ${started.task.outputFile}）——用 task_output("${started.task.id}") 读增量输出，等新输出用大 wait_ms（≤10000）一次等到、勿短间隔连发（会触发 loop-guard 同参检测）；完成时会在下轮通知`,
+        content: `后台任务已启动：#${started.task.id}（输出文件 ${started.task.outputFile}）——用 task_output("${started.task.id}") 读增量输出，等新输出用大 wait_ms（≤${TASK_OUTPUT_MAX_WAIT_MS}）一次等到、勿短间隔连发（会触发 loop-guard 同参检测）；完成时会在下轮通知`,
       }
     }
     // M9-P1：写前快照——bash 不可解析目标，传空数组由服务端 git status 近修改集兜底（无 git 跳过+warn）
@@ -123,7 +136,10 @@ export const bashTool: Tool = {
     } catch {
       /* 快照失败静默继续（装配方 warn 已记） */
     }
-    const timeout = this.timeout_ms ?? DEFAULT_TIMEOUT_MS
+    const timeout = Math.min(
+      (args as { timeout_ms?: number }).timeout_ms ?? BASH_DEFAULT_TIMEOUT_MS,
+      BASH_MAX_TIMEOUT_MS,
+    )
 
     return new Promise<ExecResult>((resolve) => {
       let child: ChildProcess
@@ -151,7 +167,14 @@ export const bashTool: Tool = {
         resolve(res)
       }
 
-      const timer = setTimeout(() => done({ content: `命令超时 (${timeout}ms)`, is_error: true }), timeout)
+      const timer = setTimeout(
+        () =>
+          done({
+            content: `命令超时 (${timeout}ms)——需更久请加大 timeout_ms（上限 ${BASH_MAX_TIMEOUT_MS}）或改用 run_in_background=true 后台跑`,
+            is_error: true,
+          }),
+        timeout,
+      )
 
       child.stdout?.on('data', (d: Buffer) => {
         stdout += d.toString('utf8')

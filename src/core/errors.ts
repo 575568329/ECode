@@ -143,10 +143,12 @@ function fromHttpStatus(status: number, e: unknown): AppError {
     // 判定原料三通道（审阅修复批 P1-2/3 收口）：① 结构化 e.error（SDK 权威字段——优先）；
     // ② 裸字符串 message 里嵌的 JSON 块；③ 纯文本兜底（无 JSON 无结构化的端点——剥状态码
     // 前缀后直测文本，防「429 You exceeded your current quota」类形态漏判回退避白烧）
+    // 通道优先级（简审收口）：jsonMsg（最干净的纯 body 文案）> 结构化提炼（可能仍是
+    // 「429 {json}」全文拼接——SDK 未提炼形态）> 纯文本兜底
     const structuredMsg = extractErrorMessage(e)
     const jsonMsg = extractJsonBlockMessage(raw)
     const plainMsg = raw.replace(/^\s*\d{3}\s*/, '')
-    const bodyMsg = (structuredMsg !== raw ? structuredMsg : undefined) ?? jsonMsg ?? (plainMsg !== '' ? plainMsg : undefined)
+    const bodyMsg = jsonMsg ?? (structuredMsg !== raw ? structuredMsg : undefined) ?? (plainMsg !== '' ? plainMsg : undefined)
     const bodyCode = extractErrorCode(e) ?? extractJsonBlockCode(raw)
     if (isQuotaExhausted(bodyMsg, bodyCode)) {
       return {

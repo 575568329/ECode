@@ -81,7 +81,25 @@ export interface ImageRefBlock {
 export interface Message {
   role: 'user' | 'assistant'
   content: ContentBlock[]
+  /**
+   * 机器/系统注入标记（2026-09-03 机器消息归属根治）：标记「这条 user 角色消息是系统产物」。
+   * 模型侧语义不变（仍以 user 角色可见——tool_result 配对约束决定信息性回喂只能走 user 通道）；
+   * 显示层据此分流（不渲染成用户气泡——历史上 [task]/[loop-guard] 通知曾顶着 ❯ 气泡出现）；
+   * 协议翻译层剥除（不外发）。用户消息**永无此字段**（判据即存在性，无需枚举比对）。
+   * 详见 docs/详设/2026-09-03_后续-机器消息归属错位诊断与根治方案_待审核.md。
+   */
+  meta?: MessageMeta
 }
+
+/** 机器消息来源枚举（显示层可按 kind 细分样式；混排多条时宿主折叠为 system-notice）。 */
+export type MessageMeta =
+  | { kind: 'task-notify' } // 后台任务完成/失败通知（tasks.collectNotifications）
+  | { kind: 'loop-guard' } // loopGuard nudge/abort 回喂（session.loopGuardRound）
+  | { kind: 'quality' } // lint/test 质量回喂（makeAfterTools quality 段）
+  | { kind: 'continue' } // max_tokens 自动续写指令（CONTINUE_PROMPT）
+  | { kind: 'review-card' } // 纠偏审查卡（maybeRunReview / pollUserInput kind:'review'）
+  | { kind: 'interject' } // 轮中用户插话（含宿主包装体——渲染为插话样式）
+  | { kind: 'system-notice' } // 通用系统通知（多种机器消息合并为一条时的兜底 kind）
 
 // 工具对外规格（JSON Schema，直接喂 LLM 协议格式）
 export interface ToolSpec {

@@ -286,3 +286,18 @@ describe('toAnthropicMsgs · 相邻同 role 规整', () => {
     expect(out[1].content).toHaveLength(1)
   })
 })
+
+// 2026-09-03 机器消息归属根治：meta 是显示层标记，协议请求体不得外发（两 provider 白名单构造）。
+describe('机器消息 meta 不进协议请求体（归属根治）', () => {
+  it('toAnthropicMsgs 输出无 meta 键（带 meta 的 user 消息照常进上下文）', async () => {
+    const { toAnthropicMsgs } = await import('../../src/providers/anthropic.js')
+    const msgs = [
+      { role: 'user' as const, content: [{ type: 'text' as const, text: '机器通知文本' }], meta: { kind: 'task-notify' as const } },
+      { role: 'assistant' as const, content: [{ type: 'text' as const, text: '回' }] },
+    ]
+    const out = toAnthropicMsgs(msgs) as Array<Record<string, unknown>>
+    expect(out.length).toBe(2)
+    for (const m of out) expect('meta' in m).toBe(false) // 标记不外发
+    expect(JSON.stringify(out)).toContain('机器通知文本') // 模型侧可见性不变
+  })
+})

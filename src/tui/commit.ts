@@ -9,15 +9,10 @@
  * findUse：从 messages 按 id 反查 tool_use（onToolResult 时配对 active.tools 用）。
  */
 import { isBoundary, isRewind, isThinking, isMessageLine, type HistoryLine, type Message, type TextBlock, type ToolUseBlock, type ToolResultBlock } from '../core/types.js'
-import { CONTINUE_PROMPT } from '../core/loop.js'
 import { stripUntrustedAnsi } from './sanitize.js'
 import type { CommittedItem, CommittedToolCall } from './types.js'
-
-/** 审查器附注卡标记（定义处 session.ts:581——格式含全角括号特异性高；此为渲染层识别副本，
- *  改标记两处同步） */
-const REVIEW_CARD_MARK = '[审查器附注（'
-/** 拼接点（session.ts:1198 双换行拼进 input） */
-const REVIEW_CARD_SEP = '\n\n'
+// 2026-09-03 机器消息归属根治：CONTINUE_PROMPT 精确过滤与 REVIEW_CARD_MARK 前缀解析已退役
+// （改为 Message.meta 结构化分流）；CONTINUE_PROMPT/审查卡标记常量随退役删除。
 
 export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
   const messages = lines.filter((l): l is Message => !isBoundary(l) && !isRewind(l) && !isThinking(l))
@@ -75,28 +70,38 @@ export function messagesToCommitted(lines: HistoryLine[]): CommittedItem[] {
     if (i === messages.length) break
     const m = messages[i]
     if (m.role === 'user') {
-      const text = m.content
-        .filter((b) => b.type === 'text')
-        .map((b) => (b as TextBlock).text)
-        .join('')
-      // 审查器附注卡（session.ts:581 拼接注入的合成指令）——拆出渲染为系统提示行，
-      // 不冒充用户气泡（CONTINUE_PROMPT 过滤同款语义；拼接点双换行与轮内插话整条两种形态）
-      const splitReviewCard = (t: string): { user: string; card: string | null } => {
-        if (t.startsWith(REVIEW_CARD_MARK)) return { user: '', card: t }
-        const at = t.indexOf(REVIEW_CARD_SEP + REVIEW_CARD_MARK)
-        if (at >= 0) return { user: t.slice(0, at), card: t.slice(at + REVIEW_CARD_SEP.length) }
-        return { user: t, card: null }
+      // 2026-09-03 机器消息归属根治：按 meta 结构化分流——替代 CONTINUE_PROMPT 精确匹配
+      // 与审查卡前缀解析（字符串特征可被内容碰撞，结构化标记不可）
+      if (m.meta !== undefined) {
+        const text = m.content
+          .filter((b) => b.type === 'text')
+          .map((b) => (b as TextBlock).text)
+          .join('')
+        if (m.meta.kind === 'continue') {
+          // 续写指令：模型侧需要，UI 不渲染（旧字符串过滤退役）
+        } else if (text !== '') {
+          flush()
+          if (m.meta.kind === 'review-card') {
+            items.push({ kind: 'review-card', id: `rv${i}`, chars: text.length })
+          } else {
+            // task-notify / loop-guard / quality / interject / system-notice → 系统提示行
+            // （interject 含用户插话文本——以系统行呈现保真文本，不冒充普通气泡）
+            items.push({ kind: 'system-note', id: `sn${i}`, text })
+          }
+        }
+        // tool_result 不生成 item（已配对进 tool-group）——meta 消息恒为纯文本，此处不留口
+      } else {
+        const text = m.content
+          .filter((b) => b.type === 'text')
+          .map((b) => (b as TextBlock).text)
+          .join('')
+        if (text !== '') {
+          flush()
+          // 输入体验批（2026-08-31）：user 文本全文固化（「锁死」）
+          items.push({ kind: 'user', id: `u${i}`, text })
+        }
+        // tool_result 不生成 item（已配对进 tool-group）
       }
-      // max_tokens 自动续写的合成指令（loop CONTINUE_PROMPT）：模型侧需要，UI 不渲染成
-      // 用户气泡（审阅 P2：曾以「isMeta 形态」注释虚构机制，实态落盘后在此精确过滤）
-      if (text && text !== CONTINUE_PROMPT) {
-        flush()
-        const { user, card } = splitReviewCard(text)
-        // 输入体验批（2026-08-31）：user 文本全文固化（「锁死」；审查卡拆出后用户部分照常气泡）
-        if (user !== '') items.push({ kind: 'user', id: `u${i}`, text: user })
-        if (card !== null) items.push({ kind: 'review-card', id: `rv${i}`, chars: card.length })
-      }
-      // tool_result 不生成 item（已配对进 tool-group）
     } else if (m.role === 'assistant') {
       for (const b of m.content) {
         if (b.type === 'text') {

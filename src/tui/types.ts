@@ -92,9 +92,12 @@ export type CommittedItem =
   | { kind: 'rewind'; id: string; seq: number }
   /** 活动流 D4-B：思考行（ThinkingLine 消化——Static 渲染折叠行，正文在 Ctrl+T 面板） */
   | { kind: 'thinking'; id: string; durMs: number; text: string }
-  /** 审查器附注卡（session.ts:581 拼进 user input 的合成指令——不冒充用户气泡，
+  /** 审查器附注卡（session.ts 拼进 user input 的合成指令——不冒充用户气泡，
    *  渲染为系统提示行；全文在 transcript（Ctrl+T 面板）可回看 */
   | { kind: 'review-card'; id: string; chars: number }
+  /** 机器消息系统行（2026-09-03 归属根治：task 通知/loop-guard/quality/插话——按 meta 分流，
+   *  不冒充用户气泡；全文 transcript 可回看） */
+  | { kind: 'system-note'; id: string; text: string }
 
 /** 创建空 ActiveState（初始 / commit 后 / clear 后） */
 export function createActive(): ActiveState {

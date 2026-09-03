@@ -164,3 +164,51 @@ describe('boundary 适配（M5：boundary → compacted 标记，不再静默过
     expect(findUse(lines, 't1')?.name).toBe('bash')
   })
 })
+
+// 2026-09-03 机器消息归属根治（docs/详设/2026-09-03_后续-机器消息归属错位诊断与根治方案）：
+// 带 meta 的 user 消息按来源分流——不渲染成用户气泡。结构化标记替代旧字符串匹配
+// （CONTINUE_PROMPT 精确过滤 / 审查卡前缀解析均已退役）。
+describe('机器消息 meta 分流（归属根治）', () => {
+  it('meta:continue（续写指令）→ 不生成任何 item', () => {
+    const items = messagesToCommitted([
+      userText('问题'),
+      { role: 'user', content: [{ type: 'text', text: '输出已达 max_tokens…' }], meta: { kind: 'continue' } },
+    ])
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ kind: 'user', text: '问题' })
+  })
+
+  it('meta:task-notify → system-note 行（非 user 气泡）', () => {
+    const items = messagesToCommitted([
+      { role: 'user', content: [{ type: 'text', text: '[task] #t1（npm test）已完成 exit 0' }], meta: { kind: 'task-notify' } },
+    ])
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ kind: 'system-note' })
+    expect(items[0]).not.toMatchObject({ kind: 'user' })
+  })
+
+  it('meta:loop-guard → system-note 行', () => {
+    const items = messagesToCommitted([
+      { role: 'user', content: [{ type: 'text', text: '[loop-guard] 最近 8 轮…' }], meta: { kind: 'loop-guard' } },
+    ])
+    expect(items[0]).toMatchObject({ kind: 'system-note' })
+  })
+
+  it('meta:review-card → review-card 行（沿用既有形态，不再前缀解析）', () => {
+    const items = messagesToCommitted([
+      { role: 'user', content: [{ type: 'text', text: '[审查器附注（glm-5.3…）]\n纠偏摘要正文' }], meta: { kind: 'review-card' } },
+    ])
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ kind: 'review-card' })
+  })
+
+  it('旧会话无 meta 的 user 行为不变（兼容零迁移）', () => {
+    const items = messagesToCommitted([userText('普通用户消息')])
+    expect(items[0]).toMatchObject({ kind: 'user', text: '普通用户消息' })
+  })
+
+  it('用户文本恰含 [task] 前缀但无 meta → 仍渲染为用户气泡（结构化标记无内容碰撞）', () => {
+    const items = messagesToCommitted([userText('[task] 这个词出现在我的真实输入里')])
+    expect(items[0]).toMatchObject({ kind: 'user', text: '[task] 这个词出现在我的真实输入里' })
+  })
+})

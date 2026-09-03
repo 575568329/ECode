@@ -101,6 +101,13 @@ function renderCommitted(item: CommittedItem): ReactNode {
           <Text dimColor>◎ 审查器附注 · 纠偏摘要 {item.chars} 字（自动生成非用户消息——Ctrl+T 全文）</Text>
         </MessageRow>
       )
+    case 'system-note':
+      // 机器消息系统行（task 通知/loop-guard/插话——meta 分流，不冒充用户气泡）
+      return (
+        <MessageRow icon="" dim>
+          <Text dimColor>◎ {item.text}</Text>
+        </MessageRow>
+      )
   }
 }
 

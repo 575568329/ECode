@@ -150,11 +150,16 @@ export class FileHistoryStore implements HistoryStore {
   append(msg: Message): void {
     this.flushPendingSeed()
     // M10-P2b：落盘前 ImageBlock → ImageRef（base64 不进会话文件）
-    this.appendStorable({ role: msg.role, content: msg.content.map(toStorableBlock) })
+    // 2026-09-03 归属根治：meta 随行落盘（机器消息标记——恢复后 UI 仍可分流）
+    this.appendStorable({
+      role: msg.role,
+      content: msg.content.map(toStorableBlock),
+      ...(msg.meta !== undefined ? { meta: msg.meta } : {}),
+    })
   }
 
   /** 实际写盘（storable 形态） */
-  private appendStorable(msg: { role: Message['role']; content: StorableBlock[] }): void {
+  private appendStorable(msg: { role: Message['role']; content: StorableBlock[]; meta?: Message['meta'] }): void {
     // 懒写首行 meta：首条 message append 时写（首条通常是 user，firstUser 此刻已知）
     if (!this.metaWritten) {
       if (msg.role === 'user') {
@@ -352,7 +357,12 @@ export class FileHistoryStore implements HistoryStore {
               (b as { type?: string }).type === 'image_ref' ||
               (b as { type?: string; blocks?: Array<{ type?: string }> }).blocks?.some((m) => m.type === 'image_ref') === true,
           )
-          lines.push(hasRef ? { role: msg.role, content: msg.content.map((b) => fromStorableBlock(b)) } : msg)
+          // 2026-09-03 归属根治：meta 原样带回（旧会话行无 meta 字段 → undefined=用户消息，零迁移）
+          lines.push(
+            hasRef
+              ? { role: msg.role, content: msg.content.map((b) => fromStorableBlock(b)), ...(msg.meta !== undefined ? { meta: msg.meta } : {}) }
+              : msg,
+          )
         }
       } catch (e) {
         // 损坏行跳过但记录（不静默吞）

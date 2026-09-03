@@ -49,7 +49,7 @@ describe('TaskRegistry', () => {
     expect('error' in (await reg.output('nope'))).toBe(true)
   })
 
-  it('完成通知：collectNotifications 一次返回后标记（不重复）；running 不通知', async () => {
+  it('完成通知：collectNotifications 一次返回后标记（不重复）；running 不通知（2026-09-03 归属根治：结构化 {text, meta}）', async () => {
     const reg = new TaskRegistry(dir)
     const r = reg.start('echo done-note', process.cwd())
     if (!r.ok) return
@@ -57,7 +57,8 @@ describe('TaskRegistry', () => {
     await waitFor(async () => (await reg.output(r.task.id, 0)).status !== 'running', 5000)
     const notes = reg.collectNotifications()
     expect(notes).toHaveLength(1)
-    expect(notes[0]).toContain(r.task.id)
+    expect(notes[0].text).toContain(r.task.id)
+    expect(notes[0].meta).toEqual({ kind: 'task-notify' }) // 机器消息标记（UI 分流依据）
     expect(reg.collectNotifications()).toHaveLength(0) // 已通知不重复
   })
 

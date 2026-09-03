@@ -184,12 +184,19 @@ export class TaskRegistry {
   }
 
   /** turn 内 afterTools 检查点：已完成且未通知的任务 → 生成摘要并标记（防重复）。 */
-  collectNotifications(): string[] {
-    const notes: string[] = []
+  /**
+   * 收集已完成未通知任务的通知（2026-09-03 归属根治：带 meta 的结构化返回）。
+   * 消费方（宿主）据此构造带 meta 的独立 user 消息——不再裸拼进用户输入字符串。
+   */
+  collectNotifications(): Array<{ text: string; meta: { kind: 'task-notify' } }> {
+    const notes: Array<{ text: string; meta: { kind: 'task-notify' } }> = []
     for (const t of this.tasks.values()) {
       if (!t.notified && (t.status === 'completed' || t.status === 'failed')) {
         t.notified = true
-        notes.push(`[task] #${t.id}（${t.command.slice(0, 60)}）已${t.status === 'completed' ? '完成' : '失败'} exit ${t.exitCode ?? '?'}——输出可用 task_output("${t.id}") 读取`)
+        notes.push({
+          text: `[task] #${t.id}（${t.command.slice(0, 60)}）已${t.status === 'completed' ? '完成' : '失败'} exit ${t.exitCode ?? '?'}——输出可用 task_output("${t.id}") 读取`,
+          meta: { kind: 'task-notify' },
+        })
       }
     }
     return notes

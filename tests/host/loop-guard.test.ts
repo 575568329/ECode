@@ -216,3 +216,34 @@ describe('M13-B2 审批超时', () => {
     host.dispose()
   })
 })
+
+// 2026-09-03 机器消息归属根治：guard feedback 带 meta（结构化标记——UI 据此不渲染成用户气泡）
+describe('M13-P1 机器消息 meta', () => {
+  it('同参 abort 路径 feedback 带 meta:{kind:loop-guard}', async () => {
+    const N = HostSession.GUARD.SIG_NUDGE + 4
+    const round = (n: number): Delta[] => [
+      { type: 'text', text: `第 ${n} 轮` },
+      { type: 'tool_use_start', id: `m${n}`, name: 'wait' },
+      { type: 'tool_use_end', id: `m${n}` },
+      { type: 'done', stop_reason: 'tool_use' },
+    ]
+    const host = makeHost(Array.from({ length: N }, (_, i) => round(i)), [
+      {
+        name: 'wait',
+        description: 'wait',
+        input_schema: { type: 'object', properties: {}, required: [] },
+        readonly: true,
+        async execute() {
+          return { content: '（暂无新输出）' }
+        },
+      },
+    ])
+    await run(host)
+    const fb = host.transcript.filter(
+      (l) => 'content' in l && Array.isArray(l.content) && l.content.some((b) => b.type === 'text' && b.text.includes('[loop-guard]')),
+    )
+    expect(fb.length).toBeGreaterThanOrEqual(1)
+    const metaLines = fb.filter((l) => (l as { meta?: { kind?: string } }).meta?.kind === 'loop-guard')
+    expect(metaLines.length).toBeGreaterThanOrEqual(1)
+  })
+})

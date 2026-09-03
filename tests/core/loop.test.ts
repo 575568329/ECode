@@ -546,6 +546,36 @@ describe('M11-P7：插话步间注入（pollUserInput）', () => {
     await runLoop([], 'q', opts)
     expect(polled).toBe(false) // 单轮流，iter=1 从不拉取
   })
+
+  // 2026-09-03 机器消息归属根治：插话消息带 meta——UI 据此分流（不渲染成普通用户气泡）
+  it('插话消息带 meta:{kind:interject}（归属根治标记）', async () => {
+    const interjectQueue: Array<string | { text: string; kind?: 'review' }> = ['改用方案B']
+    const echo: Tool = {
+      name: 'echo',
+      description: '回显',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: true,
+      async execute() {
+        return { content: 'ok' }
+      },
+    }
+    const provider = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 't1', name: 'echo' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: '收到' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const opts = makeOpts(provider, [echo])
+    opts.pollUserInput = () => interjectQueue.splice(0)[0] ?? null
+    const messages = await runLoop([], '开始', opts)
+    const withMeta = messages.filter((m) => !('rewind' in m) && (m as Message).meta !== undefined) as Array<
+      Message & { meta: { kind: string } }
+    >
+    expect(withMeta.length).toBe(1)
+    expect(withMeta[0].meta.kind).toBe('interject')
+  })
 })
 
 describe('安全审阅修复：timeout_ms 强制 + retryable 消费', () => {

@@ -129,8 +129,12 @@ export interface LoopRunOptions {
   /**
    * M9-P3：轮末质量回喂钩子（onCompacted 同款注入模式）。loop 只透传本轮工具清单
    * （宿主检测编辑成功→跑 lint/test），返回 feedback 则追加为 user 消息——loop 不认识 lint。
+   * 2026-09-03 归属根治（方案 §7 最小扩展预案启用）：返回可带 meta——fbMsg 构造时随行标记，
+   * 显示层据此不渲染成用户气泡（loop 仍不认识具体来源，纯透传）。
    */
-  afterTools?: (round: { tools: Array<{ name: string; isError: boolean }> }) => Promise<{ feedback?: string } | void>
+  afterTools?: (
+    round: { tools: Array<{ name: string; isError: boolean }> },
+  ) => Promise<{ feedback?: string; meta?: import('./types.js').MessageMeta } | void>
   /**
    * M11-P7：主循环插话——迭代顶部拉取（iter≥2：首轮输入即 userInput，避免连续双 user）。
    * 返回非空则追加为普通 user Message（落盘/恢复/rewind 零特殊处理）；多条由宿主合并。
@@ -223,6 +227,8 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
               ? `${qText}\n\n（以上为审查器自动生成的纠偏摘要，非用户消息——请评估后仅采纳高置信项校正做法，继续当前任务。）`
               : `用户在任务执行中发来新消息：\n${qText}\n\n请在完成当前任务的过程中处理上述补充（必要时按其调整做法），随后继续原任务直至完成，不要只回应本条而中断原任务。`,
           }],
+          // 机器消息标记（2026-09-03 归属根治）：插话与审查卡非普通用户气泡，UI 分流样式
+          meta: { kind: isReview ? 'review-card' : 'interject' },
         }
         messages.push(interjectMsg)
         opts.history.append(interjectMsg)
@@ -510,6 +516,7 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         const continueMsg: Message = {
           role: 'user',
           content: [{ type: 'text', text: CONTINUE_PROMPT }],
+          meta: { kind: 'continue' }, // 机器消息标记：UI 不渲染成用户气泡（2026-09-03 归属根治）
         }
         messages.push(continueMsg)
         opts.history.append(continueMsg)
@@ -559,7 +566,11 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
         tools: newToolUses.map((u) => ({ name: u.name, isError: resultById.get(u.id)?.is_error === true })),
       })
       if (fb?.feedback !== undefined && fb.feedback !== '') {
-        const fbMsg: Message = { role: 'user', content: [{ type: 'text', text: fb.feedback }] }
+        const fbMsg: Message = {
+          role: 'user',
+          content: [{ type: 'text', text: fb.feedback }],
+          ...(fb.meta !== undefined ? { meta: fb.meta } : {}), // 机器消息标记随行（UI 分流，模型侧不变）
+        }
         messages.push(fbMsg)
         opts.history.append(fbMsg)
       }

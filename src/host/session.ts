@@ -19,7 +19,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { runLoop } from '../core/loop.js'
 import { buildSystemPrompt } from '../core/system.js'
-import type { HistoryLine, ImageBlock, Message, RewindLine, ThinkingLine } from '../core/types.js'
+import type { HistoryLine, ImageBlock, Message, MessageMeta, RewindLine, ThinkingLine } from '../core/types.js'
 import { makeToolDigest } from '../protocol/toolDigest.js'
 import type { RewindExecResult, RewindListResult, SkillPanelView, McpPanelView } from '../protocol/types.js'
 import { buildProviderReq, buildProviderReqFor, DEFAULT_NOTIFICATION_IDLE_SECONDS, type Config } from '../services/config.js'
@@ -1275,15 +1275,26 @@ export class HostSession {
     // 纠偏审查（2026-09-02）：空闲期完成的审查卡随本轮注入（同 additionalContext 模式——
     // 不自动起轮烧 token，用户下一条消息自然携带）。卡文本自带中性前缀（审阅/安全席修复：
     // 去「请按建议校正」服从指令——采纳建议仍须过既有确认与安全栅栏）
+    // 2026-09-03 归属根治：通知/审查卡不再拼进 input 字符串——收集为预注入消息（带 meta 的
+    // 独立 user 消息，runLoop 的 userInput 去重检测会看到顶部已是 user 消息而跳过重复 push，
+    // 预注入消息作为独立气泡/系统行留在 transcript）。用户气泡只含用户文本。
+    const preInjected: Message[] = []
+    for (const n of this.tasks.collectNotifications()) {
+      preInjected.push({ role: 'user', content: [{ type: 'text', text: n.text }], meta: n.meta })
+    }
     if (this.pendingReviewCard !== null) {
-      input = `${input}\n\n${this.pendingReviewCard}`
+      preInjected.push({ role: 'user', content: [{ type: 'text', text: this.pendingReviewCard }], meta: { kind: 'review-card' } })
       this.pendingReviewCard = null
+    }
+    // 预注入消息先落 transcript 再进 runLoop（2026-09-03 归属根治）：用户输入照常追加在其后，
+    // runLoop 顶部 userInput 去重检测只对比最后一条消息（=用户输入本身），无双写
+    for (const pre of preInjected) {
+      this.messages.push(pre)
+      deps.history.append(pre)
     }
     this.reviewTurnCount += 1
     this.reviewTurnIterations = 0
     this.reviewSignalFiredThisTurn = false
-    // M10-P3 双时点之二：跨 turn 后台任务通知随首轮输入注入
-    for (const n of this.tasks.collectNotifications()) input = `${input}\n${n}`
 
     this.publish('turn/started', { turnId })
     this.publish('thread/status', { busy: true, waitingOn: null, iter: 0 })
@@ -1657,7 +1668,9 @@ export class HostSession {
   private makeAfterTools(): NonNullable<Parameters<typeof runLoop>[2]>['afterTools'] {
     return async (round) => {
       const deps = this.deps
+      // 2026-09-03 归属根治：feedback 与来源 meta 成对携带（结构化，替代此前裸 string + UI 前缀匹配）
       let feedback: string | undefined
+      let feedbackMeta: MessageMeta | undefined
       // Ctrl+C 立即停（用户拍板 2026-09-02）：中断态跳过整段轮末链（quality lint/test 子进程、
       // autoCommit git、loopGuard——真机实证中断后这些串行步骤照样跑完拖住轮收尾）
       if (this.abort.signal.aborted) {
@@ -1682,12 +1695,16 @@ export class HostSession {
       }
       // M13-B2：无效轮次检测先行（feedback/abort 注入在 quality 之前——止损优先）
       const guardFb = this.loopGuardRound(round)
-      if (guardFb !== undefined) feedback = guardFb
+      if (guardFb !== undefined) {
+        feedback = guardFb
+        feedbackMeta = { kind: 'loop-guard' }
+      }
       if (deps.quality != null) {
         const fb = await deps.quality.afterRound(round.tools)
-        if (fb !== undefined) {
+        if (fb !== undefined && feedback === undefined) {
           this.publish('notice', { level: 'warn', text: 'lint/test 有失败，已回喂模型自纠' })
           feedback = fb
+          feedbackMeta = { kind: 'quality' }
         }
       }
       const notes = this.tasks.collectNotifications()
@@ -1708,9 +1725,17 @@ export class HostSession {
       } else {
         this.editedFiles.clear()
       }
-      const combined =
-        feedback !== undefined ? (notes.length > 0 ? `${feedback}\n${notes.join('\n')}` : feedback) : notes.length > 0 ? notes.join('\n') : undefined
-      return combined !== undefined ? { feedback: combined } : undefined
+      // 2026-09-03 归属根治：通知与 feedback 各带 meta 结构化返回（loop 侧逐条构造 fbMsg；
+      // 多源合并进一条 feedback 时 meta 取首个来源——loopGuard 优先，其文本已含止损语义）
+      const noteTexts = notes.map((n) => n.text)
+      if (feedback !== undefined) {
+        return {
+          feedback: noteTexts.length > 0 ? `${feedback}\n${noteTexts.join('\n')}` : feedback,
+          meta: feedbackMeta,
+        }
+      }
+      if (noteTexts.length > 0) return { feedback: noteTexts.join('\n'), meta: { kind: 'task-notify' } }
+      return undefined
     }
   }
 

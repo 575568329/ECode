@@ -179,6 +179,22 @@ describe('HostSession（B1 宿主会话）', () => {
     })
   })
 
+  it('T1b：session/compact 短对话全在保留区 → 如实报失败（manual 门槛+谎报成功双修复回归）', async () => {
+    // 修复前：hook 条件漏 manual（未超阈零操作）+ compactManual 恒 {ok:true} → 谎报「压缩完成」。
+    // 修复后：manual 必进压缩分支，两条小消息全在 RECENT_BUDGET(8000) 保留区 → boundary 零新增 →
+    // 如实 {ok:false}。messages 经真实 prompt 轮次注入（两条小消息 ≈ 数 token，远小于保留区）
+    const host = new HostSession(makeDeps(new MockProvider([[{ type: 'text', text: '好' }, { type: 'done', stop_reason: 'end' }]])))
+    const events = collect(host)
+    await host.send({ op: 'prompt', text: '你好', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    const r = await host.send({ op: 'session/compact' })
+    expect(r).toMatchObject({ ok: true, output: expect.stringContaining('压缩已开始') })
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('压缩失败：无可压缩内容'))).toBe(true)
+    })
+    expect(events.some((e) => e.type === 'compacted')).toBe(false) // 零操作不得发 compacted 帧
+  })
+
   it('B2 集成：非 readonly 工具经 Broker——订阅者 respond once 放行；零订阅者 fail-closed 拒绝', async () => {
     const writeTool: Tool = {
       name: 'write_file',

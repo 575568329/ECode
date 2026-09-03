@@ -68,11 +68,22 @@ describe('makeOnBeforeRequest（端到端集成）', () => {
     expect(ctx).toHaveLength(5) // 全量返回（无 boundary 投影 = 全量）
   })
 
-  it('overflow 强制压缩（不管阈值，模拟 400 兜底/手动 /compact）', async () => {
+  it('overflow 强制压缩（不管阈值，模拟 400 兜底）', async () => {
     const { hook, onCompacted } = setup(1_000_000) // 大窗口，pressure 本不触发
     const messages: HistoryLine[] = bigTextMessages(20)
     const ctx = await hook(messages, 'overflow')
     expect(onCompacted).toHaveBeenCalledTimes(1) // overflow 强制压缩
+    expect(isBoundary(messages.at(-1)!)).toBe(true)
+    expect((ctx[0].content[0] as { text: string }).text).toContain('完成 M5')
+  })
+
+  it('manual 强制压缩（未超阈也压——/compact 门槛失效回归）', async () => {
+    // 修复前：条件漏 trigger === 'manual'，未超阈时手动 /compact 零操作（compactManual
+    // 还恒报 {ok:true}）——唯一该由手动兜住的场景恰好不干活
+    const { hook, onCompacted } = setup(1_000_000) // 大窗口，pressure 本不触发
+    const messages: HistoryLine[] = bigTextMessages(20)
+    const ctx = await hook(messages, 'manual')
+    expect(onCompacted).toHaveBeenCalledTimes(1)
     expect(isBoundary(messages.at(-1)!)).toBe(true)
     expect((ctx[0].content[0] as { text: string }).text).toContain('完成 M5')
   })

@@ -74,8 +74,8 @@ export function makeOnBeforeRequest(
     const threshold = effectiveWindow - THRESHOLD_BUFFER
     const estimated = estimateContextTokens(system, ctx, opts.tools)
 
-    // overflow（400 兜底/手动 /compact）强制压缩；pressure 超阈才压缩
-    if (trigger === 'overflow' || estimated > threshold) {
+    // overflow（400 兜底）/ manual（手动 /compact）强制压缩；pressure 超阈才压缩
+    if (trigger === 'overflow' || trigger === 'manual' || estimated > threshold) {
       opts.onCompacting?.()
       const compacted = await orchestrator.run({
         trigger,

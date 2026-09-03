@@ -29,7 +29,7 @@ import type { CompactionOrchestrator } from '../services/compaction/orchestrator
 import { resolveContextWindow } from '../services/contextWindow.js'
 import type { Logger } from '../services/logger.js'
 import type { HistoryStore } from '../services/history.js'
-import { isMessageLine } from '../core/types.js'
+import { isBoundary, isMessageLine } from '../core/types.js'
 import { ecodeCommit } from '../services/git.js'
 import { makeSandbox, resolveReal, type SandboxMode } from '../services/sandbox.js'
 import { isSensitivePath, isProjectEcodeSettings } from '../tools/sensitive.js'
@@ -459,8 +459,12 @@ export class HostSession {
       ...((r) => (r !== null ? { summary: r } : {}))(await this.resolveSummaryRole()), // M13-B3：摘要换笔（三项变更之②provider 替换）
     })
     try {
+      // 前后数 boundary：hook 不压缩也不抛错（未进压缩分支/策略判无可压），恒 {ok:true}
+      // 会把「零操作」谎报成「压缩完成」——以 boundary 是否真新增为唯一事实源
+      const boundariesBefore = this.messages.filter(isBoundary).length
       await hook(this.messages, 'manual')
-      return { ok: true }
+      if (this.messages.filter(isBoundary).length > boundariesBefore) return { ok: true }
+      return { ok: false, reason: '无可压缩内容（对话均在保留区）' }
     } catch (e) {
       this.publish('compactFailed', { detail: e instanceof Error ? e.message : String(e) })
       return { ok: false, reason: e instanceof Error ? e.message : String(e) }

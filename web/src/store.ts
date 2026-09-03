@@ -239,8 +239,16 @@ export const useApp = create<AppState>((set) => ({
           const content = Array.isArray(l.content) ? (l.content as Array<Record<string, unknown>>) : []
           const text = content.filter((b) => b.type === 'text').map((b) => String(b.text ?? '')).join('')
           if (role === 'user') {
-            const images = pickImages(content)
-            if (text !== '' || images.length > 0) entries.push({ kind: 'user', text, ...(images.length > 0 ? { images } : {}) })
+            // 2026-09-03 机器消息归属根治：带 meta 的 user 行=系统产物 → 渲染为 system 行
+            // （task 通知/loop-guard/审查卡不再冒充用户气泡；旧会话无 meta 行为不变）
+            const meta = l.meta as { kind?: string } | undefined
+            if (meta !== undefined && typeof meta.kind === 'string' && meta.kind !== 'interject') {
+              if (text !== '') entries.push({ kind: 'system', text })
+              // continue 指令零展示价值不渲染；其余机器文本以 system 行保真呈现
+            } else {
+              const images = pickImages(content)
+              if (text !== '' || images.length > 0) entries.push({ kind: 'user', text, ...(images.length > 0 ? { images } : {}) })
+            }
           } else if (role === 'assistant') {
             if (text !== '') entries.push({ kind: 'assistant', text })
             for (const b of content) {

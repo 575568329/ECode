@@ -14,7 +14,7 @@
  * ⑨ hook block 轮不重复触发定时。
  * Provider 按 req.model 分流；gate 数组可挂起指定调用（制造时序窗口）。
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { HostSession, type HostDeps } from '../../src/host/session.js'
 import type { ProtocolEvent } from '../../src/protocol/types.js'
 import type { LLMProvider, LLMProviderRunRequest } from '../../src/providers/interface.js'
@@ -313,6 +313,44 @@ describe('任务纠偏审查：HostSession 接线（含审阅修复批）', () =
     await host.whenIdle() // 若 gate 未放行此处超时（审查挂在 gReview 上永不结算）
     expect(JSON.stringify(hostMessages(host))).not.toContain('审查器附注') // 无卡注入
     gReview.resolve() // 清理挂起的审查
+    await flush(30)
+    host.dispose()
+  }, 15_000)
+
+  it('④d interval 在跑时 signal 触发：gate 不叠加等待（reviewInflight 前置——单飞守卫）', async () => {
+    // interval 审查挂在 gReview（跨轮窗口），轮2 signal 触发撞上它：gate 应直接放行
+    // （不发起第二次审查调用），轮照常完成——single-flight 语义锁定
+    const gReview = Promise.withResolvers<void>()
+    const p = new ModelRoutingProvider(
+      [
+        [doneDelta], // 轮1：interval 触发（intervalTurns=1, minTurns=1——轮末发起点）
+        [...failToolUses('t5'), ...failToolUses('t6'), { type: 'done', stop_reason: 'tool_use' }], // 轮2 iter1：signal 触发
+        [doneDelta], // 轮2 收尾：gate 放行后照常
+      ],
+      [[{ type: 'text', text: REVIEW_CARD }, doneDelta]],
+      [undefined, undefined, undefined],
+      [gReview.promise], // interval 审查挂起（跨轮窗口存活到轮2）
+    )
+    const { deps } = makeDeps(p, { enabled: true, provider: 'm', model: REVIEW_MODEL, intervalTurns: 1, minTurns: 1, timeoutMs: 60_000 })
+    const host = new HostSession(deps)
+    const events: ProtocolEvent[] = []
+    host.subscribe((e) => events.push(e))
+    await host.send({ op: 'prompt', text: '第1轮', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    // 轮 1 末 interval 发起（void 异步）——等 systemMsg「已请高级模型审查」帧确认它已进入
+    // callReviewer（reviewInflight=true，provider 挂在 gReview 上不结算）
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('已请高级模型审查'))).toBe(true)
+    })
+    await flush(10)
+    expect(p.reviewCalls).toBe(1)
+    // 决定性断言：interval 审查挂在 gReview 上不得结算（无「已就绪」）
+    expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('纠偏卡已就绪'))).toBe(false)
+    await host.send({ op: 'prompt', text: '第2轮跑失败', mode: 'StartOrSteer' })
+    await host.whenIdle() // gate 遇 reviewInflight 直接放行——不挂起不等（若等待则 whenIdle 超时）
+    expect(p.reviewCalls).toBe(1) // 未叠加第二次审查（轮 2 末 interval 也被 lastIntervalReviewedTurn+单飞挡住）
+    expect(events.some((e) => e.type === 'reviewing' && e.active === true)).toBe(false) // gate 未进等待窗口（无帧对）
+    gReview.resolve() // 清理：interval 审查完成 → pendingReviewCard
     await flush(30)
     host.dispose()
   }, 15_000)

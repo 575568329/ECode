@@ -654,7 +654,8 @@ export class HostSession {
   private async gateSignalReview(): Promise<void> {
     const reviewCfg = this.cfg().review
     if (reviewCfg === undefined || reviewCfg.enabled !== true) return
-    if (this.reviewInflight) return // 已有审查在跑（理论不可达：单飞+每轮一次双守卫）——不叠加等待
+    if (this.reviewInflight) return // 已有审查在跑（interval 跨轮窗口可达：上一轮末 void 异步发起、
+    // 本轮 signal 撞上它仍在跑）——复用在跑审查不叠加等待（其结果很快到达且覆盖近期轨迹）
     if (this.resolveReviewer() === null) return // 未启用/配置失效——快速过不闪帧
     const timeoutMs = reviewCfg.timeoutMs ?? DEFAULT_REVIEW_GATE_TIMEOUT_MS
     this.publish('reviewing', { active: true })

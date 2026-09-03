@@ -23,7 +23,7 @@ export function detectMedia(buf: Buffer, ext: string): MediaKind {
   if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
     return { kind: 'image', mediaType: 'image/webp' }
   }
-  if (buf.length >= 6 && (buf.toString('ascii', 0, 3) === 'GIF')) {
+  if (buf.length >= 6 && buf.toString('ascii', 0, 4) === 'GIF8') { // 审阅修复（开发席 P2）：补第 4 字节——纯 "GIF" 开头文本误判
     return { kind: 'image', mediaType: 'image/gif' }
   }
   if (buf.length >= 5 && buf.toString('ascii', 0, 5) === '%PDF-') {

@@ -125,6 +125,13 @@ export const bashTool: Tool = {
     }
     // M10-P3：后台分流（危险命令与沙箱校验照走——黑名单不因后台豁免）
     if (run_in_background === true) {
+      // 审阅修复（安全席 P2·二轮）：后台命令同样补写前快照——原分流早于快照，
+      // npm install/构建类后台写文件对 /rewind 完全失明（走 gitDirtyFiles 兑底同款）
+      try {
+        await ctx.onBeforeWrite?.([], 'bash-background')
+      } catch {
+        /* 快照失败静默继续 */
+      }
       const started = (ctx.tasks ?? taskRegistry).start(command, ctx.cwd)
       if (!started.ok) return { content: started.reason, is_error: true }
       return {

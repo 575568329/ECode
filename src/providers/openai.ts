@@ -306,6 +306,10 @@ export class OpenaiProvider implements LLMProvider {
           for (const d of t.flush()) yield d
           return
         }
+        // 审阅修复（架构席 P2·二轮）：停滞段已真实消耗的 input token 先补账（与 anthropic 同源）
+        for (const d of t.flush()) {
+          if (d.type === 'usage') yield d
+        }
         // 看门狗触发后 SDK 吞 AbortError 静默收尾（streaming.mjs "exit without throwing"）
         // ——落到循环外统一的停滞转译
       } catch (e) {

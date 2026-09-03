@@ -56,8 +56,9 @@ async function main() {
   fs.writeFileSync(path.join(cwd, 'a.txt'), 'hello\n')
   require('child_process').execSync('git init -q && git add a.txt && git -c user.email=t@t -c user.name=t commit -qm init', { cwd })
 
-  const proc = pty.spawn('cmd.exe', ['/c', 'npx', 'tsx', 'src/cli/index.ts'], {
-    cwd: REPO,
+  // 审阅修复（测试席 P1·二轮）：spawn cwd 接 git 沙盒——原 cwd=REPO 使 /undo 在真仓库跑 git 撤销（HEAD 带 autoCommit 时会真撤销）
+  const proc = pty.spawn('cmd.exe', ['/c', 'node', REPO + '/node_modules/tsx/dist/cli.mjs', '--tsconfig', REPO + '/tsconfig.json', REPO + '/src/cli/index.ts'], {
+    cwd: cwd,
     env: makeEnv(port, home, cwd),
     cols: 110,
     rows: 40,
@@ -65,14 +66,17 @@ async function main() {
   let out = ''
   proc.onData((d) => (out += d))
   const has = (s) => strip(out).includes(s)
-  const waitUntil = async (re, timeout = 12000) => {
+  // 审阅修复（测试席 P1·二轮）：断言跑在增量段上——原 waitUntil 扫累积缓冲，
+  // 「会话/输入/无/0」等高频词在先前帧已命中=命令无反应也绿（系统性假绿）
+  const waitSince = async (re, since, timeout = 12000) => {
     const t0 = Date.now()
     while (Date.now() - t0 < timeout) {
-      if (re.test(strip(out))) return true
+      if (re.test(strip(out.slice(since)))) return true
       await sleep(150)
     }
     return false
   }
+  const waitUntil = async (re, timeout = 12000) => waitSince(re, 0, timeout)
   const results = []
   const check = (name, ok, note = '') => {
     results.push({ name, ok })
@@ -85,7 +89,7 @@ async function main() {
     proc.write('\r')
     await sleep(350)
     proc.write('\r')
-    const ok = await waitUntil(expectRe, timeout)
+    const ok = await waitSince(expectRe, before, timeout) // 审阅修复（测试席 P1·二轮）：增量段断言（原累积缓冲恒中高频词）
     const seg = strip(out.slice(before))
     // 清状态：Esc 两连（间隔 700ms > 双击退出 500ms 窗——快速连按会触发优雅退出杀掉 TUI，
     // 首版探针 Esc×5 间隔 180ms 自伤实证）；关面板→清搜索/待清态

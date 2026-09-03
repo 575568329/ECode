@@ -31,6 +31,9 @@ export interface McpSetupResult {
   /** 项目级 .mcp.json 待批准（TuiApp 弹 overlay；approve() 后二段接入） */
   pendingApproval?: {
     file: string
+    /** 审阅修复（安全席 P1·二轮）：批准卡内容摘要——server 清单（name/类型/目标）+ 环境变量
+     *  引用名（${VAR} 形态的展开源提示——http 型 headers 外传面在此可见，值不脱敏因只列键名） */
+    summary?: string
     approve: () => Promise<void>
   }
 }
@@ -87,21 +90,48 @@ export function setupMcp(
   if (projectFile !== null && projectRaw !== null && !isMcpApproved(projectFile)) {
     // 展示时指纹：approve 时重算比对（TOCTOU 防护，审阅 P1——批准间隙文件被换则拒绝并要求重启确认）
     const displayHash = mcpFileHash(projectFile)
+    // 审阅修复（安全席 P1·二轮）：批准卡摘要——展示时解析（approve 复用同份 entries=
+    // 「批准即所见」，比批准后重读更严）。列**项目级** server 名/类型/目标 + ${VAR} 引用名
+    //（http 型 headers 的密钥外传面可见——原卡只显示文件路径，用户盲批即外传）
+    const { entries: displayEntries, warnings: w2 } = mergeMcpServers(config.mcpServers, projectRaw, opts.envFallback ?? {})
+    warnings.push(...w2)
+    const projectNames = new Set(Object.keys(projectRaw))
+    const varRefs = new Set<string>()
+    const collectVars = (v: unknown): void => {
+      if (typeof v === 'string') for (const m of v.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) varRefs.add(m[1] ?? '')
+      if (Array.isArray(v)) v.forEach(collectVars)
+      if (v !== null && typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) collectVars(x)
+    }
+    collectVars(projectRaw) // 变量引用从项目文件原文收（用户级 config 的不属本门审批面）
+    const projectEntries = displayEntries.filter((e) => projectNames.has(e.name))
+    const summaryParts = projectEntries.map((e) => {
+      const host = e.cfg.type === 'http' && e.cfg.url !== undefined ? `→${safeHost(e.cfg.url)}` : ''
+      return `${e.name}(${e.cfg.type}${host})`
+    })
+    if (varRefs.size > 0) summaryParts.push(`环境变量引用：${[...varRefs].slice(0, 6).join('、')}${varRefs.size > 6 ? ' 等' : ''}`)
     result.pendingApproval = {
       file: projectFile,
+      summary: summaryParts.join('；').slice(0, 200),
       approve: async () => {
         const currentHash = mcpFileHash(projectFile)
         if (currentHash !== displayHash) {
           throw new Error(`${projectFile} 内容在批准前已变化（展示与批准时不一致），已拒绝接入——请重启 ECode 重新确认`)
         }
         approveMcpFile(projectFile)
-        // 重读接入（不用启动时快照——approve 与读取间再变也以批准时内容为准）
-        const fresh = loadProjectMcpJson(projectFile)
-        const { entries: full, warnings: w2 } = mergeMcpServers(config.mcpServers, fresh ?? undefined, opts.envFallback ?? {})
-        warnings.push(...w2)
-        await manager.start(full) // 二段：追加 entries（start 按 name diff，已有用户级连接不重建）
+        // 批准即所见：接入展示时解析的 entries（approve 与重读间再变不生效——原 loadProjectMcpJson
+        // 重读引入「批准的是 A、接入的是 B」毫秒窗，TOCTOU 单次读收口）
+        await manager.start(displayEntries) // 二段：追加 entries（start 按 name diff，已有用户级连接不重建）
       },
     }
   }
   return result
+}
+
+/** url → host（解析失败回原串截断——摘要展示用，不 throw） */
+function safeHost(u: string): string {
+  try {
+    return new URL(u).host
+  } catch {
+    return u.slice(0, 40)
+  }
 }

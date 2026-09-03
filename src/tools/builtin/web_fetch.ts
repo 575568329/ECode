@@ -59,7 +59,7 @@ export function isPrivateIp(ip: string): boolean {
   // IPv6：回环/唯一本地/链路本地直接拒；IPv4-mapped（含 NAT64 64:ff9b::/96）展开成 IPv4 复检
   // （审阅 P1-1：mapped 的十六进制形态 ::ffff:ac10:101 曾绕过点分前缀匹配——含 169.254.169.254 IMDS）
   const lower = ip.toLowerCase()
-  if (lower === '::1' || lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80')) return true
+  if (lower === '::1' || lower.startsWith('fc') || lower.startsWith('fd') || /^fe[89ab]/.test(lower)) return true // 审阅加固：localnet 全段 fe80::/10（fe8-feb）
   const mapped = extractMappedV4(lower)
   if (mapped !== null) return isPrivateIp(mapped)
   if (lower.startsWith('64:ff9b::')) {

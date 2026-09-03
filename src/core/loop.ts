@@ -520,6 +520,15 @@ export async function runLoop(messages: HistoryLine[], userInput: string, opts: 
           ;(lastAssistant as { content: ContentBlock[] }).content = lastAssistant.content.filter(
             (b) => b.type !== 'tool_use',
           )
+          // 审阅修复（开发席 P2·二轮）：源头配对占位——剥除只改内存，history 落盘行永久留
+          // 孤儿 tool_use（恢复靠投影 repair 才不 400，transcript 重建显示未执行的工具卡）。
+          // 中断路径已做同款源头合成（注释自认「源头合成比下游修复干净」），length 路径补齐
+          for (const use of newToolUses) {
+            opts.history.append({
+              role: 'user',
+              content: [{ type: 'tool_result', tool_use_id: use.id, content: '（max_tokens 截断：该工具调用未完成已丢弃，续写后请重新发起）', is_error: true }],
+            } as Message)
+          }
         }
         newToolUses.length = 0
         opts.callbacks.onWarn?.(`输出被 max_tokens 截断，${truncatedTools} 个未完成的工具调用已丢弃（续写后请重新发起）`)
@@ -655,9 +664,14 @@ async function executeWithTimeout(
 ): Promise<{ timedOut: true; timeoutMs: number } | { timedOut: false; result: ToolResult }> {
   if (tool.timeout_ms === undefined) return { timedOut: false, result: await tool.execute(input, ctx) }
   let timer: ReturnType<typeof setTimeout> | undefined
+  // 审阅修复（架构席 P1·第二轮）：execute 侧显式挂 catch——TOOL_TIMEOUT 赢得 race 后它成为
+  // 无 handler 的输家，此后迟到 reject（MCP 传输错误/连接 RST 极现实）=unhandledRejection，
+  // TUI 主进程 handler exit(1) 杀掉整个会话（原注释只防了 timeoutPromise 一侧）
+  const execP = tool.execute(input, ctx)
+  execP.catch(() => { /* 弃等后的迟到 reject 吸收——结果已由 race 走 timeout 分支 */ })
   try {
     const r = await Promise.race([
-      tool.execute(input, ctx),
+      execP,
       new Promise<typeof TOOL_TIMEOUT>((resolve) => {
         timer = setTimeout(() => resolve(TOOL_TIMEOUT), tool.timeout_ms)
       }),

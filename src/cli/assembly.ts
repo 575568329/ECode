@@ -62,7 +62,7 @@ export interface Deps {
   /** M14-C3④：命令面实例（缺省模块单例——InputStream 直读同源；serve 每项目实例防 plugin 命令串台） */
   commands: import('../commands/registry.js').CommandRegistry
   mcpManager: McpManager | null
-  mcpPendingApproval?: { file: string; approve: () => Promise<void> }
+  mcpPendingApproval?: { file: string; summary?: string; approve: () => Promise<void> }
   mcpWarnings: string[]
   /** M8：指令/记忆截断提示（用户需知——自己写的 ECODE.md/MEMORY.md 没全生效） */
   instructionWarnings: string[]
@@ -93,7 +93,7 @@ export interface ProjectParts {
   extHooks: ExtensionHooksRegistry
   mcpManager: McpManager | null
   mcpWarnings: string[]
-  mcpPendingApproval?: { file: string; approve: () => Promise<void> }
+  mcpPendingApproval?: { file: string; summary?: string; approve: () => Promise<void> }
   instructionWarnings: string[]
 }
 

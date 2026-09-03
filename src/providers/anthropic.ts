@@ -302,6 +302,11 @@ export class AnthropicProvider implements LLMProvider {
           for (const d of t.flush()) yield d
           return // 正常完成（用户中断的 APIUserAbortError 抛出由 catch 原样上抛给 loop 分类）
         }
+        // 审阅修复（架构席 P2·二轮）：停滞段已真实消耗的 input token 先补账——
+        // flush 只在非停滞路径执行，主段 usage 原浏漏进 stats/成本（M12-P0 同源动机）
+        for (const d of t.flush()) {
+          if (d.type === 'usage') yield d
+        }
         // 停滞 → 落到循环外统一转译
       } catch (e) {
         if (!wd.fired()) throw e // 非看门狗错误（含用户中断的 APIUserAbortError）原样上抛

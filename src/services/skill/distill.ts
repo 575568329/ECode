@@ -220,14 +220,21 @@ export function patchBodyFromVerdicts(candidateBody: string, verdicts: SectionVe
 // —— JSON 提取（兼容 ```json 围栏与裸 JSON）—— //
 
 export function extractJson(raw: string): unknown {
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
-  const text = fenced !== null ? fenced[1] : raw
-  const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start === -1 || end === -1 || end <= start) return null
-  try {
-    return JSON.parse(text.slice(start, end + 1))
-  } catch {
-    return null
+  // 审阅修复（开发席 P2·二轮）：先试**原文整体**——body 常含 ``` 代码块（技能常态），
+  // 非贪婪围栏会在 body 内的 ``` 处提前闭合截断 JSON（起草成功率实际受损）。
+  // 整体失败才退围栏形态（模型显式只回 fenced JSON 的场景）
+  const parseRange = (text: string): unknown => {
+    const start = text.indexOf('{')
+    const end = text.lastIndexOf('}')
+    if (start === -1 || end === -1 || end <= start) return null
+    try {
+      return JSON.parse(text.slice(start, end + 1))
+    } catch {
+      return null
+    }
   }
+  const direct = parseRange(raw)
+  if (direct !== null) return direct
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*)```/)
+  return fenced !== null ? parseRange(fenced[1] ?? '') : null
 }

@@ -234,8 +234,11 @@ export class HostSession {
   }
 
   /** .mcp.json 批准门交互（宿主权威）：askSelect 挂起→应答→approve() 二段接入或拒绝留痕 */
-  private async runMcpApprovalGate(pending: { file: string; approve: () => Promise<void> }): Promise<void> {
-    const pick = await this.broker.askSelect(`批准项目级 ${pending.file}？（含 MCP server 定义，可 spawn 子进程）`, [
+  private async runMcpApprovalGate(pending: { file: string; summary?: string; approve: () => Promise<void> }): Promise<void> {
+    // 审阅修复（安全席 P1·二轮）：批准卡带内容摘要——server 清单+环境变量引用名（http 型 headers 的密钥外传面可见；
+    // 原卡只显示文件路径，用户盲批即外传）
+    const desc = pending.summary !== undefined && pending.summary !== '' ? `：${pending.summary}` : ''
+    const pick = await this.broker.askSelect(`批准项目级 ${pending.file}${desc}？（含 MCP server 定义；stdio 型可 spawn 子进程，http 型会向上述地址发请求）`, [
       '批准并连接',
       '本次会话不连接',
     ])
@@ -1755,6 +1758,14 @@ export class HostSession {
         ) {
           this.reviewSignalFiredThisTurn = true
           await this.gateSignalReview()
+          // 审阅修复（架构席 P1·第二轮）：gate 窗口（默认 60s）内 Ctrl+C 后复查——
+          // 原检查只在段首，gate 释放（abort 直通）后 loopGuard/quality/autoCommit 照跑，
+          // 重开了「中断后串行步骤照样跑完」的窗口（6d6fcba 引入），且中断态 autoCommit
+          // 会提交用户正要放弃的半成品
+          if (this.abort.signal.aborted) {
+            this.editedFiles.clear()
+            return undefined
+          }
         }
       }
       // M13-B2：无效轮次检测先行（feedback/abort 注入在 quality 之前——止损优先）

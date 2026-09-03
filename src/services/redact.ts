@@ -34,6 +34,9 @@ function redactString(s: string): string {
     .replace(/(\b[A-Z_]*API_KEY\b\s*=\s*)\S+/gi, '$1[REDACTED]')
     .replace(/(\b[A-Z_]*TOKEN\b\s*=\s*)\S+/gi, '$1[REDACTED]')
     .replace(/(\b[A-Z_]*SECRET\b\s*=\s*)\S+/gi, '$1[REDACTED]')
+    // 审阅修复（安全席 P2·二轮）：Bearer/JWT 形态——工具命令字符串里的 access token 原样落盘
+    .replace(/Bearer\s+[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*/g, 'Bearer [REDACTED]')
+    .replace(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}/g, '[REDACTED]')
 }
 
 const MAX_DEPTH = 10

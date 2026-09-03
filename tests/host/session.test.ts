@@ -247,7 +247,43 @@ describe('HostSession（B1 宿主会话）', () => {
       expect(done).toMatchObject({ isError: true })
       host.dispose()
     }
-    // 零订阅者 fail-closed 的 Broker 单元语义已由 approval.test 覆盖（confirm → false）
+    // 2026-09-03 二轮审阅更新：零订阅者 fail-closed 改回专用反馈串（approval.test 锁
+    // broker 返回值）；loop 侧不冠「用户已取消」前缀的透传语义由下方 NO_CHANNEL 集成锁覆盖
+  })
+
+  it('NO_CHANNEL 集成：零订阅者 fail-closed → tool_result 如实「没有可应答的客户端」（不谎称用户取消）', async () => {
+    const writeTool: Tool = {
+      name: 'write_file',
+      description: 'write',
+      input_schema: { type: 'object', properties: {}, required: [] },
+      readonly: false,
+      async execute() {
+        return { content: 'wrote' }
+      },
+    }
+    const reg = new ToolRegistryImpl()
+    reg.register(writeTool)
+    const script2: Delta[][] = [
+      [
+        { type: 'tool_use_start', id: 't1', name: 'write_file' },
+        { type: 'tool_use_end', id: 't1' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: 'done' }, { type: 'done', stop_reason: 'end' }],
+    ]
+    const host = new HostSession({ ...makeDeps(new MockProvider(script2)), tools: reg })
+    // 不订阅（hasSubscriber=false）——serve 会话无 canAnswer 客户端的形态
+    await host.send({ op: 'prompt', text: '写', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    // 断言面：工具轮的 tool_result 已进内存 messages（restore 投影同源）
+    const lastUser = [...(host as unknown as { messages: Message[] }).messages]
+      .reverse()
+      .find((m) => m.role === 'user' && m.content.some((b) => b.type === 'tool_result'))
+    const tr = lastUser?.content.find((b) => b.type === 'tool_result') as { content?: string } | undefined
+    expect(tr?.content).toContain('没有可应答的客户端')
+    expect(tr?.content).toContain('并非用户拒绝') // 语义澄清自带——区别于旧「用户已取消」谎称
+    expect(tr?.content).not.toContain('用户拒绝了本次操作') // loop 冠前缀形态=回归
+    host.dispose()
   })
 
   it('D-T8 集成：审批超时 → tool_result 如实「审批超时」引导模型决策（不得谎称用户拒绝）', async () => {

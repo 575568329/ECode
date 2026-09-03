@@ -49,6 +49,8 @@ export interface RevertResult {
   restored: string[]
   /** 还原前检测到快照后有外部修改的文件（当前内容 ≠ 最近快照基线；调用方确认页标注） */
   externalChanged: string[]
+  /** 审阅修复（二轮）：写回阶段单项失败清单（目录占用/EBUSY 等——其余项已完成） */
+  failed?: string[]
 }
 
 export interface CheckpointOpts {
@@ -66,6 +68,16 @@ function sha256(buf: Buffer): string {
 export class CheckpointStore {
   /** M11-P1：操作串行链——并发 snapshot（多子代理同时写前快照）下 nextSeq 读改写竞态会产生重复 seq */
   private chain: Promise<unknown> = Promise.resolve()
+
+  /** 串行链排队执行（快照/revert 计划段/目录拷贝共用——互斥防 TOCTOU）；失败不阻塞后续 */
+  private enqueueChain<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(fn, fn)
+    this.chain = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
   private readonly root: string
   private readonly cwd: string
   private readonly maxPerSession: number
@@ -138,13 +150,28 @@ export class CheckpointStore {
     if (files.length === 0) return null
     const refs: CheckpointFileRef[] = []
     for (const p of files) {
+      // 审阅修复（开发席 P2·二轮）：absent 判定只源于**源文件读**的 ENOENT——对象库写
+      // （mkdir/writeFile）原与源读同 try，对象库故障的 ENOENT 会把存在的文件误记 absent
+      //（后续 revert 即误删真文件）。对象库写独立 catch（失败跳过该文件——无基线不拍）
+      let buf: Buffer
       try {
         const st = await stat(p)
         if (st.size > this.maxFileBytes) {
           this.warn(`快照跳过（超过 ${Math.round(this.maxFileBytes / 1024 / 1024)}MB）：${p}`)
           continue
         }
-        const buf = await readFile(p)
+        buf = await readFile(p)
+      } catch (e) {
+        // 文件不存在（新建前/git 已删）：记 absent 基线——revert 到该点即删除此路径
+        //（原「跳过」致新建文件不可回退）。其他读失败（权限/占用）仍跳过不拍。
+        if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+          refs.push({ path: p, hash: '', absent: true })
+        } else {
+          this.warn(`快照跳过（读取失败 ${String((e as NodeJS.ErrnoException)?.code ?? '')}）：${p}`)
+        }
+        continue
+      }
+      try {
         const hash = sha256(buf)
         const objFile = join(this.sessionDir(sessionId), 'objects', hash)
         if (!(await exists(objFile))) {
@@ -154,13 +181,7 @@ export class CheckpointStore {
         }
         refs.push({ path: p, hash })
       } catch (e) {
-        // 文件不存在（新建前/git 已删）：记 absent 基线——revert 到该点即删除此路径
-        //（原「跳过」致新建文件不可回退）。其他读失败（权限/占用）仍跳过不拍。
-        if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
-          refs.push({ path: p, hash: '', absent: true })
-        } else {
-          this.warn(`快照跳过（读取失败 ${String((e as NodeJS.ErrnoException)?.code ?? '')}）：${p}`)
-        }
+        this.warn(`快照跳过（对象库写失败 ${String((e as NodeJS.ErrnoException)?.code ?? '')}）：${p}`)
       }
     }
     if (refs.length === 0) return null
@@ -192,17 +213,26 @@ export class CheckpointStore {
   /**
    * 外部改动检测：还原范围内每个文件，当前内容 hash ≠ 其最近一次快照基线 → 报告
    * （CC checkOriginFileChanged 同款语义：快照后被用户手动改过，还原将覆盖——由用户决定）。
+   * 审阅修复（架构/开发/安全席三席收敛·二轮）：absent 项对称检测——文件**当前存在**即
+   * 报告（还原将删除，删用户手改前明示）；metas 预载参数供 rewind 面板复用（原每点全量
+   * 重扫 O(点²)）。
    */
-  async detectExternalChanges(sessionId: string, seq: number): Promise<string[]> {
-    const metas = (await this.list(sessionId)).filter((m) => m.seq >= seq)
-    const latest = new Map<string, string>()
-    for (const m of metas) for (const f of m.files) if (f.absent !== true) latest.set(f.path, f.hash)
+  async detectExternalChanges(sessionId: string, seq: number, preloaded?: CheckpointMeta[]): Promise<string[]> {
+    const metas = (preloaded ?? (await this.list(sessionId))).filter((m) => m.seq >= seq)
+    const latest = new Map<string, string | null>() // null = absent 基线
+    for (const m of metas) for (const f of m.files) latest.set(f.path, f.absent === true ? null : f.hash)
     const changed: string[] = []
     for (const [p, base] of latest) {
       try {
-        if (sha256(await readFile(p)) !== base) changed.push(p)
+        if (base === null) {
+          // absent 基线 + 文件当前存在 = 快照后出现（ECode 写的或用户手建的）——还原将删除
+          await stat(p)
+          changed.push(p)
+        } else if (sha256(await readFile(p)) !== base) {
+          changed.push(p)
+        }
       } catch {
-        // 文件已被删除：还原会重建，不算外部修改
+        // 内容基线 + 文件已被删除：还原会重建，不算外部修改
       }
     }
     return changed
@@ -211,76 +241,90 @@ export class CheckpointStore {
   /**
    * 还原：选中点（含）及之后全部快照逆序写回 = 回到该点执行前。
    * 还原前先对涉及文件拍 rewind-auto 点（撤销可撤销）。外部改动只报告不拦截（调用方确认页用）。
+   * 审阅修复（架构席 P2·二轮）：读 metas/建 plans 段入串行链——与并发快照（M11 子代理写前
+   * 快照走同一 store）互斥，消灭 revert 读到链上未落盘 seq 的 TOCTOU；写回阶段留链外不阻塞。
+   * 审阅修复（安全/开发席 P2·二轮）：写回 per-plan 容错——absent 路径后被建成目录/EBUSY 等
+   * 单项失败不再中断整个还原留半程状态，失败清单汇总返回（failed）。
    */
   async revert(sessionId: string, seq: number): Promise<RevertResult> {
-    const metas = (await this.list(sessionId)).filter((m) => m.seq >= seq)
-    if (metas.length === 0) throw new Error(`快照点 ${seq} 不存在`)
-    const externalChanged = await this.detectExternalChanges(sessionId, seq)
-    const fileSet = new Set<string>()
-    for (const m of metas) for (const f of m.files) fileSet.add(f.path)
-    // 第一阶段（安全审阅 P2-a）：全量读对象 + 哈希复验后才动任何文件——content-addressed 的
-    // 意义就在哈希即身份，对象被篡改/位腐后直接写回即静默写坏数据；且逐文件边验边写会在中途
-    // 失败时留下半还原状态。任一哈希不符 → 整体拒绝（写回零执行）。对象缺失保持既有语义
-    // （warn 跳过——快照治理边界情况，非篡改特征）。
-    const plans: Array<{ path: string; buf?: Buffer }> = []
-    for (const m of [...metas].reverse()) {
-      for (const f of m.files) {
-        // absent 基线：revert 到该点=删除此路径（buf 缺省=删除计划；存在才删，force 幂等）
-        if (f.absent === true) {
-          plans.push({ path: f.path })
-          continue
+    // 阶段 0+1（链上）：范围 metas + 外检 + 计划构建（读对象+哈希复验）
+    const planPhase = this.enqueueChain(async () => {
+      const metas = (await this.list(sessionId)).filter((m) => m.seq >= seq)
+      if (metas.length === 0) throw new Error(`快照点 ${seq} 不存在`)
+      const externalChanged = await this.detectExternalChanges(sessionId, seq, metas)
+      // 第一阶段（安全审阅 P2-a）：全量读对象 + 哈希复验后才动任何文件——content-addressed 的
+      // 意义就在哈希即身份，对象被篡改/位腐后直接写回即静默写坏数据。任一哈希不符 → 整体拒绝
+      //（写回零执行）。对象缺失保持既有语义（warn 跳过——快照治理边界情况，非篡改特征）。
+      const plans: Array<{ path: string; buf?: Buffer }> = []
+      for (const m of [...metas].reverse()) {
+        for (const f of m.files) {
+          // absent 基线：revert 到该点=删除此路径（buf 缺省=删除计划；存在才删，force 幂等）
+          if (f.absent === true) {
+            plans.push({ path: f.path })
+            continue
+          }
+          let buf: Buffer
+          try {
+            buf = await readFile(join(this.sessionDir(sessionId), 'objects', f.hash))
+          } catch {
+            this.warn(`还原跳过（对象缺失）：${f.path}`)
+            continue
+          }
+          const actual = sha256(buf)
+          if (actual !== f.hash) {
+            throw new Error(`还原中止：对象内容与哈希不符（疑被篡改或损坏），拒绝写回——${f.path} 期望 ${f.hash}，实际 ${actual}（本次还原未执行任何写入）`)
+          }
+          plans.push({ path: f.path, buf })
         }
-        let buf: Buffer
-        try {
-          buf = await readFile(join(this.sessionDir(sessionId), 'objects', f.hash))
-        } catch {
-          this.warn(`还原跳过（对象缺失）：${f.path}`)
-          continue
-        }
-        const actual = sha256(buf)
-        if (actual !== f.hash) {
-          throw new Error(`还原中止：对象内容与哈希不符（疑被篡改或损坏），拒绝写回——${f.path} 期望 ${f.hash}，实际 ${actual}（本次还原未执行任何写入）`)
-        }
-        plans.push({ path: f.path, buf })
       }
-    }
+      return { externalChanged, plans }
+    })
+    const { externalChanged, plans } = await planPhase
+    const fileSet = [...new Set(plans.map((p) => p.path))]
     // 还原前自动快照当前状态（含外部改动后的现状——回错了可再 revert 回来）。
     // 走 snapshotCore：此时治理会淘汰最旧点/GC 对象，可能删掉本次正要写回的基线（终审 P1-3）。
     // 刻意不带 messageId 锚：选 rewind-auto 点回退 = 撤销回退，投影侧靠「缺锚→全量」防御路径
     // 完整恢复上下文（与文件还原一致）；带「范围内最新点的锚」会让复活不完整——最新锚那轮仍被
     // 截掉，文件已还原回改后状态而模型只记得一半（终审 P1-4 声称的修法有此缺陷，测试已锁定）。
-    await this.snapshotCore(sessionId, [...fileSet], { tool: 'rewind-auto' })
+    await this.snapshotCore(sessionId, fileSet, { tool: 'rewind-auto' })
     const restored: string[] = []
-    // 第二阶段：写回（逆序 metas 顺序——同文件多版本时最后写的生效 = 范围内最早基线）。
+    const failed: string[] = []
+    // 第二阶段（链外）：写回（逆序 metas 顺序——同文件多版本时最后写的生效 = 范围内最早基线）。
     // tmp+rename 原子替换（安全审阅 P2-b）：writeFile 直接开目标路径会**跟随 symlink**——
     // 攻击者预先在目标路径放 symlink 指向敏感文件（如 ~/.ssh/authorized_keys），还原写入即
     // 穿透。write/edit 工具是 tmp+rename 替换链接本身，还原保持同款行为；tmp 放同目录保证
     // rename 同分区原子性，名带 pid+时间戳防并发互踩。
     for (const p of plans) {
-      if (p.buf === undefined) {
-        // absent 还原=删除（快照时刻不存在；撤销撤销时还原前自动快照已拍下现存内容）
-        await rm(p.path, { force: true })
-        if (!restored.includes(p.path)) restored.push(p.path)
-        continue
-      }
-      await mkdir(dirname(p.path), { recursive: true, mode: 0o700 })
-      const tmp = join(dirname(p.path), `.${basename(p.path)}.ecode-restore-${process.pid}-${Date.now()}`)
       try {
-        await writeFile(tmp, p.buf)
-        await rename(tmp, p.path)
-      } finally {
-        await rm(tmp, { force: true }) // rename 成功后 tmp 已不存在，force 静默清理
+        if (p.buf === undefined) {
+          // absent 还原=删除（快照时刻不存在；撤销撤销时还原前自动快照已拍下现存内容）
+          await rm(p.path, { force: true })
+        } else {
+          await mkdir(dirname(p.path), { recursive: true, mode: 0o700 })
+          const tmp = join(dirname(p.path), `.${basename(p.path)}.ecode-restore-${process.pid}-${Date.now()}`)
+          try {
+            await writeFile(tmp, p.buf)
+            await rename(tmp, p.path)
+          } finally {
+            await rm(tmp, { force: true }) // rename 成功后 tmp 已不存在，force 静默清理
+          }
+        }
+        if (!restored.includes(p.path)) restored.push(p.path)
+      } catch (e) {
+        // 单项失败不中断（否则前序已写项+未写项=半程还原无反馈）——汇总报告
+        this.warn(`还原失败（${String((e as NodeJS.ErrnoException)?.code ?? e)}）：${p.path}`)
+        if (!failed.includes(p.path)) failed.push(p.path)
       }
-      if (!restored.includes(p.path)) restored.push(p.path)
     }
-    return { restored, externalChanged }
+    return { restored, externalChanged, ...(failed.length > 0 ? { failed } : {}) }
   }
 
-  /** 恢复会话跟随（M9-P2 断链修复）：restoreSession 起新 sessionId，旧快照目录整体拷贝跟随。 */
+  /** 恢复会话跟随（M9-P2 断链修复）：restoreSession 起新 sessionId，旧快照目录整体拷贝跟随。
+   *  审阅修复（架构席 P2·二轮）：入串行链——防拷到链上正写一半的 meta.json。 */
   async copyForResume(oldSessionId: string, newSessionId: string): Promise<void> {
     const from = this.sessionDir(oldSessionId)
     if (!(await exists(from))) return
-    await cp(from, this.sessionDir(newSessionId), { recursive: true, force: false, errorOnExist: true })
+    await this.enqueueChain(() => cp(from, this.sessionDir(newSessionId), { recursive: true, force: false, errorOnExist: true }))
   }
 
   /** bash 近修改集：git status 变更文件（绝对路径）；非 git 仓库返回空 + warn。 */

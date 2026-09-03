@@ -53,10 +53,16 @@ export const writeFileTool: Tool = {
       } catch {
         /* 不存在 → 新文件 */
       }
-      // 原子写：写 .tmp → rename（中断不留半截）
+      // 原子写：写 .tmp → rename（中断不留半截）；
+      // 审阅修复（开发席 P2·二轮）：rename 失败（目标为目录/被占用）时 finally 清 tmp——
+      // 否则残留 .ecode-tmp 孤儿进 glob/grep/git status/快照近修改集污染上下文
       const tmp = abs + '.ecode-tmp'
-      await fs.writeFile(tmp, content, 'utf8')
-      await fs.rename(tmp, abs)
+      try {
+        await fs.writeFile(tmp, content, 'utf8')
+        await fs.rename(tmp, abs)
+      } finally {
+        await fs.rm(tmp, { force: true }).catch(() => {})
+      }
       const lines = content.split('\n').length
       if (oldContent === null) return { content: `已写入 ${rel}（${lines} 行）` }
       if (oldContent === content) return { content: `已写入 ${rel}（${lines} 行，内容未变化）` }

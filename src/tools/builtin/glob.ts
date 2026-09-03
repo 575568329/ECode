@@ -8,6 +8,7 @@
 import fg from 'fast-glob'
 import * as path from 'node:path'
 import type { Tool } from '../interface.js'
+import { isSensitivePath } from '../sensitive.js'
 import { loadEcodeIgnore } from '../../services/ignore.js'
 
 /** 结果截断阈值（防巨量匹配刷屏） */
@@ -40,15 +41,24 @@ export const globTool: Tool = {
       })
       // 额外 filter：fast-glob ignore 与 gitignore 语义有差异，用 ignore 库兜底
       const filtered = matches.filter((m) => !ig.ignores(m))
-      if (filtered.length === 0) return { content: '(无匹配)' }
-      if (filtered.length > MAX_RESULTS) {
+      // 审阅修复（安全席 P2·二轮）：敏感路径过滤对齐 grep——原 glob 零防护，任意目录
+      // 文件名枚举（含 ~/.ssh 清单）是侦察原语
+      const safe: string[] = []
+      let skipped = 0
+      for (const m of filtered) {
+        if (isSensitivePath(path.join(cwd, m))) skipped += 1
+        else safe.push(m)
+      }
+      const skipNote = skipped > 0 ? `\n（已跳过 ${skipped} 个敏感路径）` : ''
+      if (safe.length === 0) return { content: `(无匹配${skipped > 0 ? `，${skipped} 个敏感路径已跳过` : ''})` }
+      if (safe.length > MAX_RESULTS) {
         return {
           content:
-            filtered.slice(0, MAX_RESULTS).join('\n') +
-            `\n…（共 ${filtered.length} 个匹配，已截断到 ${MAX_RESULTS}）`,
+            safe.slice(0, MAX_RESULTS).join('\n') +
+            `\n…（共 ${safe.length} 个匹配，已截断到 ${MAX_RESULTS}）${skipNote}`,
         }
       }
-      return { content: filtered.join('\n') }
+      return { content: safe.join('\n') + skipNote }
     } catch (e) {
       return {
         content: `glob 失败: ${e instanceof Error ? e.message : String(e)}`,

@@ -300,4 +300,18 @@ describe('机器消息 meta 不进协议请求体（归属根治）', () => {
     for (const m of out) expect('meta' in m).toBe(false) // 标记不外发
     expect(JSON.stringify(out)).toContain('机器通知文本') // 模型侧可见性不变
   })
+
+  // 2026-09-03 二轮审阅（测试席 P1）：openai 侧同锁——e268776 提交宣称「两 provider 锁住」
+  // 实际只锁了 anthropic；顺带锁 document 降级文案（PDF 多模态翻译面）
+  it('toOpenaiMsgs 输出无 meta 键 + document 块降级提示（openai 侧对齐）', async () => {
+    const { toOpenaiMsgs } = await import('../../src/providers/openai.js')
+    const msgs = [
+      { role: 'user' as const, content: [{ type: 'text' as const, text: '机器通知文本' }], meta: { kind: 'loop-guard' as const } },
+      { role: 'user' as const, content: [{ type: 'document' as const, mediaType: 'application/pdf', data: 'JVBERk' } as never] },
+    ]
+    const out = toOpenaiMsgs(msgs) as Array<Record<string, unknown>>
+    for (const m of out) expect('meta' in m).toBe(false)
+    expect(JSON.stringify(out)).toContain('机器通知文本')
+    expect(JSON.stringify(out)).toContain('不支持') // document 降级文案可见
+  })
 })

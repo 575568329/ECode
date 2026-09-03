@@ -14,6 +14,7 @@ import { useEffect, useState } from 'react'
 import { useStdout } from 'ink'
 import wrapAnsi from 'wrap-ansi'
 import stringWidth from 'string-width'
+import type { TimelineEntry } from '../protocol/timeline.js'
 
 /** 帧高必须留出的余量（Windows 恰满屏也触发全清，ink #969） */
 export const SAFETY_MARGIN = 2
@@ -151,12 +152,77 @@ export interface TimelineBudget {
 
 /** 条目的最小形状（解耦 protocol 类型——timeline 条目子集，纯函数可单测） */
 export interface TimelineEntryShape {
-  kind: 'text' | 'thinking' | 'tool'
+  kind: 'text' | 'thinking' | 'tool' | 'tool-run'
   live?: boolean
   text?: string
   /** thinking 专属：未闭合（live）标记——计价前滤除（与渲染层同口径） */
   endedAt?: number
   tool?: { name: string; status: string }
+  /** tool-run 专属：被折叠条数（foldedSummary 计数不漏报） */
+  count?: number
+}
+
+/**
+ * 同名工具 run 折叠摘要（2026-09-03 用户拍板「相同的工具能折叠也折叠——占位太大」）：
+ * 连续同名 tool 条目（run 长度 ≥ TOOL_RUN_FOLD_MIN 且被折叠者全终态）中除最新一条外
+ * 全部收进本摘要——动态区从 N×2~3 行平铺收敛为「摘要 1 行 + 最新 1 条完整」。
+ * 副作用工具（edit/write）不折叠：D15 diff 语义保持逐条展示。
+ */
+export interface ToolRunSummary {
+  kind: 'tool-run'
+  /** run 首条 tool id 派生（折叠线无协议 id——仅作渲染 key） */
+  id: string
+  name: string
+  /** 被折叠条数（不含保持完整的最新一条） */
+  count: number
+  errors: number
+}
+
+export type TimelineDisplayEntry = TimelineEntry | ToolRunSummary
+
+/** run 折叠最小长度（<3 折叠省不出摘要行的本钱） */
+export const TOOL_RUN_FOLD_MIN = 3
+
+/** 副作用工具集（D15 diff 全量展示——不参与 run 折叠） */
+const RUN_FOLD_EXEMPT = new Set(['edit_file', 'write_file'])
+
+/** 同名 run 折叠（纯函数，渲染与计价同源入口）：text/thinking/异名均打断 run（语义边界） */
+export function collapseSameToolRuns(entries: readonly TimelineEntry[]): TimelineDisplayEntry[] {
+  const out: TimelineDisplayEntry[] = []
+  let i = 0
+  while (i < entries.length) {
+    const e = entries[i]!
+    if (e.kind !== 'tool' || RUN_FOLD_EXEMPT.has(e.tool.name)) {
+      out.push(e)
+      i += 1
+      continue
+    }
+    let j = i
+    while (
+      j + 1 < entries.length &&
+      entries[j + 1]!.kind === 'tool' &&
+      (entries[j + 1] as { tool: { name: string } }).tool.name === e.tool.name
+    ) {
+      j += 1
+    }
+    const runLen = j - i + 1
+    const older = entries.slice(i, j) as Array<{ kind: 'tool'; tool: { status: string; } }>
+    const foldable = runLen >= TOOL_RUN_FOLD_MIN && older.every((t) => t.tool.status !== 'running')
+    if (foldable) {
+      out.push({
+        kind: 'tool-run',
+        id: `run-${(entries[i] as { id: string }).id}`,
+        name: e.tool.name,
+        count: runLen - 1,
+        errors: older.filter((t) => t.tool.status === 'error').length,
+      })
+      out.push(entries[j]!)
+    } else {
+      for (let k = i; k <= j; k++) out.push(entries[k]!)
+    }
+    i = j + 1
+  }
+  return out
 }
 
 /** 单条目实占单价（行）——v1.7 渲染审阅 P0-1：副作用 diff 展开块含附属行（标题 1+marker 1） */
@@ -178,6 +244,7 @@ function entryCost(e: TimelineEntryShape, ctx: { expandCap: number; liveMaxLines
     return 2
   }
   if (e.kind === 'thinking') return 2 // 行 1 + margin 1
+  if (e.kind === 'tool-run') return 2 // 同名折叠摘要行 1 + margin 1（2026-09-03 run 折叠）
   if (e.tool === undefined) return 1
   if (e.tool.status === 'running') return 2 // 行 1 + margin 1
   const sideEffect = e.tool.name === 'edit_file' || e.tool.name === 'write_file'
@@ -233,7 +300,11 @@ export function timelineBudget(rawEntries: readonly TimelineEntryShape[], lines:
   return {
     visibleFrom,
     foldedSummary: {
-      tools: folded.filter((e) => e.kind === 'tool').length,
+      // tool-run 摘要行背后是 count 条真实调用（计数不因折叠漏报）
+      tools: folded.reduce(
+        (n, e) => n + (e.kind === 'tool' ? 1 : e.kind === 'tool-run' ? (e.count ?? 0) : 0),
+        0,
+      ),
       texts: folded.filter((e) => e.kind === 'text').length,
     },
     finalTextEstimate,

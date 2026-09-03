@@ -19,6 +19,7 @@ import { Markdown } from './Markdown.js'
 import { ToolLine } from './ToolLine.js'
 import { foldStreamText, type StreamFoldCacheBox } from './stream.js'
 import { useViewport } from './viewport.js'
+import { collapseSameToolRuns } from './viewport.js'
 import { MessageRow } from './MessageRow.js'
 import { symbols } from './symbols.js'
 import { WIDTH } from './layout.js'
@@ -86,11 +87,25 @@ const FoldedTextEntry = memo(function FoldedTextEntry({ chars }: { chars: number
   )
 })
 
+/** 同名工具 run 折叠摘要行（2026-09-03 拍板：N 连发同名工具只保留最新完整条） */
+const ToolRunRow = memo(function ToolRunRow({ name, count, errors }: { name: string; count: number; errors: number }): ReactElement {
+  return (
+    <MessageRow icon="" dim>
+      <Text dimColor>
+        {symbols.folded} {name} ×{count} 已折叠{errors > 0 ? ` · ${errors} 失败` : ''}（Ctrl+T 全程）
+      </Text>
+    </MessageRow>
+  )
+})
+
 export function TimelineView({ timeline, lines, liveMaxLines }: TimelineViewProps): ReactElement {
   const { columns } = useViewport()
-  const budget = timelineBudget(timeline, lines, columns, liveMaxLines)
-  // live thinking 渲染跳过不占行（§5.5.6——只供 loading 行消费；终态行才计价）
-  const visible = timeline.filter((e) => !(e.kind === 'thinking' && e.endedAt === undefined))
+  // 同名 run 折叠先于计价（预算与渲染同源——折叠条按 2 行计，不再按 N×3 虚计触发头部折叠）
+  // live thinking 滤除与折叠同序执行（下标空间一致；budget 内的再滤除幂等）
+  const visible = collapseSameToolRuns(
+    timeline.filter((e) => !(e.kind === 'thinking' && e.endedAt === undefined)),
+  )
+  const budget = timelineBudget(visible, lines, columns, liveMaxLines)
   const lastFinalTextIdx = (() => {
     for (let i = visible.length - 1; i >= 0; i--) {
       const e = visible[i]
@@ -123,6 +138,9 @@ export function TimelineView({ timeline, lines, liveMaxLines }: TimelineViewProp
         }
         if (e.kind === 'thinking') {
           return <ThinkingEntry key={e.id} durMs={e.durMs ?? 0} />
+        }
+        if (e.kind === 'tool-run') {
+          return <ToolRunRow key={e.id} name={e.name} count={e.count} errors={e.errors} />
         }
         return <TimelineToolLine key={e.id} entry={e} />
       })}

@@ -1125,8 +1125,10 @@ export class HostSession {
         return { ok: true, value: { content } }
       }
       case 'model/set': {
-        // 切模型（web 顶栏/协议面；TUI /model 走客户端本地 setConfig 不经此）。getConfig 是
-        // 活引用——改 current 后下一轮 provider/getProvider/ctxWindow 即取新值（TUI 同语义）；
+        // 切模型（web 顶栏/附着态 TUI/协议面；2026-09-03 起 TUI /model 也发本帧——旧「TUI
+        // 走客户端本地 setConfig 不经此」的注释随假切换根治退役：setConfig 只改 TUI state，
+        // 宿主 cfg 由本 handler 就地改才是两形态（embedded/附着）共同的真同步面）。
+        // getConfig 是活引用——改 current 后下一轮 provider/getProvider/ctxWindow 即取新值；
         // config/changed 广播经 redact（apiKey 不出会话通道）
         const cfg = this.cfg()
         const prov = cfg.providers[cmd.provider]

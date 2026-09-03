@@ -190,7 +190,8 @@ describe('HostSession（B1 宿主会话）', () => {
     const r = await host.send({ op: 'session/compact' })
     expect(r).toMatchObject({ ok: true, output: expect.stringContaining('压缩已开始') })
     await vi.waitFor(() => {
-      expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('压缩失败：无可压缩内容'))).toBe(true)
+      // 前缀匹配不锁全文案（审阅 P3 中性化：四条零压缩路径共用一句归因）
+      expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('压缩失败：未执行压缩'))).toBe(true)
     })
     expect(events.some((e) => e.type === 'compacted')).toBe(false) // 零操作不得发 compacted 帧
   })

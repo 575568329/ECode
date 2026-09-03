@@ -467,12 +467,14 @@ export class HostSession {
       ...((r) => (r !== null ? { summary: r } : {}))(await this.resolveSummaryRole()), // M13-B3：摘要换笔（三项变更之②provider 替换）
     })
     try {
-      // 前后数 boundary：hook 不压缩也不抛错（未进压缩分支/策略判无可压），恒 {ok:true}
+      // 前后数 boundary：hook 不压缩也不抛错（策略判无可压/摘要空产出），恒 {ok:true}
       // 会把「零操作」谎报成「压缩完成」——以 boundary 是否真新增为唯一事实源
       const boundariesBefore = this.messages.filter(isBoundary).length
       await hook(this.messages, 'manual')
       if (this.messages.filter(isBoundary).length > boundariesBefore) return { ok: true }
-      return { ok: false, reason: '无可压缩内容（对话均在保留区）' }
+      // 零新增四条路径共用：全在保留区/配对不变量全纳入 tail/滚动摘要已涵盖无新内容/摘要空产出——
+      // 归因文案中性化（审阅 P3），单列「均在保留区」对后两条误导
+      return { ok: false, reason: '未执行压缩（无可压缩新内容或摘要未产出）' }
     } catch (e) {
       this.publish('compactFailed', { detail: e instanceof Error ? e.message : String(e) })
       return { ok: false, reason: e instanceof Error ? e.message : String(e) }

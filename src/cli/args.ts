@@ -43,6 +43,7 @@ export const USAGE = [
   '  -v, --version         输出版本号并退出',
   '  -h, --help            显示本用法并退出',
   '      --yes             单次模式显式放行工具审批（fail-closed 缺省）',
+  '      --local           跳过 daemon 直连本地 Embedded（附着失败自动降级）',
   '      --history <id>    REPL 启动即恢复指定会话（与位置参数互斥；同义 --history=<id>）',
 ].join('\n')
 

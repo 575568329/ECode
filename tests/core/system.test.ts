@@ -66,3 +66,40 @@ describe('活文档防漂移：工具选择指引覆盖全部注册工具（清�
     expect(new Set(names).size).toBe(names.length)
   })
 })
+
+// 防漂移方案 §4.4（F3/G3 配套）：ecode-features 手册命令表对账。
+// 命令表由 ecodeFeaturesBody() 渲染派生自 commandRegistry（P2-2 拍板），本断言锁的是
+// 「渲染管线不断」：若有人退回手工串/组装函数失效（{CMD_TABLE} 占位符漏替换），
+// 命令名将从正文消失，此处即红。
+describe('活文档防漂移：命令面↔ecode-features 手册对账（清单 §4.4）', () => {
+  it('registerBuiltinCommands 后 registry.list() 的每个 name 都出现在手册正文', async () => {
+    const { registerBuiltinCommands, commandRegistry } = await import('../../src/commands/registry.js')
+    const { builtinSkillInfos, ECODE_FEATURES_SKILL_NAME } = await import('../../src/services/skill/builtin.js')
+    registerBuiltinCommands()
+    const manual = builtinSkillInfos().find((s) => s.name === ECODE_FEATURES_SKILL_NAME)
+    expect(manual, 'ecode-features 内置 skill 应存在').toBeDefined()
+    const missing = commandRegistry
+      .list()
+      .map((c) => `/${c.name}`)
+      .filter((name) => !manual!.body.includes(name))
+    expect(
+      missing,
+      `手册缺命令：${missing.join(', ')}——ecodeFeaturesBody() 渲染管线断了（占位符未替换？）`,
+    ).toEqual([])
+  })
+
+  it('手册已实际组装：占位符 {CMD_TABLE}/{CMD_COUNT} 不残留', async () => {
+    const { builtinSkillInfos, ECODE_FEATURES_SKILL_NAME } = await import('../../src/services/skill/builtin.js')
+    const body = builtinSkillInfos().find((s) => s.name === ECODE_FEATURES_SKILL_NAME)!.body
+    expect(body).not.toContain('{CMD_TABLE}')
+    expect(body).not.toContain('{CMD_COUNT}')
+    expect(body).toContain('## 快捷键')
+    expect(body).toContain('## 多端能力矩阵')
+  })
+
+  it('ecode-features 在册时 system prompt 注入功能自述路由行', async () => {
+    const { ECODE_FEATURES_SKILL_NAME } = await import('../../src/services/skill/builtin.js')
+    const p = buildSystemPrompt([skill(ECODE_FEATURES_SKILL_NAME, 'ECode 功能自述手册')], 200_000)
+    expect(p).toContain(`加载 ${ECODE_FEATURES_SKILL_NAME} 手册`)
+  })
+})

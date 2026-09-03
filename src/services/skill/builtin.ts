@@ -8,9 +8,13 @@
  */
 
 import type { SkillInfo } from '../skill.js'
+import { commandRegistry, registerBuiltinCommands } from '../../commands/registry.js'
 
 /** 内置手册 skill 名（system.ts 路由行同用——单一事实源防改名漂移，审阅 P2-3）。 */
 export const ECODE_CONFIG_SKILL_NAME = 'ecode-config'
+
+/** 功能自述手册 skill 名（system.ts 路由行同用——防漂移方案 F3）。 */
+export const ECODE_FEATURES_SKILL_NAME = 'ecode-features'
 
 /** 手册正文。⚠ 模板字符串内：围栏用 ~~~（避开反引号）、\${} 转义（避开插值）。 */
 const ECODE_CONFIG_BODY = `# ECode 配置手册
@@ -192,6 +196,79 @@ providers 下新增 key（type/baseURL/apiKey/models）→ 重启 → /model 切
 - 修改配置保持 JSONC 合法（注释允许）；改前可备份 .bak，改后用 read_file 复查再重启
 - 「响应停滞 90000ms」告警（STREAM_STALL）：端点连续 90s 不吐字，看门狗中止。零产出会自动重试 1 次；已有部分产出时 provider 自动**续写**（半截固化为前缀继续补尾部，最多 2 次；含工具调用/思考的半截不续写直接报错——参数截断无法安全补齐）。若仍失败：让 agent 分批写入（先骨架后逐节追加），不要原样重发整轮`
 
+/**
+ * 功能自述正文（F3）：命令表由 renderCommandTable() 渲染派生，其余段落手工维护
+ * （tests/core/system.test.ts 对账断言兜底）。⚠ 模板字符串内：围栏用 ~~~。
+ */
+const ECODE_FEATURES_BODY = `# ECode 功能自述手册
+
+ECode 自身能力的权威清单。用户问「有什么功能/能做什么/XX 命令怎么用/快捷键/面板」时，以本手册为准回答，不要凭训练记忆罗列。
+
+## 斜杠命令（${'{CMD_COUNT}'} 条，渲染自 commandRegistry）
+
+${'{CMD_TABLE}'}
+
+客户端命令不经 LLM 执行（App 解释 action）；serve/web 端命令面为白名单子集（5 条）。Plugin 可贡献/注销命令。
+
+## 快捷键
+
+| 键 | 作用 |
+|---|---|
+| Ctrl+T | 详情统一入口（两级菜单：时间线/工具输出/子代理/任务等类别，数字直达；可搜索全文） |
+| Ctrl+R | 历史会话恢复（同 /history） |
+| Ctrl+U | 清空插话队列 |
+| F2 | 插话入队（忙碌态发消息，同直接 Enter） |
+| Tab | 沙箱模式循环切换（同 /sandbox 面板） |
+| Esc | 中断当前轮（审批卡上是拒绝） |
+| Ctrl+C | 中断并退出 / 清空输入行（视焦点态） |
+| @ | 文件路径补全 |
+| / | 斜杠命令补全（↓↑ 选择，滚动计数提示） |
+
+## 面板（/命令 打开）
+
+model（模型切换）/ history（历史会话）/ config（配置三页签）/ mcp（MCP 服务）/ skill（Skill 浏览）+ skill-create（从会话蒸馏 Skill）/ plugin（插件市场）/ devices（配对设备）/ rewind（回退改动）/ sandbox（沙箱档位）/ warnings（告警中心）。所有面板 Esc 退出；审批卡三键（允许一次/本会话记住/拒绝）。
+
+## 多端能力矩阵
+
+| 端 | 形态 | 命令面 |
+|---|---|---|
+| TUI（终端 Ink） | 完整交互 | 全部命令+快捷键 |
+| Web（浏览器，ecode serve） | daemon 多项目，PWA 可装 | 白名单子集（5 条） |
+| 手机（同 WiFi / PWA） | serve Mobile 页 | 同 Web |
+| 飞书（IM gateway） | 长连接免公网 | /new /sessions /switch + 审批卡片 |
+| 微信 ClawBot | iLink 扫码登录 | 同飞书形态 |
+| relay 中继 | 异地出站连接 | 同 Web |
+
+## 安全与权限三层
+
+- 沙箱五档（default/accept-edits/read-only/workspace-write/full-access）+ blockedCommands 通配黑名单全档硬拒
+- 审批：非只读工具弹卡（--yes 仅单次模式放行；sensitive 永远交互）；审批挂起超时自动拒绝
+- settings 三层权限（user/project/local 的 allow/ask/deny），目前管 Hook(skill:/plugin:) 维度
+- loopGuard 三检测器（复读/同参同果/连续空错）自动止损；纠偏审查 review 定时+异常信号出卡
+
+## 已知边界（避免过度承诺）
+
+- serve/web 端仅 5 条命令（完整面在 TUI）
+- config 不热加载（/model、/setup 例外）；改配置需 /restart 或重启
+- 联网搜索缺省 bing RSS（零配置免费）；图片理解不兜底——端点自证能力
+- 外网手机接入不内置穿透（Tailscale 或 feishu/relay 三选一）
+`
+
+/** 组装正文（渲染派生段落注入——唯一组装点，测试与运行时同源）。 */
+export function ecodeFeaturesBody(): string {
+  const list = registerBuiltinCommandsAndList()
+  return ECODE_FEATURES_BODY.replace('{CMD_COUNT}', String(list.length)).replace('{CMD_TABLE}', renderTable(list))
+}
+
+function registerBuiltinCommandsAndList() {
+  registerBuiltinCommands()
+  return commandRegistry.list()
+}
+
+function renderTable(cmds: Array<{ name: string; description: string }>): string {
+  return ['| 命令 | 用途 |', '|---|---|', ...cmds.map((c) => `| /${c.name} | ${c.description} |`)].join('\n')
+}
+
 export function builtinSkillInfos(): SkillInfo[] {
   return [
     {
@@ -201,6 +278,20 @@ export function builtinSkillInfos(): SkillInfo[] {
       whenToUse:
         '用户提到 ~/.ecode/config.json、mcpServers、.mcp.json、settings.json/settings.local.json、权限规则（permissions/allow/deny）、provider 配置、thinking/采样参数、/setup，或问「ECode 怎么配置/怎么用」时',
       body: ECODE_CONFIG_BODY,
+      baseDir: '',
+      source: 'builtin',
+      userInvocable: true,
+      disableModelInvocation: false,
+    },
+    {
+      // 防漂移方案 F3：功能自述权威源——模型答「有什么功能」的数据源（命令表渲染派生自
+      // commandRegistry，见 ecodeFeaturesBody；清单防漏登由 system.test.ts 对账断言兜底）
+      name: ECODE_FEATURES_SKILL_NAME,
+      description:
+        'ECode 功能自述手册：斜杠命令表（渲染自命令注册表）、快捷键、面板清单、多端能力矩阵（TUI/web/飞书/微信/relay）、安全与权限三层、已知边界。用户问 ECode 有什么功能/能做什么/怎么用 XX 命令时加载，不要凭记忆罗列。',
+      whenToUse:
+        '用户提到「你有什么功能/能做什么」、/命令用法、快捷键、面板、多端（web/手机/飞书/微信）能力时',
+      body: ecodeFeaturesBody(),
       baseDir: '',
       source: 'builtin',
       userInvocable: true,

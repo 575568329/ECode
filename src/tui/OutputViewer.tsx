@@ -958,7 +958,9 @@ export function OutputListPage({ page, recentTools, onOpen, onExit, getSid, getT
           const mark = activeAgentIds?.has(a.id) === true ? '◉' : '○'
           const idTail = a.id.length > 4 ? a.id.slice(-4) : a.id
           const sum = a.summary === '' ? a.id : a.summary
-          out.push({ type: 'item', value: { kind: 'agent', id: a.id }, label: clipWidth(`§${mark} ${when} ${sum} (${idTail})`, max) })
+          // 审阅修复批（安全席 P2-1）：sum 未过 strip——同列表 task/tool 段均有净化，此段漏
+          // （summary 来自 transcript 首条 user 文本，可内嵌从文件读来的不可信内容）
+          out.push({ type: 'item', value: { kind: 'agent', id: a.id }, label: clipWidth(`§${mark} ${when} ${stripUntrustedAnsi(sum)} (${idTail})`, max) })
         }
       }
     }

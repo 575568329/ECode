@@ -174,6 +174,20 @@ describe('makeTaskTool.execute（返回契约 + transcript）', () => {
     expect(r.is_error).toBeFalsy()
     expect(r.content).toContain('部分结论')
     expect(r.content).toContain('轮数耗尽 2/2')
+    // 审阅修复批（安全席 P1-1）：标注与「完整过程：agents/<agentId>.jsonl」同行——agentId
+    // 子代理不可知（system/meta 均不含），伪造者必须猜 id 才能逐字冒充标注
+    expect(r.content).toMatch(/轮数耗尽 2\/2[^\n]*\.jsonl）/)
+  })
+
+  it('2026-09-03 审阅修复：并发子代理上限——宿主计数达 8 时新 task 立即拒绝（不跑 provider）', async () => {
+    const deps = makeDeps()
+    const tool = makeTaskTool(deps)
+    const r = await tool.execute(
+      { description: '超限探针', prompt: 'x' },
+      { cwd: process.cwd(), signal: new AbortController().signal, session: { getActiveSubagentCount: () => 8 } },
+    )
+    expect(r.is_error).toBe(true)
+    expect(r.content).toContain('并发子代理已达上限')
   })
 
   it('F-46 运行期事件行逐条落盘（/output 运行期可见性）', async () => {

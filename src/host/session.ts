@@ -148,8 +148,10 @@ interface QueueEntry {
 
 export class HostSession {
   readonly channel = new InMemoryChannel()
-  /** B4：会话级后台任务表（ctx.tasks/ctx.session.tasks——多会话不串台；模块级全局仅兜底） */
-  private readonly tasks = new TaskRegistry()
+  /** B4：会话级后台任务表（ctx.tasks/ctx.session.tasks——多会话不串台；模块级全局仅兜底）。
+   *  审阅修复批改 public readonly：panel/data 'tasks' 测试需从宿主侧注入任务断言快照
+   *  （只读语义——TaskRegistry 引用不换，不破坏封装） */
+  readonly tasks = new TaskRegistry()
   private readonly subagentView = new Map<string, { id: string; description: string; activity: string; startedAt?: number; waitingSince?: number }>()
   private readonly broker: ApprovalBroker
   /** 运行态沙箱档（Tab 切档经 sandbox/set 命令改此字段——B5 接线；confirm 策略消费） */
@@ -371,6 +373,12 @@ export class HostSession {
   removeSubagent(id: string): void {
     this.subagentView.delete(id)
     this.publish('subagent/progress', { agents: [...this.subagentView.values()] })
+  }
+
+  /** 审阅修复批（安全席 P1-2）：运行中子代理计数——task 工具 execute 入口的并发闸门
+   *  （MAX_CONCURRENT_SUBAGENTS 对齐后台任务 MAX_CONCURRENT=8 的口径） */
+  get activeSubagentCount(): number {
+    return this.subagentView.size
   }
 
   /**
@@ -1129,7 +1137,12 @@ export class HostSession {
         if (cmd.panel === 'tasks') return { ok: true, value: this.tasks.snapshot() }
         const pd = this.deps.panelData
         if (pd === undefined) return { ok: false, error: '面板数据未装配', code: 'NOT_IMPLEMENTED' }
-        return cmd.panel === 'skill' ? { ok: true, value: await pd.skill() } : { ok: true, value: await pd.mcp() }
+        // 审阅修复批（架构席 P1-1）：default 错误分支——原 skill/mcp 二分对未知 panel 值
+        // fallback 执行 mcp()，版本 skew（新客户端打旧 daemon 发新 panel 名）时返回错误 shape
+        // 炸客户端渲染树；显式拒绝并给出可判别 code
+        if (cmd.panel === 'skill') return { ok: true, value: await pd.skill() }
+        if (cmd.panel === 'mcp') return { ok: true, value: await pd.mcp() }
+        return { ok: false, error: `未知面板：${String(cmd.panel)}`, code: 'BAD_PANEL' }
       }
       case 'mcp/action': {
         // T1：MCP 面板写动作（reconnect/close 单 server）
@@ -1377,6 +1390,8 @@ export class HostSession {
             tasks: this.tasks,
             updateSubagent: (st) => this.updateSubagent(st),
             removeSubagent: (id) => this.removeSubagent(id),
+            // 审阅修复批：并发闸门计数（宿主 subagentView 权威——多会话不串台）
+            getActiveSubagentCount: () => this.activeSubagentCount,
             confirmTool: (use) => this.hostConfirm(use, this.abort.signal),
             askUser: async (qs) => {
               const r = await this.broker.askUser(qs)

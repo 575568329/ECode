@@ -174,6 +174,11 @@ describe('device scope 命令面（审阅 P1-5 执行锁）', () => {
     phone.send({ t: 'cmd', id: 'm1', body: { op: { op: 'model/set', provider: 'p', model: 'm' } } })
     const resM = await phone.next((m) => m.t === 'res' && m.id === 'm1')
     expect(resM.status).toBe(403)
+    // 2026-09-03 审阅修复批（安全席 P2-4）：panel/data 不在 chat 白名单——锁住现状，防未来
+    // 「顺手」放行后手机端可拉全部会话任务的 command 原文（可含内联敏感参数）
+    phone.send({ t: 'cmd', id: 'p1', body: { op: { op: 'panel/data', panel: 'tasks' } } })
+    const resP = await phone.next((m) => m.t === 'res' && m.id === 'p1')
+    expect(resP.status).toBe(403)
     // 白名单内（config/get 只读）→ 非 403（项目未注册的其它错误可接受——scope 门已过）
     phone.send({ t: 'cmd', id: 'c1', body: { op: { op: 'config/get' } } })
     const resC = await phone.next((m) => m.t === 'res' && m.id === 'c1')

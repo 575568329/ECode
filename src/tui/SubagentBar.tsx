@@ -43,12 +43,22 @@ export function SubagentBar({ agents }: { agents: SubagentStatus[] }): ReactElem
   if (agents.length === 0) return null
   const now = Date.now()
   if (agents.length > MAX_LINES) {
-    const names = clipWidth(agents.slice(0, MAX_LINES).map((a) => a.description).join(' · '), maxLine - 28)
-    const oldest = Math.max(0, ...agents.map((a) => (a.startedAt !== undefined ? Math.round((now - a.startedAt) / 1000) : 0)))
+    // 审阅修复批（功能席 P1-2）：合计行宽度账——names 与「· 最久 dur」并入**同一个
+    // clipWidth**（原 names 单独 clip 只扣 28 列，尾段 h:mm:ss 实测最宽 ~14 列超账 → wrap
+    // 折 2 物理行使 allocateDynamic 预算失效——TasksBar P1-7 同族纪律）。截断保头部
+    // （前 3 个名字开头），整行恒 1 物理行
+    const names = agents.slice(0, MAX_LINES).map((a) => a.description).join(' · ')
+    const elapsed = agents.map((a) => (a.startedAt !== undefined ? Math.round((now - a.startedAt) / 1000) : -1))
+    const oldest = Math.max(...elapsed)
+    // startedAt 全缺（旧 daemon 帧混跑）不显示「最久 0:00」假值——单行路径同口径
+    const tail = oldest >= 0 ? `（${names}… · 最久 ${formatDuration(oldest)}）` : `（${names}…）`
+    const head = `${symbols.tool} ${agents.length} 个子代理运行中`
     return (
       <Box paddingLeft={1}>
-        <Text color={theme.info}>{symbols.tool} {agents.length} 个子代理运行中</Text>
-        <Text dimColor>（{names}… · 最久 {formatDuration(oldest)}）</Text>
+        <Text color={theme.info}>
+          {head}
+          <Text dimColor> {clipWidth(tail, Math.max(10, maxLine - stringWidth(head)))}</Text>
+        </Text>
       </Box>
     )
   }

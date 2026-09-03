@@ -62,7 +62,6 @@ import type { SubagentStatus } from '../services/subagent.js'
 import { SubagentBar } from './SubagentBar.js'
 import { TasksBar } from './TasksBar.js'
 import { OutputListPage, OutputRootPage, OutputViewer, panelWidth, toolResultSource, taskFileSource, subagentSource, timelineSource, listSubagentTranscripts, type OutputCategory, type OutputListPageKind, type OutputEntry, type RecentTool, type TaskSnap } from './OutputViewer.js'
-import { taskRegistry } from '../services/tasks.js'
 import { undoEcodeCommit } from '../services/git.js'
 import { readClipboardImage } from '../services/clipboard.js'
 import { pushNotice, deriveNoticeLine, renderNoticeLine, NOTICE_TTL_MS, type NoticeItem, type NoticeLevel } from './notices.js'
@@ -231,27 +230,50 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   /** 运行中子代理 id 集合（Ctrl+T 子代理列表 ◉ 标记数据源——subagent/progress 帧派生，
    *  跨进程权威；原 isAgentActive 模块级 Map 在 attach 态恒空已弃用） */
   const activeAgentIds = useMemo(() => new Set(subagents.map((a) => a.id)), [subagents])
-  // 2026-09-03：任务快照统一源（批 B attach 修复）——embedded=本地单例直读；attached=宿主
-  // 协议 panel/data 'tasks' 1s 轮询（客户端进程 taskRegistry 单例查不到 daemon 侧任务）。
+  // 2026-09-03 审阅修复批：任务快照统一源**恒走协议**——embedded 的 InMemoryChannel 直达
+  // 宿主 panel/data 'tasks' 分支（返回宿主会话级 TaskRegistry.snapshot()），attach 走 HTTP
+  // 同一命令。原「embedded=本地模块单例」分支接错源：宿主持有独立的会话级 registry
+  // （toolCtx.tasks 注入，bash 后台任务全进宿主实例），模块单例永远收不到——直跑 ecode 时
+  // TasksBar/根菜单任务类别/列表/查看器四处恒空（并发席 P0-1）。
   // TasksBar/根菜单计数/类别列表/taskFileSource 四处消费同一 ref 活值
-  const [taskSnaps, setTaskSnaps] = useState<TaskSnap[]>(() => taskRegistry.snapshot())
+  const [taskSnaps, setTaskSnaps] = useState<TaskSnap[]>([])
   const taskSnapsRef = useRef(taskSnaps)
   taskSnapsRef.current = taskSnaps
   useEffect(() => {
+    // P1-1 在途守卫：daemon 半死（TCP 通、handler 卡死）时 HttpTransport.send 无超时可挂
+    // ~300s——无守卫会堆积每秒一个在途 fetch，恢复瞬间响应风暴连环重渲
+    let inflight = false
     const timer = setInterval(() => {
-      if (transportRef.current !== null) {
-        void hostRef.current?.send({ op: 'panel/data', panel: 'tasks' })
-          .then((r) => {
-            if (r.ok) setTaskSnaps(r.value as unknown as TaskSnap[])
-          })
-          .catch(() => {}) // 失联保旧快照（TasksBar 自愈链另有职责）
-      } else {
-        setTaskSnaps(taskRegistry.snapshot())
-      }
+      if (inflight) return
+      // P1-2 代际校验：rescueDaemon 换宿主/降级后旧 host 的迟到响应不得覆盖新数据——
+      // 发起时捕获宿主引用，回来核对仍是当前宿主才采纳
+      const h = hostRef.current ?? host
+      inflight = true
+      void h
+        .send({ op: 'panel/data', panel: 'tasks' })
+        .then((r) => {
+          if (hostRef.current !== null && hostRef.current !== h) return
+          // P1-1（架构席）版本 skew 守卫：未重启的旧 daemon 对未知 panel 值 fallback 执行
+          // mcp() 返回非数组——TasksBar 挂载即 .filter 抛 TypeError 炸整树
+          if (r.ok && Array.isArray(r.value)) {
+            const next = r.value as TaskSnap[]
+            // 审阅 P2-3：浅比较后 set——快照每秒新数组引用，同值时保持旧引用让 React bail out
+            setTaskSnaps((prev) =>
+              prev.length === next.length &&
+              next.every((t, i) => t.id === prev[i]?.id && t.status === prev[i]?.status && t.exitCode === prev[i]?.exitCode && t.startedAt === prev[i]?.startedAt)
+                ? prev
+                : next,
+            )
+          } // 非 ok / 非数组：保旧快照（失联冻结显示，自愈链另有职责）
+        })
+        .catch(() => {})
+        .finally(() => {
+          inflight = false
+        })
     }, 1000)
     timer.unref?.()
     return () => clearInterval(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（host/transport ref 活值）
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂载期一次（host ref 活值）
   }, [])
   // 审阅 P1-1：TasksBar 活跃态（allocateDynamic 条件段扣减用——与 TasksBar 同源快照派生）
   const tasksActive = taskSnaps.length > 0
@@ -941,7 +963,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           setProtoSelect(null)
           break
         case 'subagent/progress':
-          setSubagents(ev.agents as SubagentStatus[])
+          // 审阅修复批：SubagentStatusView 契约已补 startedAt/waitingSince——与 SubagentStatus
+          // 结构等价，去掉 as 强转（此前帧字段靠运行时透传+类型断言缝合）
+          setSubagents(ev.agents)
           break
         case 'queue/snapshot':
           setQueuedInterjects(ev.items)

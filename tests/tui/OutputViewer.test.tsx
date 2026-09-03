@@ -174,14 +174,13 @@ describe('OutputListPage（M14-V3）', () => {
     try {
       writeFileSync(join(dir, 'a-s1.jsonl'), JSON.stringify({ kind: 'meta', sid: 'sess-1', description: '会话一任务' }) + '\n' + JSON.stringify({ role: 'user', content: 'x' }) + '\n', 'utf8')
       let sid = 'sess-1'
-      const { lastFrame, rerender } = render(
+      // 审阅修复批：去掉 rerender（TuiApp 真实形态 getOutputSid 引用稳定、靠 attachedSidRef
+      // 活值变化——rerender 传新函数引用反而重建 interval 且压缩轮询余量易 CI flake）
+      const { lastFrame } = render(
         <OutputListPage page="agents" recentTools={[]} onOpen={() => {}} onExit={() => {}} getSid={() => sid} />,
       )
       expect(lastFrame()).toContain('会话一任务')
       sid = 'sess-other' // ref 活值变化（attach 态真会话 id 到达——不重渲，轮询闭包取新值）
-      rerender(
-        <OutputListPage page="agents" recentTools={[]} onOpen={() => {}} onExit={() => {}} getSid={() => sid} />,
-      )
       await sleep(1100) // 1s 轮询周期后按新 sid 过滤
       expect(lastFrame()).toContain('本会话暂无子代理') // 换会话后旧条目被过滤
     } finally {

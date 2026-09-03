@@ -40,9 +40,11 @@ export interface ToolContext {
   session?: {
     /** 会话级后台任务表（bash run_in_background/task_output/task_stop） */
     tasks?: import('../services/tasks.js').TaskRegistry
-    /** 会话级子代理进度（task 工具执行期上报；waitingSince=LLM 等待起点，进度行秒数递增用） */
-    updateSubagent?(st: { id: string; description: string; activity: string; waitingSince?: number }): void
+    /** 会话级子代理进度（task 工具执行期上报；startedAt=总时长起点，waitingSince=LLM 等待起点） */
+    updateSubagent?(st: { id: string; description: string; activity: string; startedAt?: number; waitingSince?: number }): void
     removeSubagent?(id: string): void
+    /** 审阅修复批：运行中子代理计数（task 工具并发闸门 MAX_CONCURRENT_SUBAGENTS 的宿主权威源） */
+    getActiveSubagentCount?(): number
     /** B8.2：子代理 confirm 会话化（多宿主不串台——模块级桥降为单会话兜底） */
     confirmTool?(use: import('../core/types.js').ToolUseBlock): Promise<boolean | string>
     /** M12-P0 审阅 P1-4：子代理 usage 经会话窄端口归账（多宿主不串台；模块桥降兜底） */

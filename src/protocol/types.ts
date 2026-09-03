@@ -32,11 +32,17 @@ export interface ImagePayload {
   label?: string
 }
 
-/** 子代理进度视图（B4 时从 services/subagent.ts 的 SubagentStatus 收敛迁入） */
+/** 子代理进度视图（B4 时从 services/subagent.ts 的 SubagentStatus 收敛迁入）。
+ *  审阅修复批：补 startedAt/waitingSince——帧 payload 实际已携带（折叠行总时长的数据源），
+ *  此前客户端靠 as 强转缝合，违反「View 契约冻结在此」纪律（可选字段向后兼容）。 */
 export interface SubagentStatusView {
   id: string
   description: string
   activity: string
+  /** 子代理启动时刻（折叠行总时长起点；旧宿主帧可缺省） */
+  startedAt?: number
+  /** 最近进入 LLM 等待的时刻（transcript 阶段节奏推算用；可缺省） */
+  waitingSince?: number
 }
 
 /** MCP 服务状态视图（B5 面板数据化时对齐 McpManager 实际形态收紧） */

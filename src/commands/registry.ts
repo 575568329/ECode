@@ -175,7 +175,7 @@ export function registerBuiltinCommands(registry: CommandRegistry = commandRegis
     run: () => ({ action: 'open-warnings-panel' as const }),
   })
   // 活动流 D14（2026-09-02 用户拍板）：/output 命令退役——全文查看统一 Ctrl+T 一个入口
-  // （面板内 l 键来源列表保留=面板内导航非独立入口）
+  // （2026-09-03 拍板：Ctrl+T 落地两级根菜单——数字直达选类别，旧 l 键已废除）
   registry.register({
     name: 'sandbox',
     description: '沙箱模式切换（default/read-only/workspace-write/full-access；Tab 快捷循环）',

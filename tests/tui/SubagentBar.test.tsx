@@ -41,7 +41,7 @@ describe('SubagentBar 总时长显示（2026-09-03）', () => {
     expect(lastFrame() ?? '').not.toContain('0:00')
   })
 
-  it('超 3 个折叠为合计行 + 最久总时长', () => {
+  it('超 3 个折叠为合计行 + 最久总时长（names 顶满时整行截断恒 1 物理行）', () => {
     const now = Date.now()
     const agents: SubagentStatus[] = Array.from({ length: 4 }, (_, i) => ({
       id: `a-${i}`,
@@ -53,6 +53,29 @@ describe('SubagentBar 总时长显示（2026-09-03）', () => {
     const frame = lastFrame() ?? ''
     expect(frame).toContain('4 个子代理运行中')
     expect(frame).toContain('最久 4:00')
+    // 审阅修复批（功能席 P1-2）：names 与尾段并入同一 clipWidth——超长描述不折行
+    const longAgents: SubagentStatus[] = Array.from({ length: 4 }, (_, i) => ({
+      id: `b-${i}`,
+      description: '这是一个非常非常长的子代理任务描述用于撑满整行验证截断行为不换行'.repeat(6),
+      activity: '思考中',
+      startedAt: now - 60_000,
+    }))
+    const long = render(React.createElement(SubagentBar, { agents: longAgents }))
+    const lines = (long.lastFrame() ?? '').split('\n').filter((l) => l.includes('个子代理运行中'))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]?.length).toBeLessThanOrEqual((process.stdout.columns ?? 80) + 4)
+  })
+
+  it('折叠行 startedAt 全缺（旧 daemon 帧混跑）：不显示「最久 0:00」假值', () => {
+    const agents: SubagentStatus[] = Array.from({ length: 4 }, (_, i) => ({
+      id: `c-${i}`,
+      description: `旧任务${i}`,
+      activity: '思考中',
+    }))
+    const { lastFrame } = render(React.createElement(SubagentBar, { agents }))
+    const frame = lastFrame() ?? ''
+    expect(frame).toContain('4 个子代理运行中')
+    expect(frame).not.toContain('最久')
   })
 
   it('空列表渲染 null', () => {

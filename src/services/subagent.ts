@@ -33,6 +33,9 @@ import type { Sandbox } from './sandbox.js'
  *  deps.getMaxIterations 未注入时的对齐值（主代理 DEFAULT_MAX_ITERATIONS=50）；正常
  *  装配（宿主/cli）恒注入 getter：() => cfg().subagentMaxIterations ?? cfg().maxIterations） */
 const SUB_DEFAULT_MAX_ITERATIONS = 50
+/** 审阅修复批（安全席 P1-2）：并发子代理上限——对齐后台任务 MAX_CONCURRENT=8 的口径
+ *  （硬超时废除后轮数×并发是无人值守成本乘数，此处是并发维度的闸门） */
+export const MAX_CONCURRENT_SUBAGENTS = 8
 /** M13-B4：超时自总结一次性调用参数（独立信号 60s——不占用也不继承子循环的已断信号） */
 const RESUME_SUMMARY_TIMEOUT_MS = 60_000
 const RESUME_SUMMARY_MAX_TOKENS = 2048
@@ -63,6 +66,9 @@ interface SessionPort {
     getSummaryRole?(): Promise<SummaryRole | null>
     /** F-49：发起会话 id——子代理 transcript meta 带.sid，面板「只看当前会话」过滤依据 */
     getSessionId?(): string
+    /** 审阅修复批：运行中子代理计数（并发闸门 MAX_CONCURRENT_SUBAGENTS 的宿主权威源；
+     *  宿主 subagentView.size——缺省回退模块级 activeAgents.size=argv/旧测试形态） */
+    getActiveSubagentCount?(): number
   }
 }
 
@@ -488,16 +494,28 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
     async execute(args, ctx: ToolContext) {
       const { description, prompt } = args as { description: string; prompt: string; type?: string }
       const type: SubagentType = (args as { type?: string }).type === 'explore' ? 'explore' : 'general'
+      // 审阅修复批（安全席 P1-2）：并发子代理上限——readonly 工具 Promise.all 并行无条数
+      // 限制，硬超时废除后一轮 N 个 task 全并行 × 各满轮数=无人值守成本乘数；后台任务都有
+      // MAX_CONCURRENT=8，子代理对齐同值。检查在 up() 注册之前（Promise.all 的 execute 依次
+      // 同步跑到首个 await，先到者已注册，后到者计数可见——单线程无竞态窗口）
+      const sess = (ctx as SessionPort).session
+      const runningNow = sess?.getActiveSubagentCount?.() ?? activeAgents.size
+      if (runningNow >= MAX_CONCURRENT_SUBAGENTS) {
+        return {
+          content: `并发子代理已达上限（${MAX_CONCURRENT_SUBAGENTS} 个运行中）——请等当前任务完成或分批派发。`,
+          is_error: true,
+        }
+      }
       // 2026-09-03 拍板：轮数缺省跟主代理一致（config.subagentMaxIterations ?? maxIterations）；
       // 入参只能往下钳（小任务省成本——LLM 不可拉满放大跑飞面；跑飞防御从 10min 硬超时
-      // 改由轮数上限承担，同拍板废除）
-      const configuredMax = deps.getMaxIterations?.() ?? SUB_DEFAULT_MAX_ITERATIONS
+      // 改由轮数上限承担，同拍板废除）。审阅 P2-2：下界兜底——主代理 maxIterations 侧 config
+      // 无校验，0/负值直传会产生「第 0/-5 轮」怪态
+      const configuredMax = Math.max(1, Math.floor(deps.getMaxIterations?.() ?? SUB_DEFAULT_MAX_ITERATIONS))
       const rawIter = (args as { max_iterations?: number }).max_iterations
       const maxIterations =
         rawIter !== undefined && Number.isFinite(rawIter) ? Math.max(1, Math.min(Math.floor(rawIter), configuredMax)) : configuredMax
       let exhausted = false
       const agentId = makeAgentId()
-      const sess = (ctx as SessionPort).session
       const up = (st: SubagentStatus): void => {
         if (sess?.updateSubagent !== undefined) sess.updateSubagent(st)
         else {
@@ -567,9 +585,16 @@ export function makeTaskTool(deps: SubagentDeps): Tool {
             is_error: true,
           }
         }
+        // 审阅修复批（安全席 P1-1）：耗尽标注与「完整过程」合并为**一行**——agentId 是子代理
+        // 不可知的锚（system/meta 均不含），伪造者必须猜 id 才能逐字冒充标注（原两行分离格式
+        // 的文案全部由子代理已知量构成，可被结论尾部逐字伪造诱导父代理重派）。文案同时纠偏：
+        // max_iterations 入参只能往下钳，「带更大的再派」在缺省耗尽场景是误导——统一引导拆小任务
         return {
-          content: `${clampResult(text)}
-${exhausted ? `（⚠ 轮数耗尽 ${maxIterations}/${maxIterations}，任务可能未完成——可拆小任务或下次带更大的 max_iterations 再派）\n` : ''}（完整过程：~/.ecode/agents/${agentId}.jsonl）`,
+          content: exhausted
+            ? `${clampResult(text)}
+（⚠ 轮数耗尽 ${maxIterations}/${maxIterations}，任务可能未完成——可拆小任务再派（单任务上限不可再高）。完整过程：~/.ecode/agents/${agentId}.jsonl）`
+            : `${clampResult(text)}
+（完整过程：~/.ecode/agents/${agentId}.jsonl）`,
         }
       } catch (e) {
         // 双保险之一：子代理超窗/致命错误不上抛炸父循环（独立压缩链是第一道）

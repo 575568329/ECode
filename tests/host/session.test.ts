@@ -409,10 +409,23 @@ describe('HostSession（B1 宿主会话）', () => {
     const mc = await host.send({ op: 'panel/data', panel: 'mcp' })
     expect(mc.value).toMatchObject({ servers: [{ name: 'srv1', status: 'ready' }] })
 
-    // 2026-09-03：tasks 面板（attach 态客户端单例查不到 daemon 任务——协议快照数据源）
+    // 2026-09-03：tasks 面板（attach 态客户端单例查不到 daemon 任务——协议快照数据源）。
+    // 审阅修复批（P1-1 断言空转）：注入真实任务断言六字段 shape——原「Array.isArray」对
+    // 恒空数组天然成立，零覆盖（并发席 P0-1 的装配错源正是此类测试盲区）
+    const tkEmpty = await host.send({ op: 'panel/data', panel: 'tasks' })
+    expect(tkEmpty.ok).toBe(true)
+    expect(tkEmpty.value).toEqual([])
+    host.tasks.start(`${JSON.stringify(process.execPath)} -e ""`, process.cwd())
     const tk = await host.send({ op: 'panel/data', panel: 'tasks' })
     expect(tk.ok).toBe(true)
-    expect(Array.isArray(tk.value)).toBe(true)
+    const first = (tk.value as Array<Record<string, unknown>>)[0]
+    expect(first).toMatchObject({ command: expect.any(String), outputFile: expect.any(String), status: expect.any(String), startedAt: expect.any(Number) })
+    expect(first).toHaveProperty('id')
+    expect(first).toHaveProperty('exitCode')
+    // 审阅修复批（架构席 P1-1）：未知 panel 显式拒绝（原 skill/mcp 二分对未知值 fallback
+    // 执行 mcp()——版本 skew 时返回错误 shape 炸客户端）
+    const bad = await host.send({ op: 'panel/data', panel: 'nonexistent' as 'skill' })
+    expect(bad).toMatchObject({ ok: false, code: 'BAD_PANEL' })
 
     // mcp/action：close 成功带 output；reconnect 失败收敛 ok:false
     const closed = await host.send({ op: 'mcp/action', action: 'close', server: 'srv1' })

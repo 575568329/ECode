@@ -196,6 +196,27 @@ describe('runLoop', () => {
     expect(n).toBe(1)
   })
 
+  it('2026-09-03 审阅锁定：onIter 先于 system 求值——子代理首轮请求即见「第 1/M 轮」', async () => {
+    // 若有人把 onIter 挪到 provider.run 之后，首轮 system 求值拿到旧值（第 0 轮）——
+    // 子代理轮数感知的时序前提由本用例锚定（此前测试用手动 onIter/独立计数器均未锁顺序）
+    const seen: string[] = []
+    class CaptureProvider implements LLMProvider {
+      readonly type = 'capture'
+      async *run(req: LLMProviderRunRequest): AsyncIterable<Delta> {
+        seen.push(req.system)
+        yield { type: 'text', text: 'ok' }
+        yield { type: 'done', stop_reason: 'end' }
+      }
+    }
+    const marker = { v: 0 }
+    await runLoop([], '问', {
+      ...makeOpts(new CaptureProvider(), []),
+      system: () => `第${marker.v}轮`,
+      callbacks: { onText: vi.fn(), onIter: (iter: number) => { marker.v = iter } },
+    })
+    expect(seen[0]).toBe('第1轮')
+  })
+
   it('F-21（审阅 P1-5①）：最后一轮撞 CONTEXT_TOO_LONG 压缩重试（continue 路径）仍有耗尽提示', async () => {
     // 每轮都 CONTEXT_TOO_LONG 且压缩成功 → continue 重试；maxIterations=2 走完 → 必须报耗尽
     // （修复前 exhausted 赋值在 continue 之后：用户看到「已压缩对话后重试」但重试永不来且无耗尽提示）

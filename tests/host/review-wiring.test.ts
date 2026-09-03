@@ -4,7 +4,9 @@
  * ① 定时兜底：第 5 轮末恰一次（含 hook-block 防重）、下轮 input 携带卡（中性前缀）；
  * ② 异常信号：连续失败提前触发 + pending 注入；
  * ③ 开关零行为；
- * ④ midTurn 注入分支（gate 挂起审查制造同轮窗口——kind:'review' 中性包装不冒充用户）；
+ * ④ gate 基线（2026-09-03 同步化）：signal 审查 await 于 afterTools——卡进 iter2 请求 + reviewing 帧对；
+ * ④b gate 超时 fail-open：放行继续 + 晚到卡转下轮（不浪费）；
+ * ④c gate abort 直通：中断立即放行收轮；
  * ⑤ 旁路记账（stats 按 reviewer 模型落盘、不发 usage 帧）；
  * ⑥ 信号每轮一次（连续多批失败只审一次）；
  * ⑦ restoreFrom 归零；
@@ -231,44 +233,87 @@ describe('任务纠偏审查：HostSession 接线（含审阅修复批）', () =
     host2.dispose()
   }, 15_000)
 
-  it('④ midTurn 注入（审阅修复回归）：审查完成时同轮仍在跑 → kind:review 插话（中性包装，不冒充用户）', async () => {
-    // 双 gate 构造同轮窗口：iter1 fail×2（触发信号，审查挂起）→ iter2 挂起（主轮在跑）→
-    // 放开审查（同轮完成→midTurn 入队）→ 放开主轮 → iter3 pollUserInput 注入
-    const gMain = Promise.withResolvers<void>()
-    const gReview = Promise.withResolvers<void>()
-    const okToolUses = (id: string): Delta[] => [
-      { type: 'tool_use_start', id, name: 'ok' },
-      { type: 'tool_use_end', id },
-    ]
+  it('④ gate 基线（2026-09-03 同步化）：signal 审查在 iter2 主调用前完成——卡进下一动作 + reviewing 帧对', async () => {
+    // gate 化后无需时序挂起：afterTools 内 await 审查（快脚本）→ 卡 midTurn 入队 →
+    // iter2 顶部 pollUserInput 注入 → iter2 主调用即见卡（旧异步要等 iter3——卡提前一轮）
     const p = new ModelRoutingProvider(
       [
         [...failToolUses('t1'), ...failToolUses('t2'), { type: 'done', stop_reason: 'tool_use' }], // iter1：触发信号
-        [...okToolUses('t3'), { type: 'done', stop_reason: 'tool_use' }], // iter2：挂起（主轮仍在跑）
-        [{ type: 'text', text: '收到建议' }, doneDelta], // iter3：收尾（注入已发生在迭代顶部）
+        [{ type: 'text', text: '继续' }, doneDelta], // iter2：请求已含卡
       ],
       [[{ type: 'text', text: REVIEW_CARD }, doneDelta]],
-      [undefined, gMain.promise],
-      [gReview.promise],
     )
     const { deps } = makeDeps(p, { enabled: true, provider: 'm', model: REVIEW_MODEL, intervalTurns: 99 })
     const host = new HostSession(deps)
     const events: ProtocolEvent[] = []
     host.subscribe((e) => events.push(e))
     await host.send({ op: 'prompt', text: '跑', mode: 'StartOrSteer' })
-    await flush(60) // iter1 完成（信号触发，审查挂在 gate）；iter2 调用挂起
-    gReview.resolve() // 审查同轮完成 → midTurn 入队
-    await flush(60)
-    gMain.resolve() // iter2 继续 → iter3 顶部 pollUserInput 注入
     await host.whenIdle()
     await flush()
     expect(p.reviewCalls).toBe(1)
+    // gate 窗口帧对：active true（进等待）/ false（出等待）
+    const reviewing = events.filter((e) => e.type === 'reviewing') as Array<{ type: 'reviewing'; active: boolean }>
+    expect(reviewing.map((e) => e.active)).toEqual([true, false])
+    // 卡在 iter2 请求前注入（旧异步路径是 iter3——同步化的核心收益）
     expect(events.some((e) => e.type === 'interjection/injected' && e.text === '纠偏审查卡')).toBe(true)
-    // iter3 主调用收到的 messages 含审查包装（中性，不冒充用户）
-    const thirdCallMsgs = JSON.stringify(p.mainMessages[2])
-    expect(thirdCallMsgs).toContain('审查器附注')
-    expect(thirdCallMsgs).toContain('- 方向：正确')
-    expect(thirdCallMsgs).not.toContain('用户在任务执行中发来新消息')
-    expect(thirdCallMsgs).toContain('非用户消息')
+    const secondCallMsgs = JSON.stringify(p.mainMessages[1])
+    expect(secondCallMsgs).toContain('审查器附注')
+    expect(secondCallMsgs).toContain('- 方向：正确')
+    expect(secondCallMsgs).toContain('非用户消息')
+    host.dispose()
+  }, 15_000)
+
+  it('④b gate 超时 fail-open：审查挂起超 timeoutMs → 放行继续（iter2 无卡）；晚到卡不浪费转下轮', async () => {
+    // 审查挂在 gReview 上超过 timeoutMs=50ms → gate 释放，轮照常跑完（iter2 无卡）；
+    // 底层审查不取消——稍后完成时轮已结束 → pendingReviewCard → 下一轮注入（晚到不浪费）
+    const gReview = Promise.withResolvers<void>()
+    const p = new ModelRoutingProvider(
+      [
+        [...failToolUses('t1'), ...failToolUses('t2'), { type: 'done', stop_reason: 'tool_use' }],
+        [doneDelta], // iter2：gate 已超时放行，无卡
+        [doneDelta], // 轮2：pendingReviewCard 在此注入
+      ],
+      [[{ type: 'text', text: REVIEW_CARD }, doneDelta]],
+      [undefined, undefined, undefined],
+      [gReview.promise],
+    )
+    const { deps } = makeDeps(p, { enabled: true, provider: 'm', model: REVIEW_MODEL, intervalTurns: 99, timeoutMs: 50 })
+    const host = new HostSession(deps)
+    const events: ProtocolEvent[] = []
+    host.subscribe((e) => events.push(e))
+    await host.send({ op: 'prompt', text: '跑', mode: 'StartOrSteer' })
+    await host.whenIdle() // 轮已结束（审查仍挂起）
+    expect(p.reviewCalls).toBe(1)
+    expect(events.some((e) => e.type === 'systemMsg' && e.text.includes('纠偏审查超时'))).toBe(true)
+    expect(JSON.stringify(p.mainMessages[1])).not.toContain('审查器附注') // 放行时无卡
+    gReview.resolve() // 晚到审查完成 → 轮已结束 → pending
+    await flush(60)
+    await host.send({ op: 'prompt', text: '继续', mode: 'StartOrSteer' })
+    await host.whenIdle()
+    const userMsgs = [...hostMessages(host)].reverse().filter((m) => m.role === 'user')
+    const cardMsg = userMsgs.find((m) => (m as { meta?: { kind?: string } }).meta?.kind === 'review-card')
+    expect(cardMsg).toBeDefined() // 晚到卡随下轮注入——不浪费
+    expect(JSON.stringify(cardMsg)).toContain('审查器附注')
+    host.dispose()
+  }, 15_000)
+
+  it('④c gate abort 直通：审查挂起时中断 → 立即放行收轮（不等审查）', async () => {
+    const gReview = Promise.withResolvers<void>()
+    const p = new ModelRoutingProvider(
+      [[...failToolUses('t1'), ...failToolUses('t2'), { type: 'done', stop_reason: 'tool_use' }], [doneDelta]],
+      [[{ type: 'text', text: REVIEW_CARD }, doneDelta]],
+      [undefined, undefined],
+      [gReview.promise],
+    )
+    const { deps } = makeDeps(p, { enabled: true, provider: 'm', model: REVIEW_MODEL, intervalTurns: 99, timeoutMs: 60_000 })
+    const host = new HostSession(deps)
+    await host.send({ op: 'prompt', text: '跑', mode: 'StartOrSteer' })
+    await flush(60) // iter1 完成 → gate 挂起（等审查）
+    await host.send({ op: 'interrupt' }) // abort 直通——gate 立即释放
+    await host.whenIdle() // 若 gate 未放行此处超时（审查挂在 gReview 上永不结算）
+    expect(JSON.stringify(hostMessages(host))).not.toContain('审查器附注') // 无卡注入
+    gReview.resolve() // 清理挂起的审查
+    await flush(30)
     host.dispose()
   }, 15_000)
 

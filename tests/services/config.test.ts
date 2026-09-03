@@ -494,6 +494,16 @@ describe('2026-09-02 review 块校验（任务纠偏审查）', () => {
     expect(() => loadConfig({ configPath: cfgPath, loadDotenv: false })).toThrow('CONFIG_REVIEW_INVALID')
   })
 
+  it('timeoutMs：负数/非有限数 → 启动报 CONFIG_REVIEW_INVALID；正数透传（2026-09-03 gate）', () => {
+    writeReview({ enabled: true, provider: 'main', model: 'r', timeoutMs: -5 })
+    expect(() => loadConfig({ configPath: cfgPath, loadDotenv: false })).toThrow('CONFIG_REVIEW_INVALID')
+    writeReview({ enabled: true, provider: 'main', model: 'r', timeoutMs: Number.POSITIVE_INFINITY })
+    expect(() => loadConfig({ configPath: cfgPath, loadDotenv: false })).toThrow('CONFIG_REVIEW_INVALID')
+    writeReview({ enabled: true, provider: 'main', model: 'r', timeoutMs: 120_000 })
+    const cfg = loadConfig({ configPath: cfgPath, loadDotenv: false })
+    expect(cfg.review).toMatchObject({ timeoutMs: 120_000 })
+  })
+
   it('enabled=false + provider 陈旧 → 静默通过（可选功能的配置错误不阻断主功能——审阅修复）+ 合法块透传', () => {
     writeReview({ enabled: false, provider: '已删除的', model: '' })
     expect(() => loadConfig({ configPath: cfgPath, loadDotenv: false })).not.toThrow()

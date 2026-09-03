@@ -312,6 +312,32 @@ describe('makeTaskTool.execute（返回契约 + transcript）', () => {
     expect(snaps.some((l) => l.length === 1 && l[0].activity === '思考中' && typeof l[0].waitingSince === 'number')).toBe(true)
     expect(snaps.at(-1)).toEqual([])
   })
+
+  it('2026-09-03 审阅修复批：同轮两个 task 真并行（并发计数哨兵——提示词「同轮多调用即并行」的子代理级锁）', async () => {
+    // 机制锁：两个 task execute 并发发起（Promise.all 同款时序），执行中段观察到
+    // 运行计数达 2——若并发被破坏（串行化/闸门误拒），maxSeen 停在 1 且本测试红
+    let running = 0
+    let maxSeen = 0
+    const provider: LLMProvider = {
+      type: 'mock',
+      async *run(): AsyncIterable<Delta> {
+        running++
+        maxSeen = Math.max(maxSeen, running)
+        await new Promise((r) => setTimeout(r, 80)) // 拉开中段观测窗
+        running--
+        yield { type: 'text', text: '结论：完成' }
+        yield { type: 'done', stop_reason: 'end' }
+      },
+    }
+    const deps = makeDeps({ getProvider: () => provider })
+    const tool = makeTaskTool(deps)
+    const rs = await Promise.all([
+      tool.execute({ description: '甲', prompt: 'p1' }, ctx),
+      tool.execute({ description: '乙', prompt: 'p2' }, ctx),
+    ])
+    expect(rs.every((r) => r.is_error !== true)).toBe(true)
+    expect(maxSeen).toBe(2) // 两个子循环真并发（重叠窗口内同时 in-flight）
+  })
 })
 
 

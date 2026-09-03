@@ -217,6 +217,36 @@ describe('runLoop', () => {
     expect(seen[0]).toBe('第1轮')
   })
 
+  it('2026-09-03 审阅修复批：同轮多个 readonly 工具真并行（墙钟重叠哨兵——提示词并发承诺的机制锁）', async () => {
+    // 提示词明示「同轮多个 task 调用即并行执行」——本用例锁 executeTools 的 readonly
+    // Promise.all 底座：两个 120ms 慢 readonly 工具同轮执行，墙钟必须 < 2×（串行则 ≥240ms）。
+    // 若未来 executeTools 被重构为串行，提示词对模型撒谎且本测试变红
+    const slow = (name: string): Tool => ({
+      name,
+      description: name,
+      input_schema: { type: 'object', properties: {} },
+      readonly: true,
+      async execute() {
+        await new Promise((r) => setTimeout(r, 120))
+        return { content: 'ok' }
+      },
+    })
+    const p = new MockProvider([
+      [
+        { type: 'tool_use_start', id: 's1', name: 'slowA' },
+        { type: 'tool_use_end', id: 's1' },
+        { type: 'tool_use_start', id: 's2', name: 'slowB' },
+        { type: 'tool_use_end', id: 's2' },
+        { type: 'done', stop_reason: 'tool_use' },
+      ],
+      [{ type: 'text', text: 'done' }, { type: 'done', stop_reason: 'end' }],
+    ])
+    const t0 = Date.now()
+    await runLoop([], '问', { ...makeOpts(p, [slow('slowA'), slow('slowB')]) })
+    const wall = Date.now() - t0
+    expect(wall).toBeLessThan(240) // 并行：两工具墙钟重叠（120ms + 调度余量）
+  })
+
   it('F-21（审阅 P1-5①）：最后一轮撞 CONTEXT_TOO_LONG 压缩重试（continue 路径）仍有耗尽提示', async () => {
     // 每轮都 CONTEXT_TOO_LONG 且压缩成功 → continue 重试；maxIterations=2 走完 → 必须报耗尽
     // （修复前 exhausted 赋值在 continue 之后：用户看到「已压缩对话后重试」但重试永不来且无耗尽提示）

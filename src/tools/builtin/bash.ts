@@ -104,7 +104,7 @@ export const bashTool: Tool = {
       },
       run_in_background: {
         type: 'boolean',
-        description: 'true=后台运行（dev server 等持续进程不阻塞当前轮）：立即返回 task_id，用 task_output 读输出、task_stop 停止',
+        description: 'true=后台运行（仅持续型/长命令用——dev server 等不退出进程，或预计超 2 分钟的构建）：立即返回 task_id，用 task_output 读输出、task_stop 停止。秒级返回的短命令（git show/grep 等）直接同步跑，转后台徒增 task_output 往返',
       },
     },
     required: ['command'],

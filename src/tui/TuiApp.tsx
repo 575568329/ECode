@@ -2189,6 +2189,14 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
             pickerRef.current = false
             setOverlay(null)
             void checkModelWindow(e.model, e.name)
+            // 2026-09-03 根因修复：请求在宿主侧执行——本地 setConfig 只改 TUI 显示层
+            // （embedded 经 configRef 同步宿主有效；**附着 daemon 形态宿主读自己的 config，
+            // 本地 state 够不到**——真机实证：TUI 切 DeepSeek 后 daemon iter 恒 glm、
+            // 429 重置时间恒 glm 的窗）。必须把切换发到宿主（model/set 协议帧；embedded
+            // 同进程走同一 handler 幂等，web 顶栏同路径）。失败仅提示——本地已切，重试兜底
+            host.send({ op: 'model/set', provider: e.name, model: e.model }).then((r) => {
+              if (!r.ok) pushNoticeFn('error', `模型切换未送达宿主：${r.error}（菜单缺项常因 daemon 未重启加载新配置）`, true)
+            })
           }}
           onCancel={() => {
             pickerRef.current = false

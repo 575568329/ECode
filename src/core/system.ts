@@ -40,10 +40,10 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number, opts
 - ask_user：需求模糊且调查后仍无法推断时向用户提问（选项框；能推断就别问）
 - web_fetch <url>：抓公开网页转文本（查最新文档；优先读本地，线上不确定才用）
 - web_search <query>：联网搜索（不知道 URL 时先搜；拿到结果常配合 web_fetch 抓全文；可带 domain/recency 收窄）
-- bash run_in_background=true：持续型命令后台跑（dev server 等不退出进程）——立即返回 task_id
+- bash run_in_background=true：持续型/长命令后台跑（dev server 等不退出进程）——立即返回 task_id（仅此类命令用；秒级返回的短命令如 git show/grep 直接同步跑，转后台徒增 task_output 往返）
 - task_output <task_id>：读后台任务增量输出（wait_ms 单次给足等新输出或退出，上限 300000=5 分钟，有新输出或任务结束提前返回；勿短间隔同参连发）
 - task_stop <task_id>：终止后台任务（统一杀树，孙进程一并终止）
-- task <description> <prompt>：把独立子任务委派给并发子代理（大范围调研/互相独立的并行工作；prompt 必须自包含，阻塞至返回结论）
+- task <description> <prompt>：把独立子任务委派给并发子代理（大范围调研/多视角审阅/可并行的独立子任务；prompt 必须自包含。单调用阻塞至返回结论；同轮发出多个 task 调用即并行执行——能并行的独立工作不要串行自己做）
 - todo <todos>：维护多步任务清单（3 步以上才建；全量替换；完成一项立即更新）
 - 何时用 todo：预计 5+ 步骤/要改多文件/批量清点类长任务，动手前先用 todo 列计划让用户可见进度；单步小改不建（噪声大于价值）
 

@@ -82,28 +82,28 @@ server.listen(0, '127.0.0.1', async () => {
   if (!ok) { console.log('FAIL 子代理结论未回流'); proc.kill(); server.close(); process.exit(1) }
   console.log('OK   子代理跑完且结论回流主循环')
   await sleep(500)
-  // Ctrl+T → 面板
+  // Ctrl+T → 根菜单（2026-09-03 拍板：两级菜单——数字直达；旧「直落时间线+l 键」路径退役）
   const pos = out.length
   proc.write('\x14')
   ok = false
-  // F-50 批 3：Ctrl+T 默认直达执行时间线（output-view），l 键进来源列表——探针两段走
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('执行时间线') || strip(out.slice(pos)).includes('行滚') }
-  if (!ok) { console.log('FAIL Ctrl+T 未开时间线'); proc.kill(); server.close(); process.exit(1) }
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('详情查看') && strip(out.slice(pos)).includes('数字直达') }
+  if (!ok) { console.log('FAIL Ctrl+T 未开根菜单'); proc.kill(); server.close(); process.exit(1) }
+  console.log('OK   Ctrl+T 打开根菜单')
   await sleep(300)
+  // 数字 2 直达子代理类别（根菜单第 1 项恒为时间线，本会话有子代理 → 子代理段在第 2 位）
   const pos2 = out.length
-  proc.write('l')
+  proc.write('2')
   ok = false
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos2)).includes('回车 查看') }
-  if (!ok) { console.log('FAIL Ctrl+T l 列表未开'); proc.kill(); server.close(); process.exit(1) }
-  console.log('OK   Ctrl+T 打开输出面板')
-  // 面板列表：子代理条目（唯一 description 摘要）
-  ok = strip(out.slice(pos)).includes('子代理探针任务')
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos2)).includes('子代理 transcript（本会话）') && strip(out.slice(pos2)).includes('回车 查看') }
+  if (!ok) { console.log('FAIL 数字 2 未进子代理类别列表'); proc.kill(); server.close(); process.exit(1) }
+  console.log('OK   数字直达进入子代理类别列表')
+  // 类别列表：子代理条目（唯一 description 摘要）
   // 判定（F-49）：摘要=meta description（终态重写保留 meta 首行）；currentSid 过滤后
   // 本会话子代理可见、跨会话条目不出现
-  ok = strip(out.slice(pos)).includes('子代理探针任务')
-  console.log(ok ? 'OK   面板列表含本子代理条目（实时刷新生效）' : 'FAIL 面板列表未见子代理条目')
+  ok = strip(out.slice(pos2)).includes('子代理探针任务')
+  console.log(ok ? 'OK   类别列表含本子代理条目（实时刷新生效）' : 'FAIL 类别列表未见子代理条目')
   console.log('# 列表 dump:')
-  console.log(strip(out.slice(pos)).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => /§|transcript/.test(l)).join('\n'))
+  console.log(strip(out.slice(pos2)).split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => /§|transcript/.test(l)).join('\n'))
   // 回车进查看器 → 格式化内容
   const pos3 = out.length
   proc.write('\r')

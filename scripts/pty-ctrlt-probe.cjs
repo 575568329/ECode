@@ -58,17 +58,25 @@ server.listen(0, '127.0.0.1', async () => {
   console.log('OK   busy 中（bash 运行）')
   const pos = out.length
   proc.write('\x14') // Ctrl+T
-  // F-50 批 3 后 Ctrl+T 默认落地「执行时间线」视图（OutputViewer 非列表页）——
-  // 锚点用面板标题（TuiApp 稳定字面量）；审阅 D4：旧锚「q/Esc/Ctrl+C 退出」是列表页专属提示
+  // 2026-09-03 拍板：Ctrl+T 落地两级根菜单（数字直达——旧「直落时间线」路径退役）
   ok = false
-  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('执行时间线（全部流程）') }
-  console.log(ok ? 'OK   busy 中 Ctrl+T 打开执行时间线' : 'FAIL Ctrl+T 未打开面板')
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos)).includes('详情查看') && strip(out.slice(pos)).includes('数字直达') }
+  console.log(ok ? 'OK   busy 中 Ctrl+T 打开根菜单' : 'FAIL Ctrl+T 未打开根菜单')
+  let allOk = ok
+  await sleep(300)
+  // 数字 1 直达时间线（根菜单第 1 项恒为时间线）
+  const pos2 = out.length
+  proc.write('1')
+  ok = false
+  for (let i = 0; i < 30 && !ok; i++) { await sleep(200); ok = strip(out.slice(pos2)).includes('执行时间线（全部流程）') }
+  console.log(ok ? 'OK   数字 1 直达执行时间线' : 'FAIL 数字直达未进时间线')
+  allOk = allOk && ok
   // 审阅 P2 连带验证：busy 中当前轮可见（item/started 同步 messagesRef——曾只轮末同步=空时间线）
   let sawUser = false
-  for (let i = 0; i < 25 && !sawUser; i++) { await sleep(200); sawUser = strip(out.slice(pos)).includes('跑个长命令') }
+  for (let i = 0; i < 25 && !sawUser; i++) { await sleep(200); sawUser = strip(out.slice(pos2)).includes('跑个长命令') }
   console.log(sawUser ? 'OK   busy 中时间线含当前轮用户消息' : 'WARN busy 中时间线未见当前轮（轮末才同步）')
-  console.log(strip(out.slice(pos)).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-12).join('\n'))
+  console.log(strip(out.slice(pos2)).split('\n').map((l) => l.replace(/\s+$/, '')).filter(Boolean).slice(-12).join('\n'))
   proc.kill()
   server.close()
-  setTimeout(() => process.exit(ok ? 0 : 1), 200)
+  setTimeout(() => process.exit(allOk ? 0 : 1), 200)
 })

@@ -111,11 +111,18 @@ describe('R6：轮中失联自愈（rescue 收场行为）', () => {
     }
     const f = lastFrame() ?? ''
     expect(f).toContain('本地模式') // 降级提示（sticky error 主提示最后推——占底部告警行显示位）
-    // 2026-09-03 告警中心聚合语义：tail 条目（退回/作废）折叠进「还有 N 条」计数不再同屏全显
+    // 2026-09-03 告警中心聚合语义：tail 条目（退回/作废）折叠进「还有 N 条」计数不再同屏全显。
+    // 本场景收场态（confirm 残留键径干扰）不适合作键盘面板交互——全文断言在 TuiAppTimeline
+    // 的 /warnings 面板用例（干净环境）；此处计数+下条 sticky 幸存锚定
     expect(f).toMatch(/还有 \d+ 条（\/warnings 查看）/) // tail 存在（计数可见）
     expect(f).toContain('流式中段') // 已产出保留（封口不丢）
     // running 已收：输入框提示回落（不再是「处理中」占位）
     expect(f).not.toContain('（处理中')
+    // 审阅修复批（P1-2）：sticky 幸存——降级警示（pushNoticeFn 三参 sticky）不被
+    // turn/completed 自动清（本地续聊期间「勿在他端开同会话」必须持续可见）
+    fire({ type: 'turn/completed', seq: 99, turnId: 't1' })
+    await flush(100)
+    expect(lastFrame() ?? '').toContain('本地模式') // sticky 轮成功仍在
   }, 30000)
 
   it('挂起审批随轮作废：busy 轮中审批卡挂起 → rescue 收场 resolve(false)+可见提示（R6 五件套回归锁）', async () => {
@@ -144,8 +151,9 @@ describe('R6：轮中失联自愈（rescue 收场行为）', () => {
     }
     const f = lastFrame() ?? ''
     expect(f).toContain('本地模式')
-    // 2026-09-03 告警中心聚合语义：作废提示折叠进计数——存在性经 warnings 面板断言
-    expect(f).toMatch(/还有 \d+ 条（\/warnings 查看）/) // 「挂起的审批已随轮作废」在计数中
+    // 2026-09-03 告警中心聚合语义：作废提示折叠进计数——底部行强度不足，全文断言在
+    // TuiAppTimeline 的 /warnings 面板用例（本场景 confirm 残留键径不适合作面板交互）
+    expect(f).toMatch(/还有 \d+ 条（\/warnings 查看）/)
     // 审批卡已收口（confirm 清空——残留会吞后续按键）
     expect(f).not.toContain('（y 允许')
   }, 45000)

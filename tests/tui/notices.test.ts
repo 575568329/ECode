@@ -27,12 +27,22 @@ describe('pushNotice（队列）', () => {
     expect(list.some((n) => n.text === 'msg-0')).toBe(true)
   })
 
-  it('2026-09-03 sticky：不参与封顶淘汰（降级类持续状态警示不因队列滚动被丢）', () => {
-    let list = pushNotice([], 1, 'error', '本地模式续聊警示', 1000, true)
-    for (let i = 0; i < NOTICE_LIMIT + 5; i++) {
-      list = pushNotice(list, i + 2, 'info', `msg-${i}`)
+  it('2026-09-03 sticky：无 info/warn 可淘汰时也不丢 sticky（淘汰池豁免真锁）', () => {
+    // 审阅修复批（P0-4）：原用例用 info 填满——sticky 根本不在淘汰射程，旧淘汰逻辑（sticky
+    // 参与 slice(1) 兜底）下也通过（实证）＝不锁豁免行为。换成 error 填满：淘汰池只能从
+    // 非 sticky error 里挑，旧逻辑会切掉最旧的 sticky（用例红）
+    let list = pushNotice([], 1, 'error', 'sticky-oldest', 1000, true)
+    for (let i = 0; i < NOTICE_LIMIT; i++) {
+      list = pushNotice(list, i + 2, 'error', `err-${i}`)
     }
-    expect(list.some((n) => n.text === '本地模式续聊警示' && n.sticky === true)).toBe(true)
+    expect(list.length).toBeLessThanOrEqual(NOTICE_LIMIT)
+    expect(list.some((n) => n.text === 'sticky-oldest' && n.sticky === true)).toBe(true)
+    expect(list.some((n) => n.text === 'err-0')).toBe(false) // 淘汰的是最旧非 sticky error
+  })
+
+  it('sticky 字段记录：默认 false 不写字段（序列化干净）', () => {
+    const list = pushNotice([], 1, 'error', '普通 error')
+    expect(list[0]?.sticky).toBeUndefined()
   })
 })
 

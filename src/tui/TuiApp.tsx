@@ -223,8 +223,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     // T 线⑥（D-T5a）：插话 hook 宿主化——busy 输入经 prompt(StartOrSteer) 入队时宿主 dispatch
     // UserPromptSubmit（block 拒绝入队/context 注入），客户端不再二次 dispatch（原同进程捷径退役）
     const r = await host.send({ op: 'prompt', text, mode: 'StartOrSteer', ...(images !== undefined && images.length > 0 ? { images } : {}) })
-    // 2026-09-03 拍板：插话失败=中断类——error 常驻（5s 消失会让用户漏看为何没进去）
-    if (!r.ok) pushNoticeFn('error', `插话失败：${r.error}`)
+    // 2026-09-03 拍板：插话失败=中断类——error 常驻（5s 消失会让用户漏看为何没进去）。
+    // 审阅修复批（P1-1）：标 sticky——操作失败类（本轮跑完≠插话已补进），轮成功不自动清
+    if (!r.ok) pushNoticeFn('error', `插话失败：${r.error}`, true)
   }
   // M11-P4：运行中子代理快照（进度事件驱动）
   const [subagents, setSubagents] = useState<SubagentStatus[]>([])
@@ -853,6 +854,11 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           // 判定——清掉非 sticky 的 error 告警（sticky=降级类持续状态警示，续聊期间保留；
           // warn/info 历史留给 /warnings 回看）
           setNotices((ns) => (ns.some((n) => n.level === 'error' && n.sticky !== true) ? ns.filter((n) => n.level !== 'error' || n.sticky === true) : ns))
+          // 审阅修复批（P0-1）：phase 兜底清除——压缩终止帧（compacted/compactFailed）在
+          // 中断/异常/gap 丢帧路径可能永不到达（loop 吸收 AbortError 不发 compactFailed、
+          // error 帧不带、SSE 断线丢帧）；轮完成时压缩若仍在跑，compacted 到达另有独立
+          // 「✓ 已压缩」提示，此处清除不损信息（幂等，与帧清除双保险）
+          setPhase(null)
           void pullTranscript().then((l) => {
             setActivity((cur) => (cur.state === 'aborted' ? cur : { state: 'idle' }))
             if (l.length > 0) {
@@ -882,6 +888,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           setActive((a) => ({ ...a, streaming: false }))
           setError(toAppError(new Error(ev.message)))
           setActivity({ state: 'idle' })
+          // 审阅修复批（P0-1）：error 轮收尾——压缩摘要异常上抛走此帧（无 compactFailed），
+          // phase 兜底清除防 loading 永转
+          setPhase(null)
           break
         case 'compacted':
           setPhase(null)
@@ -1063,8 +1072,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       }
       if (!nr.ok || nr.sessionId === undefined) {
         setActive((a) => ({ ...a, streaming: false }))
-        // 2026-09-03 拍板：会话建立失败=中断类——error 常驻
-        pushNoticeFn('error', `新建会话失败：${nr.ok ? '回执缺 sessionId' : nr.error}`)
+        // 2026-09-03 拍板：会话建立失败=中断类——error 常驻。
+        // 审阅修复批（P1-1）：标 sticky——操作失败类（后续轮成功≠会话已建立）
+        pushNoticeFn('error', `新建会话失败：${nr.ok ? '回执缺 sessionId' : nr.error}`, true)
         setActivity({ state: 'idle' })
         return
       }
@@ -1195,6 +1205,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     setIter(undefined)
     setMaxIter(undefined)
     setError(null)
+    // 审阅修复批（P0-1 路径 d）：切会话清 phase——mux 按 sessionId 过滤会把旧会话的
+    // compacted 终止帧丢弃（新会话收不到），旧会话的压缩 phase 会驻留新会话 UI
+    setPhase(null)
     // 清可见区 + scrollback（清 Static 残留）+ 光标归位
     process.stdout.write(CLEAR_TERMINAL)
     // remount App（重置 <Static> 内部 index，避免 /clear 后消息不渲染）
@@ -1393,8 +1406,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       // 恢复失败回滚 transport（目标未载入，事件过滤与信封仍指旧会话）
       const prev = attachedSidRef.current
       if (prev !== undefined) transportRef.current?.setSessionId?.(prev)
-      // 2026-09-03 拍板：恢复失败=用户操作的直接失败——error 常驻
-      pushNoticeFn('error', `恢复失败：${r.error}，未切换`)
+      // 2026-09-03 拍板：恢复失败=用户操作的直接失败——error 常驻。
+      // 审阅修复批（P1-1）：标 sticky——操作失败类（后续轮成功≠恢复已成功）
+      pushNoticeFn('error', `恢复失败：${r.error}，未切换`, true)
       return
     }
     // P0 修复（审阅）：消费回执的新 sessionId——后续命令信封与事件帧过滤都以它为准；
@@ -1498,6 +1512,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   /** 审阅 R6：死轮收场（降级/重连两路径共用）——中断语义收轮 + 时间线封口 + 挂起审批作废 +
    * 排队插话退回（单条塞回草稿免重打）。返回追加到提示数组的退回条目（可能为空）。 */
   const closeDeadTurn = (reason: string): string[] => {
+    // 审阅修复批（P0-1）：phase 兜底清除（幂等）——失联/降级路径的压缩终止帧必丢
+    // （宿主死了没人发 compacted），不清则 idle 态 spinner 永转
+    setPhase(null)
     const notes: string[] = []
     if (runningRef.current) {
       runningRef.current = false
@@ -1557,53 +1574,59 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     const p = (async (): Promise<'reattached' | 'local' | 'dead'> => {
       // 2026-09-03 拍板：重拉是持续过程——进 loading 行（spinner+计时），不弹 5s 闪现
       beginPhase('正在重连后台服务')
-      deps.logger.warn('daemon', 'rescue_started', {})
-      // 审阅 R6：拉起前记录注册身份（同实例抖动 vs 新实例判别——同实例活轮还在流，
-      // 收场会冻结流文本=误杀；新实例旧轮必死必须收场）
-      const prevReg = readServerReg()
-      const reg = await resurrectDaemonReg(deps.logger)
-      const transport = transportRef.current
-      if (reg !== null && transport?.reattach !== undefined) {
-        // 审阅修复（架构席 P1-1）：同实例保留 SSE 游标——重连即带 sinceSeq 触发 mux 重放
-        // 断线窗口帧（turn/completed/busy:false 到达=运行态自愈；缓冲覆盖不到走 gap 对账）
-        const sameInstance = reg.pid === prevReg?.pid
-        transport.reattach(`http://127.0.0.1:${reg.port}`, reg.token, sameInstance)
-        // daemon 重启后内存会话空——冷拉回当前会话（ensureRestore 同 id 续写，历史文件在同机共享）
-        if (attachedSidRef.current !== undefined) {
-          transport.setSessionId?.(attachedSidRef.current)
-          const rr = await (hostRef.current ?? host).send({ op: 'session/restore', sessionId: attachedSidRef.current })
-          if (rr.ok) syncCommitted()
-          // 审阅 R6（原 P2 的假话覆盖修正）：找回失败提前收场返回——原实现在下方被无条件
-          // 「✓ 会话已找回」覆盖，警告从未可见
-          else {
-            endPhase()
-            const tail = closeDeadTurn('后台服务中断')
-            // 2026-09-03 拍板：中断后果=常驻告警（error 级不自动消失——/warnings 回看，轮成功自动清）。
-            // 主提示最后推（底部行只显最新一条）
-            for (const t of tail) pushNoticeFn('error', t)
-            pushNoticeFn('error', '后台已重连，但会话找回失败——续聊上下文可能为空，可 /history 重选')
-            return 'reattached'
+      try {
+        deps.logger.warn('daemon', 'rescue_started', {})
+        // 审阅 R6：拉起前记录注册身份（同实例抖动 vs 新实例判别——同实例活轮还在流，
+        // 收场会冻结流文本=误杀；新实例旧轮必死必须收场）
+        const prevReg = readServerReg()
+        const reg = await resurrectDaemonReg(deps.logger)
+        const transport = transportRef.current
+        if (reg !== null && transport?.reattach !== undefined) {
+          // 审阅修复（架构席 P1-1）：同实例保留 SSE 游标——重连即带 sinceSeq 触发 mux 重放
+          // 断线窗口帧（turn/completed/busy:false 到达=运行态自愈；缓冲覆盖不到走 gap 对账）
+          const sameInstance = reg.pid === prevReg?.pid
+          transport.reattach(`http://127.0.0.1:${reg.port}`, reg.token, sameInstance)
+          // daemon 重启后内存会话空——冷拉回当前会话（ensureRestore 同 id 续写，历史文件在同机共享）
+          if (attachedSidRef.current !== undefined) {
+            transport.setSessionId?.(attachedSidRef.current)
+            const rr = await (hostRef.current ?? host).send({ op: 'session/restore', sessionId: attachedSidRef.current })
+            if (rr.ok) syncCommitted()
+            // 审阅 R6（原 P2 的假话覆盖修正）：找回失败提前收场返回——原实现在下方被无条件
+            // 「✓ 会话已找回」覆盖，警告从未可见
+            else {
+              const tail = closeDeadTurn('后台服务中断') // 内含 phase 兜底清除（P0-1）
+              // 2026-09-03 拍板：中断后果=常驻告警（error 级不自动消失——/warnings 回看，轮成功自动清）。
+              // 主提示最后推（底部行只显最新一条）
+              for (const t of tail) pushNoticeFn('error', t)
+              pushNoticeFn('error', '后台已重连，但会话找回失败——续聊上下文可能为空，可 /history 重选')
+              return 'reattached'
+            }
           }
+          // daemon 重拉=宿主必然重建（档位静默回 config 默认）——无论会话找回成败都拉宿主
+          // 真档对齐显示，防「显示 read-only 实际 default」假安全（用户档位记忆随旧宿主死了）
+          syncSandboxFromHost()
+          // 审阅 R6/P0-1：新实例（pid 变）旧轮必死——收场防「已重连但 running 恒真」假忙碌；
+          // 同实例（pid 同，SSE 抖动重连）活轮可能还在流——**不收场**（收了=冻结流文本误杀）
+          if (reg.pid !== prevReg?.pid) {
+            // 审阅修复批（P0-2）：tail 迁 error 常驻（重连收场=中断后果；同函数 dead/降级/找回
+            // 失败三分支已迁——此处原漏）。主文案「✓ 已重连」是结果确认保留 5s systemMsg
+            const tail = closeDeadTurn('后台服务中断')
+            for (const t of tail) pushNoticeFn('error', t)
+            setSystemMsgs([
+              `✓ 后台服务已重连（新实例）${attachedSidRef.current !== undefined ? '，会话已找回' : ''}——原轮已随服务中断，已产出保留`,
+            ])
+          } else {
+            setSystemMsgs(['✓ 后台连接已恢复（服务未中断——流可能仍在继续）'])
+          }
+          return 'reattached'
         }
-        // daemon 重拉=宿主必然重建（档位静默回 config 默认）——无论会话找回成败都拉宿主
-        // 真档对齐显示，防「显示 read-only 实际 default」假安全（用户档位记忆随旧宿主死了）
-        syncSandboxFromHost()
-        // 审阅 R6/P0-1：新实例（pid 变）旧轮必死——收场防「已重连但 running 恒真」假忙碌；
-        // 同实例（pid 同，SSE 抖动重连）活轮可能还在流——**不收场**（收了=冻结流文本误杀）
-        if (reg.pid !== prevReg?.pid) {
-          endPhase()
-          const tail = closeDeadTurn('后台服务中断')
-          setSystemMsgs([
-            ...tail,
-            `✓ 后台服务已重连（新实例）${attachedSidRef.current !== undefined ? '，会话已找回' : ''}——原轮已随服务中断，已产出保留`,
-          ])
-        } else {
-          endPhase()
-          setSystemMsgs(['✓ 后台连接已恢复（服务未中断——流可能仍在继续）'])
-        }
-        return 'reattached'
+        return degradeToLocal()
+      } finally {
+        // 审阅修复批（P0-1③）：异常路径兜底——rescue 中途 throw（buildInlineHost/restoreFull 等）
+        // 此前不清 phase，tick 路径 .catch 吞掉后 idle spinner 永转；finally 无条件清（幂等，
+        // 正常路径的各分支清除被覆盖无害）
+        endPhase()
       }
-      return degradeToLocal()
     })()
     rescueInflightRef.current = p
     void p.finally(() => {
@@ -1627,6 +1650,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       setRunning(false)
       setActivity({ state: 'aborted' })
       setActive((a) => ({ ...a, streaming: false }))
+      // 审阅修复批（P0-1）：中断即清 phase——轮中压缩被 Ctrl+C 打断时压缩终止帧永不到达
+      // （loop 吸收 AbortError 不发 compactFailed），不清则「正在压缩对话」永转
+      endPhase()
       setSystemMsgs(['已中断（任务停止中——后台执行正在收敛，输入框已可用，部分产出已保留）'])
       void host.send({ op: 'interrupt' })
     },
@@ -1676,8 +1702,11 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         const metas = (r.value ?? []) as Array<{ sessionId?: string; running?: boolean }>
         const mine = metas.find((m) => m.sessionId === sid)
         if (mine !== undefined && mine.running === false) {
+          // 审阅修复批（P0-3）：tail 迁 error 常驻（断线期间轮死亡=中断后果，与 dead/降级/
+          // 找回失败/新实例四路径同族——原漏）；主文案结果确认保留 5s systemMsg
           const tail = closeDeadTurn('重连对账')
-          setSystemMsgs([...tail, '✓ 已与后台重新对齐（上一轮在断线期间已结束，已产出保留）'])
+          for (const t of tail) pushNoticeFn('error', t)
+          setSystemMsgs(['✓ 已与后台重新对齐（上一轮在断线期间已结束，已产出保留）'])
         }
       })
       .catch(() => {

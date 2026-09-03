@@ -143,4 +143,102 @@ describe('R5：TuiApp 时间线帧接线（挂账⑩）', () => {
     const f3 = lastFrame() ?? ''
     expect(f3).toContain('执行 bash') // 审批卡即等待态权威显示（ActivityBar 等待审批文案为增益）
   })
+
+  it('手动压缩 loading（2026-09-03 用户点名）：空闲态 compacting 帧 → spinner+文案+计时；compacted 清除', async () => {
+    // 修复前：compacting 帧只写 5 秒闪现 systemMsg，摘要数十秒期间 ActivityBar 是空行像死掉
+    const { host, fire } = makeFakeHost()
+    const { lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
+    await flush()
+    fire({ type: 'compacting', seq: 1 })
+    await flush(40)
+    const f1 = lastFrame() ?? ''
+    expect(f1).toContain('正在压缩对话')
+    expect(f1).toContain('· 0s') // 压缩消耗计时（formatElapsed 同款——用户点名不能丢）
+    fire({ type: 'compacted', seq: 2 })
+    await flush(40)
+    const f2 = lastFrame() ?? ''
+    expect(f2).toContain('✓ 已压缩对话') // 完成留痕
+    expect(f2).not.toContain('正在压缩对话') // loading 清除
+  })
+
+  it('手动压缩失败（空闲态）：compactFailed 清 loading 且不写「稍后自动重试」（手动不重试，宿主 systemMsg 有准确归因）', async () => {
+    const { host, fire } = makeFakeHost()
+    const { lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
+    await flush()
+    fire({ type: 'compacting', seq: 1 })
+    await flush(40)
+    expect(lastFrame() ?? '').toContain('正在压缩对话')
+    fire({ type: 'compactFailed', seq: 2 })
+    await flush(40)
+    const f = lastFrame() ?? ''
+    expect(f).not.toContain('正在压缩对话')
+    expect(f).not.toContain('稍后自动重试') // 「自动重试」只对轮中自动压缩成立
+  })
+
+  it('审阅修复批（P1-2）：turn/completed 自动清非 sticky error（轮成功=问题解决的自动判定）', async () => {
+    const { host, fire } = makeFakeHost()
+    const { lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
+    await flush()
+    fire({ type: 'notice', seq: 1, level: 'error', text: '发送失败：NETWORK 波动' })
+    await flush(40)
+    expect(lastFrame() ?? '').toContain('发送失败') // error 常驻上底部行
+    fire({ type: 'turn/completed', seq: 2, turnId: 't1' })
+    await flush(100)
+    expect(lastFrame() ?? '').not.toContain('发送失败') // 轮成功自动清（非 sticky）
+  })
+
+  it('审阅修复批（P1-3）：busy 态压缩——compacting 帧替换主文案（不显示「思考中」），compacted 清除', async () => {
+    const { host, fire } = makeFakeHost()
+    const { lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
+    await flush()
+    fire({ type: 'thread/status', seq: 1, busy: true, waitingOn: null, iter: 1 })
+    fire({ type: 'delta', seq: 2, turnId: 't1', text: '回答中' })
+    await flush(200)
+    fire({ type: 'compacting', seq: 3 })
+    await flush(40)
+    const f1 = lastFrame() ?? ''
+    expect(f1).toContain('正在压缩对话') // busy 态主文案替换为阶段名
+    expect(f1).not.toContain('思考中') // phaseText 优先级
+    fire({ type: 'compacted', seq: 4 })
+    await flush(40)
+    expect(lastFrame() ?? '').not.toContain('正在压缩对话') // 帧清除
+  })
+
+  it('审阅修复批（P0-1 回归锁）：turn/completed 兜底清 phase——压缩终止帧丢失（Ctrl+C 打断/gap 丢帧）不永转', async () => {
+    const { host, fire } = makeFakeHost()
+    const { lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
+    await flush()
+    fire({ type: 'compacting', seq: 1 })
+    await flush(40)
+    expect(lastFrame() ?? '').toContain('正在压缩对话')
+    // 无 compacted/compactFailed——轮直接完成（loop 吸收 AbortError 的中断形态）
+    fire({ type: 'turn/completed', seq: 2, turnId: 't1' })
+    await flush(100)
+    const f = lastFrame() ?? ''
+    expect(f).not.toContain('正在压缩对话') // 兜底清除——旧实现此处永转
+    expect(f).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/) // idle 无 spinner 残留
+  })
+
+  it('审阅修复批（P0-3）：/warnings 面板显示全部告警全文（底部行折叠条目的可见出口）', async () => {
+    // 干净环境验证面板通路（MidturnRescue 的收场态 confirm 残留不适合作键盘交互）——
+    // 底部行只显最新一条+计数，全文出口=面板；此用例锁「命令→面板→全文」链路真实存在
+    const { host, fire } = makeFakeHost()
+    const { stdin, lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
+    await flush()
+    fire({ type: 'notice', seq: 1, level: 'error', text: '第一条：审批已随轮作废（如需执行请重发）' })
+    fire({ type: 'notice', seq: 2, level: 'error', text: '第二条：排队的消息已退回' })
+    await flush(60)
+    const f1 = lastFrame() ?? ''
+    expect(f1).toMatch(/还有 1 条（\/warnings 查看）/) // 底部行只显最新一条
+    expect(f1).not.toContain('第一条') // 折叠条目不在底部行
+    stdin.write('/warnings')
+    await flush()
+    stdin.write('\r') // 补全面板：填入
+    await flush()
+    stdin.write('\r') // 第二个回车=执行（统一两段式）
+    await flush(120)
+    const f2 = lastFrame() ?? ''
+    expect(f2).toContain('第一条：审批已随轮作废') // 面板显示全文（折叠出口真实可达）
+    expect(f2).toContain('第二条：排队的消息已退回')
+  })
 })

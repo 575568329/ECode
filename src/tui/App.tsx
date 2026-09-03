@@ -28,6 +28,9 @@ interface AppProps {
   /** 活动流 B4：动态摘要（thinking tail / executing digest——从 timeline 派生）与轮开始时间 */
   activityDetail?: string
   turnStartedAt?: number
+  /** 持续过程阶段（2026-09-03 拍板：压缩/重连等持续执行进 loading 行——空闲态空行升级
+   *  为 spinner+文案+计时，busy 态替换主文案；原 compactingSince 的泛化） */
+  phase?: { text: string; since: number }
   iter?: number
   maxIter?: number
   tokens?: number
@@ -88,6 +91,7 @@ export function App({
   activityText,
   activityDetail,
   turnStartedAt,
+  phase,
   iter,
   maxIter,
   tokens,
@@ -139,7 +143,7 @@ export function App({
         onInterruptTurn={onInterruptTurn}
         conditions={conditions}
       >
-        {!altMode && <ActivityBar state={activity} text={activityText} detail={activityDetail} turnStartedAt={turnStartedAt} />}
+        {!altMode && <ActivityBar state={activity} text={activityText} detail={activityDetail} turnStartedAt={turnStartedAt} phase={phase} />}
         {children}
         <Box flexDirection="column">
           {!altMode && (

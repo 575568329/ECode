@@ -26,6 +26,14 @@ describe('pushNotice（队列）', () => {
     expect(list.some((n) => n.text === 'msg-10')).toBe(false)
     expect(list.some((n) => n.text === 'msg-0')).toBe(true)
   })
+
+  it('2026-09-03 sticky：不参与封顶淘汰（降级类持续状态警示不因队列滚动被丢）', () => {
+    let list = pushNotice([], 1, 'error', '本地模式续聊警示', 1000, true)
+    for (let i = 0; i < NOTICE_LIMIT + 5; i++) {
+      list = pushNotice(list, i + 2, 'info', `msg-${i}`)
+    }
+    expect(list.some((n) => n.text === '本地模式续聊警示' && n.sticky === true)).toBe(true)
+  })
 })
 
 describe('isFresh + deriveNoticeLine TTL（F-38：临时提示到期自动退场）', () => {

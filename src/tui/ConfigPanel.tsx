@@ -88,8 +88,12 @@ export function ConfigPanel({ current, providers, general, onSave, onClose }: Co
     ]
   } else {
     rows = [
+      // F5/G5（防漂移方案）：如实列举不可视改键名——消除「可视化改」过度承诺（完整可视改扩列 YAGNI）
       { type: 'header', label: '高级键（只读展示；改值请打开原始 config）' },
-      { type: 'item', label: 'mcpServers / hooks / plugins 启用态等', value: 'adv:', disabled: true },
+      { type: 'item', label: 'notificationIdleSeconds / approvalTimeoutMs / bellOnApproval', value: 'adv:notify', disabled: true },
+      { type: 'item', label: 'roles / review / lintCommand / testCommand / autoCommit', value: 'adv:quality', disabled: true },
+      { type: 'item', label: 'feishu / relay / wechat / sessionIdleMinutes', value: 'adv:remote', disabled: true },
+      { type: 'item', label: 'mcpServers / hooks / plugins 启用态 / maxInstructionsKB / webFetchMaxKB', value: 'adv:misc', disabled: true },
       { type: 'header', label: '逃生口' },
       { type: 'item', label: '打开配置文件夹（~/.ecode/）', value: 'open' },
     ]

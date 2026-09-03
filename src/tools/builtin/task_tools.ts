@@ -7,7 +7,7 @@ import { taskRegistry } from '../../services/tasks.js'
 
 export const taskOutputTool: Tool = {
   name: 'task_output',
-  description: '读取后台任务增量输出（bash run_in_background 返回的 task_id）。默认只返回上次读取之后的新内容；wait_ms 可短等新输出或退出。',
+  description: '读取后台任务增量输出（bash run_in_background 返回的 task_id）。默认只返回上次读取之后的新内容；wait_ms 可短等新输出或退出。长任务建议单次大 wait_ms（最大 10000）一次等到，避免短间隔同参连发——连发会触发 loop-guard 同参检测打断你。',
   input_schema: {
     type: 'object',
     properties: {

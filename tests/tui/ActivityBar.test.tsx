@@ -51,4 +51,36 @@ describe('ActivityBar', () => {
     expect(f).not.toContain('执行中')
     expect(f).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
   })
+
+  it('2026-09-03 phase（busy 态）：持续过程替换主文案——thinking 显示「正在压缩对话」不显示「思考中」', () => {
+    const { lastFrame } = render(
+      React.createElement(ActivityBar, { state: 'thinking', turnStartedAt: Date.now() - 3000, phase: { text: '正在压缩对话', since: Date.now() } }),
+    )
+    const f = lastFrame() ?? ''
+    expect(f).toContain('正在压缩对话')
+    expect(f).not.toContain('思考中')
+    expect(f).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
+  })
+
+  it('2026-09-03 phase（idle 态）：空行升级为 spinner+文案+计时（compactingSince 泛化）', () => {
+    const { lastFrame } = render(
+      React.createElement(ActivityBar, { state: 'idle', phase: { text: '正在重连后台服务', since: Date.now() - 4200 } }),
+    )
+    const f = lastFrame() ?? ''
+    expect(f).toContain('正在重连后台服务')
+    expect(f).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
+    expect(f).toContain('4s') // 计时走 phase.since
+  })
+
+  it('phase 计时锚（审阅 P1）：busy 态 phase 期间计时走 phase.since——轮 1m 不冒充压缩 3s', () => {
+    // 修复前 busy 分支 turnStartedAt 恒传轮起点：轮中自动压缩显示「正在压缩对话 · 1m0s」
+    // （轮总耗时冒充压缩耗时，违背「压缩消耗多少时间」点名诉求）
+    const { lastFrame } = render(
+      React.createElement(ActivityBar, { state: 'thinking', turnStartedAt: Date.now() - 60_000, phase: { text: '正在压缩对话', since: Date.now() - 3000 } }),
+    )
+    const f = lastFrame() ?? ''
+    expect(f).toContain('正在压缩对话')
+    expect(f).toContain('3s') // 压缩自身耗时
+    expect(f).not.toContain('1m0s') // 轮总耗时不冒充
+  })
 })

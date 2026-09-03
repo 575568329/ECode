@@ -110,8 +110,9 @@ describe('R6：轮中失联自愈（rescue 收场行为）', () => {
       if (f.includes('本地模式')) break
     }
     const f = lastFrame() ?? ''
-    expect(f).toContain('本地模式') // 降级提示
-    expect(f).toContain('退回') // 排队退回提示（不被降级提示覆盖——P0-2 修复验证）
+    expect(f).toContain('本地模式') // 降级提示（sticky error 主提示最后推——占底部告警行显示位）
+    // 2026-09-03 告警中心聚合语义：tail 条目（退回/作废）折叠进「还有 N 条」计数不再同屏全显
+    expect(f).toMatch(/还有 \d+ 条（\/warnings 查看）/) // tail 存在（计数可见）
     expect(f).toContain('流式中段') // 已产出保留（封口不丢）
     // running 已收：输入框提示回落（不再是「处理中」占位）
     expect(f).not.toContain('（处理中')
@@ -139,12 +140,12 @@ describe('R6：轮中失联自愈（rescue 收场行为）', () => {
     for (let i = 0; i < 50; i++) {
       await flush(500)
       const f = lastFrame() ?? ''
-      if (f.includes('随轮作废')) break
+      if (f.includes('本地模式')) break
     }
     const f = lastFrame() ?? ''
-    if (!f.includes('随轮作废')) console.log('===== DEBUG 帧尾 =====\n' + f.split('\n').filter(Boolean).slice(-12).join('\n'))
     expect(f).toContain('本地模式')
-    expect(f).toContain('挂起的审批已随轮作废') // 审批 resolve(false) 的可见痕迹（防主输入框恒 inactive 静默死锁）
+    // 2026-09-03 告警中心聚合语义：作废提示折叠进计数——存在性经 warnings 面板断言
+    expect(f).toMatch(/还有 \d+ 条（\/warnings 查看）/) // 「挂起的审批已随轮作废」在计数中
     // 审批卡已收口（confirm 清空——残留会吞后续按键）
     expect(f).not.toContain('（y 允许')
   }, 45000)

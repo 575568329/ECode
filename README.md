@@ -2,13 +2,20 @@
 
 > 终端 Agent CLI —— 以 **AgentLoop 为心脏**，工具 / 模型接入 / TUI / 历史 / 配置作为分支接入心脏。形态对标 Claude Code / Aider。
 >
-> 技术栈：TypeScript 严格模式 · Node.js · Ink（TUI 待 M2）· `@anthropic-ai/sdk` 接 GLM-5.2
+> 技术栈：TypeScript 严格模式 · Node.js · Ink（TUI）· Anthropic/OpenAI 双协议接入
 
 ## 现状
 
-- **M1 心脏最小闭环已完成** ✅ —— 终端跑通一轮：提问 → LLM 调 `read_file`/`bash` → 回答
-- 设计文档齐全（[`docs/`](docs/README.md)），代码 M1 完成，M2-M4 待启动
-- 测试 47/47 全绿 · 真 LLM 烟测通过（GLM-5.2 经智谱 Anthropic 兼容端点）
+功能以「能力清单」为准（命令清单运行 `/help`，配置权威见内置 `ecode-config` skill）：
+
+- **交互**：Ink TUI 多轮对话 + 流式输出 + 插话（busy 态发消息排队）；20+ 斜杠命令（以 `/help` 为准——勿在此硬编码计数）；快捷键 Ctrl+T（详情统一入口两级菜单）/Ctrl+R（历史）/Tab（沙箱循环）等
+- **工具面**：读/写/编辑/ls/glob/grep/bash（危险命令拦截+沙箱五档）/web 搜索与抓取/子代理（task）/后台任务/任务清单（todo）/Skill 与 MCP 扩展/Plugin
+- **记忆与上下文**：会话历史持久化+恢复（/history /rewind）· ECODE.md 两级指令注入 · MEMORY.md 自动记忆 · 上下文压缩（/compact，分批 map-reduce）
+- **质量与安全**：lint/test 编辑后回喂自纠 · loopGuard 三检测器（复读/同参同果/连续空错自动止损）· 纠偏审查（review 高级模型定时+异常信号出卡）· 审批挂起超时 · settings 三层权限
+- **多端**：`ecode serve` Web/PWA（daemon 多项目）· 飞书 IM · 微信 ClawBot · relay 异地中继 · 设备配对
+- **成本**：token/费用四维统计（/stats /cost）· 缓存命中率 · 压缩省账
+
+设计文档齐全（[`docs/`](docs/README.md)），测试与里程碑实施记录随文档体系维护。
 
 ## 快速开始
 
@@ -35,25 +42,14 @@ npm run dev
 | `npm run build` | `tsc` 编译到 `dist/`（发布前置） |
 | `npx tsx scripts/smoke.ts` | 真 LLM 烟测（验证端点连通） |
 
-## 能力（M1）
-
-- ✅ 多轮对话 + 流式输出
-- ✅ `read_file`（读文件）/ `bash`（跑命令，30s timeout + cwd）
-- ✅ GLM-5.2 经智谱 Anthropic 兼容端点
-- ✅ 工具调用回流（LLM 调工具 → 看结果 → 继续回答）
-- ⬜ TUI 界面（M2）/ `write_file`·`edit_file`·`ls`·`glob`·`grep`（M3）
-- ⬜ 对话历史持久化（M4）/ 多 provider 切换 UI（M4）
-
-> ⚠️ M1 的 bash **未做危险命令拦截**（留 M3），调用时自行留意（如 `rm -rf`）。
-
 ## 文档
 
-权威设计见 [`docs/`](docs/README.md)：
+**长文内容以 docs 体系为准，本 README 只做入口**（避免长文漂移——历史教训见 docs/README.md）：
 
+- [docs/README.md](docs/README.md) — 文档索引（详设/规范/解析/诊断总入口）
 - [MVP 详设 v6](docs/详设/2026-08-11_ECode-MVP详设_待审核.md) — 权威总览（架构 / 数据流 / 接口 / 错误处理 / 里程碑）
-- [TUI 设计规范](docs/规范/2026-08-11_MVP-TUI设计规范_待审核.md) — 全屏框架式 + ActivityBar loading + 折叠 + 组件规格
-- [技术栈选型解析](docs/解析/2026-08-11_MVP-技术栈选型解析_待审核.md) — ESM / Ink / grep / ls / JSON Schema 决策
-- [配置系统与多 Provider 解析](docs/解析/2026-08-11_MVP-配置系统与多Provider解析_待审核.md) — JSONC / 两层 Provider / 双协议
+- [活文档清单与同步守则](docs/规范/2026-08-16_活文档清单与同步守则_已完成.md) — 哪些文档何时必须同步
+- 配置怎么配：问内置 `ecode-config` skill（模型自动加载）或读 `src/services/config.ts` 的 CONFIG_TEMPLATE
 
 工作区指令见 [`AGENTS.md`](AGENTS.md)。
 
@@ -61,14 +57,18 @@ npm run dev
 
 ```
 src/
-  cli/         入口（readline REPL，TUI 留 M2）
-  core/        心脏（loop / types 规范模型 / errors）
-  providers/   LLMProvider（interface + registry + anthropic）
-  tools/       工具（interface + registry 含 AJV / read_file / bash）
-  services/    config / logger / history（stub，M3/M4 替换）
+  cli/         入口（args 解析/装配/serve 主循环）
+  core/        心脏（loop / system 提示词 / types 规范模型 / errors）
+  providers/   LLMProvider（anthropic/openai 双协议 + 翻译层 + 看门狗）
+  tools/       工具（interface + registry 含 AJV / builtin 全家桶）
+  host/        宿主会话（HostSession：审批/压缩/loopGuard/多会话）
+  commands/    斜杠命令注册表（/help 动态列）
+  services/    config / history / skill / mcp / hooks / tasks / stats ...
+  tui/         Ink 组件与面板
+web/           Web 前端（Vite + React，serve 托管）
 docs/          设计文档（大纲/详设/解析/诊断/决策/规范）
-tests/         镜像 src（47 个单测）
-scripts/       smoke.ts（真 LLM 烟测）
+tests/         镜像 src（vitest，1900+ 用例）
+scripts/       探针与烟测脚本
 ```
 
 ## 架构
@@ -82,9 +82,7 @@ scripts/       smoke.ts（真 LLM 烟测）
                        │                      │
         ┌──────────────▼──────────┐  ┌────────▼──────────────┐
         │ LLMProvider Registry    │  │ Tool Registry         │
-        │ (按 type·模型接入)      │  │ (含 AJV 校验·工具能力)│
-        │ • AnthropicProvider     │  │ • read_file / bash    │
-        │   → 接 GLM-5.2          │  │   (write/edit/... M3) │
+        │ (双协议·模型接入)        │  │ (AJV 校验·沙箱·审批)  │
         └─────────────────────────┘  └───────────────────────┘
 ```
 

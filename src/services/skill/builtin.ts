@@ -8,9 +8,13 @@
  */
 
 import type { SkillInfo } from '../skill.js'
+import { commandRegistry, registerBuiltinCommands } from '../../commands/registry.js'
 
 /** 内置手册 skill 名（system.ts 路由行同用——单一事实源防改名漂移，审阅 P2-3）。 */
 export const ECODE_CONFIG_SKILL_NAME = 'ecode-config'
+
+/** 功能自述手册 skill 名（system.ts 路由行同用——防漂移方案 F3）。 */
+export const ECODE_FEATURES_SKILL_NAME = 'ecode-features'
 
 /** 手册正文。⚠ 模板字符串内：围栏用 ~~~（避开反引号）、\${} 转义（避开插值）。 */
 const ECODE_CONFIG_BODY = `# ECode 配置手册
@@ -40,6 +44,7 @@ ECode 自身的权威配置指南。修改配置前先读本手册；不确定�
 | providers | Record<名, ProviderCfg> | — | 供应商配置，key 为自定义名 |
 | mcpServers | Record<名, McpServerConfig> | — | MCP 外部工具（见下节） |
 | maxIterations | number | 50 | Agent 循环最大轮数 |
+| subagentMaxIterations | number | 跟 maxIterations | 子代理（task 工具）迭代上限；缺省=跟主代理 maxIterations |
 | bashMaxOutputBytes | number | 50000 | bash 输出截断阈值（50KB 头尾中截；超限落盘 sessions/<sid>.outputs/ 可回看） |
 | logLevel | string | "info" | 日志级别：debug/info/warn/error |
 | hooks | HookSpec[] | — | 事件 hook（M7）：SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Stop/SessionEnd；command 子进程，stdin 喂事件 JSON，stdout 可回 {continue:false} 阻断 / updatedInput 改参 / additionalContext 附加；exit 2 = 阻断 |
@@ -47,7 +52,7 @@ ECode 自身的权威配置指南。修改配置前先读本手册；不确定�
 | webFetchMaxKB | number | 30 | web_fetch 回喂内容上限 KB |
 | providers.*.pricing | Record<模型, {input,output,cacheRead?,cacheWrite?}> | — | 定价覆盖（¥/Mtok，优先于内置表与 models.dev 同步值） |
 | plugins | Record<"name@market", boolean> | — | 插件启用状态（/plugin 面板维护） |
-| sandbox | {defaultMode?, blockedCommands?} | 关 | 沙箱（M9）：defaultMode = default/read-only/workspace-write/full-access（Tab 键或 /sandbox 面板切换）；blockedCommands 通配黑名单全档硬拒 |
+| sandbox | {defaultMode?, blockedCommands?} | 关 | 沙箱（M9）：defaultMode = default/accept-edits/read-only/workspace-write/full-access 五档（Tab 键或 /sandbox 面板切换；accept-edits=纯编辑类免审批直放、bash 等仍走审批）；blockedCommands 通配黑名单全档硬拒 |
 | lintCommand / testCommand | string | 关 | 编辑后自动验证（M9）：**空串/缺省=关闭，不会自动探测**；显式命令优先。失败输出回喂模型自纠，连续失败熔断 |
 | autoCommit | boolean | false | git 轻量集成（M9）：轮末有编辑且 lint/test 绿自动 commit（带 Ecode-Commit trailer，只提交本轮文件；/undo 只退 ECode 提交） |
 | maxTokens（providers.*） | number | 32768 | 单次最大输出 token——8192 配 thinking（budget 占额）极易触顶截断（表现：回复半截后静默，12s 后告警行消失；/warnings 可查） |
@@ -69,6 +74,8 @@ providers.<名> 字段：
   "models": ["glm-5.2"],            // 可用模型（/model 列这些）
   "thinking": "medium",             // off | low | medium | high
   "maxTokens": 32768,               // 单次最大输出 token（8192 配 thinking 极易触顶截断）
+  "contextWindow": 200000,          // 可选；上下文窗口覆盖（escape hatch，缺省 models.dev 自动探测）
+  "streamStallMs": 90000,           // 可选；流停滞看门狗 ms（缺省 90000，0=关闭；非流式 thinking 端点调大）
   "temperature": 0.7,               // 可选；anthropic 协议 thinking 非 off 时禁用（否则 400）
   "topP": 0.95                      // 可选；同上
 }
@@ -121,6 +128,48 @@ thinking 注意：anthropic 协议映射为 budget_tokens（low=2048 / medium=81
 - 弹窗第三键「永久记住」= 写入 local 层 settings.local.json
 - 目前仅 Hook(owner) 一维；Skill/Plugin/Mcp 维度与 /permissions 面板后置
 
+## review 任务纠偏审查
+
+主模型跑常规轮，高级 reviewer 模型「定时兜底 + 异常信号提前触发」出纠偏卡注入（只审查不接管——不改变任务执行流）。
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| enabled | boolean | 必填 | true 开启；false/不配 review 节=零行为变化 |
+| provider | string | 必填 | 高级模型所在供应商名——**enabled=true 时启动期校验**：必须存在于 providers（CONFIG_REVIEW_INVALID） |
+| model | string | 必填 | 审查用模型（enabled=true 时校验非空） |
+| intervalTurns | number | 5 | 定时兜底：每 N 个用户轮审查一次 |
+| minTurns | number | 3 | 长任务才启动：前 N 轮不触发（短任务不值得审查烧钱） |
+| onSignals | boolean | true | 异常信号提前触发：连续工具失败/单轮迭代过长（每轮最多一次，防连环审查） |
+
+- 隐私提示：启用后**近期对话（含工具输出）会发送至 review.provider 所配端点**——与主模型不同厂商时即数据多流向一个端点，自行权衡
+- 费用可见性：审查调用在 /stats 按模型可见
+- 等级定义即此处的 provider/model（谁强谁弱用户显式配置，代码只管调度）
+
+## relay 中继接入（异地手机）
+
+出站连接：
+
+~~~jsonc
+"relay": { "server": "wss://<relay源>", "hostToken": "<REG_TOKEN>", "hostId": "登记名", "name": "别名" }
+~~~
+
+——server 与 hostToken 必填才激活（缺省不连）；hostId 多机区分（缺省主机名），name 是手机端显示别名。配了后 serve 自动连中继，纯出站零新增入站端口。
+
+三条远程接入路径选择：
+| 路径 | 适用 | 配置 |
+|---|---|---|
+| serve + 同 WiFi | 局域网直接访问 | ECODE_SERVE_HOST/PASSWORD（.env），免额外服务 |
+| feishu / wechat | 走 IM 通道免公网 | 各自节凭据，长连接 |
+| relay | 异地（手机不在同一网络） | 自部署 relay 源 + hostToken（见 docs/规范/2026-09-01_ECode-relay自部署指南） |
+
+## wechat 微信接入（ClawBot）
+
+~~~jsonc
+"wechat": { "botToken": "<token>", "allowUsers": ["<id>@im.wechat"] }
+~~~
+
+botToken 经 "ecode wechat-login" 命令扫码获取；allowUsers 是 user id 白名单，**缺省/空=拒绝所有消息**（安全默认，必配白名单才可用）。
+
 ## 常见任务配方
 
 ### 加一个 MCP server
@@ -147,6 +196,79 @@ providers 下新增 key（type/baseURL/apiKey/models）→ 重启 → /model 切
 - 修改配置保持 JSONC 合法（注释允许）；改前可备份 .bak，改后用 read_file 复查再重启
 - 「响应停滞 90000ms」告警（STREAM_STALL）：端点连续 90s 不吐字，看门狗中止。零产出会自动重试 1 次；已有部分产出时 provider 自动**续写**（半截固化为前缀继续补尾部，最多 2 次；含工具调用/思考的半截不续写直接报错——参数截断无法安全补齐）。若仍失败：让 agent 分批写入（先骨架后逐节追加），不要原样重发整轮`
 
+/**
+ * 功能自述正文（F3）：命令表由 renderCommandTable() 渲染派生，其余段落手工维护
+ * （tests/core/system.test.ts 对账断言兜底）。⚠ 模板字符串内：围栏用 ~~~。
+ */
+const ECODE_FEATURES_BODY = `# ECode 功能自述手册
+
+ECode 自身能力的权威清单。用户问「有什么功能/能做什么/XX 命令怎么用/快捷键/面板」时，以本手册为准回答，不要凭训练记忆罗列。
+
+## 斜杠命令（${'{CMD_COUNT}'} 条，渲染自 commandRegistry）
+
+${'{CMD_TABLE}'}
+
+客户端命令不经 LLM 执行（App 解释 action）；serve/web 端命令面为白名单子集（5 条）。Plugin 可贡献/注销命令。
+
+## 快捷键
+
+| 键 | 作用 |
+|---|---|
+| Ctrl+T | 详情统一入口（两级菜单：时间线/工具输出/子代理/任务等类别，数字直达；可搜索全文） |
+| Ctrl+R | 历史会话恢复（同 /history） |
+| Ctrl+U | 清空插话队列 |
+| F2 | 插话入队（忙碌态发消息，同直接 Enter） |
+| Tab | 沙箱模式循环切换（同 /sandbox 面板） |
+| Esc | 中断当前轮（审批卡上是拒绝） |
+| Ctrl+C | 中断并退出 / 清空输入行（视焦点态） |
+| @ | 文件路径补全 |
+| / | 斜杠命令补全（↓↑ 选择，滚动计数提示） |
+
+## 面板（/命令 打开）
+
+model（模型切换）/ history（历史会话）/ config（配置三页签）/ mcp（MCP 服务）/ skill（Skill 浏览）+ skill-create（从会话蒸馏 Skill）/ plugin（插件市场）/ devices（配对设备）/ rewind（回退改动）/ sandbox（沙箱档位）/ warnings（告警中心）。所有面板 Esc 退出；审批卡三键（允许一次/本会话记住/拒绝）。
+
+## 多端能力矩阵
+
+| 端 | 形态 | 命令面 |
+|---|---|---|
+| TUI（终端 Ink） | 完整交互 | 全部命令+快捷键 |
+| Web（浏览器，ecode serve） | daemon 多项目，PWA 可装 | 白名单子集（5 条） |
+| 手机（同 WiFi / PWA） | serve Mobile 页 | 同 Web |
+| 飞书（IM gateway） | 长连接免公网 | /new /sessions /switch + 审批卡片 |
+| 微信 ClawBot | iLink 扫码登录 | 同飞书形态 |
+| relay 中继 | 异地出站连接 | 同 Web |
+
+## 安全与权限三层
+
+- 沙箱五档（default/accept-edits/read-only/workspace-write/full-access）+ blockedCommands 通配黑名单全档硬拒
+- 审批：非只读工具弹卡（--yes 仅单次模式放行；sensitive 永远交互）；审批挂起超时自动拒绝
+- settings 三层权限（user/project/local 的 allow/ask/deny），目前管 Hook(skill:/plugin:) 维度
+- loopGuard 三检测器（复读/同参同果/连续空错）自动止损；纠偏审查 review 定时+异常信号出卡
+
+## 已知边界（避免过度承诺）
+
+- serve/web 端仅 5 条命令（完整面在 TUI）
+- config 不热加载（/model、/setup 例外）；改配置需 /restart 或重启
+- 联网搜索缺省 bing RSS（零配置免费）；图片理解不兜底——端点自证能力
+- 外网手机接入不内置穿透（Tailscale 或 feishu/relay 三选一）
+`
+
+/** 组装正文（渲染派生段落注入——唯一组装点，测试与运行时同源）。 */
+export function ecodeFeaturesBody(): string {
+  const list = registerBuiltinCommandsAndList()
+  return ECODE_FEATURES_BODY.replace('{CMD_COUNT}', String(list.length)).replace('{CMD_TABLE}', renderTable(list))
+}
+
+function registerBuiltinCommandsAndList() {
+  registerBuiltinCommands()
+  return commandRegistry.list()
+}
+
+function renderTable(cmds: Array<{ name: string; description: string }>): string {
+  return ['| 命令 | 用途 |', '|---|---|', ...cmds.map((c) => `| /${c.name} | ${c.description} |`)].join('\n')
+}
+
 export function builtinSkillInfos(): SkillInfo[] {
   return [
     {
@@ -156,6 +278,20 @@ export function builtinSkillInfos(): SkillInfo[] {
       whenToUse:
         '用户提到 ~/.ecode/config.json、mcpServers、.mcp.json、settings.json/settings.local.json、权限规则（permissions/allow/deny）、provider 配置、thinking/采样参数、/setup，或问「ECode 怎么配置/怎么用」时',
       body: ECODE_CONFIG_BODY,
+      baseDir: '',
+      source: 'builtin',
+      userInvocable: true,
+      disableModelInvocation: false,
+    },
+    {
+      // 防漂移方案 F3：功能自述权威源——模型答「有什么功能」的数据源（命令表渲染派生自
+      // commandRegistry，见 ecodeFeaturesBody；清单防漏登由 system.test.ts 对账断言兜底）
+      name: ECODE_FEATURES_SKILL_NAME,
+      description:
+        'ECode 功能自述手册：斜杠命令表（渲染自命令注册表）、快捷键、面板清单、多端能力矩阵（TUI/web/飞书/微信/relay）、安全与权限三层、已知边界。用户问 ECode 有什么功能/能做什么/怎么用 XX 命令时加载，不要凭记忆罗列。',
+      whenToUse:
+        '用户提到「你有什么功能/能做什么」、/命令用法、快捷键、面板、多端（web/手机/飞书/微信）能力时',
+      body: ecodeFeaturesBody(),
       baseDir: '',
       source: 'builtin',
       userInvocable: true,

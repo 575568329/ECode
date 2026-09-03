@@ -238,7 +238,7 @@ export function buildDoctorPrompt(args?: string): string {
   const home = homedir().split(sep).join('/')
   const inECodeRepo = existsSync('src/core/system.ts') && existsSync('docs/README.md')
   const item7 = inECodeRepo
-    ? `7. 提示词与文档同步（活文档抽查，依据 docs/规范/2026-08-16_活文档清单与同步守则_已完成.md）：读 src/core/system.ts 的工具选择指引，与实际注册的工具集对照（有无工具在指引里缺席）；读 src/services/config.ts 的 CONFIG_TEMPLATE 注释与 docs/规范 内 TUI 规范的键位表，抽查是否覆盖最新功能（如告警中心/分页键位/新配置键）；发现过时内容只报告位置与差异，不要直接改。
+    ? `7. 提示词与文档同步（活文档抽查，依据 docs/规范/2026-08-16_活文档清单与同步守则_已完成.md）：读 src/core/system.ts 的工具选择指引，与实际注册的工具集对照（有无工具在指引里缺席）；读 src/services/config.ts 的 CONFIG_TEMPLATE 注释与 docs/规范 内 TUI 规范的键位表，抽查是否覆盖最新功能（如告警中心/分页键位/新配置键）；读根 README.md 的「现状」节，对照 commandRegistry.list() 的命令数量与名称（数量不一致/含「待启动」「未做拦截」等过时叙事要报告）；发现过时内容只报告位置与差异，不要直接改。
 `
     : ''
   return `请对 ECode 的配置与文档做一次自检（只读取与报告，不要做任何修改——修复由我决策后另行指示）。逐项检查并汇总：

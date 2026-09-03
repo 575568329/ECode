@@ -176,8 +176,8 @@ describe('SkillRegistry.load', () => {
   it('目录不存在 → 静默空清单（仅剩内置 skill，M6.5）', async () => {
     const { reg } = makeRegistry()
     await reg.load()
-    // builtin（ecode-config 手册）常驻注入；文件源扫描为空不报错
-    expect(reg.list().map((s) => s.source)).toEqual(['builtin'])
+    // builtin（ecode-config + ecode-features 两册）常驻注入；文件源扫描为空不报错
+    expect(reg.list().map((s) => s.source)).toEqual(['builtin', 'builtin'])
   })
 
   it('项目级同名覆盖用户级（首个胜出 + warn）', async () => {
@@ -206,10 +206,20 @@ describe('SkillRegistry.load', () => {
     writeSkill(userDir, 'manualonly', '---\nname: manualonly\ndescription: d\ndisable-model-invocation: true\n---\nb')
     writeSkill(userDir, 'llmonly', '---\nname: llmonly\ndescription: d\nuser-invocable: false\n---\nb')
     await reg.load()
-    // builtin（ecode-config，双面可用）常驻在两个清单里
-    expect(reg.listForPrompt().map((s) => s.name).sort()).toEqual(['ecode-config', 'llmonly', 'normal'])
-    expect(reg.listForCompletion().map((s) => s.name).sort()).toEqual(['ecode-config', 'manualonly', 'normal'])
-    expect(reg.list()).toHaveLength(4)
+    // builtin（ecode-config + ecode-features，双面可用）常驻在两个清单里
+    expect(reg.listForPrompt().map((s) => s.name).sort()).toEqual([
+      'ecode-config',
+      'ecode-features',
+      'llmonly',
+      'normal',
+    ])
+    expect(reg.listForCompletion().map((s) => s.name).sort()).toEqual([
+      'ecode-config',
+      'ecode-features',
+      'manualonly',
+      'normal',
+    ])
+    expect(reg.list()).toHaveLength(5)
   })
 
   it('与内置命令撞名 → shadowedByCommand 标记', async () => {

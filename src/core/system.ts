@@ -9,7 +9,7 @@
 
 import type { SkillInfo } from '../services/skill.js'
 import { renderSkillListing, listingBudget } from '../services/skill/listing.js'
-import { ECODE_CONFIG_SKILL_NAME } from '../services/skill/builtin.js'
+import { ECODE_CONFIG_SKILL_NAME, ECODE_FEATURES_SKILL_NAME } from '../services/skill/builtin.js'
 import { loadInstructions, renderInstructions } from '../services/instructions.js'
 import { loadMemoryIndexes, renderMemory } from '../services/memory.js'
 
@@ -68,6 +68,13 @@ export function buildSystemPrompt(skills?: SkillInfo[], ctxWindow?: number, opts
       if (skills.some((s) => s.name === ECODE_CONFIG_SKILL_NAME && !s.disableModelInvocation)) {
         dynamic.push(
           `用户询问 ECode 自身的配置或用法（config、MCP、provider、命令等）时，先调用 Skill 工具加载 ${ECODE_CONFIG_SKILL_NAME} 手册，不要凭记忆猜测配置格式。`,
+        )
+      }
+      // 防漂移方案 F3（G3 关闭）：功能自述路由行——同 ecode-config 式；执行时机绑定批3 之外
+      // 无自指风险（本 skill 随批2 同批落地，路由行与手册同批交付）
+      if (skills.some((s) => s.name === ECODE_FEATURES_SKILL_NAME && !s.disableModelInvocation)) {
+        dynamic.push(
+          `用户询问 ECode 自身有哪些功能/命令/界面操作/快捷键/多端能力时，先调用 Skill 工具加载 ${ECODE_FEATURES_SKILL_NAME} 手册，不要凭记忆罗列。`,
         )
       }
     }

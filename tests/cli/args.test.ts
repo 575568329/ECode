@@ -132,3 +132,18 @@ describe('F-01 parseArgv', () => {
     expect(parseArgv(['-f']).mode).toBe('error')
   })
 })
+
+// 防漂移方案 §4.4（F4/G4 配套）：USAGE 静态串须覆盖 parseArgv 实际接受的全部白名单 flag。
+// 白名单与 USAGE 同在 args.ts——此处按「字面 flag 列表」对账（宽松含词，方案 §4.1 同原则：
+// 只漏报不误报，漏报=USAGE 少写一行，正是 G4 的形态）。
+describe('活文档防漂移：USAGE 覆盖全部 CLI flag（清单 §4.4）', () => {
+  const FLAGS = ['--version', '--help', '--yes', '--history', '--local'] as const
+  it('USAGE 文本包含 parseArgv 白名单的每个 flag', () => {
+    const { usage } = parseArgv([])
+    const missing = FLAGS.filter((f) => !usage.includes(f))
+    expect(
+      missing,
+      `USAGE 缺 flag 行：${missing.join(', ')}——补 src/cli/args.ts USAGE（-v/-h 形态也须可见）`,
+    ).toEqual([])
+  })
+})

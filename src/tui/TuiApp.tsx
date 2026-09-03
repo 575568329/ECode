@@ -64,7 +64,7 @@ import { TasksBar } from './TasksBar.js'
 import { OutputListPage, OutputRootPage, OutputViewer, panelWidth, toolResultSource, taskFileSource, subagentSource, timelineSource, listSubagentTranscripts, type OutputCategory, type OutputListPageKind, type OutputEntry, type RecentTool, type TaskSnap } from './OutputViewer.js'
 import { undoEcodeCommit } from '../services/git.js'
 import { readClipboardImage } from '../services/clipboard.js'
-import { pushNotice, deriveNoticeLine, renderNoticeLine, NOTICE_TTL_MS, type NoticeItem, type NoticeLevel } from './notices.js'
+import { pushNotice, deriveNoticeLine, renderNoticeLine, NOTICE_TTL_MS, hasFreshExpirable, type NoticeItem, type NoticeLevel } from './notices.js'
 import { theme } from './theme.js'
 import { enterAltScreen, exitAltScreen, AltScreen } from './AltScreen.js'
 import { createAnsiStripper } from './sanitize.js'
@@ -415,10 +415,22 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
   // 持续过程阶段（2026-09-03 拍板：压缩/重连/起草等持续执行不弹 5s 提示，进 loading 行——
   // 空闲态升级空行为 spinner+文案+计时，busy 态替换主文案；compacted/终态清除。
-  // 原 compactingSince 的泛化）
-  const [phase, setPhase] = useState<{ text: string; since: number } | null>(null)
-  const beginPhase = (text: string): void => setPhase({ text, since: Date.now() })
-  const endPhase = (): void => setPhase(null)
+  // 原 compactingSince 的泛化）。
+  // 审阅修复批（帧序屏障+属主）：token=置起方身份（命令自身 endPhase(token) 防多源交错时
+  // 先完成者误清后者）；bornSeq=置起时的帧 seq 快照（迟到的旧 turn/completed 不得清——
+  // 空闲态命令 phase 与重放帧的唯一交错面）
+  const lastSeqRef = useRef(0)
+  const phaseTokenRef = useRef(0)
+  const [phase, setPhase] = useState<{ text: string; since: number; token: number; bornSeq: number } | null>(null)
+  const beginPhase = (text: string): number => {
+    phaseTokenRef.current += 1
+    setPhase({ text, since: Date.now(), token: phaseTokenRef.current, bornSeq: lastSeqRef.current })
+    return phaseTokenRef.current
+  }
+  /** 清除 phase。带 token=属主比对（仅清自己置起的——多源交错防误清）；缺省=无条件清
+   *  （兜底语义：轮死/中断/切会话时一切过程失效）。 */
+  const endPhase = (token?: number): void =>
+    setPhase((cur) => (cur === null || token === undefined || cur.token === token ? null : cur))
   const [activity, setActivity] = useState<{ state: ActivityState; text?: string }>({
     state: 'idle',
   })
@@ -426,16 +438,19 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   // M8 告警中心：运行时提示统一队列（onWarn/启动警告/截断提示都进这里；底部单行派生+/warnings 面板）
   const [notices, setNotices] = useState<NoticeItem[]>([])
   const noticeIdRef = useRef(0)
-  const pushNoticeFn = (level: NoticeLevel, text: string, sticky = false): void => {
+  const pushNoticeFn = (level: NoticeLevel, text: string, sticky = false, bornSeq?: number): void => {
     noticeIdRef.current += 1
-    setNotices((prev) => pushNotice(prev, noticeIdRef.current, level, text, Date.now(), sticky))
+    setNotices((prev) => pushNotice(prev, noticeIdRef.current, level, text, Date.now(), sticky, bornSeq))
   }
   // F-38：TTL 过期时钟——仅当存在可过期条目（info/warn）时每秒 tick 驱动重渲染，
-  // 到期条目从底部行退场（error 常驻不需要时钟；无过期条目时不挂 interval 不空转）
+  // 到期条目从底部行退场。审阅修复批（tick 优化）：全过期后停跳（hasFreshExpirable
+  // 含 1s 退场缓冲窗——防「过期瞬间底部行冻结不退」）；interval 谓词空转成本可忽略
   const [noticeTick, setNoticeTick] = useState(() => Date.now())
   useEffect(() => {
     if (!notices.some((n) => NOTICE_TTL_MS[n.level] !== undefined)) return
-    const timer = setInterval(() => setNoticeTick(Date.now()), 1000)
+    const timer = setInterval(() => {
+      if (hasFreshExpirable(notices)) setNoticeTick(Date.now())
+    }, 1000)
     return () => clearInterval(timer)
   }, [notices])
   const [tokens, setTokens] = useState(0)
@@ -685,6 +700,9 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const mountedRef = useRef(true) // 审阅 P2：unmount 后 in-flight rescue 不再建新宿主
   const hostEventHandlerRef = useRef<(ev: import('../protocol/types.js').ProtocolEvent) => void>(() => {})
   hostEventHandlerRef.current = (ev) => {
+      // 审阅修复批（帧序屏障）：记录最新帧 seq——notice/phase 的出生快照与 turn/completed
+      // 的清除判定基准（迟到的旧帧不得清掉新 push 的状态）
+      lastSeqRef.current = Math.max(lastSeqRef.current, ev.seq)
       // Ctrl+C 立即停：中断后到下一轮 turn/started 之间的动态帧（delta/item/thinking/usage）
       // 是宿主后台收敛的残渣——丢弃不渲染（transcript 权威在宿主，轮末/下轮重建自纠）
       if (interruptedAtRef.current && (ev.type === 'delta' || ev.type === 'item/started' || ev.type === 'item/completed' || ev.type === 'item/executing' || ev.type === 'thinking' || ev.type === 'usage')) return
@@ -852,13 +870,20 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           // submit 开头的兑现兜底保留
           // 2026-09-03 拍板（中断提示常驻「直到问题解决」）：轮成功完成=阻塞已解除的自动
           // 判定——清掉非 sticky 的 error 告警（sticky=降级类持续状态警示，续聊期间保留；
-          // warn/info 历史留给 /warnings 回看）
-          setNotices((ns) => (ns.some((n) => n.level === 'error' && n.sticky !== true) ? ns.filter((n) => n.level !== 'error' || n.sticky === true) : ns))
+          // warn/info 历史留给 /warnings 回看）。审阅修复批（帧序屏障）：只清 bornSeq 早于
+          // 本帧的条目——断线重放/迟到的旧轮完成帧不得误清重放后才 push 的新告警
+          setNotices((ns) =>
+            ns.some((n) => n.level === 'error' && n.sticky !== true && (n.bornSeq === undefined || n.bornSeq < ev.seq))
+              ? ns.filter((n) => n.level !== 'error' || n.sticky === true || (n.bornSeq !== undefined && n.bornSeq >= ev.seq))
+              : ns,
+          )
           // 审阅修复批（P0-1）：phase 兜底清除——压缩终止帧（compacted/compactFailed）在
           // 中断/异常/gap 丢帧路径可能永不到达（loop 吸收 AbortError 不发 compactFailed、
           // error 帧不带、SSE 断线丢帧）；轮完成时压缩若仍在跑，compacted 到达另有独立
-          // 「✓ 已压缩」提示，此处清除不损信息（幂等，与帧清除双保险）
-          setPhase(null)
+          // 「✓ 已压缩」提示，此处清除不损信息（幂等，与帧清除双保险）。
+          // 帧序屏障：迟到的旧 completed（seq ≤ phase 置起时快照）不清——空闲态命令
+          // （MCP 重连/起草）进行中与 gap 重放的唯一交错面
+          setPhase((cur) => (cur !== null && cur.bornSeq < ev.seq ? null : cur))
           void pullTranscript().then((l) => {
             setActivity((cur) => (cur.state === 'aborted' ? cur : { state: 'idle' }))
             if (l.length > 0) {
@@ -879,7 +904,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           applySandboxMode(ev.mode)
           break
         case 'notice':
-          pushNoticeFn(ev.level, ev.text)
+          pushNoticeFn(ev.level, ev.text, false, ev.seq)
           break
         case 'systemMsg':
           setSystemMsgs([ev.text])
@@ -893,18 +918,22 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
           setPhase(null)
           break
         case 'compacted':
-          setPhase(null)
+          // 帧终态只清压缩自己的 phase（文案锚定——迟到的 compacted 不得清掉并行的
+          // MCP 重连/起草命令 phase；属主比对同效但跨帧拿不到 token，文案唯一可锚）
+          setPhase((cur) => (cur !== null && cur.text === '正在压缩对话' ? null : cur))
           syncCommitted()
           setSystemMsgs(['✓ 已压缩对话（旧消息已摘要进上下文，原文仍显示）'])
           break
         case 'compacting':
           // 2026-09-03 拍板（持续性内容进 loading 行不弹 5s 提示）：压缩统一走 phase——
           // 空闲态 loading 行接管（spinner+计时）；轮中自动压缩主文案替换为阶段名
-          // （thinking tail 停滞期显示「正在压缩」比冻结的旧内容准确）
-          setPhase({ text: '正在压缩对话', since: Date.now() })
+          // （thinking tail 停滞期显示「正在压缩」比冻结的旧内容准确）。
+          // 帧驱动换属主（新 token——接管显示位）+ bornSeq 取帧 seq
+          phaseTokenRef.current += 1
+          setPhase({ text: '正在压缩对话', since: Date.now(), token: phaseTokenRef.current, bornSeq: ev.seq })
           break
         case 'compactFailed':
-          setPhase(null)
+          setPhase((cur) => (cur !== null && cur.text === '正在压缩对话' ? null : cur)) // 同 compacted：文案锚定只清压缩
           if (turnStartedAtRef.current !== null) setSystemMsgs(['（压缩未完成——对话太短或摘要失败，稍后自动重试）'], 'warn')
           break
         case 'approval/requested': {
@@ -1246,11 +1275,12 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       setSystemMsgs(['（MCP 未启用）'], 'warn')
       return
     }
-    // 2026-09-03 拍板：持续过程进 loading 行（重连期间 phase spinner+计时，不弹 5s 闪现）
-    beginPhase(`正在重连${name !== undefined && name !== '' ? ` ${name}` : '全部'} MCP server`)
+    // 2026-09-03 拍板：持续过程进 loading 行（重连期间 phase spinner+计时，不弹 5s 闪现）。
+    // 审阅修复批（属主比对）：持 token 清——先完成者不误清后者置起的过程显示
+    const ph = beginPhase(`正在重连${name !== undefined && name !== '' ? ` ${name}` : '全部'} MCP server`)
     try {
       const r = await deps.mcpManager.reconnect(name)
-      endPhase()
+      endPhase(ph)
       setSystemMsgs([
         r.failed.length === 0
           ? `✓ MCP 重连完成（${r.ok.length} 个成功）`
@@ -1258,7 +1288,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       ], r.failed.length === 0 ? 'info' : 'warn')
     } catch (e) {
       // 未知 server 名/内部错误透传（审阅 P2：吞错会渲染成「0 个成功」的假成功）
-      endPhase()
+      endPhase(ph)
       setSystemMsgs(['MCP 重连失败：' + (e instanceof Error ? e.message : String(e))], 'warn')
     }
   }
@@ -1276,8 +1306,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       return
     }
     // 2026-09-03 拍板：起草/合并两段持续 LLM 执行进 loading 行（交互卡点前清除——等待用户
-    // 输入时 phase 停在「正在起草」会误导）
-    beginPhase('正在从会话起草 skill')
+    // 输入时 phase 停在「正在起草」会误导）。属主比对：持 token 清
+    const phDraft = beginPhase('正在从会话起草 skill')
     try {
       const provider = deps.providerRegistry.getByType(config.providers[config.current.name].type)
       const providerReq = buildProviderReq(config)
@@ -1287,7 +1317,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       })
       const raw = await callLLM(provider, providerReq, DRAFT_SYSTEM, [userMsg(buildDraftUser(serializeSession(msgs)))])
       const candidate = parseCandidate(raw)
-      endPhase()
+      endPhase(phDraft)
       const existing = deps.skillRegistry.get(candidate.name)
       if (existing === undefined) {
         // 创建路径：选存储层级（用户级=个人 ~/.ecode/skills；项目级=团队共享 .ecode/skills 入库）
@@ -1306,14 +1336,14 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         setSystemMsgs([`✓ 已创建 skill「${candidate.name}」（${level === 'project' ? '项目级' : '用户级'}：${r.path}）`])
       } else {
         // 升级路径：merger 三态 → 冲突裁决 → diff 预览 → install
-        beginPhase('正在合并升级草稿')
+        const phMerge = beginPhase('正在合并升级草稿')
         const mRaw = await callLLM(
           provider,
           providerReq,
           MERGER_SYSTEM,
           [userMsg(buildMergerUser(existing, candidate))],
         )
-        endPhase()
+        endPhase(phMerge)
         const verdicts = parseMergerVerdicts(mRaw)
         const conflicts = conflictTitles(verdicts)
         let resolution: 'keep' | 'adopt' = 'keep'

@@ -219,6 +219,37 @@ describe('R5：TuiApp 时间线帧接线（挂账⑩）', () => {
     expect(f).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/) // idle 无 spinner 残留
   })
 
+  it('审阅修复批（帧序屏障）：迟到的旧 turn/completed 不清 phase——只清 bornSeq 早于本帧的', async () => {
+    // 场景：空闲态命令（MCP 重连/起草）进行中，gap 重放的旧轮完成帧到达——不得误清
+    const { host, fire } = makeFakeHost()
+    const { lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
+    await flush()
+    fire({ type: 'compacting', seq: 5 }) // phase 置起（bornSeq=5）
+    await flush(40)
+    expect(lastFrame() ?? '').toContain('正在压缩对话')
+    fire({ type: 'turn/completed', seq: 3, turnId: 't-old' }) // 迟到的旧帧（seq<5）
+    await flush(60)
+    expect(lastFrame() ?? '').toContain('正在压缩对话') // 屏障生效——不清
+    fire({ type: 'turn/completed', seq: 6, turnId: 't-new' }) // 新帧（seq>5）
+    await flush(60)
+    expect(lastFrame() ?? '').not.toContain('正在压缩对话') // 正常清除
+  })
+
+  it('审阅修复批（帧序屏障）：迟到的旧 turn/completed 不清重放后才 push 的 error 告警', async () => {
+    const { host, fire } = makeFakeHost()
+    const { lastFrame } = render(React.createElement(TuiApp, { deps: makeDeps(), host }))
+    await flush()
+    fire({ type: 'notice', seq: 5, level: 'error', text: '会话找回失败：上下文可能为空' }) // bornSeq=5
+    await flush(40)
+    expect(lastFrame() ?? '').toContain('会话找回失败')
+    fire({ type: 'turn/completed', seq: 3, turnId: 't-old' }) // 重放窗口的旧轮完成帧
+    await flush(60)
+    expect(lastFrame() ?? '').toContain('会话找回失败') // 屏障生效——旧帧不清新告警
+    fire({ type: 'turn/completed', seq: 6, turnId: 't-new' })
+    await flush(60)
+    expect(lastFrame() ?? '').not.toContain('会话找回失败') // 新帧正常清（轮成功=问题解决）
+  })
+
   it('审阅修复批（P0-3）：/warnings 面板显示全部告警全文（底部行折叠条目的可见出口）', async () => {
     // 干净环境验证面板通路（MidturnRescue 的收场态 confirm 残留不适合作键盘交互）——
     // 底部行只显最新一条+计数，全文出口=面板；此用例锁「命令→面板→全文」链路真实存在

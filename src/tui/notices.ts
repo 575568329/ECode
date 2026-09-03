@@ -29,6 +29,10 @@ export interface NoticeItem {
   /** 2026-09-03 拍板（中断提示常驻「直到问题解决」）：sticky=true 的 error 不随轮成功
    *  自动清（如本地降级警示——续聊期间约束必须持续可见，仅用户 /warnings 清空） */
   sticky?: boolean
+  /** 审阅修复批（帧序屏障）：入队时的协议帧 seq 快照——turn/completed 的自动清除只吃
+   *  bornSeq < ev.seq 的条目（断线重放/迟到的旧轮完成帧不得误清重放后才 push 的新告警）。
+   *  undefined=无帧上下文（非帧路径兜底，恒可清） */
+  bornSeq?: number
 }
 
 export const NOTICE_LIMIT = 50
@@ -36,15 +40,25 @@ export const NOTICE_LIMIT = 50
 const LEVEL_WEIGHT: Record<NoticeLevel, number> = { error: 3, warn: 2, info: 1 }
 
 /** 追加一条（同 level+text 去重；封顶淘汰：优先丢 info，同级丢最旧）。 */
-export function pushNotice(list: NoticeItem[], id: number, level: NoticeLevel, text: string, at = Date.now(), sticky = false): NoticeItem[] {
+export function pushNotice(list: NoticeItem[], id: number, level: NoticeLevel, text: string, at = Date.now(), sticky = false, bornSeq?: number): NoticeItem[] {
   if (list.some((n) => n.level === level && n.text === text)) return list
-  const next = [...list, { id, level, text, at, ...(sticky ? { sticky: true } : {}) }]
+  const next = [...list, { id, level, text, at, ...(sticky ? { sticky: true } : {}), ...(bornSeq !== undefined ? { bornSeq } : {}) }]
   if (next.length <= NOTICE_LIMIT) return next
-  // 淘汰优先级：info 最先，同级最旧（sticky error 不参与淘汰——先剔出淘汰序列）
+  // 淘汰优先级：info 最先，同级丢最旧（sticky error 不参与淘汰——先剔出淘汰序列）
   const pool = next.map((n, i) => ({ n, i })).filter((e) => e.n.sticky !== true)
   const dropIdx = pool.find((e) => e.n.level === 'info')?.i ?? pool.find((e) => e.n.level === 'warn')?.i ?? pool[0]?.i
   if (dropIdx !== undefined) return next.filter((_, i) => i !== dropIdx)
-  return next.slice(1)
+  return next.slice(1) // 全 sticky 溢出兜底丢最旧（现实不可达——唯一 sticky 源同文本去重）
+}
+
+/** 审阅修复批（TTL tick 优化）：是否存在「未过期或刚过期未退场」的可过期条目——tick 回调
+ *  据此决定是否驱动重渲（全过期后停跳，interval 谓词空转成本可忽略；过期后保留 graceMs
+ *  缓冲窗=退场渲染的最后机会，防止「过期瞬间底部行冻结不退」） */
+export function hasFreshExpirable(list: NoticeItem[], now = Date.now(), graceMs = 1000): boolean {
+  return list.some((n) => {
+    const ttl = NOTICE_TTL_MS[n.level]
+    return ttl !== undefined && now - n.at < ttl + graceMs
+  })
 }
 
 /** 条目是否仍在驻留期内（error 恒 fresh；TTL 判定基准 now 显式传入保纯函数可测）。 */

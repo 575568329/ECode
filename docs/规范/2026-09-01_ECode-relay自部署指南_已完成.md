@@ -158,18 +158,3 @@ curl -s "https://nodetime.cn/ecode/v1/hosts/online?ids=office-pc"  # 多机在�
 - 外网探针：`npx tsx scripts/relay-e2e-probe.ts --server wss://nodetime.cn --token <REG_TOKEN>`（自机经公网全链路 6 断言：控制腿/offer relay 段+钉公钥/E2EE 握手/cmd 往返/事件透传/rebind 自愈）。
 
 ---
-
-## 附：Windows 登录自启 serve（2026-09-04 新增）
-
-手机/远程接入的前提是电脑侧 daemon 在跑。除了手动 `ecode serve`，Windows 支持一条命令注册**登录自启**（静默后台、无需管理员）：
-
-```bash
-ecode serve autostart            # 注册（幂等，重复执行覆盖）
-ecode serve autostart --status   # 查看是否已注册（exit 0=已注册）
-ecode serve autostart --remove   # 移除
-```
-
-- 实现：用户「启动」文件夹（`%APPDATA%\...\Startup`）放一个 .vbs 隐藏启动器，登录时静默 `ecode serve`（窗口不弹出）
-- 工作目录 = 安装命令执行时的目录（默认项目注册/.env 读取基准与手动启动一致）
-- 需要 **dist 形态**（npm link 全局安装即为）；tsx 源码形态会拒绝并提示
-- 安全：绑定 127.0.0.1 与手动启动一致；启动器文件在开始菜单启动文件夹可见，删除即卸载

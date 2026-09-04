@@ -1,9 +1,10 @@
 /**
- * /devices 配对设备面板（R 线）：一个面板覆盖 查看列表/吊销/配对新设备（终端二维码+深链）。
+ * /devices 配对设备面板（R 线）：一个面板覆盖 本机服务信息（地址+token）/查看列表/吊销/
+ * 配对新设备（终端二维码+深链）/停止后台 serve。
  *
  * 数据自取（probeRunningDaemon → daemon HTTP；不可达落本地注册表）——面板与宿主零耦合。
  * 交互（PanelShell 惯例）：↑↓ 选择 · 回车 执行 · Esc 返回；
- * 吊销二次确认（回车选中 → 再回车确认，防误触）；配对成功切二维码视图（任意键返回）。
+ * 吊销/停止 serve 二次确认（回车选中 → 再回车确认，防误触）；配对成功切二维码视图（任意键返回）。
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -30,7 +31,23 @@ interface PairResultView {
   viaDaemon: boolean
 }
 
-export function DevicesPanel({ onCancel }: { onCancel: () => void }): ReactElement {
+export interface ServeInfo {
+  /** 本机服务地址（http://127.0.0.1:<port>） */
+  address: string
+  /** daemon Bearer token（server.json——本机客户端/脚本用） */
+  token: string
+}
+
+export function DevicesPanel({
+  onCancel,
+  serve,
+  onStopServe,
+}: {
+  onCancel: () => void
+  /** 附着态才有（embedded 无后台服务可展示/停止） */
+  serve?: ServeInfo
+  onStopServe?: () => void
+}): ReactElement {
   const [devices, setDevices] = useState<DeviceRow[] | null>(null)
   const [status, setStatus] = useState('')
   const [armed, setArmed] = useState<string | null>(null)
@@ -88,6 +105,29 @@ export function DevicesPanel({ onCancel }: { onCancel: () => void }): ReactEleme
 
   const rows = [
     ...(status !== '' ? [{ type: 'header' as const, label: status }] : []),
+    // 服务信息（2026-09-04 用户点名：地址+token 直接在 TUI 可见；只读展示行）
+    ...(serve !== undefined
+      ? [
+          { type: 'header' as const, label: `本机服务  ${serve.address}` },
+          { type: 'header' as const, label: `访问令牌  ${serve.token}` },
+        ]
+      : []),
+    // 停止 serve 仅附着态可见（embedded 无后台服务可停）
+    ...(serve !== undefined && onStopServe !== undefined
+      ? [
+          {
+            type: 'item' as const,
+            value: '__stop__' as const,
+            label: (
+              <Text color={theme.error}>
+                {' '}
+                ⏹ 停止后台 serve
+                {armed === '__stop__' ? ' —— 再回车确认（断开手机/远程，TUI 转本地模式；Esc 取消）' : ''}
+              </Text>
+            ),
+          },
+        ]
+      : []),
     { type: 'item' as const, value: '__pair__' as const, label: pairBusy ? ' ⏳ 生成配对中…' : ' ➕ 配对新设备（回车生成二维码+链接）' },
     { type: 'header' as const, label: `已配对设备（${devices?.length ?? 0}）` },
     ...(devices ?? []).map((d) => ({
@@ -111,6 +151,14 @@ export function DevicesPanel({ onCancel }: { onCancel: () => void }): ReactEleme
       subtitle="新设备配对 · 吊销 · 管理"
       rows={rows}
       onPick={(v) => {
+        if (v === '__stop__') {
+          // 停止 serve 二次确认（同吊销 armed 模式）；确认后交宿主回调（停进程+降级本地）
+          if (armed === '__stop__') {
+            setArmed(null)
+            onStopServe?.()
+          } else setArmed('__stop__')
+          return
+        }
         if (v === '__pair__') {
           void pair()
           return

@@ -2447,6 +2447,38 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       )}
       {overlay?.kind === 'devices-panel' && (
         <DevicesPanel
+          serve={
+            attachedHost !== undefined
+              ? (() => {
+                  const reg = readServerReg()
+                  return reg !== null ? { address: `http://127.0.0.1:${reg.port}`, token: reg.token } : undefined
+                })()
+              : undefined
+          }
+          onStopServe={
+            attachedHost !== undefined
+              ? () => {
+                  // 2026-09-04 用户点名「从 TUI 退出 serve」：进程级 stop（serveMain 优雅停机）
+                  // + 熔断 G3 自愈（否则 8s 后又拉回来）+ 降级本地续聊
+                  const reg = readServerReg()
+                  rescueDeadLatch.current = true
+                  if (reg !== null) {
+                    void fetch(`http://127.0.0.1:${reg.port}/api/cmd`, {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json', authorization: `Bearer ${reg.token}` },
+                      body: JSON.stringify({ op: { op: 'stop' } }),
+                    }).catch(() => {})
+                  }
+                  const where = degradeToLocal()
+                  if (where === 'local') {
+                    setSystemMsgs(['✓ 后台 serve 已停止——已切换本地模式续聊；重新启动后台：终端跑 ecode serve 或重启 ecode'], 'warn')
+                  } else {
+                    setSystemMsgs(['✓ 后台 serve 停止指令已发出'], 'warn')
+                  }
+                  setOverlay(null)
+                }
+              : undefined
+          }
           onCancel={() => {
             pickerRef.current = false
             setOverlay(null)

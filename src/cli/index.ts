@@ -157,13 +157,6 @@ async function main(): Promise<void> {
       await serveStop()
       return
     }
-    // 2026-09-04 用户点名：serve 登录自启（手机/远程接入不依赖手动起服务）
-    if (parsed.serveArgs[0] === 'autostart') {
-      const { autostartInstall, autostartRemove, autostartStatus } = await import('./serveAutostart.js')
-      if (parsed.serveArgs.includes('--remove')) return autostartRemove()
-      if (parsed.serveArgs.includes('--status')) return autostartStatus()
-      return autostartInstall()
-    }
     await serveMode()
     return
   }
@@ -299,7 +292,7 @@ async function main(): Promise<void> {
             makeDeps(cfg, logger, sid ?? new Date().toISOString().replace(/[:.]/g, '-'), process.cwd(), { approvalPolicy: autoYes ? 'auto-approve' : 'ask' }) as unknown as TuiAppDeps,
           // 附着成功提示走 initialNotice（底部 systemMsgs 统一通道，5s 自动消失）——
           // banner 是配置错误持久横幅，不该被这条常态信息占用（后台状态已有顶栏「后台运行中」常驻段）
-          initialNotice: `ℹ 已附着后台服务（${outcome.daemonName}）——任务在后台持续运行，手机可继续操作`,
+          initialNotice: `ℹ 已附着后台服务（${outcome.daemonName}）——任务在后台持续运行，手机可继续操作（服务地址与令牌见 /devices 面板）`,
           initialHistorySessionId,
           onExit: () => gracefulShutdown(0),
         }),

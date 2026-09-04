@@ -157,6 +157,13 @@ async function main(): Promise<void> {
       await serveStop()
       return
     }
+    // 2026-09-04 用户点名：serve 登录自启（手机/远程接入不依赖手动起服务）
+    if (parsed.serveArgs[0] === 'autostart') {
+      const { autostartInstall, autostartRemove, autostartStatus } = await import('./serveAutostart.js')
+      if (parsed.serveArgs.includes('--remove')) return autostartRemove()
+      if (parsed.serveArgs.includes('--status')) return autostartStatus()
+      return autostartInstall()
+    }
     await serveMode()
     return
   }

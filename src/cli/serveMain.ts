@@ -206,6 +206,14 @@ export async function serveMode(): Promise<void> {
     } catch {
       /* 已删/不可达——信号路径兜底 */
     }
+    // 审阅修复（正确性席 P1·三批）：写显式停止墓碑——与 CLI `serve stop` 同款。原路径漏写：
+    // 存活他端 TUI 的失联自愈（resurrectDaemonReg）读不到墓碑 → 数秒内把刚停的 daemon 原样
+    // 拉回，「停止后台 serve」被无声推翻。新 daemon 四验成功时自动清除（既有逻辑）
+    try {
+      writeFileSync(join(os.homedir(), '.ecode', 'daemon.stopped'), JSON.stringify({ ts: Date.now() }), { mode: 0o600 })
+    } catch {
+      /* 写失败不阻断停机（墓碑只是自愈让位信号） */
+    }
     shutdown(0)
   }
   // R1：配对设备凭据注入（devices.json 未吊销条目→extraCredentials device 类——不可 confirm 豁免）
@@ -407,7 +415,12 @@ export async function serveMode(): Promise<void> {
         process.exit(0)
       }
     } catch {
-      // 注册文件被删（stop 已发 SIGTERM——此路径兜底）
+      // 审阅修复（正确性席·附带）：空 catch → 注册被删/不可读=已被停止或接管——让位自杀
+      //（原吞掉后若 srv.close 挂起，daemon 会永久无注册盲跑）。与上方 id 不符同路径收敛
+      clearInterval(watchdog)
+      if (sweep !== null) clearInterval(sweep)
+      registry.disposeAll()
+      process.exit(0)
     }
   }, 10_000)
   void watchdog

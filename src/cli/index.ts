@@ -157,6 +157,13 @@ async function main(): Promise<void> {
       await serveStop()
       return
     }
+    // 审阅修复（正确性席 P2·六批）：未知 serve 子命令报错退出——原透传给 serveMode 静默起前台
+    // serve（`ecode serve autostart` 被否决删除后，肌肉记忆敲旧命令会误起常驻进程）
+    if (parsed.serveArgs.length > 0) {
+      process.stderr.write(`✗ 未知的 serve 子命令：${parsed.serveArgs.join(' ')}（可用：stop）
+`)
+      process.exit(1)
+    }
     await serveMode()
     return
   }

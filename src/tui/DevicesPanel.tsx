@@ -38,6 +38,11 @@ export interface ServeInfo {
   token: string
 }
 
+function maskToken(token: string): string {
+  if (token.length <= 12) return '•'.repeat(token.length)
+  return `${token.slice(0, 8)}…${token.slice(-4)}`
+}
+
 export function DevicesPanel({
   onCancel,
   serve,
@@ -53,6 +58,9 @@ export function DevicesPanel({
   const [armed, setArmed] = useState<string | null>(null)
   const [result, setResult] = useState<PairResultView | null>(null)
   const [pairBusy, setPairBusy] = useState(false)
+  const [tokenRevealed, setTokenRevealed] = useState(false)
+  // 审阅修复（安全席 P1·六批）：token 默认遮蔽（primary 全权凭据，面板不走 alt screen——
+  // 明文会被顶进终端 scrollback/截屏不可回收）。回车令牌行切换揭示（复用面板 armed 式交互）
 
   const load = useCallback(async (): Promise<void> => {
     const daemon = await probeRunningDaemon()
@@ -109,7 +117,19 @@ export function DevicesPanel({
     ...(serve !== undefined
       ? [
           { type: 'header' as const, label: `本机服务  ${serve.address}` },
-          { type: 'header' as const, label: `访问令牌  ${serve.token}` },
+          {
+            // 安全席 P1·六批：token 是 item（可选中），回车切换揭示；默认遮蔽——
+            // 明文常驻主缓冲会滚进 scrollback/截屏不可回收（与 serveMain「token 不打 stdout」同决策）
+            type: 'item' as const,
+            value: '__token__' as const,
+            label: (
+              <Text>
+                {' '}🔑 访问令牌{' '}
+                {tokenRevealed ? serve.token : maskToken(serve.token)}
+                <Text dimColor>{tokenRevealed ? '（回车重新遮蔽）' : '（回车显示完整）'}</Text>
+              </Text>
+            ),
+          },
         ]
       : []),
     // 停止 serve 仅附着态可见（embedded 无后台服务可停）
@@ -151,6 +171,10 @@ export function DevicesPanel({
       subtitle="新设备配对 · 吊销 · 管理"
       rows={rows}
       onPick={(v) => {
+        if (v === '__token__') {
+          setTokenRevealed((r) => !r)
+          return
+        }
         if (v === '__stop__') {
           // 停止 serve 二次确认（同吊销 armed 模式）；确认后交宿主回调（停进程+降级本地）
           if (armed === '__stop__') {
@@ -172,6 +196,11 @@ export function DevicesPanel({
       onCancel={() => {
         if (armed !== null) setArmed(null)
         else onCancel()
+      }}
+      onCursor={() => {
+        // 安全席/正确性席 P2·六批：光标移动即解除武装——armed 行被 ↑↓/搜索/窗口滚动隐藏后
+        // 单回车误执行的破坏面（stop 为最高破坏级动作）
+        if (armed !== null) setArmed(null)
       }}
       emptyHint="（尚无配对设备——回车「配对新设备」生成二维码）"
       keyHints="↑↓ 选择 · 回车 执行/二次确认 · Esc 返回"

@@ -37,6 +37,9 @@ function redactString(s: string): string {
     // 审阅修复（安全席 P2·二轮）：Bearer/JWT 形态——工具命令字符串里的 access token 原样落盘
     .replace(/Bearer\s+[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*/g, 'Bearer [REDACTED]')
     .replace(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}/g, '[REDACTED]')
+    // 审阅补遗（安全席·四批）：48-hex daemon token 形态——server.json 的 Bearer token 以自由
+    // 文本出现在日志/快照时原样落盘（64-hex 规则盖不住 48 位）
+    .replace(/\b[0-9a-f]{48}\b/gi, '[REDACTED]')
 }
 
 const MAX_DEPTH = 10

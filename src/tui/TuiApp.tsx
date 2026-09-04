@@ -218,6 +218,20 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   const readMainDraft = (): string => draftPortRef.current?.read() ?? ''
   // M12-B3：插话预览由宿主 queue/snapshot 事件镜像（队列权威在宿主，D2）
   // 插话排队列表（queue/snapshot 全量同步 + injected 即时摘除）——对话区动态渲染留痕
+  // 附着凭据缓存（五批审阅·安全/正确性席）：attach 时取一次 server.json——/devices 显示与
+  // 停止同源（渲染每帧重读文件=同步 IO 进热路径；文件被换时显示/动作对象可能不是附着的 daemon）
+  const serveInfoRef = useRef<{ address: string; token: string; port: number } | null>(null)
+  const attachedServeInfo = useMemo(() => {
+    if (attachedHost === undefined) return undefined
+    if (serveInfoRef.current === null) {
+      const reg = readServerReg()
+      serveInfoRef.current =
+        reg !== null ? { address: `http://127.0.0.1:${reg.port}`, token: reg.token, port: reg.port } : null
+    }
+    return serveInfoRef.current === null
+      ? undefined
+      : { address: serveInfoRef.current.address, token: serveInfoRef.current.token }
+  }, [attachedHost])
   const [queuedInterjects, setQueuedInterjects] = useState<string[]>([])
   const enqueueInterject = async (text: string, images?: { path: string; mime: string; label?: string }[]): Promise<void> => {
     // T 线⑥（D-T5a）：插话 hook 宿主化——busy 输入经 prompt(StartOrSteer) 入队时宿主 dispatch
@@ -1488,7 +1502,7 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
   // 事件订阅零扰动）→ 冷拉回当前会话 → 重试原命令；②重拉失败 → 本地降级（localFallback 全装配
   // + 当前镜像续写同一会话文件）——TUI 永不断聊；③降级件也缺（测试 fake）→ 明确提示不卡输入。
   const rescueInflightRef = useRef<Promise<'reattached' | 'local' | 'dead'> | null>(null)
-  const degradeToLocal = (): 'local' | 'dead' => {
+  const degradeToLocal = (reason: 'rescue' | 'user-stop' = 'rescue'): 'local' | 'dead' => {
     if (!mountedRef.current) return 'dead' // 审阅 P2：unmount 后 in-flight rescue 尾段不再建新宿主（无人 dispose 会泄漏）
     // 会话 id：优先 daemon 侧真实会话（续写同一文件）；从未建立（首命令即失联）时 undefined——
     // 由 cli 侧 localFallback 闭包兜底新 id（本地开新会话继续干活）
@@ -1541,7 +1555,13 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
     // 可见「勿在他端开同会话」，轮成功也不自动清；/restart 回后台或用户 /warnings 清空）。
     // 主提示最后推（底部行只显最新一条——先推会被 tail 退回条目顶进计数折叠）
     for (const t of tail) pushNoticeFn('error', t)
-    pushNoticeFn('error', '后台服务不可达——已切换本地模式续聊（同 id 续写；期间请勿在其他端打开本会话，/restart 或重启 ecode 回后台）', true)
+    // 审阅修复（安全席 P2·四批）：主动停止（/devices）不走「服务不可达」事故语义——
+    // warn「✓ 已停止」与 sticky error「不可达」同屏自相矛盾，且 /warnings 历史误记故障
+    if (reason === 'user-stop') {
+      pushNoticeFn('warn', '后台 serve 已停止——本地模式续写中（同 id；期间请勿在其他端打开本会话。恢复后台：ecode serve 或重启 ecode）', true)
+    } else {
+      pushNoticeFn('error', '后台服务不可达——已切换本地模式续聊（同 id 续写；期间请勿在其他端打开本会话，/restart 或重启 ecode 回后台）', true)
+    }
     return 'local'
   }
 
@@ -1616,6 +1636,8 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
         // 收场会冻结流文本=误杀；新实例旧轮必死必须收场）
         const prevReg = readServerReg()
         const reg = await resurrectDaemonReg(deps.logger)
+        // spawn 前复查熔断（等待窗内用户可能已确认停止——降级完成后的迟到结果直接弃收）
+        if (rescueDeadLatch.current) return 'dead'
         const transport = transportRef.current
         if (reg !== null && transport?.reattach !== undefined) {
           // 审阅修复（架构席 P1-1）：同实例保留 SSE 游标——重连即带 sinceSeq 触发 mux 重放
@@ -2447,35 +2469,47 @@ export function TuiApp({ deps, banner: initialBanner, initialNotice, onRestart, 
       )}
       {overlay?.kind === 'devices-panel' && (
         <DevicesPanel
-          serve={
-            attachedHost !== undefined
-              ? (() => {
-                  const reg = readServerReg()
-                  return reg !== null ? { address: `http://127.0.0.1:${reg.port}`, token: reg.token } : undefined
-                })()
-              : undefined
-          }
+          serve={attachedServeInfo}
           onStopServe={
             attachedHost !== undefined
               ? () => {
-                  // 2026-09-04 用户点名「从 TUI 退出 serve」：进程级 stop（serveMain 优雅停机）
-                  // + 熔断 G3 自愈（否则 8s 后又拉回来）+ 降级本地续聊
-                  const reg = readServerReg()
-                  rescueDeadLatch.current = true
-                  if (reg !== null) {
-                    void fetch(`http://127.0.0.1:${reg.port}/api/cmd`, {
-                      method: 'POST',
-                      headers: { 'content-type': 'application/json', authorization: `Bearer ${reg.token}` },
-                      body: JSON.stringify({ op: { op: 'stop' } }),
-                    }).catch(() => {})
-                  }
-                  const where = degradeToLocal()
-                  if (where === 'local') {
-                    setSystemMsgs(['✓ 后台 serve 已停止——已切换本地模式续聊；重新启动后台：终端跑 ecode serve 或重启 ecode'], 'warn')
-                  } else {
-                    setSystemMsgs(['✓ 后台 serve 停止指令已发出'], 'warn')
-                  }
-                  setOverlay(null)
+                  // 2026-09-04 用户点名「从 TUI 退出 serve」。审阅修复（正确性/安全席 P1·六批）：
+                  // await+超时+ok 校验——原 void+catch 把「未送达/401」也谎报成已停止，且 daemon
+                  // 半死时降级本地=同 id 双写。成功才熔断自愈+降级；失败如实提示不降级
+                  void (async () => {
+                    const reg = serveInfoRef.current
+                    if (reg === null) {
+                      setSystemMsgs(['✗ 未找到后台服务注册信息（本机未在跑 serve）'], 'warn')
+                      return
+                    }
+                    let delivered = false
+                    let reason = ''
+                    try {
+                      const res = await fetch(`http://127.0.0.1:${reg.port}/api/cmd`, {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json', authorization: `Bearer ${reg.token}` },
+                        body: JSON.stringify({ op: { op: 'stop' } }),
+                        signal: AbortSignal.timeout(3000),
+                      })
+                      delivered = res.ok
+                      if (!res.ok) reason = `HTTP ${res.status}`
+                    } catch (e) {
+                      reason = e instanceof Error ? e.message : String(e)
+                    }
+                    if (!delivered) {
+                      setSystemMsgs([`✗ 停止指令未送达（${reason}）——后台 serve 可能仍在运行；可重试或用 ecode serve stop`], 'warn')
+                      return
+                    }
+                    // 成功：熔断 G3 自愈（否则 8s 后又拉回来）+ 降级本地续聊（不推「不可达」事故语义）
+                    rescueDeadLatch.current = true
+                    const where = degradeToLocal('user-stop')
+                    if (where === 'local') {
+                      setSystemMsgs(['✓ 后台 serve 已停止——已切换本地模式续聊；重新启动后台：终端跑 ecode serve 或重启 ecode'], 'warn')
+                    } else {
+                      setSystemMsgs(['✓ 后台 serve 停止指令已发出'], 'warn')
+                    }
+                    setOverlay(null)
+                  })()
                 }
               : undefined
           }
